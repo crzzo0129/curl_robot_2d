@@ -1,0 +1,356 @@
+<mujoco model="curl_robot_2d">
+  <!--
+    自动生成文件。请修改 curl_robot_2d/parameters.py 或
+    curl_robot_2d/model.py，然后运行：
+      python -m scripts.generate_model
+
+    坐标约定：
+      x = 前进方向，z = 竖直向上，y = 垂直侧视平面。
+
+    根节点具有 x/z 平移和绕 y 的俯仰；四个内部关节也只绕 y 转动。
+    因此这是在 MuJoCo 三维动力学引擎中实现的严格 7-DOF 平面模型。
+
+    等边基线：
+      Torso 髋间边 = 前/后大腿 = 前/后小腿 = 0.15 m
+    compact 关键帧保持五条中心线边等长，并令两个有限尺寸足端球
+    表面接触而非中心重合。视觉和碰撞几何有意使用简单 primitive。
+  -->
+
+  <!-- 使用弧度和 SI 单位，重力沿 -z。 -->
+  <compiler angle="radian" autolimits="true"/>
+  <option timestep="0.001" gravity="0 0 -9.81"
+          integrator="implicitfast" cone="elliptic"
+          iterations="20" ls_iterations="10"/>
+
+  <!-- 以下设置只影响渲染，不影响动力学。 -->
+  <visual>
+    <global azimuth="90" elevation="0" offwidth="960" offheight="720"/>
+    <rgba com="0.1 1 0.1 1" contactpoint="1 0.2 0.1 1"
+          contactforce="1 0.7 0.1 1"/>
+  </visual>
+
+  <!-- 程序生成的天空和地面纹理；项目不依赖外部 mesh。 -->
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".18 .23 .30"
+             rgb2=".02 .03 .05" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" width="512"
+             height="512" rgb1=".18 .22 .27" rgb2=".10 .13 .17"/>
+    <material name="ground" texture="grid" texrepeat="1 1"
+              texuniform="true" reflectance="0.05"/>
+  </asset>
+
+  <default>
+    <!--
+      bit 1 = 地面，bit 2 = 结构代理，bit 4 = 弧壳。
+      结构和弧壳都与地面以及非相邻机器人刚体碰撞；MuJoCo 默认
+      过滤同一 body 和父子 body，避免关节两侧的预期邻接误碰。
+    -->
+    <joint limited="true"/>
+    <geom contype="0" conaffinity="1" condim="3"
+          friction="0.8 0.02 0.01"
+          solref="0.01 1" solimp="0.9 0.95 0.001"/>
+    <default class="hip_joint">
+      <!--
+        左右两个同步髋电机合并为一个二维自由度。安装固定弧壳后，
+        活动范围进一步限制为弧壳不重叠的 collision-compatible range。
+      -->
+      <joint damping="0.02"
+             armature="0.0032"
+             range="-1.12 1.570796327"/>
+    </default>
+    <default class="knee_joint">
+      <!-- 等效膝关节正角度表示向内蜷缩。 -->
+      <joint damping="0.02"
+             armature="0.0032"
+             range="0 2.69"/>
+    </default>
+    <default class="paired_servo">
+      <!--
+        左右电机对的等效伺服：最大力矩 +/-6 N m，
+        PD 增益取两个源电机之和。
+      -->
+      <general forcelimited="true" forcerange="-6 6"
+               ctrllimited="true"
+               gainprm="10 0 0"
+               biastype="affine"
+               biasprm="0 -10 -0.2"/>
+    </default>
+    <default class="rolling_shell">
+      <!--
+        第一版弧壳由短 capsule 拼接。body 已显式给出 inertial，
+        因而这些 geom 目前只改变外形和接触，不增加质量或惯量。
+      -->
+      <geom type="capsule" size="0.006"
+            contype="4" conaffinity="7"
+            solref="0.003 1" solimp="0.95 0.99 0.001"
+            group="1" rgba="0.55 0.78 0.95 0.88"/>
+    </default>
+    <default class="structure_collision">
+      <!-- 有限厚度结构代理；参与地面与选择性机器人自碰撞。 -->
+      <geom contype="2" conaffinity="7"
+            solref="0.003 1" solimp="0.95 0.99 0.001"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <!-- 固定侧视相机沿 +y 观察 x-z 平面。 -->
+    <light name="key" pos="-0.4 -1.0 1.2" dir="0.2 0.8 -1"
+           diffuse="0.9 0.9 0.9"/>
+    <camera name="side" pos="0 -0.75 0.18"
+            xyaxes="1 0 0 0 0 1"/>
+
+    <!-- 地面是当前唯一 contype=1 的碰撞物体。 -->
+    <geom name="floor" type="plane" size="2 2 0.05"
+          contype="1" conaffinity="1" material="ground"/>
+
+    <!--
+      Torso 是五连杆树的根。简化 capsule 的中心线正好连接前后髋
+      锚点，因此 Torso 边与四条腿边等长。
+    -->
+    <body name="torso" pos="0 0 0">
+      <!-- 平面复合根：x slide + z slide + 绕 y 的 hinge。 -->
+      <joint name="root_x" type="slide" axis="1 0 0" limited="false"
+             damping="0.01"/>
+      <joint name="root_z" type="slide" axis="0 0 1" limited="false"
+             damping="0.01"/>
+      <joint name="root_pitch" type="hinge" axis="0 1 0" limited="false"
+             damping="0.01"/>
+      <inertial pos="0.025 0 0.015"
+                mass="1.506"
+                diaginertia="0.0085 0.0085 0.0024"/>
+      <geom name="torso_proxy" type="capsule" class="structure_collision"
+            fromto="-0.075 0 0 0.075 0 0"
+            size="0.012"
+            rgba="0.12 0.48 0.88 1"/>
+      <geom name="torso_shell_00" class="rolling_shell"
+            fromto="-0.068 0 0.02091534125 -0.04641303854 0 0.03049330231"/>
+      <geom name="torso_shell_01" class="rolling_shell"
+            fromto="-0.04641303854 0 0.03049330231 -0.02353407813 0 0.03634884788"/>
+      <geom name="torso_shell_02" class="rolling_shell"
+            fromto="-0.02353407813 0 0.03634884788 0 0 0.03831897722"/>
+      <geom name="torso_shell_03" class="rolling_shell"
+            fromto="0 0 0.03831897722 0.02353407813 0 0.03634884788"/>
+      <geom name="torso_shell_04" class="rolling_shell"
+            fromto="0.02353407813 0 0.03634884788 0.04641303854 0 0.03049330231"/>
+      <geom name="torso_shell_05" class="rolling_shell"
+            fromto="0.04641303854 0 0.03049330231 0.068 0 0.02091534125"/>
+      <site name="torso_com" type="sphere"
+            pos="0.025 0 0.015"
+            size="0.006" rgba="0.1 1 0.1 1"/>
+
+      <!--
+        前腿链：髋关节正转使膝向外（+x），膝关节正转使足端向内。
+      -->
+      <body name="front_thigh" pos="0.075 0 0">
+        <joint name="front_hip" type="hinge" axis="0 -1 0"
+               class="hip_joint"/>
+        <inertial pos="0 0 -0.0573059111"
+                  mass="0.732"
+                  diaginertia="0.002673 0.002673 0.0002"/>
+        <geom name="front_thigh_proxy" type="capsule" class="structure_collision"
+              fromto="0 0 0 0 0 -0.15"
+              size="0.012"
+              rgba="0.95 0.45 0.12 1"/>
+        <geom name="front_thigh_shell_00" class="rolling_shell"
+              fromto="0.02091534125 0 -0.007 0.03049330231 0 -0.02858696146"/>
+        <geom name="front_thigh_shell_01" class="rolling_shell"
+              fromto="0.03049330231 0 -0.02858696146 0.03634884788 0 -0.05146592187"/>
+        <geom name="front_thigh_shell_02" class="rolling_shell"
+              fromto="0.03634884788 0 -0.05146592187 0.03831897722 0 -0.075"/>
+        <geom name="front_thigh_shell_03" class="rolling_shell"
+              fromto="0.03831897722 0 -0.075 0.03634884788 0 -0.09853407813"/>
+        <geom name="front_thigh_shell_04" class="rolling_shell"
+              fromto="0.03634884788 0 -0.09853407813 0.03049330231 0 -0.1214130385"/>
+        <geom name="front_thigh_shell_05" class="rolling_shell"
+              fromto="0.03049330231 0 -0.1214130385 0.02091534125 0 -0.143"/>
+        <site name="front_hip_site" type="sphere" size="0.006"
+              rgba="1 0.85 0.1 1"/>
+        <site name="front_thigh_com" type="sphere"
+              pos="0 0 -0.0573059111"
+              size="0.005" rgba="0.1 1 0.1 1"/>
+
+        <body name="front_shank" pos="0 0 -0.15">
+          <joint name="front_knee" type="hinge" axis="0 1 0"
+                 class="knee_joint"/>
+          <inertial pos="0 0 -0.0897967059"
+                    mass="0.1"
+                    diaginertia="0.000155075 0.000155075 2e-05"/>
+          <geom name="front_shank_proxy" type="capsule" class="structure_collision"
+                fromto="0 0 0 0 0 -0.15"
+                size="0.01"
+                rgba="0.98 0.70 0.18 1"/>
+          <geom name="front_shank_shell_00" class="rolling_shell"
+                fromto="0.02091534125 0 -0.007 0.03049330231 0 -0.02858696146"/>
+          <geom name="front_shank_shell_01" class="rolling_shell"
+                fromto="0.03049330231 0 -0.02858696146 0.03634884788 0 -0.05146592187"/>
+          <geom name="front_shank_shell_02" class="rolling_shell"
+                fromto="0.03634884788 0 -0.05146592187 0.03831897722 0 -0.075"/>
+          <geom name="front_shank_shell_03" class="rolling_shell"
+                fromto="0.03831897722 0 -0.075 0.03634884788 0 -0.09853407813"/>
+          <geom name="front_shank_shell_04" class="rolling_shell"
+                fromto="0.03634884788 0 -0.09853407813 0.03049330231 0 -0.1214130385"/>
+          <geom name="front_shank_shell_05" class="rolling_shell"
+                fromto="0.03049330231 0 -0.1214130385 0.02091534125 0 -0.143"/>
+          <geom name="front_foot_proxy" type="sphere" class="structure_collision"
+                pos="0 0 -0.15"
+                size="0.01995"
+                rgba="0.85 0.85 0.88 1"/>
+          <site name="front_knee_site" type="sphere" size="0.006"
+                rgba="1 0.85 0.1 1"/>
+          <site name="front_shank_com" type="sphere"
+                pos="0 0 -0.0897967059"
+                size="0.005" rgba="0.1 1 0.1 1"/>
+          <site name="front_foot_site"
+                pos="0 0 -0.15" size="0.004"/>
+        </body>
+      </body>
+
+      <!--
+        后腿链通过反转两个 hinge 轴镜像前腿，因此前后腿可以共用
+        相同的等效关节角约定。
+      -->
+      <body name="rear_thigh" pos="-0.075 0 0">
+        <joint name="rear_hip" type="hinge" axis="0 1 0"
+               class="hip_joint"/>
+        <inertial pos="0 0 -0.0573059111"
+                  mass="0.732"
+                  diaginertia="0.002673 0.002673 0.0002"/>
+        <geom name="rear_thigh_proxy" type="capsule" class="structure_collision"
+              fromto="0 0 0 0 0 -0.15"
+              size="0.012"
+              rgba="0.84 0.24 0.18 1"/>
+        <geom name="rear_thigh_shell_00" class="rolling_shell"
+              fromto="-0.02091534125 0 -0.007 -0.03049330231 0 -0.02858696146"/>
+        <geom name="rear_thigh_shell_01" class="rolling_shell"
+              fromto="-0.03049330231 0 -0.02858696146 -0.03634884788 0 -0.05146592187"/>
+        <geom name="rear_thigh_shell_02" class="rolling_shell"
+              fromto="-0.03634884788 0 -0.05146592187 -0.03831897722 0 -0.075"/>
+        <geom name="rear_thigh_shell_03" class="rolling_shell"
+              fromto="-0.03831897722 0 -0.075 -0.03634884788 0 -0.09853407813"/>
+        <geom name="rear_thigh_shell_04" class="rolling_shell"
+              fromto="-0.03634884788 0 -0.09853407813 -0.03049330231 0 -0.1214130385"/>
+        <geom name="rear_thigh_shell_05" class="rolling_shell"
+              fromto="-0.03049330231 0 -0.1214130385 -0.02091534125 0 -0.143"/>
+        <site name="rear_hip_site" type="sphere" size="0.006"
+              rgba="1 0.85 0.1 1"/>
+        <site name="rear_thigh_com" type="sphere"
+              pos="0 0 -0.0573059111"
+              size="0.005" rgba="0.1 1 0.1 1"/>
+
+        <body name="rear_shank" pos="0 0 -0.15">
+          <joint name="rear_knee" type="hinge" axis="0 -1 0"
+                 class="knee_joint"/>
+          <inertial pos="0 0 -0.0897967059"
+                    mass="0.1"
+                    diaginertia="0.000155075 0.000155075 2e-05"/>
+          <geom name="rear_shank_proxy" type="capsule" class="structure_collision"
+                fromto="0 0 0 0 0 -0.15"
+                size="0.01"
+                rgba="0.94 0.55 0.16 1"/>
+          <geom name="rear_shank_shell_00" class="rolling_shell"
+                fromto="-0.02091534125 0 -0.007 -0.03049330231 0 -0.02858696146"/>
+          <geom name="rear_shank_shell_01" class="rolling_shell"
+                fromto="-0.03049330231 0 -0.02858696146 -0.03634884788 0 -0.05146592187"/>
+          <geom name="rear_shank_shell_02" class="rolling_shell"
+                fromto="-0.03634884788 0 -0.05146592187 -0.03831897722 0 -0.075"/>
+          <geom name="rear_shank_shell_03" class="rolling_shell"
+                fromto="-0.03831897722 0 -0.075 -0.03634884788 0 -0.09853407813"/>
+          <geom name="rear_shank_shell_04" class="rolling_shell"
+                fromto="-0.03634884788 0 -0.09853407813 -0.03049330231 0 -0.1214130385"/>
+          <geom name="rear_shank_shell_05" class="rolling_shell"
+                fromto="-0.03049330231 0 -0.1214130385 -0.02091534125 0 -0.143"/>
+          <geom name="rear_foot_proxy" type="sphere" class="structure_collision"
+                pos="0 0 -0.15"
+                size="0.01995"
+                rgba="0.85 0.85 0.88 1"/>
+          <site name="rear_knee_site" type="sphere" size="0.006"
+                rgba="1 0.85 0.1 1"/>
+          <site name="rear_shank_com" type="sphere"
+                pos="0 0 -0.0897967059"
+                size="0.005" rgba="0.1 1 0.1 1"/>
+          <site name="rear_foot_site"
+                pos="0 0 -0.15" size="0.004"/>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <contact>
+    <!--
+      compact 中允许两个有限尺寸足端表面接触。显式 pair 使用更硬的
+      内部接触参数，减少软接触导致的数值穿透；并不把足端焊接。
+    -->
+    <pair name="front_rear_foot_contact"
+          geom1="front_foot_proxy" geom2="rear_foot_proxy"
+          condim="3" friction="0.8 0.02 0.01"
+          solref="0.002 1" solimp="0.97 0.995 0.001"/>
+  </contact>
+
+  <!-- 四个成对位置伺服；ctrl 表示目标关节角。 -->
+  <actuator>
+    <general name="front_hip_servo" joint="front_hip"
+             class="paired_servo"
+             ctrlrange="-1.12 1.570796327"/>
+    <general name="front_knee_servo" joint="front_knee"
+             class="paired_servo"
+             ctrlrange="0 2.69"/>
+    <general name="rear_hip_servo" joint="rear_hip"
+             class="paired_servo"
+             ctrlrange="-1.12 1.570796327"/>
+    <general name="rear_knee_servo" joint="rear_knee"
+             class="paired_servo"
+             ctrlrange="0 2.69"/>
+  </actuator>
+
+  <!--
+    同一模型中的刚性实验模式。四个约束默认关闭，不影响正常 servo
+    仿真；被动刚性基准脚本在运行时通过 data.eq_active 开启它们，
+    并同时关闭 actuator。joint2 省略时，polycoef[0] 是相对 qpos0
+    的固定目标角。
+  -->
+  <equality>
+    <joint name="lock_front_hip_compact" joint1="front_hip"
+           polycoef="0.3141592654 0 0 0 0"
+           active="false" solref="0.004 1"
+           solimp="0.999 0.9999 0.001"/>
+    <joint name="lock_front_knee_compact" joint1="front_knee"
+           polycoef="1.05650322 0 0 0 0"
+           active="false" solref="0.004 1"
+           solimp="0.999 0.9999 0.001"/>
+    <joint name="lock_rear_hip_compact" joint1="rear_hip"
+           polycoef="0.3141592654 0 0 0 0"
+           active="false" solref="0.004 1"
+           solimp="0.999 0.9999 0.001"/>
+    <joint name="lock_rear_knee_compact" joint1="rear_knee"
+           polycoef="1.05650322 0 0 0 0"
+           active="false" solref="0.004 1"
+           solimp="0.999 0.9999 0.001"/>
+  </equality>
+
+  <!-- 用于诊断和未来 RL 观测的最小传感器集合。 -->
+  <sensor>
+    <framepos name="torso_position" objtype="body" objname="torso"/>
+    <framelinvel name="torso_velocity" objtype="body" objname="torso"/>
+    <frameangvel name="torso_angular_velocity" objtype="body" objname="torso"/>
+    <jointpos name="front_hip_position" joint="front_hip"/>
+    <jointpos name="front_knee_position" joint="front_knee"/>
+    <jointpos name="rear_hip_position" joint="rear_hip"/>
+    <jointpos name="rear_knee_position" joint="rear_knee"/>
+  </sensor>
+
+  <keyframe>
+    <!-- 展开姿态：两条腿竖直，两个足端球与地面相切。 -->
+    <key name="open"
+         qpos="0 0.31995 0 0 0 0 0"
+         ctrl="0 0 0 0"/>
+    <!--
+      等边 compact 姿态：
+        hip 固定为 18 度；
+        knee 由有限尺寸足端的表面接触条件反算。
+      前后足端属于两条开链，只允许接触，不焊接、不中心重合。
+    -->
+    <key name="compact"
+         qpos="0 0.2731413822 0 0.3141592654 1.05650322 0.3141592654 1.05650322"
+         ctrl="0.3141592654 1.05650322 0.3141592654 1.05650322"/>
+  </keyframe>
+</mujoco>

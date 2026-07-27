@@ -1,0 +1,9 @@
+# Linux NVIDIA GPU / CUDA 12 training stack.
+# JAX's cuda12 extra installs its own compatible CUDA and cuDNN wheels.
+jax[cuda12]>=0.6,<0.7
+flax>=0.10,<0.11
+brax>=0.14,<0.15
+mujoco>=3.9,<4
+mujoco-mjx>=3.9,<4
+numpy>=1.26
+Pillow>=10
