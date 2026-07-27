@@ -105,6 +105,19 @@ def main(argv=None) -> None:
         flush=True,
     )
 
+    # A second call detects accidental reset/step dtype signature drift.  It
+    # should be a cached call, not another minute-long compilation.
+    print("stage=step_signature_check_start", flush=True)
+    start = time.perf_counter()
+    state = step_batch(state, actions)
+    jax.block_until_ready(state.reward)
+    step_signature_check_s = time.perf_counter() - start
+    print(
+        "stage=step_signature_check_done "
+        f"seconds={step_signature_check_s:.3f}",
+        flush=True,
+    )
+
     print(f"stage=cached_rollout_start steps={args.steps}", flush=True)
     start = time.perf_counter()
     for _ in range(args.steps):
@@ -128,6 +141,7 @@ def main(argv=None) -> None:
         "action_size": env.action_size,
         "reset_compile_s": reset_compile_s,
         "step_compile_s": step_compile_s,
+        "step_signature_check_s": step_signature_check_s,
         "cached_rollout_s": cached_rollout_s,
         "cached_steps_per_second": (
             args.batch_size * args.steps / max(cached_rollout_s, 1e-9)

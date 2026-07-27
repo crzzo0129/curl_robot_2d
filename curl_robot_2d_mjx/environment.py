@@ -182,7 +182,11 @@ def make_brax_env(
             return "mjx"
 
         def _zero_metrics(self):
-            zero = jp.asarray(0.0)
+            # Keep reset and step PyTree signatures identical.  A scalar made
+            # with jp.asarray(0.0) is weakly typed, while computed step metrics
+            # are strong float32; that difference makes jax.jit compile step
+            # again on its second invocation.
+            zero = jp.zeros((), dtype=jp.float32)
             return {
                 "reward": zero,
                 "reward_total": zero,
@@ -248,8 +252,12 @@ def make_brax_env(
                 "previous_phase": data.qpos[self.root_pitch_qpos],
                 "previous_root_x": data.qpos[self.root_x_qpos],
                 "last_action": last_action,
-                "maximum_forbidden_penetration": jp.asarray(0.0),
-                "maximum_allowed_excess": jp.asarray(0.0),
+                "maximum_forbidden_penetration": jp.zeros(
+                    (), dtype=jp.float32
+                ),
+                "maximum_allowed_excess": jp.zeros(
+                    (), dtype=jp.float32
+                ),
                 "step_count": jp.asarray(0, dtype=jp.int32),
             }
             observation = self._observation(
@@ -258,8 +266,8 @@ def make_brax_env(
             return State(
                 data,
                 observation,
-                jp.asarray(0.0),
-                jp.asarray(0.0),
+                jp.zeros((), dtype=jp.float32),
+                jp.zeros((), dtype=jp.float32),
                 metrics=self._zero_metrics(),
                 info=info,
             )

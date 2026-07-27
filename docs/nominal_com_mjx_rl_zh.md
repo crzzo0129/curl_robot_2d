@@ -112,12 +112,15 @@ python -m scripts.mjx_smoke \
 支持 EGL 的节点可以使用 `--mujoco-gl egl`。脚本会依次打印
 `environment_create`、`reset_compile`、`step_compile` 和 `cached_rollout`
 阶段；首次出现 XLA `Very slow compile` 警告不等于失败，应等待当前阶段完成。
+`step_signature_check` 用来确认 reset 与第一步产生的 JAX 状态类型一致；它和
+随后 cached rollout 应显著快于首次 `step_compile`。
 
 通过条件：
 
 - `status` 为 `ok`；
 - observation 形状为 `(1, 23)`；
 - reward 和 observation 全部有限；
+- `step_signature_check_s` 与 `cached_rollout_s` 不再接近首次编译时间；
 - 没有 `mjx.put_model` 不支持当前模型特征的异常。
 
 单环境通过后，再依次运行 `--batch-size 16 --steps 10` 和
