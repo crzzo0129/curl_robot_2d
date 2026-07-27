@@ -1,7 +1,7 @@
 from pathlib import Path
 import unittest
 
-from curl_robot_2d_mjx.config import NominalRLConfig
+from curl_robot_2d_mjx.config import NominalRLConfig, physics_profile
 from curl_robot_2d_mjx.environment import JOINT_NAMES, MODEL_PATH
 from curl_robot_2d_mjx.runtime import (
     configure_cloud_runtime,
@@ -27,6 +27,25 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(len(config.action_scales), 4)
         self.assertEqual(config.episode_length, 500)
         self.assertEqual(config.allowed_foot_penetration_m, 0.0005)
+
+    def test_candidate_physics_keeps_control_rate(self) -> None:
+        reference = physics_profile("reference")
+        newton4 = physics_profile("newton4")
+        cg12 = physics_profile("cg12")
+        self.assertAlmostEqual(reference.control_timestep, 0.02)
+        self.assertAlmostEqual(newton4.control_timestep, 0.02)
+        self.assertAlmostEqual(cg12.control_timestep, 0.02)
+        self.assertEqual(reference.action_repeat, 20)
+        self.assertEqual(newton4.action_repeat, 20)
+        self.assertEqual(cg12.action_repeat, 20)
+        self.assertEqual(reference.integrator_name, "implicitfast")
+        self.assertEqual(cg12.integrator_name, "implicitfast")
+        self.assertEqual(reference.cone_name, "elliptic")
+        self.assertEqual(cg12.cone_name, "elliptic")
+        self.assertEqual(cg12.solver_name, "cg")
+        self.assertLess(
+            cg12.solver_iterations, reference.solver_iterations
+        )
 
     def test_cloud_runtime_configuration_is_dependency_light(self) -> None:
         configure_cloud_runtime(memory_fraction=0.85, preallocate=False)

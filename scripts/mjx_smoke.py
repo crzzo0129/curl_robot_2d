@@ -14,6 +14,13 @@ from curl_robot_2d_mjx.runtime import (
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
+    from curl_robot_2d_mjx.config import PHYSICS_PROFILE_NAMES
+
+    parser.add_argument(
+        "--physics-profile",
+        choices=PHYSICS_PROFILE_NAMES,
+        default="cg12",
+    )
     parser.add_argument(
         "--batch-size",
         type=int,
@@ -58,15 +65,24 @@ def main(argv=None) -> None:
     import jax
     import jax.numpy as jp
 
+    from curl_robot_2d_mjx.config import physics_profile
     from curl_robot_2d_mjx.environment import make_brax_env
 
     print(json.dumps(describe_runtime(), indent=2), flush=True)
     print("stage=environment_create_start", flush=True)
-    env = make_brax_env(seed=args.seed)
+    task = physics_profile(args.physics_profile)
+    env = make_brax_env(task, seed=args.seed)
     print(
         "stage=environment_create_done "
         f"nq={env.mj_model.nq} nv={env.mj_model.nv} "
         f"nu={env.mj_model.nu} ngeom={env.mj_model.ngeom} "
+        f"physics_profile={env.config.physics_profile} "
+        f"timestep={env.mj_model.opt.timestep} "
+        f"solver={env.config.solver_name} "
+        f"integrator={env.config.integrator_name} "
+        f"cone={env.config.cone_name} "
+        f"iterations={env.mj_model.opt.iterations} "
+        f"ls_iterations={env.mj_model.opt.ls_iterations} "
         f"action_repeat={env.config.action_repeat}",
         flush=True,
     )
@@ -139,6 +155,14 @@ def main(argv=None) -> None:
         "steps": args.steps,
         "observation_size": env.observation_size,
         "action_size": env.action_size,
+        "physics_profile": env.config.physics_profile,
+        "physics_timestep": float(env.mj_model.opt.timestep),
+        "solver": env.config.solver_name,
+        "integrator": env.config.integrator_name,
+        "cone": env.config.cone_name,
+        "solver_iterations": int(env.mj_model.opt.iterations),
+        "solver_ls_iterations": int(env.mj_model.opt.ls_iterations),
+        "action_repeat": env.config.action_repeat,
         "reset_compile_s": reset_compile_s,
         "step_compile_s": step_compile_s,
         "step_signature_check_s": step_signature_check_s,

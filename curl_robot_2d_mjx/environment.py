@@ -19,6 +19,38 @@ JOINT_NAMES = (
 )
 
 
+def apply_physics_options(model, task: NominalRLConfig) -> None:
+    """Apply an MJX/CPU-comparable runtime profile to one MuJoCo model."""
+
+    import mujoco
+
+    solver_values = {
+        "newton": mujoco.mjtSolver.mjSOL_NEWTON,
+        "cg": mujoco.mjtSolver.mjSOL_CG,
+        "pgs": mujoco.mjtSolver.mjSOL_PGS,
+    }
+    integrator_values = {
+        "euler": mujoco.mjtIntegrator.mjINT_EULER,
+        "implicitfast": mujoco.mjtIntegrator.mjINT_IMPLICITFAST,
+    }
+    cone_values = {
+        "pyramidal": mujoco.mjtCone.mjCONE_PYRAMIDAL,
+        "elliptic": mujoco.mjtCone.mjCONE_ELLIPTIC,
+    }
+    jacobian_values = {
+        "dense": mujoco.mjtJacobian.mjJAC_DENSE,
+        "sparse": mujoco.mjtJacobian.mjJAC_SPARSE,
+        "auto": mujoco.mjtJacobian.mjJAC_AUTO,
+    }
+    model.opt.solver = solver_values[task.solver_name]
+    model.opt.integrator = integrator_values[task.integrator_name]
+    model.opt.cone = cone_values[task.cone_name]
+    model.opt.jacobian = jacobian_values[task.jacobian_name]
+    model.opt.timestep = task.physics_timestep
+    model.opt.iterations = task.solver_iterations
+    model.opt.ls_iterations = task.solver_ls_iterations
+
+
 def _load_dependencies():
     try:
         import jax
@@ -54,10 +86,7 @@ def make_brax_env(
             self.config = task
             self.seed = seed
             self.mj_model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
-            self.mj_model.opt.solver = mujoco.mjtSolver.mjSOL_NEWTON
-            self.mj_model.opt.jacobian = mujoco.mjtJacobian.mjJAC_DENSE
-            self.mj_model.opt.iterations = task.solver_iterations
-            self.mj_model.opt.ls_iterations = task.solver_ls_iterations
+            apply_physics_options(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)
             self.mjx_model = mjx.put_model(self.mj_model)
             self.base_data = mjx.put_data(self.mj_model, self.cpu_data)

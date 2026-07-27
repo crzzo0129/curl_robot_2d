@@ -11,7 +11,11 @@ import time
 
 import numpy as np
 
-from curl_robot_2d_mjx.config import NominalRLConfig
+from curl_robot_2d_mjx.config import (
+    PHYSICS_PROFILE_NAMES,
+    NominalRLConfig,
+    physics_profile,
+)
 from curl_robot_2d_mjx.runtime import (
     configure_cloud_runtime,
     describe_runtime,
@@ -174,6 +178,11 @@ def main() -> None:
     parser.add_argument(
         "--preset", choices=tuple(PRESETS), default="smoke"
     )
+    parser.add_argument(
+        "--physics-profile",
+        choices=PHYSICS_PROFILE_NAMES,
+        default="cg12",
+    )
     parser.add_argument("--steps", type=int)
     parser.add_argument("--envs", type=int)
     parser.add_argument("--eval-envs", type=int)
@@ -258,7 +267,10 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     runtime = describe_runtime()
     print(json.dumps(runtime, indent=2), flush=True)
-    task = NominalRLConfig(episode_length=args.episode_length)
+    task = physics_profile(
+        args.physics_profile,
+        NominalRLConfig(episode_length=args.episode_length),
+    )
     train_env = make_brax_env(task, seed=args.seed)
     eval_env = make_brax_env(task, seed=args.seed + 10_000)
 

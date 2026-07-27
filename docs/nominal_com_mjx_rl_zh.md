@@ -65,9 +65,25 @@ $$
 
 ## 3. MJX 与 CPU MuJoCo 的关系
 
-MJX 使用和 CEM 相同的 XML、接触类别、关节限位和执行器。为了 GPU 吞吐，
-训练环境把 Newton 求解器迭代从 CPU 基准的 `20/10` 暂时降为 `4/4`。
-这不改变机器人参数，但会带来求解精度差异。
+MJX 使用和 CEM 相同的 XML、接触类别、关节限位和执行器。物理运行档位通过
+加载 XML 后覆盖 MuJoCo option 实现，不复制第二份模型：
+
+- `reference`：Newton `20/10`、1 ms、20 子步，作为最终物理真值；
+- `newton4`：Newton `4/4`、1 ms、20 子步，是早期速度尝试；
+- `cg12`：CG `12/6`、1 ms、20 子步，是当前训练候选。
+
+冻结 CEM 控制器的 10 s CPU 对照中，`reference` 滚动 9.914 圈，最大非允许
+穿透 0.459 mm；`newton4` 虽滚动 9.567 圈，但穿透增至 7.068 mm，不能作为
+训练默认；`cg12` 滚动 9.906 圈，最大非允许穿透 0.410 mm，非允许接触比例
+为 1.29%，与 reference 的 1.36% 接近。CG 的允许足端穿透仍偏大，因此最终
+结论仍必须回到 reference。
+
+可随时用冻结 CEM 控制器重做档位对照；脚本会自动选择新文件名，不覆盖历史
+结果：
+
+```bash
+python -m scripts.compare_physics_profiles
+```
 
 因此 MJX 训练奖励只能用于选策略，最终结论必须把策略放回未修改的 CPU
 MuJoCo `20/10` 模型，重新测量滚动圈数、接触、穿透、能耗和力矩。
@@ -104,6 +120,7 @@ Python 输出必须为 3.12.x，并且 JAX 必须看到 `gpu` 和 NVIDIA 设备�
 
 ```bash
 python -m scripts.mjx_smoke \
+  --physics-profile cg12 \
   --batch-size 1 \
   --steps 1 \
   --mujoco-gl disable
@@ -133,6 +150,7 @@ python -m scripts.mjx_smoke \
 ```bash
 python -m scripts.train_mjx_ppo \
   --preset smoke \
+  --physics-profile cg12 \
   --seed 0 \
   --mujoco-gl disable \
   --out results/mjx_ppo_nominal_smoke_seed0
@@ -153,6 +171,7 @@ python -m scripts.train_mjx_ppo \
 ```bash
 python -m scripts.train_mjx_ppo \
   --preset 4090 \
+  --physics-profile cg12 \
   --seed 0 \
   --mujoco-gl disable \
   --out results/mjx_ppo_nominal_4090_seed0
@@ -163,6 +182,7 @@ H200：
 ```bash
 python -m scripts.train_mjx_ppo \
   --preset h200 \
+  --physics-profile cg12 \
   --seed 0 \
   --mujoco-gl egl \
   --out results/mjx_ppo_nominal_h200_seed0
