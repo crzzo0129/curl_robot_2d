@@ -6,6 +6,7 @@ import argparse
 import inspect
 import json
 import math
+from dataclasses import asdict
 from pathlib import Path
 import time
 
@@ -16,6 +17,8 @@ from curl_robot_2d_mjx.config import (
     NominalRLConfig,
     physics_profile,
 )
+from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES
+from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 from curl_robot_2d_mjx.runtime import (
     configure_cloud_runtime,
     describe_runtime,
@@ -74,6 +77,66 @@ def _float(value):
         return float(value.item())
 
 
+PER_STEP_EVAL_METRICS = (
+    "root_height_m",
+    "foot_center_distance_m",
+    "action_rms",
+    "action_rate_rms",
+    "normalized_torque_rms",
+    "forbidden_contact_count",
+    "forbidden_penetration_m",
+    "allowed_foot_penetration_m",
+    "ground_contact_count",
+    "roll_progress_rad",
+    "phase_progress_rad",
+    "translation_progress_rad",
+)
+
+
+def _add_per_step_eval_metrics(metrics):
+    episode_length = metrics.get("eval/avg_episode_length")
+    if episode_length is None or episode_length <= 0:
+        return
+    for name in PER_STEP_EVAL_METRICS:
+        key = f"eval/episode_{name}"
+        if key in metrics:
+            metrics[f"eval/avg_{name}"] = metrics[key] / episode_length
+    for name in REWARD_TERM_NAMES:
+        key = f"eval/episode_reward_{name}"
+        if key in metrics:
+            metrics[f"eval/avg_reward_{name}"] = (
+                metrics[key] / episode_length
+            )
+    if "eval/episode_reward" in metrics:
+        metrics["eval/avg_reward"] = (
+            metrics["eval/episode_reward"] / episode_length
+        )
+
+
+def _is_reward_metric(name: str) -> bool:
+    return (
+        name == "reward"
+        or name == "reward_total"
+        or name.startswith("reward_")
+        or name.startswith("eval/episode_reward")
+        or "/avg_reward" in name
+    )
+
+
+def _split_metrics(metrics):
+    reward_metrics = {
+        name: value
+        for name, value in metrics.items()
+        if _is_reward_metric(name)
+    }
+    ordinary_metrics = {
+        name: value
+        for name, value in metrics.items()
+        if not _is_reward_metric(name)
+    }
+    return reward_metrics, ordinary_metrics
+
+
 def _network_factory(hidden_layers, activation_name):
     import jax.nn as jnn
     from brax.training.agents.ppo import networks
@@ -124,6 +187,7 @@ def _evaluate_policy(
     action_rows = []
     reward_rows = []
     metric_totals = {}
+    reward_term_totals = {name: 0.0 for name in REWARD_TERM_NAMES}
 
     for _ in range(episode_length):
         rng, action_key = jax.random.split(rng)
@@ -135,9 +199,18 @@ def _evaluate_policy(
         action_rows.append(np.asarray(jax.device_get(action)))
         reward_rows.append(_float(state.reward))
         for name, value in state.metrics.items():
-            metric_totals[name] = metric_totals.get(name, 0.0) + _float(
-                value
-            )
+            scalar = _float(value)
+            if name.startswith("reward_") and name not in (
+                "reward_total",
+            ):
+                term_name = name.removeprefix("reward_")
+                reward_term_totals[term_name] = (
+                    reward_term_totals.get(term_name, 0.0) + scalar
+                )
+            elif name not in ("reward", "reward_total"):
+                metric_totals[name] = (
+                    metric_totals.get(name, 0.0) + scalar
+                )
         if _float(state.done) > 0.5:
             break
 
@@ -146,6 +219,20 @@ def _evaluate_policy(
     )
     final_x = _float(state.pipeline_state.qpos[env.root_x_qpos])
     steps = len(reward_rows)
+    metric_averages = {
+        name: value / max(steps, 1)
+        for name, value in metric_totals.items()
+    }
+    failure_reasons = {
+        name.removeprefix("failure_"): bool(metric_totals.get(name, 0.0))
+        for name in (
+            "failure_nonfinite",
+            "failure_root_low",
+            "failure_root_high",
+            "failure_foot_gap",
+            "failure_leg_crossing",
+        )
+    }
     summary = {
         "episode_steps": steps,
         "episode_duration_s": (
@@ -158,7 +245,19 @@ def _evaluate_policy(
         "net_turns": (final_phase - initial_phase) / (2.0 * math.pi),
         "root_x_displacement_m": final_x - initial_x,
         "terminated": bool(_float(state.done) > 0.5),
-        "metric_totals": metric_totals,
+        "reward_breakdown": {
+            "total": float(sum(reward_rows)),
+            "terms": reward_term_totals,
+            "per_step": {
+                name: value / max(steps, 1)
+                for name, value in reward_term_totals.items()
+            },
+        },
+        "metrics": {
+            "totals": metric_totals,
+            "per_step_averages": metric_averages,
+        },
+        "failure_reasons": failure_reasons,
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -235,6 +334,11 @@ def main() -> None:
         type=Path,
         default=Path("results") / "mjx_ppo_nominal",
     )
+    parser.add_argument(
+        "--allow-existing-output",
+        action="store_true",
+        help="Explicitly allow writing into a non-empty output directory.",
+    )
     parser.add_argument("--skip-evaluation", action="store_true")
     args = parser.parse_args()
 
@@ -250,6 +354,15 @@ def main() -> None:
         override = getattr(args, name)
         if override is not None:
             values[name] = override
+    if (
+        args.out.exists()
+        and any(args.out.iterdir())
+        and not args.allow_existing_output
+    ):
+        raise SystemExit(
+            f"Output directory is not empty: {args.out}. "
+            "Use a new --out path so historical results are preserved."
+        )
 
     configure_cloud_runtime(
         memory_fraction=args.memory_fraction,
@@ -271,10 +384,16 @@ def main() -> None:
         args.physics_profile,
         NominalRLConfig(episode_length=args.episode_length),
     )
-    train_env = make_brax_env(task, seed=args.seed)
-    eval_env = make_brax_env(task, seed=args.seed + 10_000)
+    reward_config = RollingRewardConfig()
+    train_env = make_brax_env(
+        task, reward_config=reward_config, seed=args.seed
+    )
+    eval_env = make_brax_env(
+        task, reward_config=reward_config, seed=args.seed + 10_000
+    )
 
-    history = []
+    metric_history = []
+    reward_history = []
     best = {
         "reward": float("-inf"),
         "step": None,
@@ -292,8 +411,10 @@ def main() -> None:
 
     def progress_fn(step, metrics):
         clean = {name: _float(value) for name, value in metrics.items()}
-        row = {"step": int(step), **clean}
-        history.append(row)
+        _add_per_step_eval_metrics(clean)
+        reward_metrics, ordinary_metrics = _split_metrics(clean)
+        reward_history.append({"step": int(step), **reward_metrics})
+        metric_history.append({"step": int(step), **ordinary_metrics})
         reward = clean.get(
             "eval/episode_reward",
             clean.get("eval/episode_reward_mean"),
@@ -309,6 +430,26 @@ def main() -> None:
         if "eval/episode_length" in clean:
             message += (
                 f" eval_length={clean['eval/episode_length']:.1f}"
+            )
+        if "eval/avg_episode_length" in clean:
+            message += (
+                f" avg_length={clean['eval/avg_episode_length']:.1f}"
+            )
+        if "eval/episode_failed" in clean:
+            message += f" failed={clean['eval/episode_failed']:.2f}"
+        for short_name, metric_name in (
+            ("low", "eval/episode_failure_root_low"),
+            ("high", "eval/episode_failure_root_high"),
+            ("gap", "eval/episode_failure_foot_gap"),
+            ("cross", "eval/episode_failure_leg_crossing"),
+            ("nan", "eval/episode_failure_nonfinite"),
+        ):
+            if clean.get(metric_name, 0.0) > 0.0:
+                message += f" fail_{short_name}={clean[metric_name]:.2f}"
+        if "eval/avg_roll_progress_rad" in clean:
+            message += (
+                f" avg_roll_step="
+                f"{clean['eval/avg_roll_progress_rad']:.4f}"
             )
         print(message, flush=True)
 
@@ -330,11 +471,16 @@ def main() -> None:
             if args.restore_checkpoint is not None
             else None
         ),
-        "task": task.__dict__,
+        "task": asdict(task),
+        "reward": asdict(reward_config),
         "runtime": runtime,
     }
     (args.out / "training_config.json").write_text(
         json.dumps(config_payload, indent=2) + "\n", encoding="utf-8"
+    )
+    (args.out / "reward_config.json").write_text(
+        json.dumps(asdict(reward_config), indent=2) + "\n",
+        encoding="utf-8",
     )
 
     print(
@@ -395,16 +541,25 @@ def main() -> None:
     model_io.save_params(args.out / "params_final", final_params)
     model_io.save_params(args.out / "params_best", best_params)
     (args.out / "metrics_history.json").write_text(
-        json.dumps(history, indent=2) + "\n", encoding="utf-8"
+        json.dumps(metric_history, indent=2) + "\n", encoding="utf-8"
+    )
+    (args.out / "reward_history.json").write_text(
+        json.dumps(reward_history, indent=2) + "\n", encoding="utf-8"
+    )
+    clean_final_metrics = {
+        name: _float(value)
+        for name, value in (final_metrics or {}).items()
+    }
+    _add_per_step_eval_metrics(clean_final_metrics)
+    final_reward_metrics, final_ordinary_metrics = _split_metrics(
+        clean_final_metrics
     )
     train_summary = {
         "elapsed_s": elapsed,
         "best_eval_reward": best["reward"],
         "best_step": best["step"],
-        "final_metrics": {
-            name: _float(value)
-            for name, value in (final_metrics or {}).items()
-        },
+        "final_metrics": final_ordinary_metrics,
+        "final_reward_metrics": final_reward_metrics,
     }
     (args.out / "training_summary.json").write_text(
         json.dumps(train_summary, indent=2) + "\n", encoding="utf-8"

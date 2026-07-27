@@ -61,7 +61,20 @@ $$
 - 允许足端接触超过 0.5 mm 的穿透。
 
 腿部中心线交叉会立即终止 episode 并施加强惩罚。自接触不会被误认为地面
-支撑。
+支撑。任何非超时失败还会收到独立的 `termination` 惩罚，当前权重为 5。
+
+奖励配置和实现不再混在环境文件中：
+
+- `curl_robot_2d_mjx/reward_config.py`：经常调整的所有奖励权重和阈值；
+- `curl_robot_2d_mjx/reward.py`：各奖励项的计算公式；
+- `curl_robot_2d_mjx/environment.py`：只提供物理量、接触量和终止原因。
+
+当前奖励固定拆成 `roll_progress`、`roll_mismatch`、`backward`、
+`action_rate`、`torque`、`airborne`、`foot_gap`、`collision` 和
+`termination` 九项。训练时每一项都独立记录，不再只看混合后的总 reward。
+
+失败原因也分别记录为 `failure_nonfinite`、`failure_root_low`、
+`failure_root_high`、`failure_foot_gap` 和 `failure_leg_crossing`。
 
 ## 3. MJX 与 CPU MuJoCo 的关系
 
@@ -153,7 +166,7 @@ python -m scripts.train_mjx_ppo \
   --physics-profile cg12 \
   --seed 0 \
   --mujoco-gl disable \
-  --out results/mjx_ppo_nominal_smoke_seed0
+  --out results/mjx_ppo_nominal_smoke_cg12_terminal_v2_seed0
 ```
 
 短训练使用 64 个并行环境和约 6.55 万个请求环境步。目的不是得到最终策略，
@@ -163,6 +176,8 @@ python -m scripts.train_mjx_ppo \
 - eval reward 不出现 NaN；
 - 评价 rollout 的净滚动不是持续负值；
 - 碰撞和交叉惩罚有正常数值。
+- episode 长度是否开始接近完整 500 步；
+- 终止惩罚能否消除“获得短期滚动奖励后主动失败”的策略。
 
 ## 7. 4090 与 H200 正式配置
 
@@ -213,12 +228,18 @@ python -m scripts.train_mjx_ppo \
 
 每个训练目录包含：
 
-- `training_config.json`：训练、任务和设备配置；
-- `metrics_history.json`：PPO 训练与评价曲线；
+- `training_config.json`：训练、任务、奖励和设备配置的完整快照；
+- `reward_config.json`：本次训练独立使用的奖励权重；
+- `reward_history.json`：总奖励、九个奖励分项及其每步平均值；
+- `metrics_history.json`：不含奖励项的物理、失败和 PPO 指标；
 - `training_summary.json`：耗时、最优步和最终指标；
 - `params_best`、`params_final`：Brax 策略参数；
 - `evaluation_rollout.npz`：确定性策略的 qpos、动作和奖励；
-- `evaluation_summary.json`：净滚动圈数、位移和累计奖励。
+- `evaluation_summary.json`：净滚动、独立奖励分解、普通指标平均值和具体失败
+  原因。
 
 云端训练后应完整下载该目录。确认策略确实学习后，再实现 CPU MuJoCo
 策略回放和与 CEM 的严格对照，不根据训练 reward 单独下结论。
+
+训练入口默认拒绝写入非空输出目录，避免覆盖历史实验。只有明确需要时才使用
+`--allow-existing-output`。

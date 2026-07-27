@@ -80,6 +80,8 @@
 - 已建立读取同一 XML 的名义 COM MJX/PPO 后端；云端基准环境固定为
   Python 3.12、Linux、CUDA 12.8，并在 RTX 4090 或 H200 上先做编译
   冒烟，再验证纯 RL 能否从零学会滚动。
+- RL 奖励权重已集中到 `curl_robot_2d_mjx/reward_config.py`，奖励计算、
+  普通训练指标和失败原因分别记录，便于后续频繁调参且不覆盖历史实验。
 
 第一版带注释和离散弧壳的等边五连杆模型位于 `assets/curl_robot_2d.xml`，由
 `curl_robot_2d/model.py` 根据集中参数生成。可使用：

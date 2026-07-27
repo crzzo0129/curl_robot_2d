@@ -7,6 +7,8 @@ from pathlib import Path
 import numpy as np
 
 from curl_robot_2d_mjx.config import NominalRLConfig
+from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES, reward_terms
+from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -69,21 +71,24 @@ def _load_dependencies():
 def make_brax_env(
     config: NominalRLConfig | None = None,
     *,
+    reward_config: RollingRewardConfig | None = None,
     seed: int = 0,
 ):
     """Create the fixed-nominal-COM MJX environment.
 
     The environment loads the same generated XML used by the CPU CEM baseline.
-    Only solver iteration counts are reduced for MJX throughput; no mass, COM,
-    inertia, friction, gain or torque parameter is randomized.
+    Runtime physics options can use a measured profile; no mass, COM, inertia,
+    friction, gain or torque parameter is randomized.
     """
 
     jax, jp, mujoco, mjx, Env, State = _load_dependencies()
     task = config or NominalRLConfig()
+    reward_settings = reward_config or RollingRewardConfig()
 
     class CurlRobot2DMJXEnv(Env):
         def __init__(self):
             self.config = task
+            self.reward_config = reward_settings
             self.seed = seed
             self.mj_model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
             apply_physics_options(self.mj_model, task)
@@ -219,14 +224,10 @@ def make_brax_env(
             return {
                 "reward": zero,
                 "reward_total": zero,
-                "reward_roll_progress": zero,
-                "reward_roll_mismatch": zero,
-                "reward_backward": zero,
-                "reward_action_rate": zero,
-                "reward_torque": zero,
-                "reward_airborne": zero,
-                "reward_foot_gap": zero,
-                "reward_collision": zero,
+                **{
+                    f"reward_{name}": zero
+                    for name in REWARD_TERM_NAMES
+                },
                 "roll_progress_rad": zero,
                 "phase_progress_rad": zero,
                 "translation_progress_rad": zero,
@@ -242,6 +243,11 @@ def make_brax_env(
                 "normalized_torque_rms": zero,
                 "failed": zero,
                 "timeout": zero,
+                "failure_nonfinite": zero,
+                "failure_root_low": zero,
+                "failure_root_high": zero,
+                "failure_foot_gap": zero,
+                "failure_leg_crossing": zero,
             }
 
         def reset(self, rng):
@@ -331,9 +337,6 @@ def make_brax_env(
             conservative_progress = jp.minimum(
                 phase_progress, translation_progress
             )
-            clipped_progress = jp.clip(
-                conservative_progress, -0.25, 0.25
-            )
             mismatch = jp.abs(phase_progress - translation_progress)
             backward = jp.maximum(-phase_progress, 0.0) + jp.maximum(
                 -translation_progress, 0.0
@@ -359,7 +362,7 @@ def make_brax_env(
             forbidden_depth = contacts["forbidden_depth"]
             allowed_excess = jp.maximum(
                 contacts["allowed_depth"]
-                - task.allowed_foot_penetration_m,
+                - reward_settings.allowed_foot_penetration_m,
                 0.0,
             )
             new_forbidden_max = jp.maximum(
@@ -379,61 +382,56 @@ def make_brax_env(
             control_dt = (
                 float(self.mj_model.opt.timestep) * task.action_repeat
             )
-            collision_cost = (
-                task.forbidden_contact_time_weight
-                * control_dt
-                * (contacts["forbidden_count"] > 0).astype(jp.float32)
-                + task.forbidden_penetration_integral_weight
-                * forbidden_depth
-                * control_dt
-                + task.maximum_forbidden_penetration_weight
-                * forbidden_max_increment
-                + task.allowed_excess_integral_weight
-                * allowed_excess
-                * control_dt
-                + task.maximum_allowed_excess_weight
-                * allowed_max_increment
-                + task.leg_crossing_penalty
-                * leg_crossing.astype(jp.float32)
-            )
-
-            rewards = {
-                "reward_roll_progress": (
-                    task.reward_roll_progress * clipped_progress
-                ),
-                "reward_roll_mismatch": (
-                    -task.penalty_roll_mismatch * mismatch
-                ),
-                "reward_backward": -task.penalty_backward * backward,
-                "reward_action_rate": (
-                    -task.penalty_action_rate * action_rate
-                ),
-                "reward_torque": -task.penalty_torque * torque_cost,
-                "reward_airborne": -task.penalty_airborne * airborne,
-                "reward_foot_gap": (
-                    -task.penalty_foot_gap
-                    * jp.maximum(
-                        foot_distance - task.foot_gap_penalty_threshold_m,
-                        0.0,
-                    )
-                ),
-                "reward_collision": -collision_cost,
-            }
-            reward = sum(rewards.values())
             finite = jp.all(jp.isfinite(data.qpos)) & jp.all(
                 jp.isfinite(data.qvel)
             )
             root_z = data.qpos[self.root_z_qpos]
+            failure_nonfinite = ~finite
+            failure_root_low = root_z < task.terminate_root_z_min
+            failure_root_high = root_z > task.terminate_root_z_max
+            failure_foot_gap = (
+                foot_distance > task.maximum_foot_center_distance_m
+            )
+            failure_leg_crossing = leg_crossing
             failed_bool = (
-                (~finite)
-                | leg_crossing
-                | (root_z < task.terminate_root_z_min)
-                | (root_z > task.terminate_root_z_max)
-                | (foot_distance > task.maximum_foot_center_distance_m)
+                failure_nonfinite
+                | failure_root_low
+                | failure_root_high
+                | failure_foot_gap
+                | failure_leg_crossing
             )
             step_count = state.info["step_count"] + 1
             timeout_bool = step_count >= task.episode_length
             done = (failed_bool | timeout_bool).astype(jp.float32)
+
+            raw_reward_terms = reward_terms(
+                jp,
+                reward_settings,
+                {
+                    "conservative_progress": conservative_progress,
+                    "mismatch": mismatch,
+                    "backward": backward,
+                    "action_rate": action_rate,
+                    "torque_cost": torque_cost,
+                    "airborne": airborne,
+                    "foot_distance": foot_distance,
+                    "control_dt": control_dt,
+                    "forbidden_count": contacts["forbidden_count"],
+                    "forbidden_depth": forbidden_depth,
+                    "forbidden_max_increment": (
+                        forbidden_max_increment
+                    ),
+                    "allowed_excess": allowed_excess,
+                    "allowed_max_increment": allowed_max_increment,
+                    "leg_crossing": leg_crossing.astype(jp.float32),
+                    "failed": failed_bool.astype(jp.float32),
+                },
+            )
+            reward = sum(raw_reward_terms.values())
+            rewards = {
+                f"reward_{name}": value
+                for name, value in raw_reward_terms.items()
+            }
             info = {
                 **state.info,
                 "previous_phase": phase,
@@ -464,6 +462,13 @@ def make_brax_env(
                 "normalized_torque_rms": jp.sqrt(torque_cost),
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
+                "failure_nonfinite": failure_nonfinite.astype(jp.float32),
+                "failure_root_low": failure_root_low.astype(jp.float32),
+                "failure_root_high": failure_root_high.astype(jp.float32),
+                "failure_foot_gap": failure_foot_gap.astype(jp.float32),
+                "failure_leg_crossing": (
+                    failure_leg_crossing.astype(jp.float32)
+                ),
             }
             observation = self._observation(data, action, contacts)
             return State(

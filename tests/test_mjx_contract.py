@@ -3,6 +3,8 @@ import unittest
 
 from curl_robot_2d_mjx.config import NominalRLConfig, physics_profile
 from curl_robot_2d_mjx.environment import JOINT_NAMES, MODEL_PATH
+from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES
+from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 from curl_robot_2d_mjx.runtime import (
     configure_cloud_runtime,
     select_mujoco_gl_backend,
@@ -26,7 +28,9 @@ class MJXContractTest(unittest.TestCase):
         self.assertAlmostEqual(config.control_timestep, 0.02)
         self.assertEqual(len(config.action_scales), 4)
         self.assertEqual(config.episode_length, 500)
-        self.assertEqual(config.allowed_foot_penetration_m, 0.0005)
+        reward = RollingRewardConfig()
+        self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
+        self.assertEqual(reward.termination, 5.0)
 
     def test_candidate_physics_keeps_control_rate(self) -> None:
         reference = physics_profile("reference")
@@ -101,14 +105,18 @@ class MJXContractTest(unittest.TestCase):
             / "environment.py"
         ).read_text(encoding="utf-8")
         for metric in (
-            "reward_roll_progress",
-            "reward_collision",
             "forbidden_contact_count",
             "forbidden_penetration_m",
             "allowed_foot_penetration_m",
             "leg_crossing",
+            "failure_root_low",
+            "failure_root_high",
+            "failure_foot_gap",
         ):
             self.assertIn(f'"{metric}"', source)
+        self.assertIn("roll_progress", REWARD_TERM_NAMES)
+        self.assertIn("collision", REWARD_TERM_NAMES)
+        self.assertIn("termination", REWARD_TERM_NAMES)
 
 
 if __name__ == "__main__":
