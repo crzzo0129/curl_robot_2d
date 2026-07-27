@@ -3,7 +3,10 @@ import unittest
 
 from curl_robot_2d_mjx.config import NominalRLConfig
 from curl_robot_2d_mjx.environment import JOINT_NAMES, MODEL_PATH
-from curl_robot_2d_mjx.runtime import configure_cloud_runtime
+from curl_robot_2d_mjx.runtime import (
+    configure_cloud_runtime,
+    select_mujoco_gl_backend,
+)
 from scripts import mjx_smoke, train_mjx_ppo
 
 
@@ -30,17 +33,47 @@ class MJXContractTest(unittest.TestCase):
         import os
 
         self.assertIn(
-            "--xla_gpu_triton_gemm_any=true", os.environ["XLA_FLAGS"]
+            "--xla_gpu_triton_gemm_any=True", os.environ["XLA_FLAGS"]
+        )
+        self.assertIn(
+            "--xla_gpu_enable_latency_hiding_scheduler=true",
+            os.environ["XLA_FLAGS"],
         )
         self.assertEqual(
             os.environ["XLA_PYTHON_CLIENT_MEM_FRACTION"], "0.85"
         )
+
+    def test_cloud_runtime_selects_headless_linux_backend(self) -> None:
+        self.assertEqual(
+            select_mujoco_gl_backend(
+                environ={}, platform_name="linux"
+            ),
+            "egl",
+        )
+
+    def test_mjx_smoke_starts_with_single_environment(self) -> None:
+        args = mjx_smoke.parse_args([])
+        self.assertEqual(args.batch_size, 1)
+        self.assertEqual(args.steps, 1)
 
     def test_training_entries_import_without_jax(self) -> None:
         self.assertTrue(callable(mjx_smoke.main))
         self.assertTrue(callable(train_mjx_ppo.main))
         self.assertIn("4090", train_mjx_ppo.PRESETS)
         self.assertIn("h200", train_mjx_ppo.PRESETS)
+
+    def test_restore_checkpoint_selects_latest_numbered_child(self) -> None:
+        from tempfile import TemporaryDirectory
+
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "000000001000").mkdir()
+            latest = root / "000000010000"
+            latest.mkdir()
+            self.assertEqual(
+                train_mjx_ppo._resolve_restore_checkpoint(root),
+                latest.resolve(),
+            )
 
     def test_environment_declares_collision_and_progress_metrics(self) -> None:
         source = (

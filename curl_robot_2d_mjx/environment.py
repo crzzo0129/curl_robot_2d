@@ -202,6 +202,13 @@ def make_brax_env(
                 "allowed_foot_penetration_m": zero,
                 "ground_contact_count": zero,
                 "leg_crossing": zero,
+                "root_height_m": zero,
+                "foot_center_distance_m": zero,
+                "action_rms": zero,
+                "action_rate_rms": zero,
+                "normalized_torque_rms": zero,
+                "failed": zero,
+                "timeout": zero,
             }
 
         def reset(self, rng):
@@ -380,14 +387,16 @@ def make_brax_env(
                 jp.isfinite(data.qvel)
             )
             root_z = data.qpos[self.root_z_qpos]
-            done = (
+            failed_bool = (
                 (~finite)
                 | leg_crossing
                 | (root_z < task.terminate_root_z_min)
                 | (root_z > task.terminate_root_z_max)
                 | (foot_distance > task.maximum_foot_center_distance_m)
-            ).astype(jp.float32)
+            )
             step_count = state.info["step_count"] + 1
+            timeout_bool = step_count >= task.episode_length
+            done = (failed_bool | timeout_bool).astype(jp.float32)
             info = {
                 **state.info,
                 "previous_phase": phase,
@@ -411,6 +420,13 @@ def make_brax_env(
                 "allowed_foot_penetration_m": contacts["allowed_depth"],
                 "ground_contact_count": contacts["ground_count"],
                 "leg_crossing": leg_crossing.astype(jp.float32),
+                "root_height_m": root_z,
+                "foot_center_distance_m": foot_distance,
+                "action_rms": jp.sqrt(jp.mean(jp.square(action))),
+                "action_rate_rms": jp.sqrt(action_rate),
+                "normalized_torque_rms": jp.sqrt(torque_cost),
+                "failed": failed_bool.astype(jp.float32),
+                "timeout": timeout_bool.astype(jp.float32),
             }
             observation = self._observation(data, action, contacts)
             return State(

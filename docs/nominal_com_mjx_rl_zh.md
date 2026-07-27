@@ -74,40 +74,56 @@ MuJoCo `20/10` 模型，重新测量滚动圈数、接触、穿透、能耗和�
 
 ## 4. 云端环境
 
-推荐 Linux x86-64、RTX 4090 或 H200、NVIDIA 驱动和 CUDA 12.8 环境。
+基准解释器固定为 Python 3.12。推荐 Linux x86-64、RTX 4090 或 H200、
+NVIDIA 驱动和 CUDA 12.8 环境。
 项目使用 JAX 的 CUDA 12 pip 安装路线；pip 会安装匹配的 CUDA/cuDNN
 运行库，不要求训练脚本直接依赖平台的 toolkit 文件。
 
 在 `curl_robot_2d` 根目录运行：
 
 ```bash
-python -m venv .venv
+python3.12 --version
+python3.12 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements-mjx.txt
 
+python -c "import sys; print(sys.version)"
 python -c "import jax; print(jax.default_backend()); print(jax.devices())"
 ```
 
-必须看到 `gpu` 和 NVIDIA 设备；若显示 `cpu`，不要开始正式训练。
+Python 输出必须为 3.12.x，并且 JAX 必须看到 `gpu` 和 NVIDIA 设备；
+若显示 `cpu`，不要开始正式训练。
 
 ## 5. 必须先运行的 MJX 冒烟测试
 
+当前 curl 模型有 38 个 geom、外壳与腿部自碰撞，并且每个 20 ms 控制周期
+包含 20 个物理子步；其 XLA 接触计算图明显重于 `disk_robot` 当前训练模型
+（16 个 geom、每控制周期 5 个物理子步）。因此首次测试必须从单环境开始，
+不能直接根据 GPU 显存把 batch 调到很大。
+
 ```bash
 python -m scripts.mjx_smoke \
-  --batch-size 64 \
-  --steps 10
+  --batch-size 1 \
+  --steps 1 \
+  --mujoco-gl disable
 ```
+
+支持 EGL 的节点可以使用 `--mujoco-gl egl`。脚本会依次打印
+`environment_create`、`reset_compile`、`step_compile` 和 `cached_rollout`
+阶段；首次出现 XLA `Very slow compile` 警告不等于失败，应等待当前阶段完成。
 
 通过条件：
 
 - `status` 为 `ok`；
-- observation 形状为 `(64, 23)`；
+- observation 形状为 `(1, 23)`；
 - reward 和 observation 全部有限；
 - 没有 `mjx.put_model` 不支持当前模型特征的异常。
 
-若显存溢出，先将 batch size 降为 16；若模型特征不支持，应修复模型/MJX
-兼容问题，而不是直接开始 PPO。
+单环境通过后，再依次运行 `--batch-size 16 --steps 10` 和
+`--batch-size 64 --steps 10`，记录两个 JSON 中的编译时间与
+`cached_steps_per_second`。不同 batch shape 会触发新的编译。
+若模型特征不支持，应修复模型/MJX 兼容问题，而不是直接开始 PPO。
 
 ## 6. 第一轮短训练
 
@@ -115,10 +131,12 @@ python -m scripts.mjx_smoke \
 python -m scripts.train_mjx_ppo \
   --preset smoke \
   --seed 0 \
+  --mujoco-gl disable \
   --out results/mjx_ppo_nominal_smoke_seed0
 ```
 
-短训练只有 20 万环境步，目的不是得到最终策略，而是确认：
+短训练使用 64 个并行环境和约 6.55 万个请求环境步。目的不是得到最终策略，
+而是确认：
 
 - PPO 能完成编译和更新；
 - eval reward 不出现 NaN；
@@ -133,6 +151,7 @@ python -m scripts.train_mjx_ppo \
 python -m scripts.train_mjx_ppo \
   --preset 4090 \
   --seed 0 \
+  --mujoco-gl disable \
   --out results/mjx_ppo_nominal_4090_seed0
 ```
 
@@ -142,12 +161,30 @@ H200：
 python -m scripts.train_mjx_ppo \
   --preset h200 \
   --seed 0 \
+  --mujoco-gl egl \
   --out results/mjx_ppo_nominal_h200_seed0
 ```
 
-4090 preset 使用 2048 个并行环境和 2000 万步；H200 preset 使用 8192 个
-并行环境和 5000 万步。由于当前模型接触 geom 较多，首次运行若显存不足，
-优先降低 `--envs` 和 `--eval-envs`，不要先改变物理或奖励。
+4090 preset 暂从 512 个并行环境和 2000 万步开始；H200 preset 暂从
+2048 个并行环境和 5000 万步开始。这两个并行数是保守起点，不是固定结论。
+必须根据前述 16/64 环境 smoke 的 `cached_steps_per_second` 和显存占用再决定
+是否增大。由于当前模型接触 geom 较多，首次运行若显存不足，优先降低
+`--envs` 和 `--eval-envs`，不要先改变物理或奖励。
+
+训练脚本继承了 `disk_robot` 已验证的运行配置方式：headless GL 选择、XLA
+latency-hiding/Triton 设置、编译缓存、运行时诊断、自动 PPO checkpoint 以及
+`--restore-checkpoint` 续训入口。当前阶段没有复制 `disk_robot` 的 IK teacher、
+teacher blend、命令条件化和 Student 蒸馏，因为这里要独立回答纯 RL 能否从零
+学会滚动。
+
+如训练被中断，可使用实际 checkpoint 目录续训：
+
+```bash
+python -m scripts.train_mjx_ppo \
+  --preset 4090 \
+  --restore-checkpoint results/mjx_ppo_nominal_4090_seed0/ppo_checkpoint \
+  --out results/mjx_ppo_nominal_4090_seed0_resume
+```
 
 ## 8. 输出
 

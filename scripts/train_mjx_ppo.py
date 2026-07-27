@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import math
 from pathlib import Path
@@ -19,30 +20,47 @@ from curl_robot_2d_mjx.runtime import (
 
 PRESETS = {
     "smoke": {
-        "steps": 200_000,
-        "envs": 256,
-        "eval_envs": 32,
+        "steps": 65_536,
+        "envs": 64,
+        "eval_envs": 8,
         "num_evals": 4,
-        "batch_size": 256,
-        "num_minibatches": 8,
+        "batch_size": 64,
+        "num_minibatches": 4,
     },
     "4090": {
         "steps": 20_000_000,
+        "envs": 512,
+        "eval_envs": 64,
+        "num_evals": 10,
+        "batch_size": 512,
+        "num_minibatches": 16,
+    },
+    "h200": {
+        "steps": 50_000_000,
         "envs": 2048,
-        "eval_envs": 128,
+        "eval_envs": 256,
         "num_evals": 10,
         "batch_size": 1024,
         "num_minibatches": 32,
     },
-    "h200": {
-        "steps": 50_000_000,
-        "envs": 8192,
-        "eval_envs": 512,
-        "num_evals": 10,
-        "batch_size": 2048,
-        "num_minibatches": 32,
-    },
 }
+
+
+def _resolve_restore_checkpoint(path: Path) -> Path:
+    """Resolve a Brax checkpoint root to its latest numbered child."""
+
+    path = Path(path).expanduser().resolve()
+    if not path.is_dir():
+        return path
+    numbered = sorted(
+        (
+            child
+            for child in path.iterdir()
+            if child.is_dir() and child.name.isdigit()
+        ),
+        key=lambda child: int(child.name),
+    )
+    return numbered[-1] if numbered else path
 
 
 def _float(value):
@@ -168,6 +186,7 @@ def main() -> None:
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--entropy-cost", type=float, default=1e-2)
     parser.add_argument("--discounting", type=float, default=0.99)
+    parser.add_argument("--reward-scaling", type=float, default=1.0)
     parser.add_argument(
         "--hidden-layers", type=int, nargs="+", default=[256, 256, 128]
     )
@@ -178,6 +197,30 @@ def main() -> None:
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--memory-fraction", type=float, default=0.90)
+    parser.add_argument(
+        "--mujoco-gl",
+        default="disable",
+        help="Use 'disable' for headless training or 'egl' when available.",
+    )
+    parser.add_argument("--xla-triton", action="store_true", default=True)
+    parser.add_argument(
+        "--no-xla-triton", dest="xla_triton", action="store_false"
+    )
+    parser.add_argument(
+        "--preallocate", action="store_true", default=True
+    )
+    parser.add_argument(
+        "--no-preallocate", dest="preallocate", action="store_false"
+    )
+    parser.add_argument(
+        "--runtime-diagnostics", action="store_true", default=True
+    )
+    parser.add_argument(
+        "--no-runtime-diagnostics",
+        dest="runtime_diagnostics",
+        action="store_false",
+    )
+    parser.add_argument("--restore-checkpoint", type=Path)
     parser.add_argument(
         "--out",
         type=Path,
@@ -199,7 +242,13 @@ def main() -> None:
         if override is not None:
             values[name] = override
 
-    configure_cloud_runtime(memory_fraction=args.memory_fraction)
+    configure_cloud_runtime(
+        memory_fraction=args.memory_fraction,
+        preallocate=args.preallocate,
+        xla_triton=args.xla_triton,
+        mujoco_gl=args.mujoco_gl,
+        verbose=args.runtime_diagnostics,
+    )
     import jax
     from brax.io import model as model_io
     from brax.training.agents.ppo import train as ppo
@@ -260,9 +309,15 @@ def main() -> None:
         "learning_rate": args.learning_rate,
         "entropy_cost": args.entropy_cost,
         "discounting": args.discounting,
+        "reward_scaling": args.reward_scaling,
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
         "seed": args.seed,
+        "restore_checkpoint": (
+            str(args.restore_checkpoint)
+            if args.restore_checkpoint is not None
+            else None
+        ),
         "task": task.__dict__,
         "runtime": runtime,
     }
@@ -277,6 +332,26 @@ def main() -> None:
         flush=True,
     )
     start = time.perf_counter()
+    checkpoint_kwargs = {}
+    train_parameters = inspect.signature(ppo.train).parameters
+    if "save_checkpoint_path" in train_parameters:
+        checkpoint_kwargs["save_checkpoint_path"] = str(
+            (args.out / "ppo_checkpoint").resolve()
+        )
+    if args.restore_checkpoint is not None:
+        if "restore_checkpoint_path" not in train_parameters:
+            raise SystemExit(
+                "Installed Brax does not support restore_checkpoint_path."
+            )
+        checkpoint_kwargs["restore_checkpoint_path"] = str(
+            _resolve_restore_checkpoint(args.restore_checkpoint)
+        )
+        print(
+            "stage=checkpoint_restore "
+            f"path={checkpoint_kwargs['restore_checkpoint_path']}",
+            flush=True,
+        )
+
     make_inference_fn, final_params, final_metrics = ppo.train(
         environment=train_env,
         eval_env=eval_env,
@@ -289,7 +364,7 @@ def main() -> None:
         learning_rate=args.learning_rate,
         entropy_cost=args.entropy_cost,
         discounting=args.discounting,
-        reward_scaling=1.0,
+        reward_scaling=args.reward_scaling,
         unroll_length=args.unroll_length,
         batch_size=values["batch_size"],
         num_minibatches=values["num_minibatches"],
@@ -301,6 +376,7 @@ def main() -> None:
         seed=args.seed,
         progress_fn=progress_fn,
         policy_params_fn=policy_params_fn,
+        **checkpoint_kwargs,
     )
     elapsed = time.perf_counter() - start
     best_params = best["params"] if best["params"] is not None else final_params
