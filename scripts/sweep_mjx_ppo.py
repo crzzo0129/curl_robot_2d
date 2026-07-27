@@ -336,6 +336,37 @@ def _rank(results: list[dict]) -> list[dict]:
     )
 
 
+def final_quality_gate(
+    result: dict,
+    *,
+    minimum_survival_fraction: float,
+    minimum_net_turns: float,
+) -> dict:
+    """Require evidence of both survival and rolling before a long run."""
+
+    reasons = []
+    if result.get("rejected", True):
+        reasons.append("candidate metrics were rejected")
+    if result.get("survival_fraction", 0.0) < minimum_survival_fraction:
+        reasons.append(
+            "survival_fraction "
+            f"{result.get('survival_fraction', 0.0):.3f} "
+            f"< {minimum_survival_fraction:.3f}"
+        )
+    if result.get("estimated_net_turns", -math.inf) < minimum_net_turns:
+        reasons.append(
+            "estimated_net_turns "
+            f"{result.get('estimated_net_turns', -math.inf):.3f} "
+            f"< {minimum_net_turns:.3f}"
+        )
+    return {
+        "passed": not reasons,
+        "minimum_survival_fraction": minimum_survival_fraction,
+        "minimum_net_turns": minimum_net_turns,
+        "reasons": reasons,
+    }
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description=(
@@ -355,10 +386,19 @@ def parse_args(argv=None):
     parser.add_argument("--final-evals", type=int, default=10)
     parser.add_argument("--top-k", type=int, default=2)
     parser.add_argument(
+        "--min-final-survival-fraction", type=float, default=0.20
+    )
+    parser.add_argument("--min-final-turns", type=float, default=0.25)
+    parser.add_argument(
         "--out", type=Path, default=Path("results") / "mjx_ppo_sweep"
     )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--skip-final", action="store_true")
+    parser.add_argument(
+        "--force-final",
+        action="store_true",
+        help="Run the long stage even when no confirmed candidate passes.",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
     if args.top_k < 1 or args.top_k > len(DEFAULT_CANDIDATES):
@@ -366,6 +406,10 @@ def parse_args(argv=None):
     for name in ("episode_length", "screen_evals", "confirm_evals", "final_evals"):
         if getattr(args, name) < 1:
             parser.error(f"--{name.replace('_', '-')} must be positive")
+    if not 0.0 <= args.min_final_survival_fraction <= 1.0:
+        parser.error("--min-final-survival-fraction must be in [0, 1]")
+    if args.min_final_turns < 0.0:
+        parser.error("--min-final-turns must be non-negative")
     return args
 
 
@@ -397,6 +441,10 @@ def main() -> None:
         "confirm_seed": args.seed + 1,
         "final_seed": args.seed + 2,
         "top_k": args.top_k,
+        "minimum_final_survival_fraction": (
+            args.min_final_survival_fraction
+        ),
+        "minimum_final_net_turns": args.min_final_turns,
         "candidates": [asdict(candidate) for candidate in DEFAULT_CANDIDATES],
     }
     (output_root / "sweep_config.json").write_text(
@@ -435,12 +483,12 @@ def main() -> None:
     ]
     if not eligible_screen:
         raise SystemExit("All screening runs were rejected.")
-    promoted = [
+    confirmation_queue = [
         candidate_by_name[result["candidate"]["name"]]
-        for result in eligible_screen[: args.top_k]
+        for result in eligible_screen
     ]
     confirm_results = []
-    for candidate in promoted:
+    for candidate in confirmation_queue:
         result = _run_candidate(
             candidate=candidate,
             stage="confirm",
@@ -464,7 +512,22 @@ def main() -> None:
             result["combined_score"] = (
                 0.25 * screen_score + 0.75 * result["selection_score"]
             )
+            result["quality_gate"] = final_quality_gate(
+                result,
+                minimum_survival_fraction=(
+                    args.min_final_survival_fraction
+                ),
+                minimum_net_turns=args.min_final_turns,
+            )
             confirm_results.append(result)
+            if (
+                len(confirm_results) >= args.top_k
+                and any(
+                    item["quality_gate"]["passed"]
+                    for item in confirm_results
+                )
+            ):
+                break
     ranked_confirm = sorted(
         confirm_results,
         key=lambda result: result["combined_score"],
@@ -474,7 +537,42 @@ def main() -> None:
     if not ranked_confirm:
         raise SystemExit("All confirmation runs failed.")
 
-    winner = candidate_by_name[ranked_confirm[0]["candidate"]["name"]]
+    passing_confirm = [
+        result
+        for result in ranked_confirm
+        if result["quality_gate"]["passed"]
+    ]
+    gate_summary = {
+        "passed": bool(passing_confirm),
+        "forced": bool(args.force_final and not passing_confirm),
+        "minimum_survival_fraction": args.min_final_survival_fraction,
+        "minimum_net_turns": args.min_final_turns,
+        "confirmed_candidates": [
+            {
+                "name": result["candidate"]["name"],
+                "combined_score": result["combined_score"],
+                "survival_fraction": result["survival_fraction"],
+                "estimated_net_turns": result["estimated_net_turns"],
+                "quality_gate": result["quality_gate"],
+            }
+            for result in ranked_confirm
+        ],
+    }
+    (output_root / "quality_gate.json").write_text(
+        json.dumps(gate_summary, indent=2) + "\n", encoding="utf-8"
+    )
+    if not passing_confirm and not args.force_final:
+        print(
+            "[sweep] no confirmed candidate passed the final quality gate; "
+            "the long run will not start",
+            flush=True,
+        )
+        return
+
+    winner_result = (
+        passing_confirm[0] if passing_confirm else ranked_confirm[0]
+    )
+    winner = candidate_by_name[winner_result["candidate"]["name"]]
     selection = {
         "selected_candidate": asdict(winner),
         "screen_result": next(
@@ -482,14 +580,16 @@ def main() -> None:
             for result in ranked_screen
             if result["candidate"]["name"] == winner.name
         ),
-        "confirm_result": ranked_confirm[0],
+        "confirm_result": winner_result,
+        "quality_gate": winner_result["quality_gate"],
+        "quality_gate_forced": gate_summary["forced"],
     }
     (output_root / "selected_candidate.json").write_text(
         json.dumps(selection, indent=2) + "\n", encoding="utf-8"
     )
     print(
         f"[sweep] selected={winner.name} "
-        f"combined_score={ranked_confirm[0]['combined_score']:.4f}",
+        f"combined_score={winner_result['combined_score']:.4f}",
         flush=True,
     )
     if args.skip_final:

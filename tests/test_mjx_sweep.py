@@ -7,6 +7,7 @@ from scripts.sweep_mjx_ppo import (
     DEFAULT_BUDGETS,
     DEFAULT_CANDIDATES,
     _training_command,
+    final_quality_gate,
     score_training,
 )
 
@@ -103,6 +104,29 @@ class MJXSweepTest(unittest.TestCase):
 
         self.assertTrue(score["rejected"])
         self.assertLess(score["selection_score"], -1000.0)
+
+    def test_final_quality_gate_requires_survival_and_rolling(self) -> None:
+        weak = final_quality_gate(
+            {
+                "rejected": False,
+                "survival_fraction": 0.08,
+                "estimated_net_turns": 0.15,
+            },
+            minimum_survival_fraction=0.20,
+            minimum_net_turns=0.25,
+        )
+        promising = final_quality_gate(
+            {
+                "rejected": False,
+                "survival_fraction": 0.40,
+                "estimated_net_turns": 0.50,
+            },
+            minimum_survival_fraction=0.20,
+            minimum_net_turns=0.25,
+        )
+
+        self.assertFalse(weak["passed"])
+        self.assertTrue(promising["passed"])
 
 
 if __name__ == "__main__":

@@ -231,11 +231,14 @@ python -m scripts.train_mjx_ppo \
 
 1. `screen`：比较当前基线以及终止惩罚、折扣率、学习率和 entropy cost；
 2. `confirm`：前两名更换随机种子并使用更大预算复赛；
-3. `final`：根据两轮结果自动选择一组参数，换第三个种子从零正式长训。
+3. 质量门槛：复赛结果至少存活 20% episode，并估算净滚动 0.25 圈；
+4. `final`：仅对通过门槛的最优参数换第三个种子，从零正式长训。
 
 扫描保持 XML、物理 profile、初始状态、episode 长度和失败阈值不变。排序不使用
 不同 reward 权重下不可直接比较的总 reward，而使用最近三次评估的 episode
 寿命、估算净滚动圈数、失败率和非允许碰撞深度。任何 non-finite 结果直接淘汰。
+若前两名均未通过质量门槛，脚本会继续按首轮排名复测后续候选；若全部候选
+均不达标，则写出诊断结果并停止，不会从“最不差”的失败配置启动长训。
 
 4090 默认预算为每个候选约 52 万步、前两名各约 419 万步、胜者 2000 万步；
 H200 默认预算为每个候选约 210 万步、前两名各约 1678 万步、胜者 5000
@@ -252,12 +255,14 @@ python -m scripts.sweep_mjx_ppo \
 中断后使用相同命令加 `--resume`。脚本会复用已完成的候选；不完整目录会保留，
 重跑写入新的 `_retryN` 目录。若只想完成两轮选择、不启动最终长训，可添加
 `--skip-final`。使用 `--screen-steps`、`--confirm-steps` 和 `--final-steps`
-可以显式覆盖默认预算。
+可以显式覆盖默认预算。质量门槛可用 `--min-final-survival-fraction` 和
+`--min-final-turns` 调整；`--force-final` 可显式绕过门槛，默认不应使用。
 
 主要汇总文件：
 
 - `leaderboard_screen.{json,csv}`：第一轮完整排名；
 - `leaderboard_confirm.{json,csv}`：复赛排名及两轮加权分数；
+- `quality_gate.json`：每个复赛候选是否达到长训门槛及失败原因；
 - `selected_candidate.json`：最终参数及选择依据；
 - `final_result.json`：正式长训的独立物理指标；
 - `logs/`：每个候选的完整控制台日志。
