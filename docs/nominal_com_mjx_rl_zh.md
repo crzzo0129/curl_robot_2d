@@ -224,7 +224,45 @@ python -m scripts.train_mjx_ppo \
   --out results/mjx_ppo_nominal_4090_seed0_resume
 ```
 
-## 8. 输出
+## 8. 自动参数扫描与晋级
+
+一次 smoke 不能证明某个设置值得直接训练 2000 万或 5000 万步。可使用
+`scripts.sweep_mjx_ppo` 在同一张 GPU 上顺序执行三阶段实验：
+
+1. `screen`：比较当前基线以及终止惩罚、折扣率、学习率和 entropy cost；
+2. `confirm`：前两名更换随机种子并使用更大预算复赛；
+3. `final`：根据两轮结果自动选择一组参数，换第三个种子从零正式长训。
+
+扫描保持 XML、物理 profile、初始状态、episode 长度和失败阈值不变。排序不使用
+不同 reward 权重下不可直接比较的总 reward，而使用最近三次评估的 episode
+寿命、估算净滚动圈数、失败率和非允许碰撞深度。任何 non-finite 结果直接淘汰。
+
+4090 默认预算为每个候选约 52 万步、前两名各约 419 万步、胜者 2000 万步；
+H200 默认预算为每个候选约 210 万步、前两名各约 1678 万步、胜者 5000
+万步。所有候选顺序运行，避免同一 GPU 上多个训练进程争抢显存。
+
+```bash
+python -m scripts.sweep_mjx_ppo \
+  --hardware h200 \
+  --physics-profile cg12 \
+  --seed 0 \
+  --out results/mjx_ppo_sweep_terminal_v2_h200
+```
+
+中断后使用相同命令加 `--resume`。脚本会复用已完成的候选；不完整目录会保留，
+重跑写入新的 `_retryN` 目录。若只想完成两轮选择、不启动最终长训，可添加
+`--skip-final`。使用 `--screen-steps`、`--confirm-steps` 和 `--final-steps`
+可以显式覆盖默认预算。
+
+主要汇总文件：
+
+- `leaderboard_screen.{json,csv}`：第一轮完整排名；
+- `leaderboard_confirm.{json,csv}`：复赛排名及两轮加权分数；
+- `selected_candidate.json`：最终参数及选择依据；
+- `final_result.json`：正式长训的独立物理指标；
+- `logs/`：每个候选的完整控制台日志。
+
+## 9. 输出
 
 每个训练目录包含：
 

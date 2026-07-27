@@ -6,7 +6,7 @@ import argparse
 import inspect
 import json
 import math
-from dataclasses import asdict
+from dataclasses import asdict, fields, replace
 from pathlib import Path
 import time
 
@@ -51,6 +51,35 @@ PRESETS = {
         "num_minibatches": 32,
     },
 }
+
+
+def _add_reward_arguments(parser: argparse.ArgumentParser) -> None:
+    """Expose reward dataclass fields without duplicating their defaults."""
+
+    for field in fields(RollingRewardConfig):
+        option = f"--reward-{field.name.replace('_', '-')}"
+        parser.add_argument(
+            option,
+            dest=f"reward_{field.name}",
+            type=float,
+            default=None,
+            help=(
+                f"Override RollingRewardConfig.{field.name}; "
+                "the default comes from reward_config.py."
+            ),
+        )
+
+
+def _reward_config_from_args(args) -> RollingRewardConfig:
+    overrides = {
+        field.name: value
+        for field in fields(RollingRewardConfig)
+        if (
+            value := getattr(args, f"reward_{field.name}", None)
+        )
+        is not None
+    }
+    return replace(RollingRewardConfig(), **overrides)
 
 
 def _resolve_restore_checkpoint(path: Path) -> Path:
@@ -340,6 +369,7 @@ def main() -> None:
         help="Explicitly allow writing into a non-empty output directory.",
     )
     parser.add_argument("--skip-evaluation", action="store_true")
+    _add_reward_arguments(parser)
     args = parser.parse_args()
 
     values = PRESETS[args.preset].copy()
@@ -384,7 +414,7 @@ def main() -> None:
         args.physics_profile,
         NominalRLConfig(episode_length=args.episode_length),
     )
-    reward_config = RollingRewardConfig()
+    reward_config = _reward_config_from_args(args)
     train_env = make_brax_env(
         task, reward_config=reward_config, seed=args.seed
     )

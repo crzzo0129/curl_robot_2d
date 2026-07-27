@@ -1,3 +1,4 @@
+import argparse
 import unittest
 
 import numpy as np
@@ -5,7 +6,9 @@ import numpy as np
 from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES, reward_terms
 from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 from scripts.train_mjx_ppo import (
+    _add_reward_arguments,
     _add_per_step_eval_metrics,
+    _reward_config_from_args,
     _split_metrics,
 )
 
@@ -32,6 +35,23 @@ def zero_inputs():
 
 
 class MJXRewardTest(unittest.TestCase):
+    def test_cli_can_override_reward_without_changing_source_defaults(
+        self,
+    ) -> None:
+        parser = argparse.ArgumentParser()
+        _add_reward_arguments(parser)
+        args = parser.parse_args(
+            ["--reward-termination", "20", "--reward-roll-progress", "4"]
+        )
+
+        config = _reward_config_from_args(args)
+
+        self.assertEqual(config.termination, 20.0)
+        self.assertEqual(config.roll_progress, 4.0)
+        self.assertEqual(
+            config.action_rate, RollingRewardConfig().action_rate
+        )
+
     def test_reward_terms_are_named_and_independent(self) -> None:
         config = RollingRewardConfig()
         inputs = zero_inputs()
