@@ -1,7 +1,13 @@
 from pathlib import Path
 import unittest
 
-from curl_robot_2d_mjx.config import NominalRLConfig, physics_profile
+import numpy as np
+
+from curl_robot_2d_mjx.config import (
+    NominalRLConfig,
+    physics_profile,
+    smoothstep_ramp,
+)
 from curl_robot_2d_mjx.environment import JOINT_NAMES, MODEL_PATH
 from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES
 from curl_robot_2d_mjx.reward_config import RollingRewardConfig
@@ -28,10 +34,18 @@ class MJXContractTest(unittest.TestCase):
         self.assertAlmostEqual(config.control_timestep, 0.02)
         self.assertEqual(len(config.action_scales), 4)
         self.assertEqual(config.episode_length, 500)
+        self.assertEqual(config.startup_action_ramp_s, 0.25)
         self.assertIsNone(config.terminate_root_z_min)
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
         self.assertEqual(reward.termination, 5.0)
+
+    def test_startup_action_ramp_matches_cem_smoothstep(self) -> None:
+        elapsed = np.asarray([0.0, 0.125, 0.25, 0.5])
+        np.testing.assert_allclose(
+            smoothstep_ramp(np, elapsed, 0.25),
+            np.asarray([0.0, 0.5, 1.0, 1.0]),
+        )
 
     def test_candidate_physics_keeps_control_rate(self) -> None:
         reference = physics_profile("reference")

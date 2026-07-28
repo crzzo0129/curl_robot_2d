@@ -111,6 +111,7 @@ PER_STEP_EVAL_METRICS = (
     "foot_center_distance_m",
     "action_rms",
     "action_rate_rms",
+    "startup_action_ramp",
     "normalized_torque_rms",
     "forbidden_contact_count",
     "forbidden_penetration_m",
@@ -480,11 +481,15 @@ def main() -> None:
         ):
             if clean.get(metric_name, 0.0) > 0.0:
                 message += f" fail_{short_name}={clean[metric_name]:.2f}"
-        if "eval/avg_roll_progress_rad" in clean:
-            message += (
-                f" avg_roll_step="
-                f"{clean['eval/avg_roll_progress_rad']:.4f}"
-            )
+        for short_name, metric_name in (
+            ("phase", "eval/avg_phase_progress_rad"),
+            ("translation", "eval/avg_translation_progress_rad"),
+            ("roll", "eval/avg_roll_progress_rad"),
+        ):
+            if metric_name in clean:
+                message += (
+                    f" avg_{short_name}_step={clean[metric_name]:.4f}"
+                )
         print(message, flush=True)
 
     config_payload = {

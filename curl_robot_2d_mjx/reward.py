@@ -18,6 +18,14 @@ REWARD_TERM_NAMES = (
 )
 
 
+def conservative_rolling_potential(
+    xp, cumulative_phase, cumulative_translation
+):
+    """Progress that can only grow after both rotation and translation."""
+
+    return xp.minimum(cumulative_phase, cumulative_translation)
+
+
 def reward_terms(xp, config: RollingRewardConfig, inputs):
     """Return independently logged scalar reward terms."""
 
@@ -59,4 +67,3 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
         "collision": -collision_cost,
         "termination": -config.termination * inputs["failed"],
     }
-

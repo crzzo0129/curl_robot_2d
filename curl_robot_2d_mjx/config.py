@@ -35,6 +35,7 @@ class NominalRLConfig:
         0.8,
         1.2,
     )
+    startup_action_ramp_s: float = 0.25
     reset_joint_noise_rad: float = 0.01
     reset_velocity_noise: float = 0.01
 
@@ -53,6 +54,15 @@ class NominalRLConfig:
     @property
     def control_timestep(self) -> float:
         return self.physics_timestep * self.action_repeat
+
+
+def smoothstep_ramp(xp, elapsed_s, duration_s: float):
+    """Blend from zero to one without a velocity jump at either endpoint."""
+
+    if duration_s <= 0.0:
+        return xp.ones_like(elapsed_s)
+    normalized = xp.clip(elapsed_s / duration_s, 0.0, 1.0)
+    return normalized * normalized * (3.0 - 2.0 * normalized)
 
 
 def physics_profile(

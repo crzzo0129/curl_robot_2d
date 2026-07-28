@@ -3,7 +3,11 @@ import unittest
 
 import numpy as np
 
-from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES, reward_terms
+from curl_robot_2d_mjx.reward import (
+    REWARD_TERM_NAMES,
+    conservative_rolling_potential,
+    reward_terms,
+)
 from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 from scripts.train_mjx_ppo import (
     _add_reward_arguments,
@@ -35,6 +39,18 @@ def zero_inputs():
 
 
 class MJXRewardTest(unittest.TestCase):
+    def test_cumulative_potential_rewards_asynchronous_rolling(self) -> None:
+        phase = np.asarray([0.0, 0.1, 0.1], dtype=np.float32)
+        translation = np.asarray([0.0, 0.0, 0.1], dtype=np.float32)
+
+        potential = conservative_rolling_potential(
+            np, phase, translation
+        )
+        progress = np.diff(potential)
+
+        np.testing.assert_allclose(progress, np.asarray([0.0, 0.1]))
+        self.assertAlmostEqual(float(np.sum(progress)), 0.1)
+
     def test_cli_can_override_reward_without_changing_source_defaults(
         self,
     ) -> None:

@@ -6,8 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
-from curl_robot_2d_mjx.config import NominalRLConfig
-from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES, reward_terms
+from curl_robot_2d_mjx.config import NominalRLConfig, smoothstep_ramp
+from curl_robot_2d_mjx.reward import (
+    REWARD_TERM_NAMES,
+    conservative_rolling_potential,
+    reward_terms,
+)
 from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 
 
@@ -240,6 +244,7 @@ def make_brax_env(
                 "foot_center_distance_m": zero,
                 "action_rms": zero,
                 "action_rate_rms": zero,
+                "startup_action_ramp": zero,
                 "normalized_torque_rms": zero,
                 "failed": zero,
                 "timeout": zero,
@@ -286,8 +291,13 @@ def make_brax_env(
             contacts = self._contact_metrics(data)
             last_action = jp.zeros(4)
             info = {
+                "initial_phase": data.qpos[self.root_pitch_qpos],
+                "initial_root_x": data.qpos[self.root_x_qpos],
                 "previous_phase": data.qpos[self.root_pitch_qpos],
                 "previous_root_x": data.qpos[self.root_x_qpos],
+                "previous_roll_potential": jp.zeros(
+                    (), dtype=jp.float32
+                ),
                 "last_action": last_action,
                 "maximum_forbidden_penetration": jp.zeros(
                     (), dtype=jp.float32
@@ -320,6 +330,16 @@ def make_brax_env(
                 posinf=1.0,
                 neginf=-1.0,
             )
+            control_dt = (
+                float(self.mj_model.opt.timestep) * task.action_repeat
+            )
+            elapsed_s = (
+                state.info["step_count"].astype(jp.float32) * control_dt
+            )
+            action_ramp = smoothstep_ramp(
+                jp, elapsed_s, task.startup_action_ramp_s
+            )
+            action = action_ramp * action
             target = jp.clip(
                 self.compact_ctrl + action * self.action_scales,
                 self.joint_low,
@@ -367,8 +387,15 @@ def make_brax_env(
             translation_progress = (
                 root_x - state.info["previous_root_x"]
             ) / self.rolling_radius
-            conservative_progress = jp.minimum(
-                phase_progress, translation_progress
+            cumulative_phase = phase - state.info["initial_phase"]
+            cumulative_translation = (
+                root_x - state.info["initial_root_x"]
+            ) / self.rolling_radius
+            roll_potential = conservative_rolling_potential(
+                jp, cumulative_phase, cumulative_translation
+            )
+            conservative_progress = (
+                roll_potential - state.info["previous_roll_potential"]
             )
             mismatch = jp.abs(phase_progress - translation_progress)
             backward = jp.maximum(-phase_progress, 0.0) + jp.maximum(
@@ -411,9 +438,6 @@ def make_brax_env(
             )
             allowed_max_increment = (
                 new_allowed_max - state.info["maximum_allowed_excess"]
-            )
-            control_dt = (
-                float(self.mj_model.opt.timestep) * task.action_repeat
             )
             root_z = data.qpos[self.root_z_qpos]
             failure_nonfinite_action = ~action_finite
@@ -495,6 +519,7 @@ def make_brax_env(
                 **state.info,
                 "previous_phase": phase,
                 "previous_root_x": root_x,
+                "previous_roll_potential": roll_potential,
                 "last_action": action,
                 "maximum_forbidden_penetration": new_forbidden_max,
                 "maximum_allowed_excess": new_allowed_max,
@@ -518,6 +543,7 @@ def make_brax_env(
                 "foot_center_distance_m": foot_distance,
                 "action_rms": jp.sqrt(jp.mean(jp.square(action))),
                 "action_rate_rms": jp.sqrt(action_rate),
+                "startup_action_ramp": action_ramp,
                 "normalized_torque_rms": jp.sqrt(torque_cost),
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
