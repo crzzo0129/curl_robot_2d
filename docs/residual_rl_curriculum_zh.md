@@ -199,3 +199,62 @@ python -m scripts.train_mjx_residual_ppo \
 最终策略保存在 `params_best_retained_cem`，最终确定性回放位于
 `evaluation_retained_cem/`。终端和 `training_summary.json` 使用
 `mode=retain_cem` 标识，不再用零 reference 是否成功来判断该路线。
+
+## 7. 随机推击恢复
+
+Residual 训练可在每个 episode 的随机控制步给 root 施加一次速度增量。水平与俯仰
+增量分别从给定最大绝对值内均匀采样，方向也是随机的。默认最大值均为零，因此
+旧训练保持无扰动。终端的 `pushes/episode` 表示 episode 在结束前实际经历的推击
+次数；若它小于 1，说明部分 episode 在随机推击时刻之前已经终止。
+
+先运行相同扰动下的零策略纯 CEM 对照：
+
+```bash
+python -m scripts.compare_mjx_cem_reference \
+  --physics-profile cg12 \
+  --controller results/collision_constrained_cem/best_phase_controller.json \
+  --noise-seeds 32 \
+  --cases D \
+  --disturbance-root-x-velocity 0.20 \
+  --disturbance-root-pitch-velocity 0.75 \
+  --disturbance-min-step 100 \
+  --disturbance-max-step 400 \
+  --mujoco-gl disable \
+  --output results/mjx_cem_push_baseline_seed0.json
+```
+
+再用同一扰动分布进行短训练。这里把 residual 权限从 `0.01` 提到 `0.03`，并把
+raw residual 代价从 `0.05` 降到 `0.02`，让策略有足够权限恢复，同时仍要为无谓
+介入付费：
+
+```bash
+python -m scripts.train_mjx_residual_ppo \
+  --retain-cem \
+  --preset smoke \
+  --steps 131072 \
+  --physics-profile cg12 \
+  --controller results/collision_constrained_cem/best_phase_controller.json \
+  --residual-scales 0.03 \
+  --minimum-stage-steps 131072 \
+  --gate-check-steps 131072 \
+  --gate-min-survival 0.95 \
+  --gate-min-turns 6.0 \
+  --gate-max-failure-rate 0.05 \
+  --disturbance-root-x-velocity 0.20 \
+  --disturbance-root-pitch-velocity 0.75 \
+  --disturbance-min-step 100 \
+  --disturbance-max-step 400 \
+  --learning-rate 3e-6 \
+  --entropy-cost 1e-4 \
+  --discounting 0.995 \
+  --reward-roll-progress 15 \
+  --reward-residual-action 0.02 \
+  --reward-termination 10 \
+  --reward-early-termination-scale 1 \
+  --seed 0 \
+  --mujoco-gl egl \
+  --out results/mjx_cem_residual_push_smoke_seed0
+```
+
+这项扰动是一次瞬时速度冲击，用于训练恢复能力；它还不是坡度、摩擦、质量或
+质心的 terrain/model randomization。

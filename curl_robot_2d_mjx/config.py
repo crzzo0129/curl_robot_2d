@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import math
 
 
 PHYSICS_PROFILE_NAMES = (
@@ -38,6 +39,10 @@ class NominalRLConfig:
     startup_action_ramp_s: float = 0.25
     reset_joint_noise_rad: float = 0.01
     reset_velocity_noise: float = 0.01
+    disturbance_root_x_velocity_m_s: float = 0.0
+    disturbance_root_pitch_velocity_rad_s: float = 0.0
+    disturbance_min_step: int = 100
+    disturbance_max_step: int = 400
     # The CPU CEM and release evaluators model the planar root as free and
     # remove the XML's small numerical damping at runtime.
     disable_root_damping: bool = True
@@ -57,6 +62,29 @@ class NominalRLConfig:
     @property
     def control_timestep(self) -> float:
         return self.physics_timestep * self.action_repeat
+
+
+def validate_nominal_rl_config(config: NominalRLConfig) -> None:
+    """Reject disturbance settings that cannot produce one valid impulse."""
+
+    amplitudes = (
+        config.disturbance_root_x_velocity_m_s,
+        config.disturbance_root_pitch_velocity_rad_s,
+    )
+    if any(not math.isfinite(value) or value < 0.0 for value in amplitudes):
+        raise ValueError("disturbance velocity limits must be finite and nonnegative")
+    if config.disturbance_min_step < 0:
+        raise ValueError("disturbance_min_step must be nonnegative")
+    if config.disturbance_max_step < config.disturbance_min_step:
+        raise ValueError(
+            "disturbance_max_step must be at least disturbance_min_step"
+        )
+    if any(value > 0.0 for value in amplitudes):
+        if config.disturbance_max_step >= config.episode_length:
+            raise ValueError(
+                "disturbance_max_step must be smaller than episode_length "
+                "when disturbances are enabled"
+            )
 
 
 def smoothstep_ramp(xp, elapsed_s, duration_s: float):

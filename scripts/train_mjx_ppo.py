@@ -283,7 +283,9 @@ def _format_eval_report(
             f"action_rms={_metric(metrics, 'eval/avg_action_rms'):.3f} "
             f"torque_rms="
             f"{_metric(metrics, 'eval/avg_normalized_torque_rms'):.3f} "
-            f"ramp={_metric(metrics, 'eval/avg_startup_action_ramp'):.3f}"
+            f"ramp={_metric(metrics, 'eval/avg_startup_action_ramp'):.3f} "
+            f"pushes/episode="
+            f"{_metric(metrics, 'eval/episode_disturbance_applied'):.2f}"
         ),
     ]
     for group, reward_labels in (

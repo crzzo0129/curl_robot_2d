@@ -7,6 +7,7 @@ from curl_robot_2d_mjx.config import (
     NominalRLConfig,
     physics_profile,
     smoothstep_ramp,
+    validate_nominal_rl_config,
 )
 from curl_robot_2d_mjx.environment import JOINT_NAMES, MODEL_PATH
 from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES
@@ -40,11 +41,32 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(config.episode_length, 500)
         self.assertEqual(config.startup_action_ramp_s, 0.25)
         self.assertTrue(config.disable_root_damping)
+        self.assertEqual(config.disturbance_root_x_velocity_m_s, 0.0)
+        self.assertEqual(config.disturbance_root_pitch_velocity_rad_s, 0.0)
         self.assertIsNone(config.terminate_root_z_min)
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
         self.assertEqual(reward.termination, 5.0)
         self.assertEqual(reward.early_termination_scale, 1.0)
+
+    def test_disturbance_configuration_requires_valid_episode_step(self) -> None:
+        validate_nominal_rl_config(
+            NominalRLConfig(
+                disturbance_root_x_velocity_m_s=0.2,
+                disturbance_root_pitch_velocity_rad_s=0.8,
+                disturbance_min_step=100,
+                disturbance_max_step=400,
+            )
+        )
+        with self.assertRaisesRegex(ValueError, "episode_length"):
+            validate_nominal_rl_config(
+                NominalRLConfig(
+                    episode_length=100,
+                    disturbance_root_x_velocity_m_s=0.2,
+                    disturbance_min_step=50,
+                    disturbance_max_step=100,
+                )
+            )
 
     def test_startup_action_ramp_matches_cem_smoothstep(self) -> None:
         elapsed = np.asarray([0.0, 0.125, 0.25, 0.5])
@@ -106,6 +128,24 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(args.noise_seeds, 32)
         self.assertEqual(args.mujoco_gl, "disable")
         self.assertEqual(tuple(args.cases), ("A", "B", "C", "D"))
+        self.assertEqual(args.disturbance_root_x_velocity, 0.0)
+        self.assertEqual(args.disturbance_root_pitch_velocity, 0.0)
+
+    def test_cem_reference_ablation_accepts_disturbances(self) -> None:
+        args = compare_mjx_cem_reference.parse_args(
+            [
+                "--disturbance-root-x-velocity",
+                "0.2",
+                "--disturbance-root-pitch-velocity",
+                "0.8",
+                "--cases",
+                "D",
+            ]
+        )
+
+        self.assertEqual(args.disturbance_root_x_velocity, 0.2)
+        self.assertEqual(args.disturbance_root_pitch_velocity, 0.8)
+        self.assertEqual(args.cases, ["D"])
 
     def test_root_damping_can_match_cpu_cem_runtime(self) -> None:
         import mujoco

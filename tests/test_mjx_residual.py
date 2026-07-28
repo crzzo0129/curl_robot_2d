@@ -24,6 +24,27 @@ from scripts.optimize_phase_controller import controller_targets
 
 
 class MJXResidualTest(unittest.TestCase):
+    def test_disturbance_cli_defaults_off_and_accepts_impulses(self) -> None:
+        defaults = _parse_args(["--retain-cem"])
+        disturbed = _parse_args(
+            [
+                "--retain-cem",
+                "--disturbance-root-x-velocity",
+                "0.2",
+                "--disturbance-root-pitch-velocity",
+                "0.8",
+                "--disturbance-min-step",
+                "100",
+                "--disturbance-max-step",
+                "400",
+            ]
+        )
+
+        self.assertEqual(defaults.disturbance_root_x_velocity, 0.0)
+        self.assertEqual(defaults.disturbance_root_pitch_velocity, 0.0)
+        self.assertEqual(disturbed.disturbance_root_x_velocity, 0.2)
+        self.assertEqual(disturbed.disturbance_root_pitch_velocity, 0.8)
+
     def test_retained_cem_curriculums_only_residual_scale(self) -> None:
         args = _parse_args(["--retain-cem"])
 

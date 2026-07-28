@@ -208,6 +208,7 @@ class MJXRewardTest(unittest.TestCase):
             "eval/episode_timeout": 0.0,
             "eval/episode_roll_progress_rad": 1.0,
             "eval/episode_forbidden_penetration_m": 0.01,
+            "eval/episode_disturbance_applied": 0.75,
             "training/sps": 4200.0,
             "training/kl_mean": 0.02,
             "training/policy_loss": -0.1,
@@ -232,6 +233,7 @@ class MJXRewardTest(unittest.TestCase):
 
         self.assertIn("[eval 2/6]", report)
         self.assertIn("turns/episode=", report)
+        self.assertIn("pushes/episode=0.75", report)
         self.assertIn("reward/step", report)
         self.assertIn("early=-0.0100", report)
         self.assertIn("failures", report)

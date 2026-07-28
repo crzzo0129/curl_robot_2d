@@ -31,7 +31,11 @@ DEFAULT_OUTPUT = (
 
 
 def parse_args(argv=None):
-    from curl_robot_2d_mjx.config import PHYSICS_PROFILE_NAMES
+    from curl_robot_2d_mjx.config import (
+        PHYSICS_PROFILE_NAMES,
+        NominalRLConfig,
+        validate_nominal_rl_config,
+    )
 
     parser = argparse.ArgumentParser(
         description=(
@@ -50,6 +54,14 @@ def parse_args(argv=None):
         default=DEFAULT_CEM_CONTROLLER,
     )
     parser.add_argument("--episode-length", type=int, default=500)
+    parser.add_argument(
+        "--disturbance-root-x-velocity", type=float, default=0.0
+    )
+    parser.add_argument(
+        "--disturbance-root-pitch-velocity", type=float, default=0.0
+    )
+    parser.add_argument("--disturbance-min-step", type=int, default=100)
+    parser.add_argument("--disturbance-max-step", type=int, default=400)
     parser.add_argument(
         "--noise-seeds",
         type=int,
@@ -71,7 +83,24 @@ def parse_args(argv=None):
         default="disable",
         help="Rendering is unused; 'disable' is suitable locally.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    try:
+        validate_nominal_rl_config(
+            NominalRLConfig(
+                episode_length=args.episode_length,
+                disturbance_root_x_velocity_m_s=(
+                    args.disturbance_root_x_velocity
+                ),
+                disturbance_root_pitch_velocity_rad_s=(
+                    args.disturbance_root_pitch_velocity
+                ),
+                disturbance_min_step=args.disturbance_min_step,
+                disturbance_max_step=args.disturbance_max_step,
+            )
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
+    return args
 
 
 def _mean(values) -> float:
@@ -168,6 +197,7 @@ def _run_case(
     maximum_foot_gap = jp.zeros((batch_size,), dtype=jp.float32)
     maximum_forbidden_depth = jp.zeros((batch_size,), dtype=jp.float32)
     reference_rms_sum = jp.zeros((batch_size,), dtype=jp.float32)
+    disturbance_count = jp.zeros((batch_size,), dtype=jp.float32)
     actions = jp.zeros((batch_size, env.action_size), dtype=jp.float32)
 
     for _ in range(task.episode_length):
@@ -196,6 +226,10 @@ def _run_case(
         reference_rms_sum = (
             reference_rms_sum
             + active_float * state.metrics["reference_action_rms"]
+        )
+        disturbance_count = (
+            disturbance_count
+            + active_float * state.metrics["disturbance_applied"]
         )
         active = active & (state.done < 0.5)
 
@@ -229,6 +263,15 @@ def _run_case(
         ),
         "average_reference_action_rms": np.asarray(
             jax.device_get(reference_rms_sum / divisor)
+        ),
+        "disturbance_count": np.asarray(
+            jax.device_get(disturbance_count)
+        ),
+        "disturbance_root_x_velocity_m_s": np.asarray(
+            jax.device_get(state.info["disturbance_root_x_velocity"])
+        ),
+        "disturbance_root_pitch_velocity_rad_s": np.asarray(
+            jax.device_get(state.info["disturbance_root_pitch_velocity"])
         ),
         "failed": np.asarray(jax.device_get(state.metrics["failed"])),
         "failure_root_high": np.asarray(
@@ -271,6 +314,15 @@ def _run_case(
         "average_reference_action_rms": _distribution(
             arrays["average_reference_action_rms"]
         ),
+        "disturbance_count": _distribution(
+            arrays["disturbance_count"]
+        ),
+        "disturbance_root_x_velocity_m_s": _distribution(
+            arrays["disturbance_root_x_velocity_m_s"]
+        ),
+        "disturbance_root_pitch_velocity_rad_s": _distribution(
+            arrays["disturbance_root_pitch_velocity_rad_s"]
+        ),
         "average_steps": _mean(arrays["steps"]),
         "failure_rate": _mean(arrays["failed"]),
         "failure_rates": {
@@ -298,6 +350,7 @@ def _run_case(
         f"[{turns['min']:+.3f}, {turns['max']:+.3f}] "
         f"x={displacement['mean']:+.3f}m "
         f"failed={result['failure_rate']:.1%} "
+        f"pushes={result['disturbance_count']['mean']:.2f}/episode "
         f"wall={elapsed_s:.1f}s",
         flush=True,
     )
@@ -325,6 +378,14 @@ def main(argv=None) -> None:
         NominalRLConfig(
             episode_length=args.episode_length,
             disable_root_damping=False,
+            disturbance_root_x_velocity_m_s=(
+                args.disturbance_root_x_velocity
+            ),
+            disturbance_root_pitch_velocity_rad_s=(
+                args.disturbance_root_pitch_velocity
+            ),
+            disturbance_min_step=args.disturbance_min_step,
+            disturbance_max_step=args.disturbance_max_step,
         ),
     )
     reference = load_cem_reference(
@@ -370,6 +431,12 @@ def main(argv=None) -> None:
         f"episode={args.episode_length} "
         f"noise_seeds={args.noise_seeds} "
         f"cases={list(args.cases)}\n"
+        f"  disturbance root_x<=+/-"
+        f"{args.disturbance_root_x_velocity:g}m/s "
+        f"root_pitch<=+/-"
+        f"{args.disturbance_root_pitch_velocity:g}rad/s "
+        f"step=[{args.disturbance_min_step},"
+        f"{args.disturbance_max_step}]\n"
         f"  policy_action=0 residual_gain=0 "
         f"controller={reference.source}",
         flush=True,

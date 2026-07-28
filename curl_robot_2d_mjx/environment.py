@@ -12,7 +12,11 @@ from curl_robot_2d_mjx.cem_reference import (
     effective_residual_action,
     reference_action,
 )
-from curl_robot_2d_mjx.config import NominalRLConfig, smoothstep_ramp
+from curl_robot_2d_mjx.config import (
+    NominalRLConfig,
+    smoothstep_ramp,
+    validate_nominal_rl_config,
+)
 from curl_robot_2d_mjx.reward import (
     REWARD_TERM_NAMES,
     conservative_rolling_potential,
@@ -101,8 +105,13 @@ def make_brax_env(
     friction, gain or torque parameter is randomized.
     """
 
-    jax, jp, mujoco, mjx, Env, State = _load_dependencies()
     task = config or NominalRLConfig()
+    validate_nominal_rl_config(task)
+    disturbance_enabled = (
+        task.disturbance_root_x_velocity_m_s > 0.0
+        or task.disturbance_root_pitch_velocity_rad_s > 0.0
+    )
+    jax, jp, mujoco, mjx, Env, State = _load_dependencies()
     reward_settings = reward_config or RollingRewardConfig()
     reference_settings = cem_reference
 
@@ -148,6 +157,16 @@ def make_brax_env(
             )
             self.root_pitch_qpos = int(
                 self.mj_model.jnt_qposadr[
+                    object_id(mujoco.mjtObj.mjOBJ_JOINT, "root_pitch")
+                ]
+            )
+            self.root_x_dof = int(
+                self.mj_model.jnt_dofadr[
+                    object_id(mujoco.mjtObj.mjOBJ_JOINT, "root_x")
+                ]
+            )
+            self.root_pitch_dof = int(
+                self.mj_model.jnt_dofadr[
                     object_id(mujoco.mjtObj.mjOBJ_JOINT, "root_pitch")
                 ]
             )
@@ -277,11 +296,17 @@ def make_brax_env(
                 "failure_root_high": zero,
                 "failure_foot_gap": zero,
                 "failure_leg_crossing": zero,
+                "disturbance_applied": zero,
             }
 
         def reset(self, rng):
             rng = jax.random.fold_in(rng, self.seed)
-            joint_key, velocity_key = jax.random.split(rng)
+            (
+                joint_key,
+                velocity_key,
+                disturbance_step_key,
+                disturbance_value_key,
+            ) = jax.random.split(rng, 4)
             joint_noise = jax.random.uniform(
                 joint_key,
                 shape=(4,),
@@ -293,6 +318,18 @@ def make_brax_env(
                 shape=(self.mj_model.nv,),
                 minval=-task.reset_velocity_noise,
                 maxval=task.reset_velocity_noise,
+            )
+            disturbance_step = jax.random.randint(
+                disturbance_step_key,
+                shape=(),
+                minval=task.disturbance_min_step,
+                maxval=task.disturbance_max_step + 1,
+            )
+            disturbance_values = jax.random.uniform(
+                disturbance_value_key,
+                shape=(2,),
+                minval=-1.0,
+                maxval=1.0,
             )
             qpos = self.compact_qpos.at[self.joint_qpos_indices].add(
                 joint_noise
@@ -347,6 +384,15 @@ def make_brax_env(
                     (), dtype=jp.float32
                 ),
                 "step_count": jp.asarray(0, dtype=jp.int32),
+                "disturbance_step": disturbance_step,
+                "disturbance_root_x_velocity": (
+                    disturbance_values[0]
+                    * task.disturbance_root_x_velocity_m_s
+                ),
+                "disturbance_root_pitch_velocity": (
+                    disturbance_values[1]
+                    * task.disturbance_root_pitch_velocity_rad_s
+                ),
             }
             observation = self._observation(
                 data,
@@ -385,6 +431,27 @@ def make_brax_env(
             action_ramp = smoothstep_ramp(
                 jp, elapsed_s, task.startup_action_ramp_s
             )
+            disturbance_applied = jp.asarray(disturbance_enabled) & (
+                state.info["step_count"] == state.info["disturbance_step"]
+            )
+            disturbed_qvel = state.pipeline_state.qvel
+            disturbed_qvel = disturbed_qvel.at[self.root_x_dof].add(
+                jp.where(
+                    disturbance_applied,
+                    state.info["disturbance_root_x_velocity"],
+                    0.0,
+                )
+            )
+            disturbed_qvel = disturbed_qvel.at[self.root_pitch_dof].add(
+                jp.where(
+                    disturbance_applied,
+                    state.info["disturbance_root_pitch_velocity"],
+                    0.0,
+                )
+            )
+            pipeline_state = state.pipeline_state.replace(
+                qvel=disturbed_qvel
+            )
             if reference_settings is None:
                 action = action_ramp * policy_action
                 cem_action = jp.zeros(4, dtype=jp.float32)
@@ -394,7 +461,7 @@ def make_brax_env(
                     self.joint_low,
                     self.joint_high,
                 )
-                data = state.pipeline_state.replace(ctrl=target)
+                data = pipeline_state.replace(ctrl=target)
 
                 def physics_step(carry, _):
                     return mjx.step(self.mjx_model, carry), None
@@ -462,7 +529,7 @@ def make_brax_env(
                 ), residual_trace = jax.lax.scan(
                     residual_physics_step,
                     (
-                        state.pipeline_state,
+                        pipeline_state,
                         state.info["oscillator_phase"],
                     ),
                     (),
@@ -740,6 +807,9 @@ def make_brax_env(
                 "failure_foot_gap": failure_foot_gap.astype(jp.float32),
                 "failure_leg_crossing": (
                     failure_leg_crossing.astype(jp.float32)
+                ),
+                "disturbance_applied": (
+                    disturbance_applied.astype(jp.float32)
                 ),
             }
             observation = self._observation(

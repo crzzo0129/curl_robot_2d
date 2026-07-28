@@ -19,6 +19,7 @@ from curl_robot_2d_mjx.config import (
     PHYSICS_PROFILE_NAMES,
     NominalRLConfig,
     physics_profile,
+    validate_nominal_rl_config,
 )
 from curl_robot_2d_mjx.runtime import (
     configure_cloud_runtime,
@@ -197,6 +198,20 @@ def _parse_args(argv=None):
     parser.add_argument("--unroll-length", type=int)
     parser.add_argument("--updates-per-batch", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
+    parser.add_argument(
+        "--disturbance-root-x-velocity",
+        type=float,
+        default=0.0,
+        help="Maximum signed root-x velocity impulse in m/s per episode.",
+    )
+    parser.add_argument(
+        "--disturbance-root-pitch-velocity",
+        type=float,
+        default=0.0,
+        help="Maximum signed root-pitch velocity impulse in rad/s per episode.",
+    )
+    parser.add_argument("--disturbance-min-step", type=int, default=100)
+    parser.add_argument("--disturbance-max-step", type=int, default=400)
     parser.add_argument("--learning-rate", type=float, default=3e-5)
     parser.add_argument("--entropy-cost", type=float, default=1e-3)
     parser.add_argument("--discounting", type=float, default=0.995)
@@ -260,6 +275,22 @@ def _parse_args(argv=None):
         _validate_weights(parser, args.reference_weights)
     if not 0.0 <= args.minimum_residual_gain <= 1.0:
         parser.error("--minimum-residual-gain must be in [0, 1]")
+    try:
+        validate_nominal_rl_config(
+            NominalRLConfig(
+                episode_length=args.episode_length,
+                disturbance_root_x_velocity_m_s=(
+                    args.disturbance_root_x_velocity
+                ),
+                disturbance_root_pitch_velocity_rad_s=(
+                    args.disturbance_root_pitch_velocity
+                ),
+                disturbance_min_step=args.disturbance_min_step,
+                disturbance_max_step=args.disturbance_max_step,
+            )
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     return args
 
 
@@ -314,7 +345,17 @@ def main() -> None:
     args.out.mkdir(parents=True, exist_ok=True)
     task = physics_profile(
         args.physics_profile,
-        NominalRLConfig(episode_length=args.episode_length),
+        NominalRLConfig(
+            episode_length=args.episode_length,
+            disturbance_root_x_velocity_m_s=(
+                args.disturbance_root_x_velocity
+            ),
+            disturbance_root_pitch_velocity_rad_s=(
+                args.disturbance_root_pitch_velocity
+            ),
+            disturbance_min_step=args.disturbance_min_step,
+            disturbance_max_step=args.disturbance_max_step,
+        ),
     )
     reward_config = _reward_config_from_args(args)
     base_reference = load_cem_reference(
@@ -366,6 +407,12 @@ def main() -> None:
         f"minimum_stage={args.minimum_stage_steps:,}\n"
         f"  physics={args.physics_profile} root_damping="
         f"{'disabled' if task.disable_root_damping else 'xml'}\n"
+        f"  disturbance root_x<=+/-"
+        f"{task.disturbance_root_x_velocity_m_s:g}m/s "
+        f"root_pitch<=+/-"
+        f"{task.disturbance_root_pitch_velocity_rad_s:g}rad/s "
+        f"step=[{task.disturbance_min_step},"
+        f"{task.disturbance_max_step}]\n"
         f"  gate survival>={args.gate_min_survival:.0%} "
         f"turns>={args.gate_min_turns:g} "
         f"failure<={args.gate_max_failure_rate:.0%}\n"
