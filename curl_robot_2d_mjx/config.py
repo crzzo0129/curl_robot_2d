@@ -38,7 +38,10 @@ class NominalRLConfig:
     reset_joint_noise_rad: float = 0.01
     reset_velocity_noise: float = 0.01
 
-    terminate_root_z_min: float = 0.06
+    # Torso root height is phase dependent during valid planar rolling.  The
+    # collision-constrained CEM baseline reaches 0.0437 m once per turn, so a
+    # fixed lower-height termination would reject known-good behavior.
+    terminate_root_z_min: float | None = None
     terminate_root_z_max: float = 0.70
     maximum_foot_center_distance_m: float = 0.28
 

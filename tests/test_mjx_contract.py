@@ -28,6 +28,7 @@ class MJXContractTest(unittest.TestCase):
         self.assertAlmostEqual(config.control_timestep, 0.02)
         self.assertEqual(len(config.action_scales), 4)
         self.assertEqual(config.episode_length, 500)
+        self.assertIsNone(config.terminate_root_z_min)
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
         self.assertEqual(reward.termination, 5.0)

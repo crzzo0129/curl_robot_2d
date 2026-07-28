@@ -387,7 +387,11 @@ def make_brax_env(
             )
             root_z = data.qpos[self.root_z_qpos]
             failure_nonfinite = ~finite
-            failure_root_low = root_z < task.terminate_root_z_min
+            failure_root_low = (
+                jp.asarray(False)
+                if task.terminate_root_z_min is None
+                else root_z < task.terminate_root_z_min
+            )
             failure_root_high = root_z > task.terminate_root_z_max
             failure_foot_gap = (
                 foot_distance > task.maximum_foot_center_distance_m

@@ -44,8 +44,8 @@ class Candidate:
 # while retaining the current settings as a control.
 DEFAULT_CANDIDATES = (
     Candidate("baseline", 3e-4, 1e-2, 0.990, 5.0),
+    Candidate("terminal10", 3e-4, 1e-2, 0.990, 10.0),
     Candidate("terminal20", 3e-4, 1e-2, 0.990, 20.0),
-    Candidate("terminal50", 3e-4, 1e-2, 0.990, 50.0),
     Candidate("horizon995", 3e-4, 1e-2, 0.995, 20.0),
     Candidate("horizon997", 3e-4, 1e-2, 0.997, 20.0),
     Candidate("stable_lr", 1e-4, 1e-2, 0.995, 20.0),

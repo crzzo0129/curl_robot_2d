@@ -76,6 +76,11 @@ $$
 失败原因也分别记录为 `failure_nonfinite`、`failure_root_low`、
 `failure_root_high`、`failure_foot_gap` 和 `failure_leg_crossing`。
 
+碰撞约束 CEM 控制器在 `cg12` 下的 10 s 回放表明，正常滚动时 Torso
+`root_z` 最低约为 0.0437 m，并会每圈周期性低于 0.06 m。因此滚动任务默认
+不再使用固定 `root_z` 下限作为硬终止；`failure_root_low` 保留为兼容指标，
+默认恒为 0。`root_high`、足端过度张开、腿部交叉和 non-finite 仍会终止。
+
 ## 3. MJX 与 CPU MuJoCo 的关系
 
 MJX 使用和 CEM 相同的 XML、接触类别、关节限位和执行器。物理运行档位通过
