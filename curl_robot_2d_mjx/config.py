@@ -38,6 +38,7 @@ class NominalRLConfig:
     startup_action_ramp_s: float = 0.25
     reset_joint_noise_rad: float = 0.01
     reset_velocity_noise: float = 0.01
+    disable_root_damping: bool = False
 
     # Torso root height is phase dependent during valid planar rolling.  The
     # collision-constrained CEM baseline reaches 0.0437 m once per turn, so a

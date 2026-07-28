@@ -69,7 +69,31 @@ effective budget = 2,097,152
 不达标时无法同时满足。当前实现优先遵守固定预算和性能门槛，并把未完成课程
 作为失败结果暴露出来。
 
-## 3. 云端命令
+## 3. 训练前的纯 CEM 对照
+
+Residual 训练前先在 MJX 中令 `policy_action=0`、`residual_gain=0`，验证
+reference 本身。该诊断不训练 PPO，可在本地 CPU 上运行：
+
+```bash
+python -m scripts.compare_mjx_cem_reference \
+  --physics-profile cg12 \
+  --controller results/collision_constrained_cem/best_phase_controller.json \
+  --noise-seeds 32 \
+  --mujoco-gl disable \
+  --output results/mjx_cem_reference_ablation/summary.json
+```
+
+脚本同时运行 CPU MuJoCo reference 和三组 MJX 对照：
+
+- A：保留训练使用的 reset noise 和 XML root damping；
+- B：从精确 compact、零速度启动，保留 XML root damping；
+- C：从精确 compact、零速度启动，并像 CPU CEM 一样清零 root damping。
+
+A 到 B 的改善表示启动噪声敏感；B 到 C 的改善表示 root damping 不一致；
+C 仍明显落后 CPU reference 则表示 MJX 接触或积分轨迹尚未对齐。在 CEM 的
+MJX 结果通过课程 gate 前，不应开始 residual curriculum。
+
+## 4. 云端命令
 
 ```bash
 python -m scripts.train_mjx_residual_ppo \
@@ -96,7 +120,7 @@ python -m scripts.train_mjx_residual_ppo \
 该入口独立于 `scripts/train_mjx_ppo.py`。纯 PPO 训练命令和 action 路径保持
 不变，只复用日志、评估、参数保存和 GIF 渲染工具。
 
-## 4. 输出
+## 5. 输出
 
 - `training_config.json`：CEM 参数、课程、gate、PPO 和 runtime 快照；
 - `curriculum_history.json`：每次 eval 的 reference 权重、gate 和完整指标；

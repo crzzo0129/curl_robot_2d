@@ -15,7 +15,11 @@ from curl_robot_2d_mjx.runtime import (
     configure_cloud_runtime,
     select_mujoco_gl_backend,
 )
-from scripts import mjx_smoke, train_mjx_ppo
+from scripts import (
+    compare_mjx_cem_reference,
+    mjx_smoke,
+    train_mjx_ppo,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +39,7 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(len(config.action_scales), 4)
         self.assertEqual(config.episode_length, 500)
         self.assertEqual(config.startup_action_ramp_s, 0.25)
+        self.assertFalse(config.disable_root_damping)
         self.assertIsNone(config.terminate_root_z_min)
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
@@ -94,6 +99,28 @@ class MJXContractTest(unittest.TestCase):
         args = mjx_smoke.parse_args([])
         self.assertEqual(args.batch_size, 1)
         self.assertEqual(args.steps, 1)
+
+    def test_cem_reference_ablation_is_local_cpu_safe_by_default(self) -> None:
+        args = compare_mjx_cem_reference.parse_args([])
+        self.assertEqual(args.physics_profile, "cg12")
+        self.assertEqual(args.noise_seeds, 32)
+        self.assertEqual(args.mujoco_gl, "disable")
+
+    def test_root_damping_can_match_cpu_cem_runtime(self) -> None:
+        import mujoco
+
+        from curl_robot_2d_mjx.environment import apply_physics_options
+
+        model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+        task = NominalRLConfig(disable_root_damping=True)
+        apply_physics_options(model, task)
+
+        for joint_name in ("root_x", "root_z", "root_pitch"):
+            joint_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+            )
+            dof_id = int(model.jnt_dofadr[joint_id])
+            self.assertEqual(float(model.dof_damping[dof_id]), 0.0)
 
     def test_training_entries_import_without_jax(self) -> None:
         self.assertTrue(callable(mjx_smoke.main))

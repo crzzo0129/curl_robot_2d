@@ -61,6 +61,15 @@ def apply_physics_options(model, task: NominalRLConfig) -> None:
     model.opt.timestep = task.physics_timestep
     model.opt.iterations = task.solver_iterations
     model.opt.ls_iterations = task.solver_ls_iterations
+    if task.disable_root_damping:
+        for joint_name in ("root_x", "root_z", "root_pitch"):
+            joint_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+            )
+            if joint_id < 0:
+                raise ValueError(f"missing MuJoCo joint: {joint_name}")
+            dof_id = int(model.jnt_dofadr[joint_id])
+            model.dof_damping[dof_id] = 0.0
 
 
 def _load_dependencies():
