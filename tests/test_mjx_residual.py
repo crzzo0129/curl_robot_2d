@@ -18,6 +18,7 @@ from scripts.train_mjx_residual_ppo import (
     _gate_assessment,
     _parse_args,
     _stage_plan,
+    _target_eval_eligible,
 )
 from scripts.optimize_phase_controller import controller_targets
 
@@ -44,6 +45,11 @@ class MJXResidualTest(unittest.TestCase):
             [stage["reference_weight"] for stage in _stage_plan(args)],
             [1.0, 0.5, 0.0],
         )
+
+    def test_target_gate_ignores_untrained_step_zero(self) -> None:
+        self.assertFalse(_target_eval_eligible(0, 1, 0, 131_072))
+        self.assertTrue(_target_eval_eligible(0, 1, 131_072, 131_072))
+        self.assertFalse(_target_eval_eligible(0, 2, 131_072, 131_072))
 
     def test_checked_in_cem_controller_loads(self) -> None:
         reference = load_cem_reference(DEFAULT_CEM_CONTROLLER)

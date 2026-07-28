@@ -160,6 +160,15 @@ def _stage_plan(args):
     ]
 
 
+def _target_eval_eligible(
+    stage_index, stage_count, local_step, minimum_stage_steps
+):
+    return (
+        stage_index == stage_count - 1
+        and int(local_step) >= minimum_stage_steps
+    )
+
+
 def _eval_visualization_dir(output_dir, eval_index, step, weight):
     weight_label = f"{weight:.2f}".replace(".", "p")
     return (
@@ -533,14 +542,20 @@ def main() -> None:
                 }
             )
             is_target_stage = stage_index == len(stage_plan) - 1
+            target_eval_eligible = _target_eval_eligible(
+                stage_index,
+                len(stage_plan),
+                local_step,
+                args.minimum_stage_steps,
+            )
             selected = (
-                is_target_stage
+                target_eval_eligible
                 and gate["passed"]
                 and not selection["rejected"]
                 and selection["score"] > best_target["score"]
             )
-            if is_target_stage and gate["passed"]:
-                target_stage_gate_passed = True
+            if target_eval_eligible:
+                target_stage_gate_passed = gate["passed"]
             if selected and stage["params"] is not None:
                 best_target["score"] = selection["score"]
                 best_target["step"] = global_step
