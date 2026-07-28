@@ -110,6 +110,8 @@ class MJXContractTest(unittest.TestCase):
             "forbidden_penetration_m",
             "allowed_foot_penetration_m",
             "leg_crossing",
+            "failure_nonfinite_action",
+            "failure_nonfinite_physics",
             "failure_root_low",
             "failure_root_high",
             "failure_foot_gap",
@@ -118,6 +120,29 @@ class MJXContractTest(unittest.TestCase):
         self.assertIn("roll_progress", REWARD_TERM_NAMES)
         self.assertIn("collision", REWARD_TERM_NAMES)
         self.assertIn("termination", REWARD_TERM_NAMES)
+
+    def test_environment_quarantines_nonfinite_transitions(self) -> None:
+        source = (
+            PROJECT_ROOT
+            / "curl_robot_2d_mjx"
+            / "environment.py"
+        ).read_text(encoding="utf-8")
+        for guard in (
+            "action_finite",
+            "physics_finite",
+            "transition_finite",
+            "jax.lax.cond",
+            "jp.nan_to_num",
+        ):
+            self.assertIn(guard, source)
+        step_source = source[
+            source.index("        def step(") :
+            source.index("        def _contact_arrays(")
+        ]
+        self.assertLess(
+            step_source.index("transition_finite ="),
+            step_source.index("contacts = self._contact_metrics(data)"),
+        )
 
 
 if __name__ == "__main__":

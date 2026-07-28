@@ -256,6 +256,8 @@ def _evaluate_policy(
         name.removeprefix("failure_"): bool(metric_totals.get(name, 0.0))
         for name in (
             "failure_nonfinite",
+            "failure_nonfinite_action",
+            "failure_nonfinite_physics",
             "failure_root_low",
             "failure_root_high",
             "failure_foot_gap",
@@ -473,6 +475,8 @@ def main() -> None:
             ("gap", "eval/episode_failure_foot_gap"),
             ("cross", "eval/episode_failure_leg_crossing"),
             ("nan", "eval/episode_failure_nonfinite"),
+            ("nan_action", "eval/episode_failure_nonfinite_action"),
+            ("nan_physics", "eval/episode_failure_nonfinite_physics"),
         ):
             if clean.get(metric_name, 0.0) > 0.0:
                 message += f" fail_{short_name}={clean[metric_name]:.2f}"

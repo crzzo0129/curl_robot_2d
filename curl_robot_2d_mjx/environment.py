@@ -244,6 +244,8 @@ def make_brax_env(
                 "failed": zero,
                 "timeout": zero,
                 "failure_nonfinite": zero,
+                "failure_nonfinite_action": zero,
+                "failure_nonfinite_physics": zero,
                 "failure_root_low": zero,
                 "failure_root_high": zero,
                 "failure_foot_gap": zero,
@@ -298,6 +300,9 @@ def make_brax_env(
             observation = self._observation(
                 data, last_action, contacts
             )
+            observation = jp.nan_to_num(
+                observation, nan=0.0, posinf=0.0, neginf=0.0
+            )
             return State(
                 data,
                 observation,
@@ -308,7 +313,13 @@ def make_brax_env(
             )
 
         def step(self, state, action):
-            action = jp.clip(action, -1.0, 1.0)
+            action_finite = jp.all(jp.isfinite(action))
+            action = jp.nan_to_num(
+                jp.clip(action, -1.0, 1.0),
+                nan=0.0,
+                posinf=1.0,
+                neginf=-1.0,
+            )
             target = jp.clip(
                 self.compact_ctrl + action * self.action_scales,
                 self.joint_low,
@@ -319,12 +330,34 @@ def make_brax_env(
             def physics_step(carry, _):
                 return mjx.step(self.mjx_model, carry), None
 
-            data = jax.lax.scan(
+            candidate_data = jax.lax.scan(
                 physics_step,
                 data,
                 (),
                 length=task.action_repeat,
             )[0]
+            _, _, candidate_contact_distance = self._contact_arrays(
+                candidate_data
+            )
+            physics_finite = (
+                jp.all(jp.isfinite(candidate_data.qpos))
+                & jp.all(jp.isfinite(candidate_data.qvel))
+                & jp.all(jp.isfinite(candidate_data.qacc))
+                & jp.all(jp.isfinite(candidate_data.actuator_force))
+                & jp.all(jp.isfinite(candidate_data.xpos))
+                & jp.all(jp.isfinite(candidate_data.site_xpos))
+                & jp.all(jp.isfinite(candidate_contact_distance))
+            )
+            transition_finite = action_finite & physics_finite
+            data = jax.lax.cond(
+                transition_finite,
+                lambda _: candidate_data,
+                lambda _: state.pipeline_state,
+                operand=None,
+            )
+            action = jp.where(
+                transition_finite, action, state.info["last_action"]
+            )
             contacts = self._contact_metrics(data)
             leg_crossing = self._leg_crossing(data)
 
@@ -382,11 +415,10 @@ def make_brax_env(
             control_dt = (
                 float(self.mj_model.opt.timestep) * task.action_repeat
             )
-            finite = jp.all(jp.isfinite(data.qpos)) & jp.all(
-                jp.isfinite(data.qvel)
-            )
             root_z = data.qpos[self.root_z_qpos]
-            failure_nonfinite = ~finite
+            failure_nonfinite_action = ~action_finite
+            failure_nonfinite_physics = action_finite & (~physics_finite)
+            failure_nonfinite = ~transition_finite
             failure_root_low = (
                 jp.asarray(False)
                 if task.terminate_root_z_min is None
@@ -431,9 +463,32 @@ def make_brax_env(
                     "failed": failed_bool.astype(jp.float32),
                 },
             )
+            raw_reward_terms = {
+                name: (
+                    value
+                    if name == "termination"
+                    else jp.where(failure_nonfinite, 0.0, value)
+                )
+                for name, value in raw_reward_terms.items()
+            }
             reward = sum(raw_reward_terms.values())
+            reward = jp.nan_to_num(
+                reward,
+                nan=-reward_settings.termination,
+                posinf=-reward_settings.termination,
+                neginf=-reward_settings.termination,
+            )
             rewards = {
-                f"reward_{name}": value
+                f"reward_{name}": jp.nan_to_num(
+                    value,
+                    nan=(
+                        -reward_settings.termination
+                        if name == "termination"
+                        else 0.0
+                    ),
+                    posinf=0.0,
+                    neginf=0.0,
+                )
                 for name, value in raw_reward_terms.items()
             }
             info = {
@@ -467,6 +522,12 @@ def make_brax_env(
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),
+                "failure_nonfinite_action": (
+                    failure_nonfinite_action.astype(jp.float32)
+                ),
+                "failure_nonfinite_physics": (
+                    failure_nonfinite_physics.astype(jp.float32)
+                ),
                 "failure_root_low": failure_root_low.astype(jp.float32),
                 "failure_root_high": failure_root_high.astype(jp.float32),
                 "failure_foot_gap": failure_foot_gap.astype(jp.float32),
@@ -475,6 +536,15 @@ def make_brax_env(
                 ),
             }
             observation = self._observation(data, action, contacts)
+            observation = jp.nan_to_num(
+                observation, nan=0.0, posinf=0.0, neginf=0.0
+            )
+            metrics = {
+                name: jp.nan_to_num(
+                    value, nan=0.0, posinf=0.0, neginf=0.0
+                )
+                for name, value in metrics.items()
+            }
             return State(
                 data,
                 observation,

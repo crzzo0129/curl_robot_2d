@@ -37,6 +37,13 @@
 
 ## 文档
 
+- [`docs/project_roadmap_zh.md`](docs/project_roadmap_zh.md)：从当前二维滚动
+  到三维双模态和实体验证的执行路线图、里程碑与退出条件。
+- [`docs/evaluation_protocol_zh.md`](docs/evaluation_protocol_zh.md)：跨
+  CEM、RL、二维和未来三维任务的统一物理指标与分级验收协议。
+- [`docs/experiment_management_zh.md`](docs/experiment_management_zh.md)：
+  实验 ID、假设、产物和决策记录规范；机器可读索引位于
+  [`experiments/registry.csv`](experiments/registry.csv)。
 - [`docs/design_discussion_zh.md`](docs/design_discussion_zh.md)：截至
   2026-07-26 的方案讨论整理、当前共识和待研究问题。
 - [`docs/fixed_parameters_zh.md`](docs/fixed_parameters_zh.md)：第一版二维
@@ -60,7 +67,8 @@
 
 ## 当前状态
 
-目前处于参数化模型和评价体系设计阶段。主仿真器已经确定为 MuJoCo：
+目前处于路线图 M1：在已验证的二维碰撞模型和名义 COM 下学习启动与持续
+滚动。主仿真器已经确定为 MuJoCo：
 
 - 前期使用 CPU MuJoCo 建模、调试接触并完成结构评价；
 - 使用平面复合根关节建立严格的侧视模型；

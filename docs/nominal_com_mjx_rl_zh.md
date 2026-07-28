@@ -81,6 +81,12 @@ $$
 不再使用固定 `root_z` 下限作为硬终止；`failure_root_low` 保留为兼容指标，
 默认恒为 0。`root_high`、足端过度张开、腿部交叉和 non-finite 仍会终止。
 
+non-finite transition 在进入 PPO 前隔离：非有限 action 会替换为有限动作，
+非有限 MJX 结果会回退到上一个有限 pipeline state；该步只返回固定终止惩罚
+和有限 observation。`failure_nonfinite_action` 与
+`failure_nonfinite_physics` 分别标记策略输出和物理求解器来源，避免单个并行
+环境的 NaN 污染 observation normalization、梯度和共享策略参数。
+
 ## 3. MJX 与 CPU MuJoCo 的关系
 
 MJX 使用和 CEM 相同的 XML、接触类别、关节限位和执行器。物理运行档位通过
