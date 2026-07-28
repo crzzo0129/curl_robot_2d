@@ -463,6 +463,9 @@ def make_brax_env(
             step_count = state.info["step_count"] + 1
             timeout_bool = step_count >= task.episode_length
             done = (failed_bool | timeout_bool).astype(jp.float32)
+            remaining_fraction = jp.maximum(
+                task.episode_length - step_count, 0
+            ).astype(jp.float32) / max(task.episode_length - 1, 1)
 
             raw_reward_terms = reward_terms(
                 jp,
@@ -485,22 +488,28 @@ def make_brax_env(
                     "allowed_max_increment": allowed_max_increment,
                     "leg_crossing": leg_crossing.astype(jp.float32),
                     "failed": failed_bool.astype(jp.float32),
+                    "remaining_fraction": remaining_fraction,
                 },
             )
             raw_reward_terms = {
                 name: (
                     value
-                    if name == "termination"
+                    if name in ("termination", "early_termination")
                     else jp.where(failure_nonfinite, 0.0, value)
                 )
                 for name, value in raw_reward_terms.items()
             }
             reward = sum(raw_reward_terms.values())
+            nonfinite_terminal_reward = -reward_settings.termination * (
+                1.0
+                + reward_settings.early_termination_scale
+                * remaining_fraction
+            )
             reward = jp.nan_to_num(
                 reward,
-                nan=-reward_settings.termination,
-                posinf=-reward_settings.termination,
-                neginf=-reward_settings.termination,
+                nan=nonfinite_terminal_reward,
+                posinf=nonfinite_terminal_reward,
+                neginf=nonfinite_terminal_reward,
             )
             rewards = {
                 f"reward_{name}": jp.nan_to_num(
@@ -508,7 +517,13 @@ def make_brax_env(
                     nan=(
                         -reward_settings.termination
                         if name == "termination"
-                        else 0.0
+                        else (
+                            -reward_settings.termination
+                            * reward_settings.early_termination_scale
+                            * remaining_fraction
+                            if name == "early_termination"
+                            else 0.0
+                        )
                     ),
                     posinf=0.0,
                     neginf=0.0,

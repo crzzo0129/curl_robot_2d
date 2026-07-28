@@ -39,6 +39,7 @@ class MJXContractTest(unittest.TestCase):
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
         self.assertEqual(reward.termination, 5.0)
+        self.assertEqual(reward.early_termination_scale, 1.0)
 
     def test_startup_action_ramp_matches_cem_smoothstep(self) -> None:
         elapsed = np.asarray([0.0, 0.125, 0.25, 0.5])

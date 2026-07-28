@@ -15,6 +15,7 @@ REWARD_TERM_NAMES = (
     "foot_gap",
     "collision",
     "termination",
+    "early_termination",
 )
 
 
@@ -66,4 +67,10 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
         ),
         "collision": -collision_cost,
         "termination": -config.termination * inputs["failed"],
+        "early_termination": (
+            -config.termination
+            * config.early_termination_scale
+            * inputs["remaining_fraction"]
+            * inputs["failed"]
+        ),
     }

@@ -19,6 +19,7 @@ class RollingRewardConfig:
     foot_gap: float = 5.0
     foot_gap_threshold_m: float = 0.20
     termination: float = 5.0
+    early_termination_scale: float = 1.0
 
     # Collision reward terms mirror the collision-constrained CEM objective.
     allowed_foot_penetration_m: float = 0.0005
@@ -28,4 +29,3 @@ class RollingRewardConfig:
     allowed_excess_integral: float = 12000.0
     maximum_allowed_excess: float = 2500.0
     leg_crossing: float = 100.0
-

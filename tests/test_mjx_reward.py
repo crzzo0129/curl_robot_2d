@@ -35,6 +35,7 @@ def zero_inputs():
         "allowed_max_increment": zero,
         "leg_crossing": zero,
         "failed": zero,
+        "remaining_fraction": zero,
     }
 
 
@@ -57,12 +58,20 @@ class MJXRewardTest(unittest.TestCase):
         parser = argparse.ArgumentParser()
         _add_reward_arguments(parser)
         args = parser.parse_args(
-            ["--reward-termination", "20", "--reward-roll-progress", "4"]
+            [
+                "--reward-termination",
+                "20",
+                "--reward-early-termination-scale",
+                "0.5",
+                "--reward-roll-progress",
+                "4",
+            ]
         )
 
         config = _reward_config_from_args(args)
 
         self.assertEqual(config.termination, 20.0)
+        self.assertEqual(config.early_termination_scale, 0.5)
         self.assertEqual(config.roll_progress, 4.0)
         self.assertEqual(
             config.action_rate, RollingRewardConfig().action_rate
@@ -83,6 +92,23 @@ class MJXRewardTest(unittest.TestCase):
             float(terms["termination"]), -config.termination
         )
         self.assertAlmostEqual(float(terms["collision"]), 0.0)
+
+    def test_early_failure_penalty_decays_with_remaining_length(self) -> None:
+        config = RollingRewardConfig(
+            termination=10.0, early_termination_scale=1.0
+        )
+        inputs = zero_inputs()
+        inputs["failed"] = np.asarray(1.0, dtype=np.float32)
+
+        inputs["remaining_fraction"] = np.asarray(1.0, dtype=np.float32)
+        early_terms = reward_terms(np, config, inputs)
+        inputs["remaining_fraction"] = np.asarray(0.0, dtype=np.float32)
+        late_terms = reward_terms(np, config, inputs)
+
+        self.assertEqual(float(early_terms["termination"]), -10.0)
+        self.assertEqual(float(early_terms["early_termination"]), -10.0)
+        self.assertEqual(float(late_terms["termination"]), -10.0)
+        self.assertEqual(float(late_terms["early_termination"]), 0.0)
 
     def test_eval_reward_metrics_are_split_from_other_metrics(self) -> None:
         metrics = {

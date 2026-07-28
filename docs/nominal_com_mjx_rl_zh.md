@@ -72,7 +72,10 @@ $$
 - 允许足端接触超过 0.5 mm 的穿透。
 
 腿部中心线交叉会立即终止 episode 并施加强惩罚。自接触不会被误认为地面
-支撑。任何非超时失败还会收到独立的 `termination` 惩罚，当前权重为 5。
+支撑。任何非超时失败还会收到固定的 `termination` 惩罚，以及随剩余
+episode 比例线性衰减的 `early_termination` 惩罚。默认
+`early_termination_scale=1`；若固定终止权重为 10，则第一步失败总计接近
+-20，最后一步失败为 -10。正常 timeout 不扣这两项。
 
 奖励配置和实现不再混在环境文件中：
 
@@ -82,7 +85,8 @@ $$
 
 当前奖励固定拆成 `roll_progress`、`roll_mismatch`、`backward`、
 `action_rate`、`torque`、`airborne`、`foot_gap`、`collision` 和
-`termination` 九项。训练时每一项都独立记录，不再只看混合后的总 reward。
+`termination`、`early_termination` 十项。训练时每一项都独立记录，不再
+只看混合后的总 reward。
 
 失败原因也分别记录为 `failure_nonfinite`、`failure_root_low`、
 `failure_root_high`、`failure_foot_gap` 和 `failure_leg_crossing`。
@@ -295,7 +299,7 @@ python -m scripts.sweep_mjx_ppo \
 
 - `training_config.json`：训练、任务、奖励和设备配置的完整快照；
 - `reward_config.json`：本次训练独立使用的奖励权重；
-- `reward_history.json`：总奖励、九个奖励分项及其每步平均值；
+- `reward_history.json`：总奖励、十个奖励分项及其每步平均值；
 - `metrics_history.json`：不含奖励项的物理、失败和 PPO 指标；
 - `training_summary.json`：耗时、最优步和最终指标；
 - `params_best`、`params_final`：Brax 策略参数；
