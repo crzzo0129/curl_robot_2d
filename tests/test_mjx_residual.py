@@ -16,11 +16,35 @@ from scripts.train_mjx_residual_ppo import (
     _eval_visualization_dir,
     _exact_stage_eval_schedule,
     _gate_assessment,
+    _parse_args,
+    _stage_plan,
 )
 from scripts.optimize_phase_controller import controller_targets
 
 
 class MJXResidualTest(unittest.TestCase):
+    def test_retained_cem_curriculums_only_residual_scale(self) -> None:
+        args = _parse_args(["--retain-cem"])
+
+        self.assertEqual(
+            _stage_plan(args),
+            [
+                {
+                    "reference_weight": 1.0,
+                    "minimum_residual_gain": scale,
+                }
+                for scale in (0.05, 0.10, 0.20, 0.30)
+            ],
+        )
+
+    def test_legacy_curriculum_still_withdraws_reference(self) -> None:
+        args = _parse_args([])
+
+        self.assertEqual(
+            [stage["reference_weight"] for stage in _stage_plan(args)],
+            [1.0, 0.5, 0.0],
+        )
+
     def test_checked_in_cem_controller_loads(self) -> None:
         reference = load_cem_reference(DEFAULT_CEM_CONTROLLER)
 

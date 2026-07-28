@@ -1,5 +1,8 @@
 # CEM Reference Residual RL 课程
 
+> 当前推荐主路线是永久保留 CEM 的 bounded residual RL。旧的 reference
+> 退权课程仍保留用于历史复现，但不再作为最终控制器的默认设计目标。
+
 ## 1. 控制形式
 
 Residual PPO 使用冻结的碰撞约束 CEM 控制器：
@@ -151,3 +154,43 @@ python -m scripts.train_mjx_residual_ppo \
 阶段切换保留 observation normalizer、policy 和 value 参数。Brax 的公开
 `restore_params` 接口不保存 Adam optimizer state，因此每次成功降权时会重新
 初始化 optimizer；默认只有两次切换。
+
+## 6. 永久保留 CEM
+
+推荐模式固定 `reference_weight=1`，只对 residual 控制幅度做性能门控课程：
+
+```text
+action = clip(CEM_action + residual_scale * policy_action)
+residual_scale = 0.05 -> 0.10 -> 0.20 -> 0.30
+```
+
+该模式最终仍使用碰撞约束 CEM，RL 负责修正初始状态扰动、接触偏差，并为后续
+terrain 和 model randomization 留出控制权。它不会执行或评价零 reference。
+
+```bash
+python -m scripts.train_mjx_residual_ppo \
+  --retain-cem \
+  --preset h200 \
+  --steps 4194304 \
+  --physics-profile cg12 \
+  --controller results/collision_constrained_cem/best_phase_controller.json \
+  --residual-scales 0.05 0.10 0.20 0.30 \
+  --minimum-stage-steps 131072 \
+  --gate-check-steps 131072 \
+  --gate-min-survival 0.80 \
+  --gate-min-turns 3.0 \
+  --gate-max-failure-rate 0.20 \
+  --learning-rate 3e-5 \
+  --entropy-cost 1e-3 \
+  --discounting 0.995 \
+  --reward-roll-progress 15 \
+  --reward-termination 10 \
+  --reward-early-termination-scale 1 \
+  --seed 0 \
+  --mujoco-gl egl \
+  --out results/mjx_cem_residual_retained_seed0
+```
+
+最终策略保存在 `params_best_retained_cem`，最终确定性回放位于
+`evaluation_retained_cem/`。终端和 `training_summary.json` 使用
+`mode=retain_cem` 标识，不再用零 reference 是否成功来判断该路线。

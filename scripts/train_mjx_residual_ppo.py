@@ -133,6 +133,33 @@ def _validate_weights(parser, weights):
         parser.error("--reference-weights must be strictly decreasing")
 
 
+def _validate_residual_scales(parser, scales):
+    if not scales:
+        parser.error("--residual-scales must not be empty")
+    if any(not 0.0 < scale <= 1.0 for scale in scales):
+        parser.error("--residual-scales must stay in (0, 1]")
+    if any(left >= right for left, right in zip(scales, scales[1:])):
+        parser.error("--residual-scales must be strictly increasing")
+
+
+def _stage_plan(args):
+    if args.retain_cem:
+        return [
+            {
+                "reference_weight": 1.0,
+                "minimum_residual_gain": scale,
+            }
+            for scale in args.residual_scales
+        ]
+    return [
+        {
+            "reference_weight": weight,
+            "minimum_residual_gain": args.minimum_residual_gain,
+        }
+        for weight in args.reference_weights
+    ]
+
+
 def _eval_visualization_dir(output_dir, eval_index, step, weight):
     weight_label = f"{weight:.2f}".replace(".", "p")
     return (
@@ -145,7 +172,7 @@ def _eval_visualization_dir(output_dir, eval_index, step, weight):
     )
 
 
-def _parse_args():
+def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--preset", choices=tuple(PRESETS), default="h200")
     parser.add_argument(
@@ -176,12 +203,27 @@ def _parse_args():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--controller", type=Path, default=DEFAULT_CEM_CONTROLLER)
     parser.add_argument(
+        "--retain-cem",
+        action="store_true",
+        help=(
+            "Keep CEM weight at 1 and curriculum only the bounded residual "
+            "scale."
+        ),
+    )
+    parser.add_argument(
         "--reference-weights",
         type=float,
         nargs="+",
         default=[1.0, 0.5, 0.0],
     )
     parser.add_argument("--minimum-residual-gain", type=float, default=0.05)
+    parser.add_argument(
+        "--residual-scales",
+        type=float,
+        nargs="+",
+        default=[0.05, 0.10, 0.20, 0.30],
+        help="Increasing residual scales used by --retain-cem.",
+    )
     parser.add_argument("--minimum-stage-steps", type=int, default=500_000)
     parser.add_argument("--gate-check-steps", type=int, default=500_000)
     parser.add_argument("--gate-min-survival", type=float, default=0.80)
@@ -202,8 +244,11 @@ def _parse_args():
     parser.add_argument("--skip-visualization", action="store_true")
     parser.add_argument("--visualization-diagnostics", action="store_true")
     _add_reward_arguments(parser)
-    args = parser.parse_args()
-    _validate_weights(parser, args.reference_weights)
+    args = parser.parse_args(argv)
+    if args.retain_cem:
+        _validate_residual_scales(parser, args.residual_scales)
+    else:
+        _validate_weights(parser, args.reference_weights)
     if not 0.0 <= args.minimum_residual_gain <= 1.0:
         parser.error("--minimum-residual-gain must be in [0, 1]")
     return args
@@ -211,6 +256,7 @@ def _parse_args():
 
 def main() -> None:
     args = _parse_args()
+    stage_plan = _stage_plan(args)
     values = PRESETS[args.preset].copy()
     for name in (
         "steps",
@@ -264,7 +310,7 @@ def main() -> None:
     reward_config = _reward_config_from_args(args)
     base_reference = load_cem_reference(
         args.controller,
-        minimum_residual_gain=args.minimum_residual_gain,
+        minimum_residual_gain=stage_plan[0]["minimum_residual_gain"],
     )
     runtime = describe_runtime()
     config_payload = {
@@ -283,7 +329,12 @@ def main() -> None:
         "task": asdict(task),
         "reward": asdict(reward_config),
         "reference": asdict(base_reference),
+        "curriculum_mode": (
+            "retain_cem" if args.retain_cem else "withdraw_reference"
+        ),
+        "stage_plan": stage_plan,
         "reference_weights": args.reference_weights,
+        "residual_scales": args.residual_scales,
         "minimum_stage_steps": args.minimum_stage_steps,
         "gate_check_steps": args.gate_check_steps,
         "gate": {
@@ -298,10 +349,11 @@ def main() -> None:
     )
     print(
         "[residual curriculum]\n"
+        f"  mode={'retain_cem' if args.retain_cem else 'withdraw_reference'}\n"
         f"  requested_steps={values['steps']:,} "
         f"fixed_budget={effective_budget:,} "
         f"rollout_quantum={rollout_quantum:,}\n"
-        f"  reference_weights={args.reference_weights} "
+        f"  stage_plan={stage_plan} "
         f"minimum_stage={args.minimum_stage_steps:,}\n"
         f"  physics={args.physics_profile} root_damping="
         f"{'disabled' if task.disable_root_damping else 'xml'}\n"
@@ -324,13 +376,18 @@ def main() -> None:
     stage_history = []
     eval_visualizations = []
     eval_counter = 0
-    best_zero = {"score": float("-inf"), "step": None, "params": None}
-    zero_reference_steps = 0
-    zero_reference_gate_passed = False
+    best_target = {"score": float("-inf"), "step": None, "params": None}
+    target_stage_steps = 0
+    target_stage_gate_passed = False
 
     while consumed_steps < effective_budget:
-        weight = args.reference_weights[stage_index]
-        reference = base_reference.with_weight(weight)
+        stage_spec = stage_plan[stage_index]
+        weight = stage_spec["reference_weight"]
+        reference = load_cem_reference(
+            args.controller,
+            reference_weight=weight,
+            minimum_residual_gain=stage_spec["minimum_residual_gain"],
+        )
         remaining = effective_budget - consumed_steps
         stage_schedule = _exact_stage_eval_schedule(
             remaining, rollout_quantum, args.gate_check_steps
@@ -360,7 +417,7 @@ def main() -> None:
         }
         stage_start = consumed_steps
         print(
-            f"[stage {stage_index + 1}/{len(args.reference_weights)}]\n"
+            f"[stage {stage_index + 1}/{len(stage_plan)}]\n"
             f"  reference_weight={weight:.2f} "
             f"residual_gain={reference.residual_gain:.3f}\n"
             f"  global_start={stage_start:,} remaining={remaining:,} "
@@ -420,7 +477,11 @@ def main() -> None:
                 print(
                     f"[eval visualization {record['global_eval']}]\n"
                     f"  step={record['global_step']:,} "
-                    f"ref={weight:.2f}\n"
+                    f"ref={weight:.2f} "
+                    f"seed={args.seed + 30_000 + record['global_eval']}\n"
+                    f"  single_rollout turns={rollout['net_turns']:+.3f} "
+                    f"reward={rollout['total_reward']:+.3f} "
+                    f"steps={rollout['episode_steps']}\n"
                     f"  gif={gif_path.resolve()}",
                     flush=True,
                 )
@@ -442,7 +503,7 @@ def main() -> None:
             visualize_eval(local_step)
 
         def progress_fn(local_step, metrics):
-            nonlocal eval_counter, zero_reference_gate_passed
+            nonlocal eval_counter, target_stage_gate_passed
             clean = {name: _float(value) for name, value in metrics.items()}
             _add_per_step_eval_metrics(clean)
             global_step = stage_start + int(local_step)
@@ -471,18 +532,19 @@ def main() -> None:
                     "metrics": ordinary_metrics,
                 }
             )
+            is_target_stage = stage_index == len(stage_plan) - 1
             selected = (
-                weight == 0.0
+                is_target_stage
                 and gate["passed"]
                 and not selection["rejected"]
-                and selection["score"] > best_zero["score"]
+                and selection["score"] > best_target["score"]
             )
-            if weight == 0.0 and gate["passed"]:
-                zero_reference_gate_passed = True
+            if is_target_stage and gate["passed"]:
+                target_stage_gate_passed = True
             if selected and stage["params"] is not None:
-                best_zero["score"] = selection["score"]
-                best_zero["step"] = global_step
-                best_zero["params"] = stage["params"]
+                best_target["score"] = selection["score"]
+                best_target["step"] = global_step
+                best_target["params"] = stage["params"]
             eval_counter += 1
             eval_record = {
                 "global_eval": eval_counter,
@@ -506,16 +568,16 @@ def main() -> None:
                 ),
                 flush=True,
             )
+            policy_rms = clean.get("eval/avg_residual_action_rms", 0.0)
             print(
                 "  residual "
                 f"ref_weight={weight:.2f} "
                 f"gain={reference.residual_gain:.3f} "
                 f"ref_rms="
                 f"{clean.get('eval/avg_reference_action_rms', 0.0):.3f} "
-                f"policy_rms="
-                f"{clean.get('eval/avg_residual_action_rms', 0.0):.3f} "
+                f"policy_rms={policy_rms:.3f} "
                 f"effective_residual_rms="
-                f"{reference.residual_gain * clean.get('eval/avg_residual_action_rms', 0.0):.3f}",
+                f"{reference.residual_gain * policy_rms:.3f}",
                 flush=True,
             )
             visualize_eval(local_step)
@@ -525,14 +587,14 @@ def main() -> None:
             print(
                 "  curriculum "
                 f"global_eval={eval_counter} "
-                f"stage={stage_index + 1}/{len(args.reference_weights)} "
+                f"stage={stage_index + 1}/{len(stage_plan)} "
                 f"ref={weight:.2f} local_steps={int(local_step):,} "
                 f"gate={'PASS' if gate['passed'] else 'WAIT'} "
                 f"missing={','.join(failed_checks) or 'none'}",
                 flush=True,
             )
             can_advance = (
-                stage_index < len(args.reference_weights) - 1
+                stage_index < len(stage_plan) - 1
                 and int(local_step) >= args.minimum_stage_steps
                 and gate["passed"]
             )
@@ -596,8 +658,8 @@ def main() -> None:
             advanced = True
 
         consumed_steps += local_trained
-        if weight == 0.0:
-            zero_reference_steps += local_trained
+        if stage_index == len(stage_plan) - 1:
+            target_stage_steps += local_trained
         stage_history.append(
             {
                 "stage_index": stage_index,
@@ -619,37 +681,54 @@ def main() -> None:
         else:
             break
 
-    reached_zero = zero_reference_steps > 0
     last_trained_weight = stage_history[-1]["reference_weight"]
+    reached_target_stage = target_stage_steps > 0
     curriculum_success = (
-        reached_zero
-        and zero_reference_gate_passed
-        and stage_index == len(args.reference_weights) - 1
+        reached_target_stage
+        and target_stage_gate_passed
+        and stage_index == len(stage_plan) - 1
         and consumed_steps == effective_budget
     )
     model_io.save_params(args.out / "params_final", final_params)
-    if best_zero["params"] is not None:
+    best_target_name = (
+        "params_best_retained_cem"
+        if args.retain_cem
+        else "params_best_zero_reference"
+    )
+    if best_target["params"] is not None:
         model_io.save_params(
-            args.out / "params_best_zero_reference",
-            best_zero["params"],
+            args.out / best_target_name,
+            best_target["params"],
         )
     elapsed = time.perf_counter() - start
     clean_final_metrics = {
         name: _float(value) for name, value in final_metrics.items()
     }
     summary = {
+        "curriculum_mode": (
+            "retain_cem" if args.retain_cem else "withdraw_reference"
+        ),
         "curriculum_success": curriculum_success,
-        "reached_zero_reference": reached_zero,
-        "zero_reference_gate_passed": zero_reference_gate_passed,
-        "zero_reference_training_steps": zero_reference_steps,
+        "reached_target_stage": reached_target_stage,
+        "target_stage_gate_passed": target_stage_gate_passed,
+        "target_stage_training_steps": target_stage_steps,
+        "reached_zero_reference": (
+            reached_target_stage and not args.retain_cem
+        ),
+        "zero_reference_gate_passed": (
+            target_stage_gate_passed and not args.retain_cem
+        ),
+        "zero_reference_training_steps": (
+            target_stage_steps if not args.retain_cem else 0
+        ),
         "requested_steps": values["steps"],
         "effective_budget_steps": effective_budget,
         "consumed_steps": consumed_steps,
         "final_reference_weight": last_trained_weight,
-        "best_zero_reference_step": best_zero["step"],
-        "best_zero_reference_score": (
-            best_zero["score"]
-            if math.isfinite(best_zero["score"])
+        "best_target_step": best_target["step"],
+        "best_target_score": (
+            best_target["score"]
+            if math.isfinite(best_target["score"])
             else None
         ),
         "elapsed_s": elapsed,
@@ -668,36 +747,49 @@ def main() -> None:
     )
     print(
         "[curriculum complete]\n"
+        f"  mode={'retain_cem' if args.retain_cem else 'withdraw_reference'}\n"
         f"  status={'SUCCESS' if curriculum_success else 'FAILED'} "
         f"consumed={consumed_steps:,}/{effective_budget:,}\n"
         f"  final_reference_weight="
         f"{last_trained_weight:.2f} "
-        f"zero_reference_steps={zero_reference_steps:,}\n"
+        f"target_stage_steps={target_stage_steps:,}\n"
         f"  elapsed={elapsed / 60.0:.1f}min",
         flush=True,
     )
 
-    zero_reference = base_reference.with_weight(0.0)
-    zero_eval_env = make_brax_env(
+    final_stage_spec = stage_plan[-1]
+    evaluation_reference = load_cem_reference(
+        args.controller,
+        reference_weight=final_stage_spec["reference_weight"],
+        minimum_residual_gain=final_stage_spec["minimum_residual_gain"],
+    )
+    final_eval_env = make_brax_env(
         task,
         reward_config=reward_config,
-        cem_reference=zero_reference,
+        cem_reference=evaluation_reference,
         seed=args.seed + 20_000,
     )
-    evaluation_dir = args.out / "evaluation_zero_reference"
+    evaluation_label = (
+        "retained-cem" if args.retain_cem else "zero-reference"
+    )
+    evaluation_dir = args.out / (
+        "evaluation_retained_cem"
+        if args.retain_cem
+        else "evaluation_zero_reference"
+    )
     evaluation = _evaluate_policy(
-        zero_eval_env,
+        final_eval_env,
         make_inference_fn,
         (
-            best_zero["params"]
-            if best_zero["params"] is not None
+            best_target["params"]
+            if best_target["params"] is not None
             else final_params
         ),
         seed=args.seed + 20_000,
         episode_length=args.episode_length,
         output_dir=evaluation_dir,
     )
-    print(_format_rollout_report("zero-reference", evaluation), flush=True)
+    print(_format_rollout_report(evaluation_label, evaluation), flush=True)
     if not args.skip_visualization:
         try:
             from scripts.render_mjx_policy import render_rollout
