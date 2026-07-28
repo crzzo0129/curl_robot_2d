@@ -56,7 +56,7 @@ class ModelContractTest(unittest.TestCase):
         self.assertEqual(model.nq, 7)
         self.assertEqual(model.nv, 7)
         self.assertEqual(model.nu, 4)
-        self.assertEqual(model.nkey, 2)
+        self.assertEqual(model.nkey, 3)
         self.assertEqual(model.neq, 4)
         self.assertFalse(np.asarray(model.eq_active0).any())
         self.assertEqual(
@@ -191,6 +191,109 @@ class ModelContractTest(unittest.TestCase):
             self.assertAlmostEqual(
                 min(clearances), FIXED_PARAMETERS.shell_design_gap, places=9
             )
+
+    def test_shells_clear_full_safe_joint_ranges(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+        data = mujoco.MjData(model)
+        key_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_KEY, "open"
+        )
+        mujoco.mj_resetDataKeyframe(model, data, key_id)
+        open_qpos = data.qpos.copy()
+
+        def shell_segments(
+            prefix: str,
+        ) -> list[tuple[np.ndarray, np.ndarray, float]]:
+            segments = []
+            for geom_id in range(model.ngeom):
+                name = mujoco.mj_id2name(
+                    model, mujoco.mjtObj.mjOBJ_GEOM, geom_id
+                )
+                if not (name or "").startswith(f"{prefix}_shell_"):
+                    continue
+                rotation = np.asarray(data.geom_xmat[geom_id]).reshape(3, 3)
+                axis = rotation[:, 2][[0, 2]]
+                center = np.asarray(data.geom_xpos[geom_id])[[0, 2]]
+                half_length = float(model.geom_size[geom_id, 1])
+                segments.append(
+                    (
+                        center - half_length * axis,
+                        center + half_length * axis,
+                        float(model.geom_size[geom_id, 0]),
+                    )
+                )
+            return segments
+
+        cases = (
+            (
+                "front_hip",
+                FIXED_PARAMETERS.hip.safe_range,
+                "torso",
+                "front_thigh",
+            ),
+            (
+                "front_knee",
+                FIXED_PARAMETERS.knee.safe_range,
+                "front_thigh",
+                "front_shank",
+            ),
+        )
+        for joint_name, angle_range, first_prefix, second_prefix in cases:
+            joint_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+            )
+            qpos_address = model.jnt_qposadr[joint_id]
+            minimum_clearance = np.inf
+            for angle in np.linspace(*angle_range, 101):
+                data.qpos[:] = open_qpos
+                data.qpos[qpos_address] = angle
+                mujoco.mj_forward(model, data)
+                for first_start, first_end, first_radius in shell_segments(
+                    first_prefix
+                ):
+                    for (
+                        second_start,
+                        second_end,
+                        second_radius,
+                    ) in shell_segments(second_prefix):
+                        minimum_clearance = min(
+                            minimum_clearance,
+                            segment_distance(
+                                first_start,
+                                first_end,
+                                second_start,
+                                second_end,
+                            )
+                            - first_radius
+                            - second_radius,
+                        )
+            self.assertGreaterEqual(minimum_clearance, 0.002)
+
+    def test_walking_keyframe_has_clear_shells_and_swing_foot(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+        data = mujoco.MjData(model)
+        key_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_KEY, "walk"
+        )
+        front_site = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_SITE, "front_foot_site"
+        )
+        rear_site = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_SITE, "rear_foot_site"
+        )
+
+        mujoco.mj_resetDataKeyframe(model, data, key_id)
+        mujoco.mj_forward(model, data)
+
+        self.assertAlmostEqual(
+            float(data.site_xpos[front_site, 2]),
+            FIXED_PARAMETERS.foot_radius,
+        )
+        self.assertGreater(
+            float(data.site_xpos[rear_site, 2]),
+            FIXED_PARAMETERS.foot_radius + 0.01,
+        )
+        self.assertEqual(data.ncon, 0)
 
     def test_collision_classes_and_compact_foot_contact(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))

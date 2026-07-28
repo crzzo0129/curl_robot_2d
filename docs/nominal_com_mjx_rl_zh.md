@@ -1,6 +1,11 @@
 # 名义 COM 的 MJX 纯 RL 第一阶段
 
-更新日期：2026-07-27
+更新日期：2026-07-28
+
+> 模型版本说明：2026-07-28 当前活动 XML 为保留行走安全关节范围而缩短了
+> 外壳，并恢复完整建议安全关节范围。此前 sweep 和正在运行的
+> `mjx_ppo_rootfix_seed0` 使用修改前的 2 mm 外壳模型，只能作为历史实验；
+> 新模型的正式 PPO 必须重新训练。
 
 ## 1. 目标
 
@@ -298,8 +303,22 @@ python -m scripts.sweep_mjx_ppo \
 - `evaluation_summary.json`：净滚动、独立奖励分解、普通指标平均值和具体失败
   原因。
 
-云端训练后应完整下载该目录。确认策略确实学习后，再实现 CPU MuJoCo
-策略回放和与 CEM 的严格对照，不根据训练 reward 单独下结论。
+训练结束后可直接把确定性评估轨迹渲染为跟随相机 GIF。云端无显示器节点使用
+EGL：
+
+```bash
+python -m scripts.render_mjx_policy \
+  results/mjx_ppo_cem_ramp_potential_seed0/evaluation_rollout.npz \
+  --mujoco-gl egl \
+  --output results/mjx_ppo_cem_ramp_potential_seed0/policy_rollout.gif
+```
+
+本地有图形环境时可省略 `--mujoco-gl`，脚本会自动选择后端。添加
+`--diagnostics` 可显示 COM 和接触点。该动画重放保存的 qpos，不需要加载
+JAX、Brax 或策略参数，也不会重新采样动作。
+
+云端训练后应完整下载该目录，并使用 CPU MuJoCo 做策略复算和与 CEM 的严格
+对照，不根据训练 reward 单独下结论。
 
 训练入口默认拒绝写入非空输出目录，避免覆盖历史实验。只有明确需要时才使用
 `--allow-existing-output`。

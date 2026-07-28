@@ -28,7 +28,11 @@ def reset_keyframe(model: mujoco.MjModel, data: mujoco.MjData, name: str) -> Non
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--keyframe", choices=("open", "compact"), default="compact")
+    parser.add_argument(
+        "--keyframe",
+        choices=("open", "walk", "compact"),
+        default="compact",
+    )
     parser.add_argument("--steps", type=int, default=0)
     args = parser.parse_args()
 

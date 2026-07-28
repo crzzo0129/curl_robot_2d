@@ -74,7 +74,7 @@ class FixedParameters:
     hip: JointParameters = JointParameters(
         mechanical_range=(-1.22, 2.51),
         safe_range=(-1.12, 2.41),
-        shell_compatible_range=(-1.12, math.pi / 2.0),
+        shell_compatible_range=(-1.12, 2.41),
         damping=0.02,
         armature=0.0032,
         force_limit=6.0,
@@ -87,7 +87,7 @@ class FixedParameters:
     knee: JointParameters = JointParameters(
         mechanical_range=(-0.71, 2.79),
         safe_range=(-0.61, 2.69),
-        shell_compatible_range=(0.0, 2.69),
+        shell_compatible_range=(-0.61, 2.69),
         damping=0.02,
         armature=0.0032,
         force_limit=6.0,
@@ -106,9 +106,10 @@ class FixedParameters:
     # nominal contact circle.
     shell_segments_per_edge: int = 6
     shell_capsule_radius: float = 0.006
-    # Deliberate surface gap between shells on two adjacent, collinear links.
-    # The arc endpoints are trimmed to meet this worst-case design condition.
-    shell_design_gap: float = 0.002
+    # The endpoints are shortened enough to keep at least 2 mm clearance
+    # throughout the source-derived safe hip and knee ranges.  Expressed at
+    # the collinear pose, that requires a 28 mm endpoint-to-endpoint gap.
+    shell_design_gap: float = 0.028
 
     nominal_ground_friction: float = 0.8
     # A 1 ms step keeps the deliberately stiff self-contact response above
@@ -122,6 +123,14 @@ class FixedParameters:
     # The two finite-size foot proxies share one sagittal plane.  Their
     # surfaces may touch in compact, but their centers may not coincide.
     compact_foot_surface_gap: float = 0.0
+
+    # Representative planar walking pose: the front leg is in stance while
+    # the rear leg is flexed into swing.  This is a geometry and collision
+    # test pose, not a prescribed walking controller trajectory.
+    walk_front_hip_angle: float = 0.35
+    walk_front_knee_angle: float = 0.52
+    walk_rear_hip_angle: float = 0.35
+    walk_rear_knee_angle: float = 0.78
 
     @property
     def torso_length(self) -> float:
@@ -221,6 +230,28 @@ class FixedParameters:
             + self.lower_length * math.cos(lower_absolute_angle)
             + self.foot_radius
         )
+
+    def leg_extension_height(self, hip_angle: float, knee_angle: float) -> float:
+        """Vertical hip-to-foot distance for the planar joint convention."""
+
+        return (
+            self.upper_length * math.cos(hip_angle)
+            + self.lower_length * math.cos(knee_angle - hip_angle)
+        )
+
+    @property
+    def walk_root_height(self) -> float:
+        """Root height placing the lower foot of the walk pose on the floor."""
+
+        front_height = self.leg_extension_height(
+            self.walk_front_hip_angle,
+            self.walk_front_knee_angle,
+        )
+        rear_height = self.leg_extension_height(
+            self.walk_rear_hip_angle,
+            self.walk_rear_knee_angle,
+        )
+        return max(front_height, rear_height) + self.foot_radius
 
 
 FIXED_PARAMETERS = FixedParameters()

@@ -14,7 +14,11 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "renders"
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--keyframe", choices=("open", "compact", "all"), default="all")
+    parser.add_argument(
+        "--keyframe",
+        choices=("open", "walk", "compact", "all"),
+        default="all",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--diagnostics",
@@ -33,7 +37,11 @@ def main() -> None:
         scene_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = True
         scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
 
-    names = ("open", "compact") if args.keyframe == "all" else (args.keyframe,)
+    names = (
+        ("open", "walk", "compact")
+        if args.keyframe == "all"
+        else (args.keyframe,)
+    )
     for name in names:
         key_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, name)
         mujoco.mj_resetDataKeyframe(model, data, key_id)

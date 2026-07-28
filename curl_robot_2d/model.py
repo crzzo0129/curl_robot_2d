@@ -155,8 +155,8 @@ def build_mjcf(parameters: FixedParameters = FIXED_PARAMETERS) -> str:
                   solref="0.01 1" solimp="0.9 0.95 0.001"/>
             <default class="hip_joint">
               <!--
-                左右两个同步髋电机合并为一个二维自由度。安装固定弧壳后，
-                活动范围进一步限制为弧壳不重叠的 collision-compatible range。
+                左右两个同步髋电机合并为一个二维自由度。弧壳端部已经缩短，
+                collision-compatible range 恢复为源模型建议安全范围。
               -->
               <joint damping="{_f(p.hip.damping)}"
                      armature="{_f(p.hip.armature)}"
@@ -392,6 +392,13 @@ def build_mjcf(parameters: FixedParameters = FIXED_PARAMETERS) -> str:
             <key name="open"
                  qpos="0 {_f(p.open_root_height)} 0 0 0 0 0"
                  ctrl="0 0 0 0"/>
+            <!--
+              二维行走检查姿态：前足支撑，后足摆动。它只用于验证展开后的
+              外壳间隙与足端工作区，不代表固定的行走控制轨迹。
+            -->
+            <key name="walk"
+                 qpos="0 {_f(p.walk_root_height)} 0 {_f(p.walk_front_hip_angle)} {_f(p.walk_front_knee_angle)} {_f(p.walk_rear_hip_angle)} {_f(p.walk_rear_knee_angle)}"
+                 ctrl="{_f(p.walk_front_hip_angle)} {_f(p.walk_front_knee_angle)} {_f(p.walk_rear_hip_angle)} {_f(p.walk_rear_knee_angle)}"/>
             <!--
               等边 compact 姿态：
                 hip 固定为 18 度；

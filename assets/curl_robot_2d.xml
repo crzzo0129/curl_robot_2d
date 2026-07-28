@@ -51,18 +51,18 @@
           solref="0.01 1" solimp="0.9 0.95 0.001"/>
     <default class="hip_joint">
       <!--
-        左右两个同步髋电机合并为一个二维自由度。安装固定弧壳后，
-        活动范围进一步限制为弧壳不重叠的 collision-compatible range。
+        左右两个同步髋电机合并为一个二维自由度。弧壳端部已经缩短，
+        collision-compatible range 恢复为源模型建议安全范围。
       -->
       <joint damping="0.02"
              armature="0.0032"
-             range="-1.12 1.570796327"/>
+             range="-1.12 2.41"/>
     </default>
     <default class="knee_joint">
       <!-- 等效膝关节正角度表示向内蜷缩。 -->
       <joint damping="0.02"
              armature="0.0032"
-             range="0 2.69"/>
+             range="-0.61 2.69"/>
     </default>
     <default class="paired_servo">
       <!--
@@ -123,17 +123,17 @@
             size="0.012"
             rgba="0.12 0.48 0.88 1"/>
       <geom name="torso_shell_00" class="rolling_shell"
-            fromto="-0.068 0 0.02091534125 -0.04641303854 0 0.03049330231"/>
+            fromto="-0.055 0 0.02719654173 -0.03721561714 0 0.03333902023"/>
       <geom name="torso_shell_01" class="rolling_shell"
-            fromto="-0.04641303854 0 0.03049330231 -0.02353407813 0 0.03634884788"/>
+            fromto="-0.03721561714 0 0.03333902023 -0.01877366594 0 0.03706846409"/>
       <geom name="torso_shell_02" class="rolling_shell"
-            fromto="-0.02353407813 0 0.03634884788 0 0 0.03831897722"/>
+            fromto="-0.01877366594 0 0.03706846409 0 0 0.03831897722"/>
       <geom name="torso_shell_03" class="rolling_shell"
-            fromto="0 0 0.03831897722 0.02353407813 0 0.03634884788"/>
+            fromto="0 0 0.03831897722 0.01877366594 0 0.03706846409"/>
       <geom name="torso_shell_04" class="rolling_shell"
-            fromto="0.02353407813 0 0.03634884788 0.04641303854 0 0.03049330231"/>
+            fromto="0.01877366594 0 0.03706846409 0.03721561714 0 0.03333902023"/>
       <geom name="torso_shell_05" class="rolling_shell"
-            fromto="0.04641303854 0 0.03049330231 0.068 0 0.02091534125"/>
+            fromto="0.03721561714 0 0.03333902023 0.055 0 0.02719654173"/>
       <site name="torso_com" type="sphere"
             pos="0.025 0 0.015"
             size="0.006" rgba="0.1 1 0.1 1"/>
@@ -152,17 +152,17 @@
               size="0.012"
               rgba="0.95 0.45 0.12 1"/>
         <geom name="front_thigh_shell_00" class="rolling_shell"
-              fromto="0.02091534125 0 -0.007 0.03049330231 0 -0.02858696146"/>
+              fromto="0.02719654173 0 -0.02 0.03333902023 0 -0.03778438286"/>
         <geom name="front_thigh_shell_01" class="rolling_shell"
-              fromto="0.03049330231 0 -0.02858696146 0.03634884788 0 -0.05146592187"/>
+              fromto="0.03333902023 0 -0.03778438286 0.03706846409 0 -0.05622633406"/>
         <geom name="front_thigh_shell_02" class="rolling_shell"
-              fromto="0.03634884788 0 -0.05146592187 0.03831897722 0 -0.075"/>
+              fromto="0.03706846409 0 -0.05622633406 0.03831897722 0 -0.075"/>
         <geom name="front_thigh_shell_03" class="rolling_shell"
-              fromto="0.03831897722 0 -0.075 0.03634884788 0 -0.09853407813"/>
+              fromto="0.03831897722 0 -0.075 0.03706846409 0 -0.09377366594"/>
         <geom name="front_thigh_shell_04" class="rolling_shell"
-              fromto="0.03634884788 0 -0.09853407813 0.03049330231 0 -0.1214130385"/>
+              fromto="0.03706846409 0 -0.09377366594 0.03333902023 0 -0.1122156171"/>
         <geom name="front_thigh_shell_05" class="rolling_shell"
-              fromto="0.03049330231 0 -0.1214130385 0.02091534125 0 -0.143"/>
+              fromto="0.03333902023 0 -0.1122156171 0.02719654173 0 -0.13"/>
         <site name="front_hip_site" type="sphere" size="0.006"
               rgba="1 0.85 0.1 1"/>
         <site name="front_thigh_com" type="sphere"
@@ -180,17 +180,17 @@
                 size="0.01"
                 rgba="0.98 0.70 0.18 1"/>
           <geom name="front_shank_shell_00" class="rolling_shell"
-                fromto="0.02091534125 0 -0.007 0.03049330231 0 -0.02858696146"/>
+                fromto="0.02719654173 0 -0.02 0.03333902023 0 -0.03778438286"/>
           <geom name="front_shank_shell_01" class="rolling_shell"
-                fromto="0.03049330231 0 -0.02858696146 0.03634884788 0 -0.05146592187"/>
+                fromto="0.03333902023 0 -0.03778438286 0.03706846409 0 -0.05622633406"/>
           <geom name="front_shank_shell_02" class="rolling_shell"
-                fromto="0.03634884788 0 -0.05146592187 0.03831897722 0 -0.075"/>
+                fromto="0.03706846409 0 -0.05622633406 0.03831897722 0 -0.075"/>
           <geom name="front_shank_shell_03" class="rolling_shell"
-                fromto="0.03831897722 0 -0.075 0.03634884788 0 -0.09853407813"/>
+                fromto="0.03831897722 0 -0.075 0.03706846409 0 -0.09377366594"/>
           <geom name="front_shank_shell_04" class="rolling_shell"
-                fromto="0.03634884788 0 -0.09853407813 0.03049330231 0 -0.1214130385"/>
+                fromto="0.03706846409 0 -0.09377366594 0.03333902023 0 -0.1122156171"/>
           <geom name="front_shank_shell_05" class="rolling_shell"
-                fromto="0.03049330231 0 -0.1214130385 0.02091534125 0 -0.143"/>
+                fromto="0.03333902023 0 -0.1122156171 0.02719654173 0 -0.13"/>
           <geom name="front_foot_proxy" type="sphere" class="structure_collision"
                 pos="0 0 -0.15"
                 size="0.01995"
@@ -220,17 +220,17 @@
               size="0.012"
               rgba="0.84 0.24 0.18 1"/>
         <geom name="rear_thigh_shell_00" class="rolling_shell"
-              fromto="-0.02091534125 0 -0.007 -0.03049330231 0 -0.02858696146"/>
+              fromto="-0.02719654173 0 -0.02 -0.03333902023 0 -0.03778438286"/>
         <geom name="rear_thigh_shell_01" class="rolling_shell"
-              fromto="-0.03049330231 0 -0.02858696146 -0.03634884788 0 -0.05146592187"/>
+              fromto="-0.03333902023 0 -0.03778438286 -0.03706846409 0 -0.05622633406"/>
         <geom name="rear_thigh_shell_02" class="rolling_shell"
-              fromto="-0.03634884788 0 -0.05146592187 -0.03831897722 0 -0.075"/>
+              fromto="-0.03706846409 0 -0.05622633406 -0.03831897722 0 -0.075"/>
         <geom name="rear_thigh_shell_03" class="rolling_shell"
-              fromto="-0.03831897722 0 -0.075 -0.03634884788 0 -0.09853407813"/>
+              fromto="-0.03831897722 0 -0.075 -0.03706846409 0 -0.09377366594"/>
         <geom name="rear_thigh_shell_04" class="rolling_shell"
-              fromto="-0.03634884788 0 -0.09853407813 -0.03049330231 0 -0.1214130385"/>
+              fromto="-0.03706846409 0 -0.09377366594 -0.03333902023 0 -0.1122156171"/>
         <geom name="rear_thigh_shell_05" class="rolling_shell"
-              fromto="-0.03049330231 0 -0.1214130385 -0.02091534125 0 -0.143"/>
+              fromto="-0.03333902023 0 -0.1122156171 -0.02719654173 0 -0.13"/>
         <site name="rear_hip_site" type="sphere" size="0.006"
               rgba="1 0.85 0.1 1"/>
         <site name="rear_thigh_com" type="sphere"
@@ -248,17 +248,17 @@
                 size="0.01"
                 rgba="0.94 0.55 0.16 1"/>
           <geom name="rear_shank_shell_00" class="rolling_shell"
-                fromto="-0.02091534125 0 -0.007 -0.03049330231 0 -0.02858696146"/>
+                fromto="-0.02719654173 0 -0.02 -0.03333902023 0 -0.03778438286"/>
           <geom name="rear_shank_shell_01" class="rolling_shell"
-                fromto="-0.03049330231 0 -0.02858696146 -0.03634884788 0 -0.05146592187"/>
+                fromto="-0.03333902023 0 -0.03778438286 -0.03706846409 0 -0.05622633406"/>
           <geom name="rear_shank_shell_02" class="rolling_shell"
-                fromto="-0.03634884788 0 -0.05146592187 -0.03831897722 0 -0.075"/>
+                fromto="-0.03706846409 0 -0.05622633406 -0.03831897722 0 -0.075"/>
           <geom name="rear_shank_shell_03" class="rolling_shell"
-                fromto="-0.03831897722 0 -0.075 -0.03634884788 0 -0.09853407813"/>
+                fromto="-0.03831897722 0 -0.075 -0.03706846409 0 -0.09377366594"/>
           <geom name="rear_shank_shell_04" class="rolling_shell"
-                fromto="-0.03634884788 0 -0.09853407813 -0.03049330231 0 -0.1214130385"/>
+                fromto="-0.03706846409 0 -0.09377366594 -0.03333902023 0 -0.1122156171"/>
           <geom name="rear_shank_shell_05" class="rolling_shell"
-                fromto="-0.03049330231 0 -0.1214130385 -0.02091534125 0 -0.143"/>
+                fromto="-0.03333902023 0 -0.1122156171 -0.02719654173 0 -0.13"/>
           <geom name="rear_foot_proxy" type="sphere" class="structure_collision"
                 pos="0 0 -0.15"
                 size="0.01995"
@@ -290,16 +290,16 @@
   <actuator>
     <general name="front_hip_servo" joint="front_hip"
              class="paired_servo"
-             ctrlrange="-1.12 1.570796327"/>
+             ctrlrange="-1.12 2.41"/>
     <general name="front_knee_servo" joint="front_knee"
              class="paired_servo"
-             ctrlrange="0 2.69"/>
+             ctrlrange="-0.61 2.69"/>
     <general name="rear_hip_servo" joint="rear_hip"
              class="paired_servo"
-             ctrlrange="-1.12 1.570796327"/>
+             ctrlrange="-1.12 2.41"/>
     <general name="rear_knee_servo" joint="rear_knee"
              class="paired_servo"
-             ctrlrange="0 2.69"/>
+             ctrlrange="-0.61 2.69"/>
   </actuator>
 
   <!--
@@ -343,6 +343,13 @@
     <key name="open"
          qpos="0 0.31995 0 0 0 0 0"
          ctrl="0 0 0 0"/>
+    <!--
+      二维行走检查姿态：前足支撑，后足摆动。它只用于验证展开后的
+      外壳间隙与足端工作区，不代表固定的行走控制轨迹。
+    -->
+    <key name="walk"
+         qpos="0 0.308693622 0 0.35 0.52 0.35 0.78"
+         ctrl="0.35 0.52 0.35 0.78"/>
     <!--
       等边 compact 姿态：
         hip 固定为 18 度；

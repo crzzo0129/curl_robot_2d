@@ -14,7 +14,11 @@ MODEL_PATH = PROJECT_ROOT / "assets" / "curl_robot_2d.xml"
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--keyframe", choices=("open", "compact"), default="compact")
+    parser.add_argument(
+        "--keyframe",
+        choices=("open", "walk", "compact"),
+        default="compact",
+    )
     parser.add_argument(
         "--simulate",
         action="store_true",
