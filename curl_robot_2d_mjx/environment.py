@@ -612,6 +612,9 @@ def make_brax_env(
                     "mismatch_progress": mismatch_progress,
                     "backward": backward,
                     "action_rate": action_rate,
+                    "residual_action_cost": jp.mean(
+                        jp.square(policy_action)
+                    ),
                     "torque_cost": torque_cost,
                     "airborne": airborne,
                     "foot_distance": foot_distance,

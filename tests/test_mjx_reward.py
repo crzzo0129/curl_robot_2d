@@ -27,6 +27,7 @@ def zero_inputs():
         "mismatch_progress": zero,
         "backward": zero,
         "action_rate": zero,
+        "residual_action_cost": zero,
         "torque_cost": zero,
         "airborne": zero,
         "foot_distance": zero,
@@ -112,6 +113,20 @@ class MJXRewardTest(unittest.TestCase):
             float(terms["termination"]), -config.termination
         )
         self.assertAlmostEqual(float(terms["collision"]), 0.0)
+
+    def test_residual_action_cost_is_explicit_and_optional(self) -> None:
+        inputs = zero_inputs()
+        inputs["residual_action_cost"] = np.asarray(0.25, dtype=np.float32)
+
+        default_term = reward_terms(
+            np, RollingRewardConfig(), inputs
+        )["residual_action"]
+        penalized_term = reward_terms(
+            np, RollingRewardConfig(residual_action=0.1), inputs
+        )["residual_action"]
+
+        self.assertEqual(float(default_term), 0.0)
+        self.assertAlmostEqual(float(penalized_term), -0.025)
 
     def test_early_failure_penalty_decays_with_remaining_length(self) -> None:
         config = RollingRewardConfig(

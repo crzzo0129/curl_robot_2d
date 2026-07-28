@@ -297,7 +297,11 @@ def _format_eval_report(
         ),
         (
             "control ",
-            (("action", "action_rate"), ("torque", "torque")),
+            (
+                ("action", "action_rate"),
+                ("residual", "residual_action"),
+                ("torque", "torque"),
+            ),
         ),
         (
             "safety  ",

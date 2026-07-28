@@ -14,6 +14,7 @@ class RollingRewardConfig:
     roll_mismatch: float = 0.5
     backward: float = 2.0
     action_rate: float = 0.02
+    residual_action: float = 0.0
     torque: float = 0.01
     airborne: float = 0.15
     foot_gap: float = 5.0

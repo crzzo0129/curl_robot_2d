@@ -164,6 +164,10 @@ action = clip(CEM_action + residual_scale * policy_action)
 residual_scale = 0.05 -> 0.10 -> 0.20 -> 0.30
 ```
 
+可通过 `--reward-residual-action` 对 raw policy residual 的均方幅度收费。默认
+值为零以保持旧实验不变；retained-CEM 训练建议从 `0.05` 开始，使策略只有在
+改善扰动恢复的收益超过介入代价时才修改 CEM。
+
 该模式最终仍使用碰撞约束 CEM，RL 负责修正初始状态扰动、接触偏差，并为后续
 terrain 和 model randomization 留出控制权。它不会执行或评价零 reference。
 
@@ -184,6 +188,7 @@ python -m scripts.train_mjx_residual_ppo \
   --entropy-cost 1e-3 \
   --discounting 0.995 \
   --reward-roll-progress 15 \
+  --reward-residual-action 0.05 \
   --reward-termination 10 \
   --reward-early-termination-scale 1 \
   --seed 0 \

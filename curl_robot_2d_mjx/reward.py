@@ -10,6 +10,7 @@ REWARD_TERM_NAMES = (
     "roll_mismatch",
     "backward",
     "action_rate",
+    "residual_action",
     "torque",
     "airborne",
     "foot_gap",
@@ -58,6 +59,9 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
         ),
         "backward": -config.backward * inputs["backward"],
         "action_rate": -config.action_rate * inputs["action_rate"],
+        "residual_action": (
+            -config.residual_action * inputs["residual_action_cost"]
+        ),
         "torque": -config.torque * inputs["torque_cost"],
         "airborne": -config.airborne * inputs["airborne"],
         "foot_gap": (
