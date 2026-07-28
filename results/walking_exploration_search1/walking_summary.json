@@ -1,0 +1,156 @@
+{
+  "controller": {
+    "body_height_m": 0.2798557366261946,
+    "step_length_m": 0.10133322889092361,
+    "foot_lift_m": 0.01,
+    "frequency_hz": 1.7832009465217502,
+    "duty_factor": 0.6623421344211572,
+    "pitch_kp_m_per_rad": 0.03092638793803274,
+    "pitch_kd_m_s_per_rad": 0.016683272270604232,
+    "velocity_gain_s": 0.007792370529347585
+  },
+  "score": 11.565804308839791,
+  "summary": {
+    "duration_s": 2.902,
+    "requested_duration_s": 8.0,
+    "survival_fraction": 0.36275,
+    "failed": true,
+    "root_x_displacement_m": 0.330374328573817,
+    "mean_velocity_m_s": 0.1138436693913911,
+    "forward_travel_m": 0.33770977768796256,
+    "backward_travel_m": 0.007335449114145395,
+    "minimum_root_z_m": 0.24800025252332802,
+    "maximum_root_z_m": 0.3054191624970499,
+    "maximum_abs_pitch_rad": 0.8054830997016161,
+    "foot_contact_fraction": 0.9989662301860786,
+    "double_support_fraction": 0.8314955203308063,
+    "airborne_fraction": 0.0010337698139214334,
+    "nonfoot_ground_fraction": 0.0,
+    "self_contact_fraction": 0.006891798759476223,
+    "torque_saturation_fraction": 0.002067539627842867,
+    "desired_speed_m_s": 0.18069750967240014
+  },
+  "search_history": [
+    {
+      "generation": 0.0,
+      "generation_best_score": 15.685844973925905,
+      "global_best_score": 15.685844973925905,
+      "generation_best_displacement_m": 0.171534435890161,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 7.312801240891927,
+      "population_std_score": 5.6875760620600895
+    },
+    {
+      "generation": 1.0,
+      "generation_best_score": 17.682157017643092,
+      "global_best_score": 17.682157017643092,
+      "generation_best_displacement_m": 0.32270317009979105,
+      "generation_best_survival_fraction": 0.9466666666666667,
+      "population_mean_score": 7.0551655778244,
+      "population_std_score": 6.991177125440397
+    },
+    {
+      "generation": 2.0,
+      "generation_best_score": 17.682157017643092,
+      "global_best_score": 17.682157017643092,
+      "generation_best_displacement_m": 0.32270317009979105,
+      "generation_best_survival_fraction": 0.9466666666666667,
+      "population_mean_score": 9.286823538651012,
+      "population_std_score": 7.22981385317791
+    },
+    {
+      "generation": 3.0,
+      "generation_best_score": 17.682157017643092,
+      "global_best_score": 17.682157017643092,
+      "generation_best_displacement_m": 0.32270317009979105,
+      "generation_best_survival_fraction": 0.9466666666666667,
+      "population_mean_score": 11.586533445434444,
+      "population_std_score": 5.396830816524583
+    },
+    {
+      "generation": 4.0,
+      "generation_best_score": 17.682157017643092,
+      "global_best_score": 17.682157017643092,
+      "generation_best_displacement_m": 0.32270317009979105,
+      "generation_best_survival_fraction": 0.9466666666666667,
+      "population_mean_score": 12.369211128756149,
+      "population_std_score": 4.204677610491757
+    },
+    {
+      "generation": 5.0,
+      "generation_best_score": 18.786634645543465,
+      "global_best_score": 18.786634645543465,
+      "generation_best_displacement_m": 0.3034442536531029,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 13.796893074624709,
+      "population_std_score": 2.2694102532330223
+    },
+    {
+      "generation": 6.0,
+      "generation_best_score": 18.786634645543465,
+      "global_best_score": 18.786634645543465,
+      "generation_best_displacement_m": 0.3034442536531029,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 13.801856133568464,
+      "population_std_score": 2.4517574569275835
+    },
+    {
+      "generation": 7.0,
+      "generation_best_score": 18.820804308839797,
+      "global_best_score": 18.820804308839797,
+      "generation_best_displacement_m": 0.330374328573817,
+      "generation_best_survival_fraction": 0.9673333333333334,
+      "population_mean_score": 14.237398745059746,
+      "population_std_score": 2.160862245375574
+    },
+    {
+      "generation": 8.0,
+      "generation_best_score": 18.820804308839797,
+      "global_best_score": 18.820804308839797,
+      "generation_best_displacement_m": 0.330374328573817,
+      "generation_best_survival_fraction": 0.9673333333333334,
+      "population_mean_score": 14.855417252954316,
+      "population_std_score": 1.9136217415989816
+    },
+    {
+      "generation": 9.0,
+      "generation_best_score": 18.820804308839797,
+      "global_best_score": 18.820804308839797,
+      "generation_best_displacement_m": 0.330374328573817,
+      "generation_best_survival_fraction": 0.9673333333333334,
+      "population_mean_score": 14.293548025524057,
+      "population_std_score": 2.187374651090343
+    },
+    {
+      "generation": 10.0,
+      "generation_best_score": 18.820804308839797,
+      "global_best_score": 18.820804308839797,
+      "generation_best_displacement_m": 0.330374328573817,
+      "generation_best_survival_fraction": 0.9673333333333334,
+      "population_mean_score": 15.152940975805791,
+      "population_std_score": 2.1429570318566387
+    },
+    {
+      "generation": 11.0,
+      "generation_best_score": 18.820804308839797,
+      "global_best_score": 18.820804308839797,
+      "generation_best_displacement_m": 0.330374328573817,
+      "generation_best_survival_fraction": 0.9673333333333334,
+      "population_mean_score": 15.406774430905534,
+      "population_std_score": 2.0785660076187535
+    }
+  ],
+  "diagnostic_columns": [
+    "time_s",
+    "root_x_m",
+    "root_z_m",
+    "root_pitch_rad",
+    "root_velocity_m_s",
+    "root_pitch_rate_rad_s",
+    "foot_contact_count",
+    "nonfoot_ground_contact_count",
+    "self_contact_count",
+    "front_planned_stance",
+    "rear_planned_stance"
+  ]
+}

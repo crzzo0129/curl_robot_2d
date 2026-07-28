@@ -1,0 +1,47 @@
+{
+  "controller": {
+    "body_height_m": 0.25,
+    "step_length_m": 0.07,
+    "foot_lift_m": 0.035,
+    "frequency_hz": 1.4,
+    "duty_factor": 0.64,
+    "pitch_kp_m_per_rad": 0.035,
+    "pitch_kd_m_s_per_rad": 0.008,
+    "velocity_gain_s": 0.03
+  },
+  "score": 7.061201252544719,
+  "summary": {
+    "duration_s": 1.613,
+    "requested_duration_s": 4.0,
+    "survival_fraction": 0.40325,
+    "failed": true,
+    "root_x_displacement_m": 0.23242861126748116,
+    "mean_velocity_m_s": 0.1440970931602487,
+    "forward_travel_m": 0.25626256219647103,
+    "backward_travel_m": 0.023833950928989996,
+    "minimum_root_z_m": 0.2202808661842311,
+    "maximum_root_z_m": 0.27525981999293175,
+    "maximum_abs_pitch_rad": 0.8004042821269118,
+    "foot_contact_fraction": 0.8295102293862369,
+    "double_support_fraction": 0.6540607563546187,
+    "airborne_fraction": 0.17048977061376316,
+    "nonfoot_ground_fraction": 0.2411655300681959,
+    "self_contact_fraction": 0.0,
+    "torque_saturation_fraction": 0.0,
+    "desired_speed_m_s": 0.098
+  },
+  "search_history": [],
+  "diagnostic_columns": [
+    "time_s",
+    "root_x_m",
+    "root_z_m",
+    "root_pitch_rad",
+    "root_velocity_m_s",
+    "root_pitch_rate_rad_s",
+    "foot_contact_count",
+    "nonfoot_ground_contact_count",
+    "self_contact_count",
+    "front_planned_stance",
+    "rear_planned_stance"
+  ]
+}

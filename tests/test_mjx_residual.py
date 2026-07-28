@@ -13,6 +13,7 @@ from curl_robot_2d_mjx.cem_reference import (
     reference_action,
 )
 from scripts.train_mjx_residual_ppo import (
+    _eval_visualization_dir,
     _exact_stage_eval_schedule,
     _gate_assessment,
 )
@@ -30,6 +31,9 @@ class MJXResidualTest(unittest.TestCase):
         self.assertAlmostEqual(
             reference.oscillator_coupling_per_s, 4.864379682159608
         )
+        self.assertAlmostEqual(reference.with_weight(1.0).residual_gain, 0.05)
+        self.assertAlmostEqual(reference.with_weight(0.5).residual_gain, 0.525)
+        self.assertAlmostEqual(reference.with_weight(0.0).residual_gain, 1.0)
 
     def test_residual_authority_increases_as_reference_recedes(self) -> None:
         reference = load_cem_reference(
@@ -137,6 +141,18 @@ class MJXResidualTest(unittest.TestCase):
         self.assertTrue(pass_result["passed"])
         self.assertFalse(fail_result["passed"])
         self.assertFalse(fail_result["checks"]["failure_rate"])
+
+    def test_eval_visualization_path_identifies_policy(self) -> None:
+        path = _eval_visualization_dir(
+            Path("results/run"), 3, 1_048_576, 0.5
+        )
+
+        self.assertEqual(
+            path,
+            Path("results/run")
+            / "eval_visualizations"
+            / "eval_003_step_001048576_ref_0p50",
+        )
 
     def test_environment_keeps_reference_optional(self) -> None:
         source = (

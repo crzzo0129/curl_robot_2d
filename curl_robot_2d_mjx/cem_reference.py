@@ -37,7 +37,7 @@ class CEMReferenceConfig:
     oscillator_rate_rad_s: float
     oscillator_coupling_per_s: float
     reference_weight: float = 1.0
-    minimum_residual_gain: float = 0.25
+    minimum_residual_gain: float = 0.05
     source: str = ""
 
     def with_weight(self, weight: float) -> "CEMReferenceConfig":
@@ -66,7 +66,7 @@ def load_cem_reference(
     path: Path = DEFAULT_CEM_CONTROLLER,
     *,
     reference_weight: float = 1.0,
-    minimum_residual_gain: float = 0.25,
+    minimum_residual_gain: float = 0.05,
 ) -> CEMReferenceConfig:
     """Load the frozen CEM phase-locked oscillator from its JSON artifact."""
 

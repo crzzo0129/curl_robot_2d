@@ -133,6 +133,18 @@ def _validate_weights(parser, weights):
         parser.error("--reference-weights must be strictly decreasing")
 
 
+def _eval_visualization_dir(output_dir, eval_index, step, weight):
+    weight_label = f"{weight:.2f}".replace(".", "p")
+    return (
+        Path(output_dir)
+        / "eval_visualizations"
+        / (
+            f"eval_{eval_index:03d}_step_{step:09d}_"
+            f"ref_{weight_label}"
+        )
+    )
+
+
 def _parse_args():
     parser = argparse.ArgumentParser()
     parser.add_argument("--preset", choices=tuple(PRESETS), default="h200")
@@ -169,7 +181,7 @@ def _parse_args():
         nargs="+",
         default=[1.0, 0.5, 0.0],
     )
-    parser.add_argument("--minimum-residual-gain", type=float, default=0.25)
+    parser.add_argument("--minimum-residual-gain", type=float, default=0.05)
     parser.add_argument("--minimum-stage-steps", type=int, default=500_000)
     parser.add_argument("--gate-check-steps", type=int, default=500_000)
     parser.add_argument("--gate-min-survival", type=float, default=0.80)
@@ -308,6 +320,7 @@ def main() -> None:
     final_metrics = {}
     history = []
     stage_history = []
+    eval_visualizations = []
     eval_counter = 0
     best_zero = {"score": float("-inf"), "step": None, "params": None}
     zero_reference_steps = 0
@@ -335,9 +348,13 @@ def main() -> None:
         stage = {
             "local_step": 0,
             "params": restored_params,
+            "params_step": None,
             "make_inference_fn": None,
             "last_metrics": {},
             "gate": None,
+            "eval_index": 0,
+            "eval_records": {},
+            "visualized_steps": set(),
         }
         stage_start = consumed_steps
         print(
@@ -349,10 +366,78 @@ def main() -> None:
             flush=True,
         )
 
+        def visualize_eval(local_step):
+            if args.skip_visualization:
+                return
+            local_step = int(local_step)
+            record = stage["eval_records"].get(local_step)
+            if (
+                record is None
+                or local_step in stage["visualized_steps"]
+                or stage["params_step"] != local_step
+                or stage["params"] is None
+                or stage["make_inference_fn"] is None
+            ):
+                return
+            stage["visualized_steps"].add(local_step)
+            output_dir = _eval_visualization_dir(
+                args.out,
+                record["global_eval"],
+                record["global_step"],
+                weight,
+            )
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+                model_io.save_params(output_dir / "params", stage["params"])
+                rollout = _evaluate_policy(
+                    eval_env,
+                    stage["make_inference_fn"],
+                    stage["params"],
+                    seed=args.seed + 30_000 + record["global_eval"],
+                    episode_length=args.episode_length,
+                    output_dir=output_dir,
+                )
+                from scripts.render_mjx_policy import render_rollout
+
+                gif_path = output_dir / "policy_rollout.gif"
+                render_rollout(
+                    output_dir / "evaluation_rollout.npz",
+                    gif_path,
+                    control_dt=task.control_timestep,
+                    fps=20,
+                    width=640,
+                    height=480,
+                    camera_distance=0.75,
+                    diagnostics=args.visualization_diagnostics,
+                )
+                record["visualization"] = {
+                    "output_dir": str(output_dir),
+                    "gif": str(gif_path),
+                    "rollout": rollout,
+                }
+                print(
+                    f"[eval visualization {record['global_eval']}]\n"
+                    f"  step={record['global_step']:,} "
+                    f"ref={weight:.2f}\n"
+                    f"  gif={gif_path.resolve()}",
+                    flush=True,
+                )
+            except Exception as exc:
+                record["visualization_error"] = str(exc)
+                print(
+                    f"[eval visualization warning "
+                    f"{record['global_eval']}]\n"
+                    f"  step={record['global_step']:,} "
+                    f"ref={weight:.2f} error={exc}",
+                    flush=True,
+                )
+
         def policy_params_fn(local_step, make_policy, params):
             stage["local_step"] = int(local_step)
             stage["params"] = params
+            stage["params_step"] = int(local_step)
             stage["make_inference_fn"] = make_policy
+            visualize_eval(local_step)
 
         def progress_fn(local_step, metrics):
             nonlocal eval_counter, zero_reference_gate_passed
@@ -372,6 +457,7 @@ def main() -> None:
             stage["local_step"] = int(local_step)
             stage["last_metrics"] = clean
             stage["gate"] = gate
+            stage["eval_index"] += 1
             reward_metrics, ordinary_metrics = _split_metrics(clean)
             history.append(
                 {
@@ -396,10 +482,19 @@ def main() -> None:
                 best_zero["step"] = global_step
                 best_zero["params"] = stage["params"]
             eval_counter += 1
+            eval_record = {
+                "global_eval": eval_counter,
+                "global_step": global_step,
+                "stage_index": stage_index,
+                "stage_eval_index": stage["eval_index"],
+                "reference_weight": weight,
+            }
+            stage["eval_records"][int(local_step)] = eval_record
+            eval_visualizations.append(eval_record)
             print(
                 _format_eval_report(
-                    eval_counter,
-                    "?",
+                    stage["eval_index"],
+                    stage_schedule["num_evals"],
                     global_step,
                     clean,
                     episode_length=args.episode_length,
@@ -416,14 +511,19 @@ def main() -> None:
                 f"ref_rms="
                 f"{clean.get('eval/avg_reference_action_rms', 0.0):.3f} "
                 f"policy_rms="
-                f"{clean.get('eval/avg_residual_action_rms', 0.0):.3f}",
+                f"{clean.get('eval/avg_residual_action_rms', 0.0):.3f} "
+                f"effective_residual_rms="
+                f"{reference.residual_gain * clean.get('eval/avg_residual_action_rms', 0.0):.3f}",
                 flush=True,
             )
+            visualize_eval(local_step)
             failed_checks = [
                 name for name, passed in gate["checks"].items() if not passed
             ]
             print(
                 "  curriculum "
+                f"global_eval={eval_counter} "
+                f"stage={stage_index + 1}/{len(args.reference_weights)} "
                 f"ref={weight:.2f} local_steps={int(local_step):,} "
                 f"gate={'PASS' if gate['passed'] else 'WAIT'} "
                 f"missing={','.join(failed_checks) or 'none'}",
@@ -468,6 +568,7 @@ def main() -> None:
                 num_minibatches=values["num_minibatches"],
                 num_updates_per_batch=values["updates_per_batch"],
                 normalize_observations=True,
+                deterministic_eval=True,
                 network_factory=_network_factory(
                     args.hidden_layers, args.activation
                 ),
@@ -555,6 +656,10 @@ def main() -> None:
     }
     (args.out / "curriculum_history.json").write_text(
         json.dumps(history, indent=2) + "\n", encoding="utf-8"
+    )
+    (args.out / "eval_visualizations.json").write_text(
+        json.dumps(eval_visualizations, indent=2) + "\n",
+        encoding="utf-8",
     )
     (args.out / "training_summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"

@@ -27,12 +27,13 @@ residual_gain =
     + (1 - reference_weight) * (1 - minimum_residual_gain)
 ```
 
-默认 `minimum_residual_gain=0.25`：
+默认 `minimum_residual_gain=0.05`。第一阶段只开放很小的 residual，优先保留
+CEM 已验证的滚动；reference 降低后再快速增加策略控制权：
 
 | 阶段 | reference weight | residual gain |
 |---|---:|---:|
-| 1 | 1.0 | 0.250 |
-| 2 | 0.5 | 0.625 |
+| 1 | 1.0 | 0.050 |
+| 2 | 0.5 | 0.525 |
 | 3 | 0.0 | 1.000 |
 
 最后阶段的 CEM action 和 oscillator 特征在 observation 中也会乘以零。因此
@@ -76,6 +77,7 @@ python -m scripts.train_mjx_residual_ppo \
   --physics-profile cg12 \
   --controller results/collision_constrained_cem/best_phase_controller.json \
   --reference-weights 1.0 0.5 0.0 \
+  --minimum-residual-gain 0.05 \
   --minimum-stage-steps 500000 \
   --gate-check-steps 500000 \
   --gate-min-survival 0.80 \
@@ -102,6 +104,9 @@ python -m scripts.train_mjx_residual_ppo \
 - `params_stage_*_final`：每个实际训练阶段结束时的参数；
 - `params_final`：预算结束时的策略；
 - `params_best_zero_reference`：仅从 reference 为零的 eval 中选择；
+- `eval_visualizations/`：每个 eval 独立保存当时的参数、确定性 rollout、
+  summary 和 GIF，目录名包含全局 eval 编号、step 与 reference 权重；
+- `eval_visualizations.json`：全部 eval 可视化的路径、结果或失败原因索引；
 - `evaluation_zero_reference/`：强制使用 reference 为零的确定性回放与 GIF。
 
 阶段切换保留 observation normalizer、policy 和 value 参数。Brax 的公开

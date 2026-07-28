@@ -1,0 +1,213 @@
+{
+  "controller": {
+    "body_height_m": 0.27980397412821933,
+    "step_length_m": 0.06926012060168348,
+    "foot_lift_m": 0.013117091022120646,
+    "frequency_hz": 2.1056595352035994,
+    "duty_factor": 0.5863518160890011,
+    "pitch_kp_m_per_rad": 0.04947186482370336,
+    "pitch_kd_m_s_per_rad": 0.021982335972434864,
+    "velocity_gain_s": 0.0
+  },
+  "score": 17.684864941127557,
+  "summary": {
+    "duration_s": 8.038,
+    "requested_duration_s": 12.0,
+    "survival_fraction": 0.6698333333333334,
+    "failed": true,
+    "root_x_displacement_m": 0.32571237301878875,
+    "mean_velocity_m_s": 0.04052156917377317,
+    "forward_travel_m": 0.3669977534264329,
+    "backward_travel_m": 0.04128538040764336,
+    "minimum_root_z_m": 0.22468686226194215,
+    "maximum_root_z_m": 0.3036634523155551,
+    "maximum_abs_pitch_rad": 0.8019378519399716,
+    "foot_contact_fraction": 0.9980094550883304,
+    "double_support_fraction": 0.918138840507589,
+    "airborne_fraction": 0.0019905449116695696,
+    "nonfoot_ground_fraction": 0.0018661358546902215,
+    "self_contact_fraction": 0.005473998507091316,
+    "torque_saturation_fraction": 0.0,
+    "desired_speed_m_s": 0.14583823335428606
+  },
+  "search_history": [
+    {
+      "generation": 0.0,
+      "stage": 0.0,
+      "rollout_duration_s": 2.6666666666666665,
+      "generation_best_score": 39.17172654052222,
+      "global_best_score": 39.17172654052222,
+      "generation_best_displacement_m": 0.24394835759892816,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 22.040197047330928,
+      "population_std_score": 12.01830992731172
+    },
+    {
+      "generation": 1.0,
+      "stage": 0.0,
+      "rollout_duration_s": 2.6666666666666665,
+      "generation_best_score": 39.17172654052222,
+      "global_best_score": 39.17172654052222,
+      "generation_best_displacement_m": 0.24394835759892816,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 22.813019484231297,
+      "population_std_score": 11.349875190423578
+    },
+    {
+      "generation": 2.0,
+      "stage": 0.0,
+      "rollout_duration_s": 2.6666666666666665,
+      "generation_best_score": 39.34681685341923,
+      "global_best_score": 39.34681685341923,
+      "generation_best_displacement_m": 0.29048232895970416,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 29.862462096315436,
+      "population_std_score": 8.915498416672024
+    },
+    {
+      "generation": 3.0,
+      "stage": 0.0,
+      "rollout_duration_s": 2.6666666666666665,
+      "generation_best_score": 39.34681685341923,
+      "global_best_score": 39.34681685341923,
+      "generation_best_displacement_m": 0.29048232895970416,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 25.343597003969585,
+      "population_std_score": 10.052542878883145
+    },
+    {
+      "generation": 4.0,
+      "stage": 0.0,
+      "rollout_duration_s": 2.6666666666666665,
+      "generation_best_score": 39.44656184698469,
+      "global_best_score": 39.44656184698469,
+      "generation_best_displacement_m": 0.21052449235117737,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 26.282518083785863,
+      "population_std_score": 9.543084107342771
+    },
+    {
+      "generation": 5.0,
+      "stage": 1.0,
+      "rollout_duration_s": 5.333333333333333,
+      "generation_best_score": 35.14553852829948,
+      "global_best_score": 35.14553852829948,
+      "generation_best_displacement_m": 0.021639949901389892,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 17.06454498503184,
+      "population_std_score": 6.651338365048712
+    },
+    {
+      "generation": 6.0,
+      "stage": 1.0,
+      "rollout_duration_s": 5.333333333333333,
+      "generation_best_score": 37.64097140488003,
+      "global_best_score": 37.64097140488003,
+      "generation_best_displacement_m": 0.13510880523151633,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 18.476505236208613,
+      "population_std_score": 7.778756451994297
+    },
+    {
+      "generation": 7.0,
+      "stage": 1.0,
+      "rollout_duration_s": 5.333333333333333,
+      "generation_best_score": 39.07976875096613,
+      "global_best_score": 39.07976875096613,
+      "generation_best_displacement_m": 0.20790110516217086,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 21.787406612329306,
+      "population_std_score": 9.600813750308303
+    },
+    {
+      "generation": 8.0,
+      "stage": 1.0,
+      "rollout_duration_s": 5.333333333333333,
+      "generation_best_score": 39.07976875096613,
+      "global_best_score": 39.07976875096613,
+      "generation_best_displacement_m": 0.20790110516217086,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 26.667680830912968,
+      "population_std_score": 9.159958559122726
+    },
+    {
+      "generation": 9.0,
+      "stage": 1.0,
+      "rollout_duration_s": 5.333333333333333,
+      "generation_best_score": 39.07976875096613,
+      "global_best_score": 39.07976875096613,
+      "generation_best_displacement_m": 0.20790110516217086,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 21.857942777538575,
+      "population_std_score": 7.361031921296376
+    },
+    {
+      "generation": 10.0,
+      "stage": 2.0,
+      "rollout_duration_s": 8.0,
+      "generation_best_score": 36.64418842389829,
+      "global_best_score": 36.64418842389829,
+      "generation_best_displacement_m": 0.09253623253611787,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 21.201526902572873,
+      "population_std_score": 9.201290325010543
+    },
+    {
+      "generation": 11.0,
+      "stage": 2.0,
+      "rollout_duration_s": 8.0,
+      "generation_best_score": 39.123444738361236,
+      "global_best_score": 39.123444738361236,
+      "generation_best_displacement_m": 0.2905575264425447,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 23.876678503141513,
+      "population_std_score": 9.475092126006055
+    },
+    {
+      "generation": 12.0,
+      "stage": 2.0,
+      "rollout_duration_s": 8.0,
+      "generation_best_score": 39.123444738361236,
+      "global_best_score": 39.123444738361236,
+      "generation_best_displacement_m": 0.2905575264425447,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 25.316877138995,
+      "population_std_score": 9.898492577298331
+    },
+    {
+      "generation": 13.0,
+      "stage": 2.0,
+      "rollout_duration_s": 8.0,
+      "generation_best_score": 39.123444738361236,
+      "global_best_score": 39.123444738361236,
+      "generation_best_displacement_m": 0.2905575264425447,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 23.961078442334895,
+      "population_std_score": 9.273192821799553
+    },
+    {
+      "generation": 14.0,
+      "stage": 2.0,
+      "rollout_duration_s": 8.0,
+      "generation_best_score": 39.123444738361236,
+      "global_best_score": 39.123444738361236,
+      "generation_best_displacement_m": 0.2905575264425447,
+      "generation_best_survival_fraction": 1.0,
+      "population_mean_score": 27.48439629808472,
+      "population_std_score": 9.283936477760413
+    }
+  ],
+  "diagnostic_columns": [
+    "time_s",
+    "root_x_m",
+    "root_z_m",
+    "root_pitch_rad",
+    "root_velocity_m_s",
+    "root_pitch_rate_rad_s",
+    "foot_contact_count",
+    "nonfoot_ground_contact_count",
+    "self_contact_count",
+    "front_planned_stance",
+    "rear_planned_stance"
+  ]
+}
