@@ -12,6 +12,8 @@ from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 from scripts.train_mjx_ppo import (
     _add_reward_arguments,
     _add_per_step_eval_metrics,
+    _checkpoint_selection,
+    _format_eval_report,
     _reward_config_from_args,
     _split_metrics,
 )
@@ -21,7 +23,7 @@ def zero_inputs():
     zero = np.asarray(0.0, dtype=np.float32)
     return {
         "conservative_progress": zero,
-        "mismatch": zero,
+        "mismatch_progress": zero,
         "backward": zero,
         "action_rate": zero,
         "torque_cost": zero,
@@ -51,6 +53,23 @@ class MJXRewardTest(unittest.TestCase):
 
         np.testing.assert_allclose(progress, np.asarray([0.0, 0.1]))
         self.assertAlmostEqual(float(np.sum(progress)), 0.1)
+
+    def test_cumulative_mismatch_is_repaid_when_motion_catches_up(
+        self,
+    ) -> None:
+        config = RollingRewardConfig()
+        phase = np.asarray([0.0, 0.1, 0.1], dtype=np.float32)
+        translation = np.asarray([0.0, 0.0, 0.1], dtype=np.float32)
+        mismatch_potential = np.abs(phase - translation)
+        mismatch_progress = np.diff(mismatch_potential)
+        rewards = []
+        for progress in mismatch_progress:
+            inputs = zero_inputs()
+            inputs["mismatch_progress"] = progress
+            rewards.append(reward_terms(np, config, inputs)["roll_mismatch"])
+
+        np.testing.assert_allclose(rewards, np.asarray([-0.05, 0.05]))
+        self.assertAlmostEqual(float(np.sum(rewards)), 0.0)
 
     def test_cli_can_override_reward_without_changing_source_defaults(
         self,
@@ -126,6 +145,81 @@ class MJXRewardTest(unittest.TestCase):
         )
         self.assertEqual(ordinary["eval/avg_root_height_m"], 0.2)
         self.assertNotIn("eval/episode_reward", ordinary)
+
+    def test_checkpoint_selection_prefers_physical_progress_and_survival(
+        self,
+    ) -> None:
+        short_backward = {
+            "eval/avg_episode_length": 60.0,
+            "eval/episode_failed": 1.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_roll_progress_rad": -0.5,
+            "eval/avg_forbidden_penetration_m": 0.0,
+        }
+        longer_forward = {
+            "eval/avg_episode_length": 300.0,
+            "eval/episode_failed": 1.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_roll_progress_rad": 2.0,
+            "eval/avg_forbidden_penetration_m": 0.0,
+        }
+
+        short_score = _checkpoint_selection(short_backward, 500)
+        longer_score = _checkpoint_selection(longer_forward, 500)
+
+        self.assertGreater(longer_score["score"], short_score["score"])
+        self.assertGreater(longer_score["turns"], 0.0)
+        self.assertFalse(longer_score["rejected"])
+
+    def test_checkpoint_selection_rejects_nonfinite_policy(self) -> None:
+        metrics = {
+            "eval/avg_episode_length": 500.0,
+            "eval/episode_failed": 0.0,
+            "eval/episode_failure_nonfinite": 0.1,
+            "eval/episode_roll_progress_rad": 20.0,
+            "eval/avg_forbidden_penetration_m": 0.0,
+        }
+
+        selection = _checkpoint_selection(metrics, 500)
+
+        self.assertTrue(selection["rejected"])
+
+    def test_eval_report_contains_reward_and_failure_details(self) -> None:
+        metrics = {
+            "eval/episode_reward": -12.0,
+            "eval/avg_episode_length": 100.0,
+            "eval/episode_failed": 1.0,
+            "eval/episode_timeout": 0.0,
+            "eval/episode_roll_progress_rad": 1.0,
+            "eval/episode_forbidden_penetration_m": 0.01,
+            "training/sps": 4200.0,
+            "training/kl_mean": 0.02,
+            "training/policy_loss": -0.1,
+            "training/v_loss": 0.03,
+            "training/policy_dist_mean_std": 0.5,
+        }
+        for name in REWARD_TERM_NAMES:
+            metrics[f"eval/episode_reward_{name}"] = -1.0
+        _add_per_step_eval_metrics(metrics)
+        selection = _checkpoint_selection(metrics, 500)
+
+        report = _format_eval_report(
+            2,
+            6,
+            655_360,
+            metrics,
+            episode_length=500,
+            control_dt=0.02,
+            selection=selection,
+            selected=True,
+        )
+
+        self.assertIn("[eval 2/6]", report)
+        self.assertIn("turns/episode=", report)
+        self.assertIn("reward/step", report)
+        self.assertIn("early=-0.0100", report)
+        self.assertIn("failures", report)
+        self.assertIn("ppo", report)
 
 
 if __name__ == "__main__":

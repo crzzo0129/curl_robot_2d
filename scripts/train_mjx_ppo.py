@@ -167,6 +167,188 @@ def _split_metrics(metrics):
     return reward_metrics, ordinary_metrics
 
 
+def _checkpoint_selection(metrics, episode_length):
+    """Score an eval point by physical behavior, independent of reward scale."""
+
+    avg_length = metrics.get("eval/avg_episode_length", 0.0)
+    failed_rate = metrics.get("eval/episode_failed", 1.0)
+    nonfinite_rate = metrics.get(
+        "eval/episode_failure_nonfinite", 0.0
+    )
+    roll_total = metrics.get("eval/episode_roll_progress_rad", -math.inf)
+    penetration = metrics.get(
+        "eval/avg_forbidden_penetration_m", math.inf
+    )
+    survival = min(max(avg_length / episode_length, 0.0), 1.0)
+    turns = roll_total / (2.0 * math.pi)
+    progress_quality = min(max(turns / 3.0, -1.0), 1.0)
+    safety_quality = 1.0 - min(
+        max(penetration / 0.001, 0.0), 1.0
+    )
+    score = (
+        0.50 * survival
+        + 0.35 * progress_quality
+        + 0.10 * (1.0 - min(max(failed_rate, 0.0), 1.0))
+        + 0.05 * safety_quality
+    )
+    rejected = (
+        nonfinite_rate > 0.0
+        or not math.isfinite(turns)
+        or not math.isfinite(penetration)
+        or not math.isfinite(score)
+    )
+    return {
+        "score": -1_000_000.0 if rejected else score,
+        "rejected": rejected,
+        "survival": survival,
+        "turns": turns,
+    }
+
+
+def _metric(metrics, name, default=0.0):
+    return float(metrics.get(name, default))
+
+
+def _format_eval_report(
+    eval_index,
+    total_evals,
+    step,
+    metrics,
+    *,
+    episode_length,
+    control_dt,
+    selection,
+    selected,
+):
+    reward = _metric(metrics, "eval/episode_reward")
+    avg_reward = _metric(metrics, "eval/avg_reward")
+    avg_length = _metric(metrics, "eval/avg_episode_length")
+    failed = _metric(metrics, "eval/episode_failed")
+    timeout = _metric(metrics, "eval/episode_timeout")
+    marker = " new_best" if selected else ""
+    lines = [
+        (
+            f"[eval {eval_index}/{total_evals}] step={int(step)} "
+            f"physical_score={selection['score']:.4f}{marker}"
+        ),
+        (
+            f"  outcome reward={reward:+.3f} avg/step={avg_reward:+.4f} "
+            f"length={avg_length:.1f}/{episode_length} "
+            f"time={avg_length * control_dt:.2f}s "
+            f"failed={failed:.1%} timeout={timeout:.1%}"
+        ),
+        (
+            "  motion (rad/step) "
+            f"phase={_metric(metrics, 'eval/avg_phase_progress_rad'):+.5f} "
+            f"translation="
+            f"{_metric(metrics, 'eval/avg_translation_progress_rad'):+.5f} "
+            f"roll={_metric(metrics, 'eval/avg_roll_progress_rad'):+.5f} "
+            f"turns/episode={selection['turns']:+.3f}"
+        ),
+        (
+            "  state   "
+            f"avg_root_z={_metric(metrics, 'eval/avg_root_height_m'):.3f}m "
+            f"avg_foot_gap="
+            f"{_metric(metrics, 'eval/avg_foot_center_distance_m'):.3f}m "
+            f"action_rms={_metric(metrics, 'eval/avg_action_rms'):.3f} "
+            f"torque_rms="
+            f"{_metric(metrics, 'eval/avg_normalized_torque_rms'):.3f} "
+            f"ramp={_metric(metrics, 'eval/avg_startup_action_ramp'):.3f}"
+        ),
+    ]
+    for group, reward_labels in (
+        (
+            "progress",
+            (
+                ("roll", "roll_progress"),
+                ("mismatch", "roll_mismatch"),
+                ("back", "backward"),
+            ),
+        ),
+        (
+            "control ",
+            (("action", "action_rate"), ("torque", "torque")),
+        ),
+        (
+            "safety  ",
+            (
+                ("air", "airborne"),
+                ("gap", "foot_gap"),
+                ("collision", "collision"),
+                ("terminal", "termination"),
+                ("early", "early_termination"),
+            ),
+        ),
+    ):
+        lines.append(
+            f"  reward/step {group} "
+            + " ".join(
+                f"{label}="
+                f"{_metric(metrics, f'eval/avg_reward_{name}'):+.4f}"
+                for label, name in reward_labels
+            )
+        )
+    lines.append(
+        "  failures "
+        f"low={_metric(metrics, 'eval/episode_failure_root_low'):.1%} "
+        f"gap={_metric(metrics, 'eval/episode_failure_foot_gap'):.1%} "
+        f"high={_metric(metrics, 'eval/episode_failure_root_high'):.1%} "
+        f"cross={_metric(metrics, 'eval/episode_failure_leg_crossing'):.1%} "
+        f"forbidden_depth="
+        f"{1e3 * _metric(metrics, 'eval/avg_forbidden_penetration_m'):.3f}mm"
+    )
+    lines.append(
+        "  numerics "
+        f"nan={_metric(metrics, 'eval/episode_failure_nonfinite'):.1%} "
+        f"action_nan="
+        f"{_metric(metrics, 'eval/episode_failure_nonfinite_action'):.1%} "
+        f"physics_nan="
+        f"{_metric(metrics, 'eval/episode_failure_nonfinite_physics'):.1%}"
+    )
+    if "training/sps" in metrics:
+        lines.append(
+            "  ppo     "
+            f"sps={_metric(metrics, 'training/sps'):.0f} "
+            f"kl={_metric(metrics, 'training/kl_mean'):.4f} "
+            f"policy_loss={_metric(metrics, 'training/policy_loss'):+.4f} "
+            f"value_loss={_metric(metrics, 'training/v_loss'):.4f} "
+            f"mean_std={_metric(metrics, 'training/policy_dist_mean_std'):.3f}"
+        )
+    return "\n".join(lines)
+
+
+def _format_rollout_report(label, summary):
+    failures = [
+        name
+        for name, failed in summary["failure_reasons"].items()
+        if failed
+    ]
+    failure_text = ",".join(failures) if failures else "none"
+    terms = summary["reward_breakdown"]["terms"]
+    return "\n".join(
+        [
+            f"[policy {label}]",
+            (
+                f"  outcome reward={summary['total_reward']:+.3f} "
+                f"steps={summary['episode_steps']} "
+                f"time={summary['episode_duration_s']:.2f}s "
+                f"failure={failure_text}"
+            ),
+            (
+                f"  motion  turns={summary['net_turns']:+.3f} "
+                f"x={summary['root_x_displacement_m']:+.3f}m"
+            ),
+            (
+                "  reward  "
+                + " ".join(
+                    f"{name}={float(terms.get(name, 0.0)):+.3f}"
+                    for name in REWARD_TERM_NAMES
+                )
+            ),
+        ]
+    )
+
+
 def _network_factory(hidden_layers, activation_name):
     import jax.nn as jnn
     from brax.training.agents.ppo import networks
@@ -339,8 +521,9 @@ def main() -> None:
     parser.add_argument("--memory-fraction", type=float, default=0.90)
     parser.add_argument(
         "--mujoco-gl",
-        default="disable",
-        help="Use 'disable' for headless training or 'egl' when available.",
+        choices=("auto", "egl", "glfw", "osmesa", "disable"),
+        default="auto",
+        help="Defaults to EGL on a headless Linux instance.",
     )
     parser.add_argument("--xla-triton", action="store_true", default=True)
     parser.add_argument(
@@ -372,6 +555,22 @@ def main() -> None:
         help="Explicitly allow writing into a non-empty output directory.",
     )
     parser.add_argument("--skip-evaluation", action="store_true")
+    parser.add_argument(
+        "--skip-visualization",
+        action="store_true",
+        help="Do not render best/final deterministic rollout GIFs.",
+    )
+    parser.add_argument("--visualization-fps", type=int, default=20)
+    parser.add_argument("--visualization-width", type=int, default=640)
+    parser.add_argument("--visualization-height", type=int, default=480)
+    parser.add_argument(
+        "--visualization-camera-distance", type=float, default=0.75
+    )
+    parser.add_argument(
+        "--visualization-diagnostics",
+        action="store_true",
+        help="Show MuJoCo COM and contact points in generated GIFs.",
+    )
     _add_reward_arguments(parser)
     args = parser.parse_args()
 
@@ -402,7 +601,7 @@ def main() -> None:
         preallocate=args.preallocate,
         xla_triton=args.xla_triton,
         mujoco_gl=args.mujoco_gl,
-        verbose=args.runtime_diagnostics,
+        verbose=False,
     )
     import jax
     from brax.io import model as model_io
@@ -412,7 +611,17 @@ def main() -> None:
 
     args.out.mkdir(parents=True, exist_ok=True)
     runtime = describe_runtime()
-    print(json.dumps(runtime, indent=2), flush=True)
+    if args.runtime_diagnostics:
+        print(
+            "[runtime]\n"
+            f"  python={runtime['python_version']} "
+            f"jax={runtime['jax_version']} backend={runtime['backend']}\n"
+            f"  devices={', '.join(runtime['devices'])}\n"
+            f"  mujoco_gl={runtime['mujoco_gl']} "
+            f"memory_fraction={runtime['memory_fraction']}\n"
+            f"  compilation_cache={runtime['compilation_cache']}",
+            flush=True,
+        )
     task = physics_profile(
         args.physics_profile,
         NominalRLConfig(episode_length=args.episode_length),
@@ -428,12 +637,15 @@ def main() -> None:
     metric_history = []
     reward_history = []
     best = {
+        "score": float("-inf"),
         "reward": float("-inf"),
         "step": None,
         "params": None,
         "candidate_step": None,
         "candidate_params": None,
     }
+    reward_peak = {"reward": float("-inf"), "step": None}
+    eval_counter = {"value": 0}
 
     def policy_params_fn(step, make_policy, params):
         del make_policy
@@ -452,45 +664,34 @@ def main() -> None:
             "eval/episode_reward",
             clean.get("eval/episode_reward_mean"),
         )
-        if reward is not None and reward > best["reward"]:
+        if reward is not None and reward > reward_peak["reward"]:
+            reward_peak["reward"] = reward
+            reward_peak["step"] = int(step)
+        selection = _checkpoint_selection(clean, args.episode_length)
+        selected = (
+            not selection["rejected"]
+            and selection["score"] > best["score"]
+        )
+        if selected:
+            best["score"] = selection["score"]
             best["reward"] = reward
             best["step"] = int(step)
             if best["candidate_step"] == int(step):
                 best["params"] = best["candidate_params"]
-        message = f"steps={int(step)}"
-        if reward is not None:
-            message += f" eval_reward={reward:.4f}"
-        if "eval/episode_length" in clean:
-            message += (
-                f" eval_length={clean['eval/episode_length']:.1f}"
-            )
-        if "eval/avg_episode_length" in clean:
-            message += (
-                f" avg_length={clean['eval/avg_episode_length']:.1f}"
-            )
-        if "eval/episode_failed" in clean:
-            message += f" failed={clean['eval/episode_failed']:.2f}"
-        for short_name, metric_name in (
-            ("low", "eval/episode_failure_root_low"),
-            ("high", "eval/episode_failure_root_high"),
-            ("gap", "eval/episode_failure_foot_gap"),
-            ("cross", "eval/episode_failure_leg_crossing"),
-            ("nan", "eval/episode_failure_nonfinite"),
-            ("nan_action", "eval/episode_failure_nonfinite_action"),
-            ("nan_physics", "eval/episode_failure_nonfinite_physics"),
-        ):
-            if clean.get(metric_name, 0.0) > 0.0:
-                message += f" fail_{short_name}={clean[metric_name]:.2f}"
-        for short_name, metric_name in (
-            ("phase", "eval/avg_phase_progress_rad"),
-            ("translation", "eval/avg_translation_progress_rad"),
-            ("roll", "eval/avg_roll_progress_rad"),
-        ):
-            if metric_name in clean:
-                message += (
-                    f" avg_{short_name}_step={clean[metric_name]:.4f}"
-                )
-        print(message, flush=True)
+        eval_counter["value"] += 1
+        print(
+            _format_eval_report(
+                eval_counter["value"],
+                values["num_evals"],
+                step,
+                clean,
+                episode_length=args.episode_length,
+                control_dt=task.control_timestep,
+                selection=selection,
+                selected=selected,
+            ),
+            flush=True,
+        )
 
     config_payload = {
         "preset": args.preset,
@@ -513,6 +714,28 @@ def main() -> None:
         "task": asdict(task),
         "reward": asdict(reward_config),
         "runtime": runtime,
+        "evaluation": {
+            "skip": args.skip_evaluation,
+            "skip_visualization": args.skip_visualization,
+            "visualization_fps": args.visualization_fps,
+            "visualization_width": args.visualization_width,
+            "visualization_height": args.visualization_height,
+            "visualization_camera_distance": (
+                args.visualization_camera_distance
+            ),
+            "visualization_diagnostics": (
+                args.visualization_diagnostics
+            ),
+        },
+        "checkpoint_selection": {
+            "description": (
+                "0.50 survival + 0.35 forward turns + "
+                "0.10 non-failure + 0.05 contact safety"
+            ),
+            "target_turns": 3.0,
+            "penetration_limit_m": 0.001,
+            "reject_nonfinite": True,
+        },
     }
     (args.out / "training_config.json").write_text(
         json.dumps(config_payload, indent=2) + "\n", encoding="utf-8"
@@ -523,9 +746,23 @@ def main() -> None:
     )
 
     print(
-        "stage=train_start "
-        f"preset={args.preset} steps={values['steps']} "
-        f"envs={values['envs']} episode_length={args.episode_length}",
+        "[training]\n"
+        f"  preset={args.preset} physics={args.physics_profile} "
+        f"steps={values['steps']:,} envs={values['envs']} "
+        f"eval_envs={values['eval_envs']} evals={values['num_evals']}\n"
+        f"  episode={args.episode_length} steps "
+        f"({args.episode_length * task.control_timestep:.2f}s) "
+        f"batch={values['batch_size']} "
+        f"minibatches={values['num_minibatches']}\n"
+        f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
+        f"discount={args.discounting:g} seed={args.seed}\n"
+        f"  reward roll={reward_config.roll_progress:g} "
+        f"mismatch={reward_config.roll_mismatch:g} "
+        f"termination={reward_config.termination:g} "
+        f"early={reward_config.early_termination_scale:g}\n"
+        "  selection=physical: 50% survival, 35% turns, "
+        "10% non-failure, 5% contact safety\n"
+        f"  output={args.out.resolve()}",
         flush=True,
     )
     start = time.perf_counter()
@@ -544,8 +781,8 @@ def main() -> None:
             _resolve_restore_checkpoint(args.restore_checkpoint)
         )
         print(
-            "stage=checkpoint_restore "
-            f"path={checkpoint_kwargs['restore_checkpoint_path']}",
+            "[checkpoint]\n"
+            f"  restoring={checkpoint_kwargs['restore_checkpoint_path']}",
             flush=True,
         )
 
@@ -593,28 +830,131 @@ def main() -> None:
     final_reward_metrics, final_ordinary_metrics = _split_metrics(
         clean_final_metrics
     )
+    best_reward_value = (
+        best["reward"] if math.isfinite(best["reward"]) else None
+    )
+    best_score_value = (
+        best["score"] if math.isfinite(best["score"]) else None
+    )
+    reward_peak_value = (
+        reward_peak["reward"]
+        if math.isfinite(reward_peak["reward"])
+        else None
+    )
     train_summary = {
         "elapsed_s": elapsed,
-        "best_eval_reward": best["reward"],
+        "best_eval_reward": best_reward_value,
         "best_step": best["step"],
+        "best_selection_score": best_score_value,
+        "reward_peak": reward_peak_value,
+        "reward_peak_step": reward_peak["step"],
         "final_metrics": final_ordinary_metrics,
         "final_reward_metrics": final_reward_metrics,
     }
     (args.out / "training_summary.json").write_text(
         json.dumps(train_summary, indent=2) + "\n", encoding="utf-8"
     )
-    print(json.dumps(train_summary, indent=2), flush=True)
+    throughput = values["steps"] / max(elapsed, 1e-9)
+    best_source = (
+        f"step={best['step']} score={best['score']:.4f} "
+        f"reward={best['reward']:+.3f}"
+        if best["step"] is not None
+        else "final parameters (all eval points rejected)"
+    )
+    reward_peak_source = (
+        f"step={reward_peak['step']} reward={reward_peak['reward']:+.3f}"
+        if reward_peak["step"] is not None
+        else "unavailable"
+    )
+    print(
+        "[training complete]\n"
+        f"  elapsed={elapsed / 60.0:.1f}min "
+        f"throughput={throughput:,.0f} steps/s\n"
+        f"  physical_best {best_source}\n"
+        f"  reward_peak {reward_peak_source}\n"
+        f"  checkpoints best={args.out / 'params_best'} "
+        f"final={args.out / 'params_final'}",
+        flush=True,
+    )
 
     if not args.skip_evaluation:
-        evaluation = _evaluate_policy(
+        evaluation_best_dir = args.out / "evaluation_best"
+        evaluation_final_dir = args.out / "evaluation_final"
+        evaluation_best = _evaluate_policy(
             eval_env,
             make_inference_fn,
             best_params,
             seed=args.seed + 20_000,
             episode_length=args.episode_length,
-            output_dir=args.out,
+            output_dir=evaluation_best_dir,
         )
-        print(json.dumps(evaluation, indent=2), flush=True)
+        evaluation_final = _evaluate_policy(
+            eval_env,
+            make_inference_fn,
+            final_params,
+            seed=args.seed + 20_000,
+            episode_length=args.episode_length,
+            output_dir=evaluation_final_dir,
+        )
+        comparison = {
+            "selection": {
+                "best_step": best["step"],
+                "best_selection_score": best_score_value,
+                "reward_peak_step": reward_peak["step"],
+            },
+            "best": evaluation_best,
+            "final": evaluation_final,
+        }
+        (args.out / "policy_comparison.json").write_text(
+            json.dumps(comparison, indent=2) + "\n", encoding="utf-8"
+        )
+        print(_format_rollout_report("best", evaluation_best), flush=True)
+        print(_format_rollout_report("final", evaluation_final), flush=True)
+
+        if not args.skip_visualization:
+            try:
+                from scripts.render_mjx_policy import render_rollout
+
+                for label, directory in (
+                    ("best", evaluation_best_dir),
+                    ("final", evaluation_final_dir),
+                ):
+                    gif_path = directory / "policy_rollout.gif"
+                    render_summary = render_rollout(
+                        directory / "evaluation_rollout.npz",
+                        gif_path,
+                        control_dt=task.control_timestep,
+                        fps=args.visualization_fps,
+                        width=args.visualization_width,
+                        height=args.visualization_height,
+                        camera_distance=(
+                            args.visualization_camera_distance
+                        ),
+                        diagnostics=args.visualization_diagnostics,
+                    )
+                    print(
+                        f"[visualization {label}]\n"
+                        f"  gif={gif_path.resolve()}\n"
+                        f"  frames={render_summary['frames']} "
+                        f"duration={render_summary['duration_s']:.2f}s",
+                        flush=True,
+                    )
+            except Exception as exc:
+                print(
+                    "[visualization warning]\n"
+                    f"  automatic GIF rendering failed: {exc}\n"
+                    "  rollout data was saved and can be rendered later.",
+                    flush=True,
+                )
+
+        print(
+            "[artifacts]\n"
+            f"  summary={args.out / 'training_summary.json'}\n"
+            f"  comparison={args.out / 'policy_comparison.json'}\n"
+            f"  best={evaluation_best_dir}\n"
+            f"  final={evaluation_final_dir}",
+            flush=True,
+        )
 
 
 if __name__ == "__main__":

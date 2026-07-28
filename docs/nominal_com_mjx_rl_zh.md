@@ -61,6 +61,22 @@ $$
 仍会受另一个累计量限制。日志分别输出 `avg_phase_step`、
 `avg_translation_step` 和 `avg_roll_step`，避免仅凭保守进度判断运动方向。
 
+滚动不一致也使用累计势函数：
+
+$$
+M_t =
+\left|
+(\phi_t-\phi_0)-\frac{x_t-x_0}{R}
+\right|,
+\qquad
+r_{\mathrm{mismatch},t}
+=
+-w_m(M_t-M_{t-1}).
+$$
+
+累计差异增大时扣分，后续旋转或平移追平时返还相应奖励；整个 episode 的
+净 mismatch 奖励只由终点差异决定，不再要求每个 20 ms 周期都同步。
+
 同时惩罚：
 
 - 转角和水平位移不一致；
@@ -301,25 +317,27 @@ python -m scripts.sweep_mjx_ppo \
 - `reward_config.json`：本次训练独立使用的奖励权重；
 - `reward_history.json`：总奖励、十个奖励分项及其每步平均值；
 - `metrics_history.json`：不含奖励项的物理、失败和 PPO 指标；
-- `training_summary.json`：耗时、最优步和最终指标；
+- `training_summary.json`：耗时、物理表现最优步、奖励峰值步和最终指标；
 - `params_best`、`params_final`：Brax 策略参数；
-- `evaluation_rollout.npz`：确定性策略的 qpos、动作和奖励；
-- `evaluation_summary.json`：净滚动、独立奖励分解、普通指标平均值和具体失败
-  原因。
+- `policy_comparison.json`：`params_best` 与 `params_final` 的公平对照；
+- `evaluation_best/`、`evaluation_final/`：各自包含确定性策略的
+  `evaluation_rollout.npz`、`evaluation_summary.json` 和
+  `policy_rollout.gif`。
 
-训练结束后可直接把确定性评估轨迹渲染为跟随相机 GIF。云端无显示器节点使用
-EGL：
+训练默认会在确定性评估后自动渲染 best 和 final 两个跟随相机 GIF。云端训练
+命令使用 `--mujoco-gl egl` 即可。若渲染失败，轨迹仍会保留，可手动重试：
 
 ```bash
 python -m scripts.render_mjx_policy \
-  results/mjx_ppo_cem_ramp_potential_seed0/evaluation_rollout.npz \
+  results/mjx_ppo_cem_ramp_potential_seed0/evaluation_best/evaluation_rollout.npz \
   --mujoco-gl egl \
-  --output results/mjx_ppo_cem_ramp_potential_seed0/policy_rollout.gif
+  --output results/mjx_ppo_cem_ramp_potential_seed0/evaluation_best/policy_rollout.gif
 ```
 
 本地有图形环境时可省略 `--mujoco-gl`，脚本会自动选择后端。添加
-`--diagnostics` 可显示 COM 和接触点。该动画重放保存的 qpos，不需要加载
-JAX、Brax 或策略参数，也不会重新采样动作。
+`--diagnostics` 可显示 COM 和接触点。训练时可用 `--skip-visualization`
+关闭自动 GIF，或用 `--visualization-diagnostics` 打开诊断叠加。该动画重放
+保存的 qpos，不需要加载 JAX、Brax 或策略参数，也不会重新采样动作。
 
 云端训练后应完整下载该目录，并使用 CPU MuJoCo 做策略复算和与 CEM 的严格
 对照，不根据训练 reward 单独下结论。

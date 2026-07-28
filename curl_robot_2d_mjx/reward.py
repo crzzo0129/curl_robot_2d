@@ -53,7 +53,9 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
     )
     return {
         "roll_progress": config.roll_progress * clipped_progress,
-        "roll_mismatch": -config.roll_mismatch * inputs["mismatch"],
+        "roll_mismatch": (
+            -config.roll_mismatch * inputs["mismatch_progress"]
+        ),
         "backward": -config.backward * inputs["backward"],
         "action_rate": -config.action_rate * inputs["action_rate"],
         "torque": -config.torque * inputs["torque_cost"],

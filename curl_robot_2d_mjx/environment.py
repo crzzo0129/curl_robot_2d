@@ -298,6 +298,9 @@ def make_brax_env(
                 "previous_roll_potential": jp.zeros(
                     (), dtype=jp.float32
                 ),
+                "previous_mismatch_potential": jp.zeros(
+                    (), dtype=jp.float32
+                ),
                 "last_action": last_action,
                 "maximum_forbidden_penetration": jp.zeros(
                     (), dtype=jp.float32
@@ -397,7 +400,13 @@ def make_brax_env(
             conservative_progress = (
                 roll_potential - state.info["previous_roll_potential"]
             )
-            mismatch = jp.abs(phase_progress - translation_progress)
+            mismatch_potential = jp.abs(
+                cumulative_phase - cumulative_translation
+            )
+            mismatch_progress = (
+                mismatch_potential
+                - state.info["previous_mismatch_potential"]
+            )
             backward = jp.maximum(-phase_progress, 0.0) + jp.maximum(
                 -translation_progress, 0.0
             )
@@ -472,7 +481,7 @@ def make_brax_env(
                 reward_settings,
                 {
                     "conservative_progress": conservative_progress,
-                    "mismatch": mismatch,
+                    "mismatch_progress": mismatch_progress,
                     "backward": backward,
                     "action_rate": action_rate,
                     "torque_cost": torque_cost,
@@ -535,6 +544,7 @@ def make_brax_env(
                 "previous_phase": phase,
                 "previous_root_x": root_x,
                 "previous_roll_potential": roll_potential,
+                "previous_mismatch_potential": mismatch_potential,
                 "last_action": action,
                 "maximum_forbidden_penetration": new_forbidden_max,
                 "maximum_allowed_excess": new_allowed_max,

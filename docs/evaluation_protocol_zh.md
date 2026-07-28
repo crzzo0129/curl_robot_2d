@@ -62,7 +62,7 @@ pitch、支撑状态和不可恢复性判断真实跌倒。
 | displacement | root x 的净位移 |
 | translation-equivalent turns | 位移除以名义滚动周长 |
 | conservative progress | 相位进展与位移等效进展的较小值 |
-| rolling mismatch | 相位进展与位移等效进展之差，用于识别滑动或原地自转 |
+| rolling mismatch | 累计相位与累计位移等效相位之差，用于识别净滑动或原地自转 |
 | backward travel | 负方向相位和位移累计 |
 | survival fraction | 实际步数除以 episode 最大步数 |
 | start latency | 从命令开始到达到最小持续滚动速度的时间 |
@@ -82,8 +82,9 @@ pitch、支撑状态和不可恢复性判断真实跌倒。
 - 非允许接触与穿透指标。
 
 当前 MJX 训练已经直接记录大部分逐步指标，但最终确定性评价还需要从
-`evaluation_rollout.npz` 补算 min/max、连续腾空和做功等轨迹统计，才能与
-CEM 完全对齐。
+`evaluation_best/evaluation_rollout.npz` 或
+`evaluation_final/evaluation_rollout.npz` 补算 min/max、连续腾空和做功等
+轨迹统计，才能与 CEM 完全对齐。
 
 ### 3.4 速度、制动和切换指标
 
@@ -177,7 +178,10 @@ PPO 训练目录目前已保存：
 - `metrics_history.json` 和 `reward_history.json`；
 - `training_summary.json`；
 - `params_best` 和 `params_final`；
-- `evaluation_rollout.npz` 和 `evaluation_summary.json`。
+- `policy_comparison.json`；
+- `evaluation_best/` 和 `evaluation_final/` 中各自的
+  `evaluation_rollout.npz`、`evaluation_summary.json` 与
+  `policy_rollout.gif`。
 
 近期应补一个统一离线 evaluator，使 CEM CSV 和 PPO NPZ 产生相同字段的
 `benchmark_summary.json`。在该工具完成前，跨方法对比需明确哪些量来自训练
