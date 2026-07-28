@@ -1,0 +1,110 @@
+{
+  "controller_source": "results\\collision_constrained_cem\\best_phase_controller.json",
+  "model_source": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\assets\\curl_robot_2d.xml",
+  "duration_s": 9.999999999999897,
+  "timestep_s": 0.001,
+  "compact_foot_surface_contact_is_allowed": true,
+  "any_proper_crossing": false,
+  "first_crossing_time_s": null,
+  "first_crossing_phase_deg": null,
+  "crossing_total_s": 0.0,
+  "crossing_fraction": 0.0,
+  "crossing_event_count": 0,
+  "longest_crossing_event_s": 0.0,
+  "any_core_crossing": false,
+  "first_core_crossing_time_s": null,
+  "first_core_crossing_phase_deg": null,
+  "core_crossing_total_s": 0.0,
+  "core_crossing_fraction": 0.0,
+  "core_crossing_event_count": 0,
+  "longest_core_crossing_event_s": 0.0,
+  "maximum_simultaneous_crossing_pairs": 0,
+  "minimum_estimated_clearance_m": 0.02706057839173364,
+  "self_contact_total_s": 0.631,
+  "self_contact_fraction": 0.06309369063093691,
+  "maximum_simultaneous_self_contact_pairs": 1,
+  "minimum_self_contact_distance_m": -0.0006021054766677178,
+  "final_roll_phase_deg": 3569.0980360823664,
+  "final_roll_turns": 9.914161211339907,
+  "self_contact_pairs": {
+    "front_foot_proxy__rear_foot_proxy": {
+      "total_contact_s": 0.495,
+      "contact_fraction": 0.0494950504949505,
+      "event_count": 139,
+      "longest_event_s": 0.028,
+      "minimum_contact_distance_m": -0.0006021054766677178
+    },
+    "front_foot_proxy__rear_shank_proxy": {
+      "total_contact_s": 0.014,
+      "contact_fraction": 0.0013998600139986002,
+      "event_count": 3,
+      "longest_event_s": 0.007,
+      "minimum_contact_distance_m": -0.0004130448285005698
+    },
+    "front_shank_proxy__rear_foot_proxy": {
+      "total_contact_s": 0.122,
+      "contact_fraction": 0.012198780121987801,
+      "event_count": 78,
+      "longest_event_s": 0.004,
+      "minimum_contact_distance_m": -0.0004586746797394254
+    }
+  },
+  "pairs": {
+    "front_thigh__rear_thigh": {
+      "ever_crossed": false,
+      "first_crossing_time_s": null,
+      "total_crossing_s": 0.0,
+      "event_count": 0,
+      "longest_event_s": 0.0,
+      "core_ever_crossed": false,
+      "core_first_crossing_time_s": null,
+      "core_total_crossing_s": 0.0,
+      "core_event_count": 0,
+      "core_longest_event_s": 0.0,
+      "minimum_centerline_distance_m": 0.1481163373505691,
+      "minimum_estimated_clearance_m": 0.12411633735056908
+    },
+    "front_thigh__rear_shank": {
+      "ever_crossed": false,
+      "first_crossing_time_s": null,
+      "total_crossing_s": 0.0,
+      "event_count": 0,
+      "longest_event_s": 0.0,
+      "core_ever_crossed": false,
+      "core_first_crossing_time_s": null,
+      "core_total_crossing_s": 0.0,
+      "core_event_count": 0,
+      "core_longest_event_s": 0.0,
+      "minimum_centerline_distance_m": 0.06815541335823062,
+      "minimum_estimated_clearance_m": 0.046155413358230625
+    },
+    "front_shank__rear_thigh": {
+      "ever_crossed": false,
+      "first_crossing_time_s": null,
+      "total_crossing_s": 0.0,
+      "event_count": 0,
+      "longest_event_s": 0.0,
+      "core_ever_crossed": false,
+      "core_first_crossing_time_s": null,
+      "core_total_crossing_s": 0.0,
+      "core_event_count": 0,
+      "core_longest_event_s": 0.0,
+      "minimum_centerline_distance_m": 0.09011976098785371,
+      "minimum_estimated_clearance_m": 0.06811976098785372
+    },
+    "front_shank__rear_shank": {
+      "ever_crossed": false,
+      "first_crossing_time_s": null,
+      "total_crossing_s": 0.0,
+      "event_count": 0,
+      "longest_event_s": 0.0,
+      "core_ever_crossed": false,
+      "core_first_crossing_time_s": null,
+      "core_total_crossing_s": 0.0,
+      "core_event_count": 0,
+      "core_longest_event_s": 0.0,
+      "minimum_centerline_distance_m": 0.047060578391733644,
+      "minimum_estimated_clearance_m": 0.02706057839173364
+    }
+  }
+}

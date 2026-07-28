@@ -1,0 +1,68 @@
+{
+  "model": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\assets\\curl_robot_2d.xml",
+  "samples_per_joint": 1001,
+  "shell_design_gap_m": 0.028,
+  "shell_arc_trim_angle_rad": 0.22924828838027506,
+  "shell_arc_coverage_angle_rad": 0.7981404846753671,
+  "safe_range_scans": {
+    "front_hip": {
+      "minimum_clearance_m": 0.002370477404293206,
+      "angle_at_minimum_rad": 2.41,
+      "range_min_rad": -1.12,
+      "range_max_rad": 2.41
+    },
+    "front_knee": {
+      "minimum_clearance_m": 0.00982000636108332,
+      "angle_at_minimum_rad": -0.61,
+      "range_min_rad": -0.61,
+      "range_max_rad": 2.69
+    }
+  },
+  "walk_keyframe": {
+    "qpos": [
+      0.0,
+      0.308693622,
+      0.0,
+      0.35,
+      0.52,
+      0.35,
+      0.78
+    ],
+    "front_foot_xz_m": [
+      0.10105731875826827,
+      0.01995000003645908
+    ],
+    "rear_foot_xz_m": [
+      -0.06390405075393607,
+      0.03144285262166044
+    ],
+    "minimum_shell_clearance_m": 0.04063900304039338,
+    "shell_pair_clearances_m": {
+      "torso__front_thigh": 0.05195457081100978,
+      "torso__front_shank": 0.2025255808742212,
+      "torso__rear_thigh": 0.05195457081100978,
+      "torso__rear_shank": 0.20425297434881315,
+      "front_thigh__front_shank": 0.04063900304039338,
+      "front_thigh__rear_thigh": 0.20281129066817213,
+      "front_thigh__rear_shank": 0.2768749707406577,
+      "front_shank__rear_thigh": 0.28760246600833095,
+      "front_shank__rear_shank": 0.2162304299601045,
+      "rear_thigh__rear_shank": 0.04567598258861174
+    },
+    "contact_pairs": []
+  },
+  "legacy_controller_replay": {
+    "controller": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\results\\collision_constrained_cem\\best_phase_controller.json",
+    "note": "Direct replay without retuning after shortening the shells.",
+    "duration_s": 9.999999999999897,
+    "net_turns": 9.048594567255932,
+    "root_x_displacement_m": 8.830689909421658,
+    "airborne_fraction": 0.1121,
+    "longest_airborne_s": 0.028,
+    "maximum_foot_gap_m": 0.20850108829771383,
+    "forbidden_contact_fraction": 0.0097,
+    "maximum_forbidden_penetration_m": 0.0006081400949039407,
+    "maximum_allowed_foot_penetration_m": 0.0016621769422785482,
+    "leg_crossing_detected": false
+  }
+}

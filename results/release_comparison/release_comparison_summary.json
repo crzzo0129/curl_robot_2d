@@ -1,0 +1,15 @@
+{
+  "rigid_actual_max_phase_deg": 284.6996972223958,
+  "servo_actual_max_phase_deg": 280.8458328458108,
+  "servo_minus_rigid_max_phase_deg": -3.8538643765850225,
+  "rigid_residual_loss_to_max_phase_J": 1.3436254020815213,
+  "servo_residual_loss_to_max_phase_J": 1.0593607821108417,
+  "servo_actuator_net_work_to_max_phase_J": -0.9290787793419352,
+  "servo_passive_damping_loss_to_max_phase_J": 0.07766799022788227,
+  "servo_max_joint_error_deg": 14.663350367490843,
+  "servo_max_foot_gap_m": 0.07714739375722482,
+  "servo_max_roundness_peak_to_peak_m": 0.030621537376812197,
+  "servo_max_saturated_actuator_count": 0,
+  "servo_any_actuator_saturation_fraction": 0.0,
+  "servo_max_joint_torque_Nm": 2.66851958540584
+}

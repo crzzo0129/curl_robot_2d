@@ -1,0 +1,85 @@
+{
+  "controller": "phase_locked_oscillator",
+  "oscillator_rate_rad_s": 3.6565631998063983,
+  "oscillator_period_s": 1.7183308379606999,
+  "oscillator_coupling_per_s": 4.796179221538381,
+  "raw_coefficients": {
+    "front_hip_sin": -0.13463466356145193,
+    "front_hip_cos": 0.04614731038835503,
+    "front_knee_sin": -0.6405481459671534,
+    "front_knee_cos": -0.09633088345006677,
+    "rear_hip_sin": -0.16570907958954714,
+    "rear_hip_cos": 0.37821523118531303,
+    "rear_knee_sin": -0.685432308932681,
+    "rear_knee_cos": -0.29240076876815396
+  },
+  "joint_sinusoid": {
+    "front_hip": {
+      "sine_coefficient_rad": -0.13463466356145193,
+      "cosine_coefficient_rad": 0.04614731038835503,
+      "amplitude_rad": 0.1423238099840801,
+      "amplitude_deg": 8.154553636309677,
+      "phase_offset_rad": 2.8113826707332557,
+      "phase_offset_deg": 161.08036162923312
+    },
+    "front_knee": {
+      "sine_coefficient_rad": -0.6405481459671534,
+      "cosine_coefficient_rad": -0.09633088345006677,
+      "amplitude_rad": 0.6477511608698421,
+      "amplitude_deg": 37.11340769254159,
+      "phase_offset_rad": -2.992323068749124,
+      "phase_offset_deg": -171.44748277895968
+    },
+    "rear_hip": {
+      "sine_coefficient_rad": -0.16570907958954714,
+      "cosine_coefficient_rad": 0.37821523118531303,
+      "amplitude_rad": 0.4129240367900307,
+      "amplitude_deg": 23.658804567573494,
+      "phase_offset_rad": 1.9837390715387695,
+      "phase_offset_deg": 113.65987645437198
+    },
+    "rear_knee": {
+      "sine_coefficient_rad": -0.685432308932681,
+      "cosine_coefficient_rad": -0.29240076876815396,
+      "amplitude_rad": 0.7451950480947882,
+      "amplitude_deg": 42.69653116987976,
+      "phase_offset_rad": -2.738373317431347,
+      "phase_offset_deg": -156.89723382005425
+    }
+  },
+  "rollout_summary": {
+    "score": 106.24978909608404,
+    "duration_s": 10.000000000000009,
+    "maximum_phase_rad": 69.07456316589783,
+    "maximum_phase_deg": 3957.6809411157597,
+    "maximum_turns": 10.993558169765999,
+    "final_phase_rad": 69.07456316589783,
+    "final_phase_deg": 3957.6809411157597,
+    "net_turns": 10.993558169765999,
+    "root_x_displacement_m": 10.35447840520475,
+    "translation_equivalent_phase_rad": 70.177196469088,
+    "translation_equivalent_turns": 11.16904771038646,
+    "rolling_progress_rad": 69.62587981749292,
+    "rolling_progress_turns": 11.08130294007623,
+    "conservative_rolling_progress_rad": 69.07456316589783,
+    "conservative_rolling_turns": 10.993558169765999,
+    "rolling_mismatch_rad": 1.1026333031901743,
+    "tail_rolling_progress_rad": 18.929548744159007,
+    "conservative_tail_progress_rad": 18.898118872572127,
+    "forward_travel_rad": 69.086057272431,
+    "backward_travel_rad": 0.011494106533179897,
+    "actuator_positive_work_J": 43.185656916196805,
+    "actuator_absorbed_work_J": 9.255189896775146,
+    "actuator_net_work_J": 33.93046701942168,
+    "airborne_fraction": 0.1318,
+    "airborne_total_s": 1.318,
+    "longest_airborne_s": 0.02,
+    "maximum_foot_gap_m": 0.18278776334488578,
+    "maximum_joint_tracking_error_deg": 24.7946711298745,
+    "maximum_actuator_torque_Nm": 3.932895250014446,
+    "actuator_saturation_fraction": 0.0,
+    "reached_one_turn": true,
+    "completed_one_turn": true,
+    "completed_two_turns": true
+  }
+}

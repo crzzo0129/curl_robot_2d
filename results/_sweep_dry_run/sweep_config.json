@@ -1,0 +1,70 @@
+{
+  "hardware": "4090",
+  "physics_profile": "cg12",
+  "episode_length": 500,
+  "screen_steps": 524288,
+  "confirm_steps": 4194304,
+  "final_steps": 20000000,
+  "screen_seed": 0,
+  "confirm_seed": 1,
+  "final_seed": 2,
+  "top_k": 2,
+  "candidates": [
+    {
+      "name": "baseline",
+      "learning_rate": 0.0003,
+      "entropy_cost": 0.01,
+      "discounting": 0.99,
+      "reward_termination": 5.0
+    },
+    {
+      "name": "terminal20",
+      "learning_rate": 0.0003,
+      "entropy_cost": 0.01,
+      "discounting": 0.99,
+      "reward_termination": 20.0
+    },
+    {
+      "name": "terminal50",
+      "learning_rate": 0.0003,
+      "entropy_cost": 0.01,
+      "discounting": 0.99,
+      "reward_termination": 50.0
+    },
+    {
+      "name": "horizon995",
+      "learning_rate": 0.0003,
+      "entropy_cost": 0.01,
+      "discounting": 0.995,
+      "reward_termination": 20.0
+    },
+    {
+      "name": "horizon997",
+      "learning_rate": 0.0003,
+      "entropy_cost": 0.01,
+      "discounting": 0.997,
+      "reward_termination": 20.0
+    },
+    {
+      "name": "stable_lr",
+      "learning_rate": 0.0001,
+      "entropy_cost": 0.01,
+      "discounting": 0.995,
+      "reward_termination": 20.0
+    },
+    {
+      "name": "very_stable_lr",
+      "learning_rate": 3e-05,
+      "entropy_cost": 0.01,
+      "discounting": 0.995,
+      "reward_termination": 20.0
+    },
+    {
+      "name": "stable_low_entropy",
+      "learning_rate": 0.0001,
+      "entropy_cost": 0.003,
+      "discounting": 0.995,
+      "reward_termination": 20.0
+    }
+  ]
+}
