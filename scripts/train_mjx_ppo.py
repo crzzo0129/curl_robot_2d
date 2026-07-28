@@ -796,6 +796,8 @@ def main() -> None:
         f"({args.episode_length * task.control_timestep:.2f}s) "
         f"batch={values['batch_size']} "
         f"minibatches={values['num_minibatches']}\n"
+        f"  root_damping="
+        f"{'disabled' if task.disable_root_damping else 'xml'}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  reward roll={reward_config.roll_progress:g} "

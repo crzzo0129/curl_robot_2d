@@ -56,6 +56,13 @@ def parse_args(argv=None):
         default=32,
         help="Number of parallel reset-noise samples in case A.",
     )
+    parser.add_argument(
+        "--cases",
+        nargs="+",
+        choices=("A", "B", "C", "D"),
+        default=("A", "B", "C", "D"),
+        help="Ablation cases to run; use '--cases D' for the training default.",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--memory-fraction", type=float, default=0.50)
@@ -315,20 +322,23 @@ def main(argv=None) -> None:
 
     base_task = physics_profile(
         args.physics_profile,
-        NominalRLConfig(episode_length=args.episode_length),
+        NominalRLConfig(
+            episode_length=args.episode_length,
+            disable_root_damping=False,
+        ),
     )
     reference = load_cem_reference(
         args.controller,
         reference_weight=1.0,
         minimum_residual_gain=0.0,
     )
-    cases = (
-        (
+    case_options = {
+        "A": (
             "A_noise_root_damping",
             base_task,
             args.noise_seeds,
         ),
-        (
+        "B": (
             "B_compact_root_damping",
             replace(
                 base_task,
@@ -337,7 +347,7 @@ def main(argv=None) -> None:
             ),
             1,
         ),
-        (
+        "C": (
             "C_compact_no_root_damping",
             replace(
                 base_task,
@@ -347,12 +357,19 @@ def main(argv=None) -> None:
             ),
             1,
         ),
-    )
+        "D": (
+            "D_noise_no_root_damping",
+            replace(base_task, disable_root_damping=True),
+            args.noise_seeds,
+        ),
+    }
+    cases = [case_options[name] for name in args.cases]
     print(
         "[pure CEM MJX ablation]\n"
         f"  profile={args.physics_profile} "
         f"episode={args.episode_length} "
-        f"noise_seeds={args.noise_seeds}\n"
+        f"noise_seeds={args.noise_seeds} "
+        f"cases={list(args.cases)}\n"
         f"  policy_action=0 residual_gain=0 "
         f"controller={reference.source}",
         flush=True,

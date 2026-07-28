@@ -38,7 +38,9 @@ class NominalRLConfig:
     startup_action_ramp_s: float = 0.25
     reset_joint_noise_rad: float = 0.01
     reset_velocity_noise: float = 0.01
-    disable_root_damping: bool = False
+    # The CPU CEM and release evaluators model the planar root as free and
+    # remove the XML's small numerical damping at runtime.
+    disable_root_damping: bool = True
 
     # Torso root height is phase dependent during valid planar rolling.  The
     # collision-constrained CEM baseline reaches 0.0437 m once per turn, so a

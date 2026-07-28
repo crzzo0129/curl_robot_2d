@@ -39,7 +39,7 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(len(config.action_scales), 4)
         self.assertEqual(config.episode_length, 500)
         self.assertEqual(config.startup_action_ramp_s, 0.25)
-        self.assertFalse(config.disable_root_damping)
+        self.assertTrue(config.disable_root_damping)
         self.assertIsNone(config.terminate_root_z_min)
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
@@ -105,6 +105,7 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(args.physics_profile, "cg12")
         self.assertEqual(args.noise_seeds, 32)
         self.assertEqual(args.mujoco_gl, "disable")
+        self.assertEqual(tuple(args.cases), ("A", "B", "C", "D"))
 
     def test_root_damping_can_match_cpu_cem_runtime(self) -> None:
         import mujoco

@@ -303,6 +303,8 @@ def main() -> None:
         f"rollout_quantum={rollout_quantum:,}\n"
         f"  reference_weights={args.reference_weights} "
         f"minimum_stage={args.minimum_stage_steps:,}\n"
+        f"  physics={args.physics_profile} root_damping="
+        f"{'disabled' if task.disable_root_damping else 'xml'}\n"
         f"  gate survival>={args.gate_min_survival:.0%} "
         f"turns>={args.gate_min_turns:g} "
         f"failure<={args.gate_max_failure_rate:.0%}\n"

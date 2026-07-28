@@ -14,7 +14,8 @@ oscillator_rate =
 ```
 
 每个 1 ms MJX 物理子步都会更新 oscillator 和 CEM 目标。PPO 动作在一个
-20 ms 控制周期内保持不变。
+20 ms 控制周期内保持不变。MJX 与 CPU CEM 都会在加载 XML 后清零
+`root_x/root_z/root_pitch` 的数值阻尼；关节和执行器阻尼保持不变。
 
 实际归一化动作是：
 
@@ -83,15 +84,29 @@ python -m scripts.compare_mjx_cem_reference \
   --output results/mjx_cem_reference_ablation/summary.json
 ```
 
-脚本同时运行 CPU MuJoCo reference 和三组 MJX 对照：
+脚本同时运行 CPU MuJoCo reference 和四组 MJX 对照：
 
-- A：保留训练使用的 reset noise 和 XML root damping；
+- A：保留 reset noise 和旧训练使用的 XML root damping；
 - B：从精确 compact、零速度启动，保留 XML root damping；
 - C：从精确 compact、零速度启动，并像 CPU CEM 一样清零 root damping。
+- D：保留 reset noise，并清零 root damping，即当前训练物理设置。
 
 A 到 B 的改善表示启动噪声敏感；B 到 C 的改善表示 root damping 不一致；
-C 仍明显落后 CPU reference 则表示 MJX 接触或积分轨迹尚未对齐。在 CEM 的
-MJX 结果通过课程 gate 前，不应开始 residual curriculum。
+C 到 D 表示高速滚动对 reset noise 的敏感度；C 仍明显落后 CPU reference
+则表示 MJX 接触或积分轨迹尚未对齐。在 D 通过课程 gate 前，不应开始
+residual curriculum。当前训练默认采用 D 的设置。
+
+已经完成 A/B/C 后，可只补跑 D：
+
+```bash
+python -m scripts.compare_mjx_cem_reference \
+  --physics-profile cg12 \
+  --controller results/collision_constrained_cem/best_phase_controller.json \
+  --noise-seeds 32 \
+  --cases D \
+  --mujoco-gl disable \
+  --output results/mjx_cem_reference_ablation/noise_no_root_damping.json
+```
 
 ## 4. 云端命令
 
