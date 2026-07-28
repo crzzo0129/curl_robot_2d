@@ -16,6 +16,7 @@ from scripts.train_mjx_ppo import (
     _format_eval_report,
     _reward_config_from_args,
     _split_metrics,
+    _training_step_schedule,
 )
 
 
@@ -220,6 +221,19 @@ class MJXRewardTest(unittest.TestCase):
         self.assertIn("early=-0.0100", report)
         self.assertIn("failures", report)
         self.assertIn("ppo", report)
+
+    def test_training_schedule_reports_brax_rollout_rounding(self) -> None:
+        schedule = _training_step_schedule(
+            requested_steps=50_000_000,
+            num_evals=10,
+            batch_size=1024,
+            unroll_length=20,
+            num_minibatches=32,
+        )
+
+        self.assertEqual(schedule["rollout_quantum"], 655_360)
+        self.assertEqual(schedule["eval_interval_steps"], 5_898_240)
+        self.assertEqual(schedule["effective_steps"], 53_084_160)
 
 
 if __name__ == "__main__":

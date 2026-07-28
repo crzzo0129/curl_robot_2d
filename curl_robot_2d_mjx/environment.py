@@ -6,6 +6,12 @@ from pathlib import Path
 
 import numpy as np
 
+from curl_robot_2d_mjx.cem_reference import (
+    CEMReferenceConfig,
+    advance_oscillator,
+    effective_residual_action,
+    reference_action,
+)
 from curl_robot_2d_mjx.config import NominalRLConfig, smoothstep_ramp
 from curl_robot_2d_mjx.reward import (
     REWARD_TERM_NAMES,
@@ -76,6 +82,7 @@ def make_brax_env(
     config: NominalRLConfig | None = None,
     *,
     reward_config: RollingRewardConfig | None = None,
+    cem_reference: CEMReferenceConfig | None = None,
     seed: int = 0,
 ):
     """Create the fixed-nominal-COM MJX environment.
@@ -88,11 +95,13 @@ def make_brax_env(
     jax, jp, mujoco, mjx, Env, State = _load_dependencies()
     task = config or NominalRLConfig()
     reward_settings = reward_config or RollingRewardConfig()
+    reference_settings = cem_reference
 
     class CurlRobot2DMJXEnv(Env):
         def __init__(self):
             self.config = task
             self.reward_config = reward_settings
+            self.cem_reference = reference_settings
             self.seed = seed
             self.mj_model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
             apply_physics_options(self.mj_model, task)
@@ -209,7 +218,7 @@ def make_brax_env(
 
         @property
         def observation_size(self):
-            return 23
+            return 32 if reference_settings is not None else 23
 
         @property
         def action_size(self):
@@ -246,6 +255,10 @@ def make_brax_env(
                 "action_rate_rms": zero,
                 "startup_action_ramp": zero,
                 "normalized_torque_rms": zero,
+                "reference_action_rms": zero,
+                "residual_action_rms": zero,
+                "reference_weight": zero,
+                "residual_gain": zero,
                 "failed": zero,
                 "timeout": zero,
                 "failure_nonfinite": zero,
@@ -290,6 +303,19 @@ def make_brax_env(
             data = mjx.forward(self.mjx_model, data)
             contacts = self._contact_metrics(data)
             last_action = jp.zeros(4)
+            oscillator_phase = jp.zeros((), dtype=jp.float32)
+            if reference_settings is not None:
+                cem_action = reference_action(
+                    jp,
+                    oscillator_phase,
+                    reference_settings,
+                    compact_ctrl=self.compact_ctrl,
+                    action_scales=self.action_scales,
+                    joint_low=self.joint_low,
+                    joint_high=self.joint_high,
+                )
+            else:
+                cem_action = jp.zeros(4, dtype=jp.float32)
             info = {
                 "initial_phase": data.qpos[self.root_pitch_qpos],
                 "initial_root_x": data.qpos[self.root_x_qpos],
@@ -302,6 +328,9 @@ def make_brax_env(
                     (), dtype=jp.float32
                 ),
                 "last_action": last_action,
+                "last_policy_action": last_action,
+                "last_reference_action": cem_action,
+                "oscillator_phase": oscillator_phase,
                 "maximum_forbidden_penetration": jp.zeros(
                     (), dtype=jp.float32
                 ),
@@ -311,7 +340,12 @@ def make_brax_env(
                 "step_count": jp.asarray(0, dtype=jp.int32),
             }
             observation = self._observation(
-                data, last_action, contacts
+                data,
+                last_action,
+                contacts,
+                reference_action_value=cem_action,
+                oscillator_phase=oscillator_phase,
+                action_ramp=jp.zeros((), dtype=jp.float32),
             )
             observation = jp.nan_to_num(
                 observation, nan=0.0, posinf=0.0, neginf=0.0
@@ -327,7 +361,7 @@ def make_brax_env(
 
         def step(self, state, action):
             action_finite = jp.all(jp.isfinite(action))
-            action = jp.nan_to_num(
+            policy_action = jp.nan_to_num(
                 jp.clip(action, -1.0, 1.0),
                 nan=0.0,
                 posinf=1.0,
@@ -342,23 +376,93 @@ def make_brax_env(
             action_ramp = smoothstep_ramp(
                 jp, elapsed_s, task.startup_action_ramp_s
             )
-            action = action_ramp * action
-            target = jp.clip(
-                self.compact_ctrl + action * self.action_scales,
-                self.joint_low,
-                self.joint_high,
-            )
-            data = state.pipeline_state.replace(ctrl=target)
+            if reference_settings is None:
+                action = action_ramp * policy_action
+                cem_action = jp.zeros(4, dtype=jp.float32)
+                oscillator_phase = state.info["oscillator_phase"]
+                target = jp.clip(
+                    self.compact_ctrl + action * self.action_scales,
+                    self.joint_low,
+                    self.joint_high,
+                )
+                data = state.pipeline_state.replace(ctrl=target)
 
-            def physics_step(carry, _):
-                return mjx.step(self.mjx_model, carry), None
+                def physics_step(carry, _):
+                    return mjx.step(self.mjx_model, carry), None
 
-            candidate_data = jax.lax.scan(
-                physics_step,
-                data,
-                (),
-                length=task.action_repeat,
-            )[0]
+                candidate_data = jax.lax.scan(
+                    physics_step,
+                    data,
+                    (),
+                    length=task.action_repeat,
+                )[0]
+            else:
+                physics_dt = float(self.mj_model.opt.timestep)
+
+                def residual_physics_step(carry, _):
+                    current_data, current_oscillator_phase = carry
+                    next_oscillator_phase = advance_oscillator(
+                        jp,
+                        current_data.qpos[self.root_pitch_qpos],
+                        current_oscillator_phase,
+                        physics_dt,
+                        reference_settings,
+                    )
+                    current_reference_action = reference_action(
+                        jp,
+                        next_oscillator_phase,
+                        reference_settings,
+                        compact_ctrl=self.compact_ctrl,
+                        action_scales=self.action_scales,
+                        joint_low=self.joint_low,
+                        joint_high=self.joint_high,
+                    )
+                    current_ramp = smoothstep_ramp(
+                        jp,
+                        current_data.time,
+                        task.startup_action_ramp_s,
+                    )
+                    current_action = current_ramp * effective_residual_action(
+                        jp,
+                        policy_action,
+                        current_reference_action,
+                        reference_settings,
+                    )
+                    current_target = jp.clip(
+                        self.compact_ctrl
+                        + current_action * self.action_scales,
+                        self.joint_low,
+                        self.joint_high,
+                    )
+                    next_data = mjx.step(
+                        self.mjx_model,
+                        current_data.replace(ctrl=current_target),
+                    )
+                    return (
+                        next_data,
+                        next_oscillator_phase,
+                    ), (
+                        current_action,
+                        current_reference_action,
+                        current_ramp,
+                    )
+
+                (
+                    candidate_data,
+                    candidate_oscillator_phase,
+                ), residual_trace = jax.lax.scan(
+                    residual_physics_step,
+                    (
+                        state.pipeline_state,
+                        state.info["oscillator_phase"],
+                    ),
+                    (),
+                    length=task.action_repeat,
+                )
+                action = residual_trace[0][-1]
+                cem_action = residual_trace[1][-1]
+                action_ramp = residual_trace[2][-1]
+                oscillator_phase = candidate_oscillator_phase
             _, _, candidate_contact_distance = self._contact_arrays(
                 candidate_data
             )
@@ -380,6 +484,21 @@ def make_brax_env(
             )
             action = jp.where(
                 transition_finite, action, state.info["last_action"]
+            )
+            policy_action = jp.where(
+                transition_finite,
+                policy_action,
+                state.info["last_policy_action"],
+            )
+            cem_action = jp.where(
+                transition_finite,
+                cem_action,
+                state.info["last_reference_action"],
+            )
+            oscillator_phase = jp.where(
+                transition_finite,
+                oscillator_phase,
+                state.info["oscillator_phase"],
             )
             contacts = self._contact_metrics(data)
             leg_crossing = self._leg_crossing(data)
@@ -546,6 +665,9 @@ def make_brax_env(
                 "previous_roll_potential": roll_potential,
                 "previous_mismatch_potential": mismatch_potential,
                 "last_action": action,
+                "last_policy_action": policy_action,
+                "last_reference_action": cem_action,
+                "oscillator_phase": oscillator_phase,
                 "maximum_forbidden_penetration": new_forbidden_max,
                 "maximum_allowed_excess": new_allowed_max,
                 "step_count": step_count,
@@ -570,6 +692,28 @@ def make_brax_env(
                 "action_rate_rms": jp.sqrt(action_rate),
                 "startup_action_ramp": action_ramp,
                 "normalized_torque_rms": jp.sqrt(torque_cost),
+                "reference_action_rms": jp.sqrt(
+                    jp.mean(jp.square(cem_action))
+                ),
+                "residual_action_rms": jp.sqrt(
+                    jp.mean(jp.square(policy_action))
+                ),
+                "reference_weight": jp.asarray(
+                    (
+                        reference_settings.reference_weight
+                        if reference_settings is not None
+                        else 0.0
+                    ),
+                    dtype=jp.float32,
+                ),
+                "residual_gain": jp.asarray(
+                    (
+                        reference_settings.residual_gain
+                        if reference_settings is not None
+                        else 0.0
+                    ),
+                    dtype=jp.float32,
+                ),
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),
@@ -586,7 +730,14 @@ def make_brax_env(
                     failure_leg_crossing.astype(jp.float32)
                 ),
             }
-            observation = self._observation(data, action, contacts)
+            observation = self._observation(
+                data,
+                action,
+                contacts,
+                reference_action_value=cem_action,
+                oscillator_phase=oscillator_phase,
+                action_ramp=action_ramp,
+            )
             observation = jp.nan_to_num(
                 observation, nan=0.0, posinf=0.0, neginf=0.0
             )
@@ -689,7 +840,16 @@ def make_brax_env(
                 )
             )
 
-        def _observation(self, data, last_action, contacts):
+        def _observation(
+            self,
+            data,
+            last_action,
+            contacts,
+            *,
+            reference_action_value,
+            oscillator_phase,
+            action_ramp,
+        ):
             phase = data.qpos[self.root_pitch_qpos]
             root_velocity = data.qvel[:3]
             joint_position = data.qpos[self.joint_qpos_indices]
@@ -703,7 +863,7 @@ def make_brax_env(
                     1000.0 * contacts["allowed_depth"],
                 ]
             )
-            return jp.concatenate(
+            observation = jp.concatenate(
                 [
                     jp.asarray([jp.sin(phase), jp.cos(phase)]),
                     jp.asarray([data.qpos[self.root_z_qpos]]),
@@ -714,5 +874,28 @@ def make_brax_env(
                     contact_features,
                 ]
             )
+            if reference_settings is None:
+                return observation
+            weighted_reference = (
+                reference_settings.reference_weight
+                * reference_action_value
+            )
+            reference_features = jp.concatenate(
+                [
+                    weighted_reference,
+                    jp.asarray(
+                        [
+                            reference_settings.reference_weight
+                            * jp.sin(oscillator_phase),
+                            reference_settings.reference_weight
+                            * jp.cos(oscillator_phase),
+                            reference_settings.reference_weight,
+                            reference_settings.residual_gain,
+                            action_ramp,
+                        ]
+                    ),
+                ]
+            )
+            return jp.concatenate([observation, reference_features])
 
     return CurlRobot2DMJXEnv()

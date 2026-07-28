@@ -113,6 +113,10 @@ PER_STEP_EVAL_METRICS = (
     "action_rate_rms",
     "startup_action_ramp",
     "normalized_torque_rms",
+    "reference_action_rms",
+    "residual_action_rms",
+    "reference_weight",
+    "residual_gain",
     "forbidden_contact_count",
     "forbidden_penetration_m",
     "allowed_foot_penetration_m",
@@ -165,6 +169,32 @@ def _split_metrics(metrics):
         if not _is_reward_metric(name)
     }
     return reward_metrics, ordinary_metrics
+
+
+def _training_step_schedule(
+    *,
+    requested_steps,
+    num_evals,
+    batch_size,
+    unroll_length,
+    num_minibatches,
+):
+    """Mirror Brax PPO's integer rollout scheduling."""
+
+    rollout_quantum = batch_size * unroll_length * num_minibatches
+    eval_intervals = max(num_evals - 1, 1)
+    updates_per_interval = math.ceil(
+        requested_steps / (eval_intervals * rollout_quantum)
+    )
+    eval_interval_steps = updates_per_interval * rollout_quantum
+    return {
+        "requested_steps": requested_steps,
+        "effective_steps": eval_intervals * eval_interval_steps,
+        "rollout_quantum": rollout_quantum,
+        "eval_intervals": eval_intervals,
+        "updates_per_interval": updates_per_interval,
+        "eval_interval_steps": eval_interval_steps,
+    }
 
 
 def _checkpoint_selection(metrics, episode_length):
@@ -586,6 +616,13 @@ def main() -> None:
         override = getattr(args, name)
         if override is not None:
             values[name] = override
+    schedule = _training_step_schedule(
+        requested_steps=values["steps"],
+        num_evals=values["num_evals"],
+        batch_size=values["batch_size"],
+        unroll_length=args.unroll_length,
+        num_minibatches=values["num_minibatches"],
+    )
     if (
         args.out.exists()
         and any(args.out.iterdir())
@@ -736,6 +773,7 @@ def main() -> None:
             "penetration_limit_m": 0.001,
             "reject_nonfinite": True,
         },
+        "training_step_schedule": schedule,
     }
     (args.out / "training_config.json").write_text(
         json.dumps(config_payload, indent=2) + "\n", encoding="utf-8"
@@ -748,8 +786,12 @@ def main() -> None:
     print(
         "[training]\n"
         f"  preset={args.preset} physics={args.physics_profile} "
-        f"steps={values['steps']:,} envs={values['envs']} "
-        f"eval_envs={values['eval_envs']} evals={values['num_evals']}\n"
+        f"requested_steps={schedule['requested_steps']:,} "
+        f"effective_steps={schedule['effective_steps']:,}\n"
+        f"  rollout_quantum={schedule['rollout_quantum']:,} "
+        f"eval_interval={schedule['eval_interval_steps']:,} "
+        f"evals={values['num_evals']}\n"
+        f"  envs={values['envs']} eval_envs={values['eval_envs']}\n"
         f"  episode={args.episode_length} steps "
         f"({args.episode_length * task.control_timestep:.2f}s) "
         f"batch={values['batch_size']} "
@@ -854,7 +896,7 @@ def main() -> None:
     (args.out / "training_summary.json").write_text(
         json.dumps(train_summary, indent=2) + "\n", encoding="utf-8"
     )
-    throughput = values["steps"] / max(elapsed, 1e-9)
+    throughput = schedule["effective_steps"] / max(elapsed, 1e-9)
     best_source = (
         f"step={best['step']} score={best['score']:.4f} "
         f"reward={best['reward']:+.3f}"
