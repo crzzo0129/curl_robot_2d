@@ -258,3 +258,26 @@ python -m scripts.train_mjx_residual_ppo \
 
 这项扰动是一次瞬时速度冲击，用于训练恢复能力；它还不是坡度、摩擦、质量或
 质心的 terrain/model randomization。
+
+## 8. 稳定课程与鲁棒评估
+
+阶段 gate 和最终目标可以分别设置：`--gate-min-turns` 只负责确认中间策略安全且
+没有明显退化，`--target-min-turns` 用于最终部署候选的严格目标。每个阶段都会保存：
+
+- `params_stage_*_last`：该阶段最后一次更新；
+- `params_stage_*_best`：通过生存、失败率和数值安全检查后，平均圈数最高的策略；
+- `params_stage_*_final`：实际传入下一阶段或作为失败课程回退结果的最佳策略。
+
+课程失败时，最终回放使用最后实际训练到的 residual scale，不会再强制套用计划
+末尾的 scale。最终 checkpoint 以平均圈数为第一排序条件，避免旧 physical score
+在 3 圈后饱和而无法区分候选。
+
+`reference_weight` 和 `residual_gain` 已从 policy observation 中删除。它们在一个
+stage 内是常量，经 observation normalization 后方差接近零；切换 stage 时数值变化
+会成为极端离群输入。新 residual observation 为 30 维，因此旧 PPO checkpoint 不
+兼容，必须从头训练；CEM controller JSON 不受影响。
+
+训练结束后默认用 128 个确定性 rollout 输出 `min/p10/median/mean/p90/max`、失败率
+和实际推击次数，并写入 `evaluation_retained_cem/robust_evaluation.json`。可通过
+`--robust-eval-envs` 调整样本数，或设为零关闭。平均 gate 通过并不等于适合部署，
+低分位结果仍需单独检查。

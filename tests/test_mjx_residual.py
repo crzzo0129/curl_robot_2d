@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 
 from curl_robot_2d_mjx.cem_reference import (
+    CEMReferenceConfig,
     DEFAULT_CEM_CONTROLLER,
     advance_oscillator,
     effective_residual_action,
@@ -13,10 +14,14 @@ from curl_robot_2d_mjx.cem_reference import (
     reference_action,
 )
 from scripts.train_mjx_residual_ppo import (
+    _distribution_summary,
     _eval_visualization_dir,
     _exact_stage_eval_schedule,
     _gate_assessment,
+    _last_trained_stage_spec,
     _parse_args,
+    _residual_checkpoint_rank,
+    _safe_stage_checkpoint,
     _stage_plan,
     _target_eval_eligible,
 )
@@ -45,6 +50,25 @@ class MJXResidualTest(unittest.TestCase):
         self.assertEqual(disturbed.disturbance_root_x_velocity, 0.2)
         self.assertEqual(disturbed.disturbance_root_pitch_velocity, 0.8)
 
+    def test_target_gate_defaults_to_stage_gate_but_can_be_stricter(self) -> None:
+        defaults = _parse_args(["--retain-cem", "--gate-min-turns", "7.0"])
+        explicit = _parse_args(
+            [
+                "--retain-cem",
+                "--gate-min-turns",
+                "7.0",
+                "--target-min-turns",
+                "7.5",
+                "--robust-eval-envs",
+                "64",
+            ]
+        )
+
+        self.assertEqual(defaults.target_min_turns, 7.0)
+        self.assertEqual(defaults.robust_eval_envs, 128)
+        self.assertEqual(explicit.target_min_turns, 7.5)
+        self.assertEqual(explicit.robust_eval_envs, 64)
+
     def test_retained_cem_curriculums_only_residual_scale(self) -> None:
         args = _parse_args(["--retain-cem"])
 
@@ -71,6 +95,52 @@ class MJXResidualTest(unittest.TestCase):
         self.assertFalse(_target_eval_eligible(0, 1, 0, 131_072))
         self.assertTrue(_target_eval_eligible(0, 1, 131_072, 131_072))
         self.assertFalse(_target_eval_eligible(0, 2, 131_072, 131_072))
+
+    def test_checkpoint_rank_prefers_more_turns_after_safety_gate(self) -> None:
+        slower = {"turns": 7.6, "survival": 1.0}
+        faster = {"turns": 8.2, "survival": 0.99}
+        metrics = {
+            "eval/episode_failed": 0.0,
+            "eval/avg_forbidden_penetration_m": 0.0,
+        }
+        gate = {
+            "checks": {
+                "survival": True,
+                "turns": False,
+                "failure_rate": True,
+                "finite": True,
+            }
+        }
+
+        self.assertGreater(
+            _residual_checkpoint_rank(faster, metrics),
+            _residual_checkpoint_rank(slower, metrics),
+        )
+        self.assertTrue(_safe_stage_checkpoint(gate))
+        gate["checks"]["failure_rate"] = False
+        self.assertFalse(_safe_stage_checkpoint(gate))
+
+    def test_failed_curriculum_evaluates_last_trained_scale(self) -> None:
+        plan = [
+            {"reference_weight": 1.0, "minimum_residual_gain": scale}
+            for scale in (0.03, 0.05, 0.10)
+        ]
+        history = [{"stage_index": 0}, {"stage_index": 1}]
+
+        self.assertEqual(
+            _last_trained_stage_spec(plan, history)[
+                "minimum_residual_gain"
+            ],
+            0.05,
+        )
+
+    def test_robust_distribution_reports_lower_tail(self) -> None:
+        summary = _distribution_summary(np.arange(10.0))
+
+        self.assertEqual(summary["min"], 0.0)
+        self.assertAlmostEqual(summary["p10"], 0.9)
+        self.assertEqual(summary["median"], 4.5)
+        self.assertEqual(summary["max"], 9.0)
 
     def test_checked_in_cem_controller_loads(self) -> None:
         reference = load_cem_reference(DEFAULT_CEM_CONTROLLER)
@@ -153,6 +223,31 @@ class MJXResidualTest(unittest.TestCase):
 
         np.testing.assert_allclose(compact + normalized * scales, expected)
 
+    def test_reference_action_applies_saved_knee_bias(self) -> None:
+        reference = CEMReferenceConfig(
+            coefficients=(0.0,) * 8,
+            oscillator_rate_rad_s=1.0,
+            oscillator_coupling_per_s=0.0,
+            knee_bias_rad=-0.01,
+        )
+        compact = np.asarray([0.3, 1.0, 0.3, 1.0])
+        scales = np.ones(4)
+
+        normalized = reference_action(
+            np,
+            0.0,
+            reference,
+            compact_ctrl=compact,
+            action_scales=scales,
+            joint_low=np.full(4, -2.0),
+            joint_high=np.full(4, 2.0),
+        )
+
+        np.testing.assert_allclose(
+            compact + normalized * scales,
+            [0.3, 0.99, 0.3, 0.99],
+        )
+
     def test_two_million_budget_and_gate_interval_are_fixed(self) -> None:
         quantum = 512 * 16 * 16
         budget = expected_budget_steps(2_000_000, quantum)
@@ -215,6 +310,13 @@ class MJXResidualTest(unittest.TestCase):
         self.assertIn("cem_reference: CEMReferenceConfig | None = None", source)
         self.assertIn("if reference_settings is None:", source)
         self.assertIn("reference_settings.reference_weight", source)
+        observation_source = source[source.index("        def _observation(") :]
+        self.assertNotIn(
+            "reference_settings.residual_gain", observation_source
+        )
+        self.assertIn(
+            "return 30 if reference_settings is not None else 23", source
+        )
 
 
 if __name__ == "__main__":

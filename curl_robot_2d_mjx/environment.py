@@ -246,7 +246,7 @@ def make_brax_env(
 
         @property
         def observation_size(self):
-            return 32 if reference_settings is not None else 23
+            return 30 if reference_settings is not None else 23
 
         @property
         def action_size(self):
@@ -971,8 +971,6 @@ def make_brax_env(
                             * jp.sin(oscillator_phase),
                             reference_settings.reference_weight
                             * jp.cos(oscillator_phase),
-                            reference_settings.reference_weight,
-                            reference_settings.residual_gain,
                             action_ramp,
                         ]
                     ),

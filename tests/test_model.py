@@ -11,7 +11,11 @@ from curl_robot_2d.planar_geometry import (
     segment_distance,
 )
 from scripts.analyze_roll_phase import analyze_rigid_phase
-from scripts.optimize_phase_controller import controller_targets, rollout_controller
+from scripts.optimize_phase_controller import (
+    controller_targets,
+    knee_bias_for_foot_gap,
+    rollout_controller,
+)
 from scripts.run_release_baseline import run_release
 
 
@@ -460,6 +464,38 @@ class ModelContractTest(unittest.TestCase):
         )
         self.assertIsNotNone(rollout.rows)
         self.assertGreater(rollout.rows.shape[0], 2)
+        self.assertEqual(rollout.summary["foot_separation_penalty"], 0.0)
+
+    def test_positive_foot_gap_offsets_both_knees_symmetrically(self) -> None:
+        knee_bias = knee_bias_for_foot_gap(0.002)
+        targets = controller_targets(
+            0.0,
+            1.0,
+            np.zeros(8),
+            control_phase=0.0,
+            knee_bias_rad=knee_bias,
+        )
+
+        self.assertLess(knee_bias, 0.0)
+        self.assertAlmostEqual(targets[0], FIXED_PARAMETERS.compact_hip_angle)
+        self.assertAlmostEqual(targets[2], FIXED_PARAMETERS.compact_hip_angle)
+        self.assertAlmostEqual(
+            targets[1], FIXED_PARAMETERS.compact_knee_angle + knee_bias
+        )
+        self.assertAlmostEqual(targets[1], targets[3])
+
+        model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+        rollout = rollout_controller(
+            model,
+            np.zeros(8),
+            duration=0.002,
+            minimum_foot_surface_gap_m=0.002,
+            detailed=True,
+        )
+        self.assertGreaterEqual(
+            float(rollout.summary["minimum_foot_surface_gap_m"]),
+            0.0019,
+        )
 
 
 if __name__ == "__main__":

@@ -170,6 +170,154 @@ def _target_eval_eligible(
     )
 
 
+def _residual_checkpoint_rank(selection, metrics):
+    """Rank safe residual checkpoints by motion before tie breakers."""
+
+    return (
+        float(selection["turns"]),
+        float(selection["survival"]),
+        -float(metrics.get("eval/episode_failed", 1.0)),
+        -float(
+            metrics.get("eval/avg_forbidden_penetration_m", math.inf)
+        ),
+    )
+
+
+def _safe_stage_checkpoint(gate):
+    return all(
+        passed
+        for name, passed in gate["checks"].items()
+        if name != "turns"
+    )
+
+
+def _last_trained_stage_spec(stage_plan, stage_history):
+    if not stage_history:
+        raise ValueError("stage history is empty")
+    return stage_plan[int(stage_history[-1]["stage_index"])]
+
+
+def _distribution_summary(values):
+    import numpy as np
+
+    array = np.asarray(values, dtype=np.float64)
+    if array.size == 0:
+        raise ValueError("distribution must not be empty")
+    return {
+        "mean": float(np.mean(array)),
+        "std": float(np.std(array)),
+        "min": float(np.min(array)),
+        "p10": float(np.quantile(array, 0.10)),
+        "median": float(np.median(array)),
+        "p90": float(np.quantile(array, 0.90)),
+        "max": float(np.max(array)),
+    }
+
+
+def _evaluate_policy_distribution(
+    env,
+    make_inference_fn,
+    params,
+    *,
+    seed,
+    episode_length,
+    batch_size,
+):
+    import jax
+    import jax.numpy as jp
+    import numpy as np
+
+    try:
+        policy = make_inference_fn(params, deterministic=True)
+    except TypeError:
+        policy = make_inference_fn(params)
+
+    def policy_action(observation, key):
+        action, _ = policy(observation, key)
+        return action
+
+    policy_batch = jax.jit(jax.vmap(policy_action))
+    reset_batch = jax.jit(jax.vmap(env.reset))
+
+    def step_one(state, action, active):
+        return jax.lax.cond(
+            active,
+            lambda _: env.step(state, action),
+            lambda _: state,
+            operand=None,
+        )
+
+    step_batch = jax.jit(jax.vmap(step_one))
+    reset_keys = jax.random.split(jax.random.PRNGKey(seed), batch_size)
+    state = reset_batch(reset_keys)
+    active = jp.ones((batch_size,), dtype=bool)
+    steps = jp.zeros((batch_size,), dtype=jp.int32)
+    reward_total = jp.zeros((batch_size,), dtype=jp.float32)
+    roll_progress = jp.zeros((batch_size,), dtype=jp.float32)
+    disturbance_count = jp.zeros((batch_size,), dtype=jp.float32)
+
+    for step_index in range(episode_length):
+        action_keys = jax.random.split(
+            jax.random.fold_in(
+                jax.random.PRNGKey(seed + 1), step_index
+            ),
+            batch_size,
+        )
+        actions = policy_batch(state.obs, action_keys)
+        was_active = active
+        state = step_batch(state, actions, active)
+        active_float = was_active.astype(jp.float32)
+        steps = steps + was_active.astype(jp.int32)
+        reward_total = reward_total + active_float * state.reward
+        roll_progress = (
+            roll_progress
+            + active_float * state.metrics["roll_progress_rad"]
+        )
+        disturbance_count = (
+            disturbance_count
+            + active_float * state.metrics["disturbance_applied"]
+        )
+        active = active & (state.done < 0.5)
+
+    jax.block_until_ready(state.obs)
+    arrays = {
+        "turns": np.asarray(
+            jax.device_get(roll_progress / (2.0 * math.pi))
+        ),
+        "reward": np.asarray(jax.device_get(reward_total)),
+        "steps": np.asarray(jax.device_get(steps)),
+        "failed": np.asarray(
+            jax.device_get(state.metrics["failed"])
+        ),
+        "disturbance_count": np.asarray(
+            jax.device_get(disturbance_count)
+        ),
+    }
+    return {
+        "batch_size": batch_size,
+        "seed": seed,
+        "turns": _distribution_summary(arrays["turns"]),
+        "reward": _distribution_summary(arrays["reward"]),
+        "steps": _distribution_summary(arrays["steps"]),
+        "disturbance_count": _distribution_summary(
+            arrays["disturbance_count"]
+        ),
+        "failure_rate": float(np.mean(arrays["failed"])),
+        "samples": [
+            {
+                "turns": float(arrays["turns"][index]),
+                "reward": float(arrays["reward"][index]),
+                "steps": int(arrays["steps"][index]),
+                "failed": bool(arrays["failed"][index]),
+                "disturbance_count": float(
+                    arrays["disturbance_count"][index]
+                ),
+            }
+            for index in range(batch_size)
+        ],
+    }
+
+
 def _eval_visualization_dir(output_dir, eval_index, step, weight):
     weight_label = f"{weight:.2f}".replace(".", "p")
     return (
@@ -252,7 +400,21 @@ def _parse_args(argv=None):
     parser.add_argument("--gate-check-steps", type=int, default=500_000)
     parser.add_argument("--gate-min-survival", type=float, default=0.80)
     parser.add_argument("--gate-min-turns", type=float, default=3.0)
+    parser.add_argument(
+        "--target-min-turns",
+        type=float,
+        help=(
+            "Final-stage turns gate. Defaults to --gate-min-turns for "
+            "backward compatibility."
+        ),
+    )
     parser.add_argument("--gate-max-failure-rate", type=float, default=0.20)
+    parser.add_argument(
+        "--robust-eval-envs",
+        type=int,
+        default=128,
+        help="Final deterministic evaluation batch; set to 0 to disable.",
+    )
     parser.add_argument("--memory-fraction", type=float, default=0.90)
     parser.add_argument(
         "--mujoco-gl",
@@ -275,6 +437,10 @@ def _parse_args(argv=None):
         _validate_weights(parser, args.reference_weights)
     if not 0.0 <= args.minimum_residual_gain <= 1.0:
         parser.error("--minimum-residual-gain must be in [0, 1]")
+    if args.target_min_turns is None:
+        args.target_min_turns = args.gate_min_turns
+    if args.robust_eval_envs < 0:
+        parser.error("--robust-eval-envs must be nonnegative")
     try:
         validate_nominal_rl_config(
             NominalRLConfig(
@@ -389,9 +555,11 @@ def main() -> None:
         "gate_check_steps": args.gate_check_steps,
         "gate": {
             "minimum_survival": args.gate_min_survival,
-            "minimum_turns": args.gate_min_turns,
+            "stage_minimum_turns": args.gate_min_turns,
+            "target_minimum_turns": args.target_min_turns,
             "maximum_failure_rate": args.gate_max_failure_rate,
         },
+        "robust_eval_envs": args.robust_eval_envs,
         "runtime": runtime,
     }
     (args.out / "training_config.json").write_text(
@@ -414,7 +582,8 @@ def main() -> None:
         f"step=[{task.disturbance_min_step},"
         f"{task.disturbance_max_step}]\n"
         f"  gate survival>={args.gate_min_survival:.0%} "
-        f"turns>={args.gate_min_turns:g} "
+        f"stage_turns>={args.gate_min_turns:g} "
+        f"target_turns>={args.target_min_turns:g} "
         f"failure<={args.gate_max_failure_rate:.0%}\n"
         f"  controller={base_reference.source}\n"
         f"  output={args.out.resolve()}",
@@ -432,7 +601,13 @@ def main() -> None:
     stage_history = []
     eval_visualizations = []
     eval_counter = 0
-    best_target = {"score": float("-inf"), "step": None, "params": None}
+    best_target = {
+        "rank": None,
+        "score": float("-inf"),
+        "turns": None,
+        "step": None,
+        "params": None,
+    }
     target_stage_steps = 0
     target_stage_gate_passed = False
 
@@ -470,6 +645,13 @@ def main() -> None:
             "eval_index": 0,
             "eval_records": {},
             "visualized_steps": set(),
+            "best": {
+                "rank": None,
+                "step": None,
+                "params": None,
+                "metrics": None,
+                "gate": None,
+            },
         }
         stage_start = consumed_steps
         print(
@@ -563,11 +745,17 @@ def main() -> None:
             clean = {name: _float(value) for name, value in metrics.items()}
             _add_per_step_eval_metrics(clean)
             global_step = stage_start + int(local_step)
+            is_target_stage = stage_index == len(stage_plan) - 1
+            required_turns = (
+                args.target_min_turns
+                if is_target_stage
+                else args.gate_min_turns
+            )
             gate = _gate_assessment(
                 clean,
                 episode_length=args.episode_length,
                 minimum_survival=args.gate_min_survival,
-                minimum_turns=args.gate_min_turns,
+                minimum_turns=required_turns,
                 maximum_failure_rate=args.gate_max_failure_rate,
             )
             selection = _checkpoint_selection(
@@ -588,7 +776,24 @@ def main() -> None:
                     "metrics": ordinary_metrics,
                 }
             )
-            is_target_stage = stage_index == len(stage_plan) - 1
+            checkpoint_rank = _residual_checkpoint_rank(selection, clean)
+            if (
+                int(local_step) > 0
+                and stage["params"] is not None
+                and not selection["rejected"]
+                and _safe_stage_checkpoint(gate)
+                and (
+                    stage["best"]["rank"] is None
+                    or checkpoint_rank > stage["best"]["rank"]
+                )
+            ):
+                stage["best"] = {
+                    "rank": checkpoint_rank,
+                    "step": int(local_step),
+                    "params": stage["params"],
+                    "metrics": clean,
+                    "gate": gate,
+                }
             target_eval_eligible = _target_eval_eligible(
                 stage_index,
                 len(stage_plan),
@@ -599,12 +804,19 @@ def main() -> None:
                 target_eval_eligible
                 and gate["passed"]
                 and not selection["rejected"]
-                and selection["score"] > best_target["score"]
+                and (
+                    best_target["rank"] is None
+                    or checkpoint_rank > best_target["rank"]
+                )
             )
             if target_eval_eligible:
-                target_stage_gate_passed = gate["passed"]
+                target_stage_gate_passed = (
+                    target_stage_gate_passed or gate["passed"]
+                )
             if selected and stage["params"] is not None:
+                best_target["rank"] = checkpoint_rank
                 best_target["score"] = selection["score"]
+                best_target["turns"] = selection["turns"]
                 best_target["step"] = global_step
                 best_target["params"] = stage["params"]
             eval_counter += 1
@@ -705,19 +917,25 @@ def main() -> None:
             )
             local_trained = remaining
             make_inference_fn = stage_make_inference_fn
-            final_params = stage_final_params
-            final_metrics = stage_final_metrics or {}
-            restored_params = stage_final_params
+            stage_last_params = stage_final_params
+            stage_last_metrics = stage_final_metrics or {}
             advanced = False
         except _AdvanceCurriculum:
             local_trained = int(stage["local_step"])
             if local_trained <= 0 or stage["params"] is None:
                 raise RuntimeError("curriculum advanced without policy params")
             make_inference_fn = stage["make_inference_fn"]
-            final_params = stage["params"]
-            final_metrics = stage["last_metrics"]
-            restored_params = stage["params"]
+            stage_last_params = stage["params"]
+            stage_last_metrics = stage["last_metrics"]
             advanced = True
+
+        if stage["best"]["params"] is not None:
+            final_params = stage["best"]["params"]
+            final_metrics = stage["best"]["metrics"]
+        else:
+            final_params = stage_last_params
+            final_metrics = stage_last_metrics
+        restored_params = final_params
 
         consumed_steps += local_trained
         if stage_index == len(stage_plan) - 1:
@@ -732,18 +950,60 @@ def main() -> None:
                 "trained_steps": local_trained,
                 "gate": stage["gate"],
                 "advanced": advanced,
+                "best_local_step": stage["best"]["step"],
+                "best_turns": (
+                    stage["best"]["rank"][0]
+                    if stage["best"]["rank"] is not None
+                    else None
+                ),
             }
         )
         model_io.save_params(
+            args.out / f"params_stage_{stage_index}_last",
+            stage_last_params,
+        )
+        if stage["best"]["params"] is not None:
+            model_io.save_params(
+                args.out / f"params_stage_{stage_index}_best",
+                stage["best"]["params"],
+            )
+        model_io.save_params(
             args.out / f"params_stage_{stage_index}_final",
             final_params,
+        )
+        selected_step = (
+            stage["best"]["step"]
+            if stage["best"]["step"] is not None
+            else int(stage["local_step"])
+        )
+        selected_turns = stage_history[-1]["best_turns"]
+        print(
+            f"[stage result {stage_index + 1}/{len(stage_plan)}]\n"
+            f"  trained={local_trained:,} "
+            f"last_step={int(stage['local_step']):,} "
+            f"selected_step={selected_step:,} "
+            f"best_turns="
+            f"{selected_turns if selected_turns is not None else float('nan'):+.3f}\n"
+            f"  action={'advance' if advanced else 'stop'} "
+            f"checkpoint=params_stage_{stage_index}_final",
+            flush=True,
         )
         if advanced:
             stage_index += 1
         else:
             break
 
-    last_trained_weight = stage_history[-1]["reference_weight"]
+    last_trained_stage_spec = _last_trained_stage_spec(
+        stage_plan, stage_history
+    )
+    last_trained_weight = last_trained_stage_spec["reference_weight"]
+    last_trained_reference = load_cem_reference(
+        args.controller,
+        reference_weight=last_trained_stage_spec["reference_weight"],
+        minimum_residual_gain=(
+            last_trained_stage_spec["minimum_residual_gain"]
+        ),
+    )
     reached_target_stage = target_stage_steps > 0
     curriculum_success = (
         reached_target_stage
@@ -787,7 +1047,9 @@ def main() -> None:
         "effective_budget_steps": effective_budget,
         "consumed_steps": consumed_steps,
         "final_reference_weight": last_trained_weight,
+        "final_residual_gain": last_trained_reference.residual_gain,
         "best_target_step": best_target["step"],
+        "best_target_turns": best_target["turns"],
         "best_target_score": (
             best_target["score"]
             if math.isfinite(best_target["score"])
@@ -814,16 +1076,18 @@ def main() -> None:
         f"consumed={consumed_steps:,}/{effective_budget:,}\n"
         f"  final_reference_weight="
         f"{last_trained_weight:.2f} "
+        f"final_residual_gain={last_trained_reference.residual_gain:.3f} "
         f"target_stage_steps={target_stage_steps:,}\n"
         f"  elapsed={elapsed / 60.0:.1f}min",
         flush=True,
     )
 
-    final_stage_spec = stage_plan[-1]
     evaluation_reference = load_cem_reference(
         args.controller,
-        reference_weight=final_stage_spec["reference_weight"],
-        minimum_residual_gain=final_stage_spec["minimum_residual_gain"],
+        reference_weight=last_trained_stage_spec["reference_weight"],
+        minimum_residual_gain=(
+            last_trained_stage_spec["minimum_residual_gain"]
+        ),
     )
     final_eval_env = make_brax_env(
         task,
@@ -832,26 +1096,63 @@ def main() -> None:
         seed=args.seed + 20_000,
     )
     evaluation_label = (
-        "retained-cem" if args.retain_cem else "zero-reference"
+        f"retained-cem scale={evaluation_reference.residual_gain:.3f}"
+        if args.retain_cem
+        else "zero-reference"
     )
     evaluation_dir = args.out / (
         "evaluation_retained_cem"
         if args.retain_cem
         else "evaluation_zero_reference"
     )
+    evaluation_params = (
+        best_target["params"]
+        if reached_target_stage and best_target["params"] is not None
+        else final_params
+    )
     evaluation = _evaluate_policy(
         final_eval_env,
         make_inference_fn,
-        (
-            best_target["params"]
-            if best_target["params"] is not None
-            else final_params
-        ),
+        evaluation_params,
         seed=args.seed + 20_000,
         episode_length=args.episode_length,
         output_dir=evaluation_dir,
     )
     print(_format_rollout_report(evaluation_label, evaluation), flush=True)
+    robust_evaluation = None
+    if args.robust_eval_envs > 0:
+        robust_evaluation = _evaluate_policy_distribution(
+            final_eval_env,
+            make_inference_fn,
+            evaluation_params,
+            seed=args.seed + 40_000,
+            episode_length=args.episode_length,
+            batch_size=args.robust_eval_envs,
+        )
+        robust_path = evaluation_dir / "robust_evaluation.json"
+        robust_path.write_text(
+            json.dumps(robust_evaluation, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        turns = robust_evaluation["turns"]
+        print(
+            "[robust evaluation]\n"
+            f"  scale={evaluation_reference.residual_gain:.3f} "
+            f"batch={args.robust_eval_envs} "
+            f"failure={robust_evaluation['failure_rate']:.1%}\n"
+            f"  turns mean={turns['mean']:+.3f} "
+            f"min={turns['min']:+.3f} p10={turns['p10']:+.3f} "
+            f"median={turns['median']:+.3f} "
+            f"p90={turns['p90']:+.3f} max={turns['max']:+.3f}\n"
+            f"  pushes/episode="
+            f"{robust_evaluation['disturbance_count']['mean']:.2f} "
+            f"output={robust_path.resolve()}",
+            flush=True,
+        )
+        summary["robust_evaluation"] = robust_evaluation
+        (args.out / "training_summary.json").write_text(
+            json.dumps(summary, indent=2) + "\n", encoding="utf-8"
+        )
     if not args.skip_visualization:
         try:
             from scripts.render_mjx_policy import render_rollout

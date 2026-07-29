@@ -36,6 +36,7 @@ class CEMReferenceConfig:
     coefficients: tuple[float, ...]
     oscillator_rate_rad_s: float
     oscillator_coupling_per_s: float
+    knee_bias_rad: float = 0.0
     reference_weight: float = 1.0
     minimum_residual_gain: float = 0.05
     source: str = ""
@@ -84,11 +85,14 @@ def load_cem_reference(
         oscillator_coupling_per_s=float(
             payload["oscillator_coupling_per_s"]
         ),
+        knee_bias_rad=float(payload.get("nominal_knee_bias_rad", 0.0)),
         reference_weight=float(reference_weight),
         minimum_residual_gain=float(minimum_residual_gain),
         source=str(path),
     )
     config.with_weight(config.reference_weight)
+    if not math.isfinite(config.knee_bias_rad):
+        raise ValueError(f"invalid CEM knee bias in {path}")
     residual_gain(config.reference_weight, config.minimum_residual_gain)
     return config
 
@@ -125,8 +129,12 @@ def reference_action(
     coefficients = xp.asarray(config.coefficients)
     sine = coefficients[0::2]
     cosine = coefficients[1::2]
+    nominal_offset = xp.asarray(
+        [0.0, config.knee_bias_rad, 0.0, config.knee_bias_rad]
+    )
     target = compact_ctrl + (
-        sine * xp.sin(oscillator_phase)
+        nominal_offset
+        + sine * xp.sin(oscillator_phase)
         + cosine * xp.cos(oscillator_phase)
     )
     target = xp.clip(target, joint_low, joint_high)
