@@ -14,7 +14,9 @@ from scripts.analyze_roll_phase import analyze_rigid_phase
 from scripts.optimize_phase_controller import (
     controller_targets,
     knee_bias_for_foot_gap,
+    project_targets_to_foot_gap,
     rollout_controller,
+    target_foot_center_distance,
 )
 from scripts.run_release_baseline import run_release
 
@@ -495,6 +497,22 @@ class ModelContractTest(unittest.TestCase):
         self.assertGreaterEqual(
             float(rollout.summary["minimum_foot_surface_gap_m"]),
             0.0019,
+        )
+
+    def test_target_projection_enforces_foot_gap_with_margin(self) -> None:
+        compact = np.asarray(
+            [
+                FIXED_PARAMETERS.compact_hip_angle,
+                FIXED_PARAMETERS.compact_knee_angle,
+                FIXED_PARAMETERS.compact_hip_angle,
+                FIXED_PARAMETERS.compact_knee_angle,
+            ]
+        )
+        projected = project_targets_to_foot_gap(compact, 0.002)
+
+        self.assertGreaterEqual(
+            target_foot_center_distance(projected),
+            2.0 * FIXED_PARAMETERS.foot_radius + 0.006 - 1.0e-6,
         )
 
 

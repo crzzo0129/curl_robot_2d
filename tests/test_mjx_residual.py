@@ -25,7 +25,10 @@ from scripts.train_mjx_residual_ppo import (
     _stage_plan,
     _target_eval_eligible,
 )
-from scripts.optimize_phase_controller import controller_targets
+from scripts.optimize_phase_controller import (
+    controller_targets,
+    knee_bias_for_foot_gap,
+)
 
 
 class MJXResidualTest(unittest.TestCase):
@@ -246,6 +249,47 @@ class MJXResidualTest(unittest.TestCase):
         np.testing.assert_allclose(
             compact + normalized * scales,
             [0.3, 0.99, 0.3, 0.99],
+        )
+
+    def test_projected_reference_matches_cpu_cem_target(self) -> None:
+        coefficients = np.asarray(
+            [-0.1, 0.04, 0.16, 0.82, -0.03, 0.60, -1.0, 0.54]
+        )
+        knee_bias = knee_bias_for_foot_gap(0.002)
+        reference = CEMReferenceConfig(
+            coefficients=tuple(coefficients),
+            oscillator_rate_rad_s=3.3,
+            oscillator_coupling_per_s=4.5,
+            knee_bias_rad=knee_bias,
+            minimum_foot_surface_gap_m=0.002,
+            foot_gap_tracking_margin_m=0.004,
+        )
+        compact = np.asarray(
+            [0.3141592654, 1.05650322, 0.3141592654, 1.05650322]
+        )
+        scales = np.asarray([0.8, 1.2, 0.8, 1.2])
+        phase = 0.7
+        expected = controller_targets(
+            0.0,
+            1.0,
+            coefficients,
+            control_phase=phase,
+            knee_bias_rad=knee_bias,
+            minimum_foot_surface_gap_m=0.002,
+            foot_gap_tracking_margin_m=0.004,
+        )
+        normalized = reference_action(
+            np,
+            phase,
+            reference,
+            compact_ctrl=compact,
+            action_scales=scales,
+            joint_low=np.asarray([-1.12, -0.61, -1.12, -0.61]),
+            joint_high=np.asarray([2.41, 2.69, 2.41, 2.69]),
+        )
+
+        np.testing.assert_allclose(
+            compact + normalized * scales, expected, atol=2.0e-5
         )
 
     def test_two_million_budget_and_gate_interval_are_fixed(self) -> None:

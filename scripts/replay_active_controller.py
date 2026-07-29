@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import math
 import time
@@ -13,9 +14,11 @@ import numpy as np
 from PIL import Image, ImageDraw
 
 from scripts.optimize_phase_controller import (
+    FOOT_GAP_TRACKING_MARGIN_M,
     PARAMETER_NAMES,
     controller_targets,
 )
+from curl_robot_2d.parameters import FIXED_PARAMETERS
 from scripts.run_release_baseline import JOINT_TARGETS, MODEL_PATH, _id
 
 
@@ -32,6 +35,12 @@ DEFAULT_GIF_PATH = (
 
 
 def load_controller(path: Path) -> tuple[np.ndarray, float, float]:
+    return load_controller_options(path)[:3]
+
+
+def load_controller_options(
+    path: Path,
+) -> tuple[np.ndarray, float, float, float, float, float]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     raw = payload["raw_coefficients"]
     coefficients = np.asarray([raw[name] for name in PARAMETER_NAMES], dtype=float)
@@ -39,11 +48,19 @@ def load_controller(path: Path) -> tuple[np.ndarray, float, float]:
         coefficients,
         float(payload["oscillator_rate_rad_s"]),
         float(payload["oscillator_coupling_per_s"]),
+        float(payload.get("minimum_foot_surface_gap_m", 0.0)),
+        float(
+            payload.get(
+                "foot_gap_tracking_margin_m", FOOT_GAP_TRACKING_MARGIN_M
+            )
+        ),
+        float(payload.get("nominal_knee_bias_rad", 0.0)),
     )
 
 
 def initialize_simulation(
     model: mujoco.MjModel,
+    minimum_foot_surface_gap_m: float = 0.0,
 ) -> tuple[mujoco.MjData, int, list[int]]:
     data = mujoco.MjData(model)
     compact_key_id = _id(model, mujoco.mjtObj.mjOBJ_KEY, "compact")
@@ -57,6 +74,22 @@ def initialize_simulation(
     ]
 
     mujoco.mj_resetDataKeyframe(model, data, compact_key_id)
+    if minimum_foot_surface_gap_m > 0.0:
+        separated = replace(
+            FIXED_PARAMETERS,
+            compact_foot_surface_gap=minimum_foot_surface_gap_m,
+        )
+        root_z_joint = _id(
+            model, mujoco.mjtObj.mjOBJ_JOINT, "root_z"
+        )
+        data.qpos[int(model.jnt_qposadr[root_z_joint])] = (
+            separated.compact_root_height
+        )
+        for joint_name in ("front_knee", "rear_knee"):
+            joint_id = _id(model, mujoco.mjtObj.mjOBJ_JOINT, joint_name)
+            data.qpos[int(model.jnt_qposadr[joint_id])] = (
+                separated.compact_knee_angle
+            )
     data.qvel[:] = 0.0
     model.opt.disableflags &= ~int(mujoco.mjtDisableBit.mjDSBL_ACTUATION)
     for root_joint_name in ("root_x", "root_z", "root_pitch"):
@@ -74,6 +107,9 @@ def advance_controller(
     oscillator_coupling: float,
     oscillator_phase: float,
     root_pitch_qpos_address: int,
+    minimum_foot_surface_gap_m: float = 0.0,
+    foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
+    knee_bias_rad: float = 0.0,
 ) -> float:
     phase = float(data.qpos[root_pitch_qpos_address])
     oscillator_phase_rate = oscillator_rate + oscillator_coupling * math.sin(
@@ -88,6 +124,9 @@ def advance_controller(
         coefficients,
         oscillator_rate=oscillator_rate,
         control_phase=oscillator_phase,
+        knee_bias_rad=knee_bias_rad,
+        minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
     )
     mujoco.mj_step(model, data)
     return oscillator_phase
@@ -117,11 +156,18 @@ def render_gif(
     camera_distance: float,
     diagnostics: bool,
 ) -> None:
-    coefficients, oscillator_rate, oscillator_coupling = load_controller(
-        controller_path
-    )
+    (
+        coefficients,
+        oscillator_rate,
+        oscillator_coupling,
+        minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m,
+        knee_bias_rad,
+    ) = load_controller_options(controller_path)
     model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
-    data, root_pitch_qpos_address, _ = initialize_simulation(model)
+    data, root_pitch_qpos_address, _ = initialize_simulation(
+        model, minimum_foot_surface_gap_m
+    )
     renderer = mujoco.Renderer(model, height=height, width=width)
     camera = mujoco.MjvCamera()
     configure_tracking_camera(model, camera, distance=camera_distance)
@@ -145,6 +191,9 @@ def render_gif(
                 oscillator_coupling,
                 oscillator_phase,
                 root_pitch_qpos_address,
+                minimum_foot_surface_gap_m,
+                foot_gap_tracking_margin_m,
+                knee_bias_rad,
             )
             if data.time + 1e-12 < next_frame_time:
                 continue
@@ -194,11 +243,18 @@ def launch_viewer(
 ) -> None:
     import mujoco.viewer
 
-    coefficients, oscillator_rate, oscillator_coupling = load_controller(
-        controller_path
-    )
+    (
+        coefficients,
+        oscillator_rate,
+        oscillator_coupling,
+        minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m,
+        knee_bias_rad,
+    ) = load_controller_options(controller_path)
     model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
-    data, root_pitch_qpos_address, _ = initialize_simulation(model)
+    data, root_pitch_qpos_address, _ = initialize_simulation(
+        model, minimum_foot_surface_gap_m
+    )
     oscillator_phase = 0.0
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -218,6 +274,9 @@ def launch_viewer(
                 oscillator_coupling,
                 oscillator_phase,
                 root_pitch_qpos_address,
+                minimum_foot_surface_gap_m,
+                foot_gap_tracking_margin_m,
+                knee_bias_rad,
             )
             viewer.sync()
             remaining = float(model.opt.timestep) - (

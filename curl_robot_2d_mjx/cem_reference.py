@@ -37,6 +37,8 @@ class CEMReferenceConfig:
     oscillator_rate_rad_s: float
     oscillator_coupling_per_s: float
     knee_bias_rad: float = 0.0
+    minimum_foot_surface_gap_m: float = 0.0
+    foot_gap_tracking_margin_m: float = 0.0
     reference_weight: float = 1.0
     minimum_residual_gain: float = 0.05
     source: str = ""
@@ -86,6 +88,12 @@ def load_cem_reference(
             payload["oscillator_coupling_per_s"]
         ),
         knee_bias_rad=float(payload.get("nominal_knee_bias_rad", 0.0)),
+        minimum_foot_surface_gap_m=float(
+            payload.get("minimum_foot_surface_gap_m", 0.0)
+        ),
+        foot_gap_tracking_margin_m=float(
+            payload.get("foot_gap_tracking_margin_m", 0.0)
+        ),
         reference_weight=float(reference_weight),
         minimum_residual_gain=float(minimum_residual_gain),
         source=str(path),
@@ -93,6 +101,8 @@ def load_cem_reference(
     config.with_weight(config.reference_weight)
     if not math.isfinite(config.knee_bias_rad):
         raise ValueError(f"invalid CEM knee bias in {path}")
+    if config.minimum_foot_surface_gap_m < 0.0:
+        raise ValueError(f"invalid CEM foot gap in {path}")
     residual_gain(config.reference_weight, config.minimum_residual_gain)
     return config
 
@@ -137,6 +147,54 @@ def reference_action(
         + sine * xp.sin(oscillator_phase)
         + cosine * xp.cos(oscillator_phase)
     )
+    if config.minimum_foot_surface_gap_m > 0.0:
+        length = 0.15
+        target_distance = (
+            0.0399
+            + config.minimum_foot_surface_gap_m
+            + config.foot_gap_tracking_margin_m
+        )
+        for _ in range(6):
+            front_hip, front_knee, rear_hip, rear_knee = target
+            delta_x = 0.15 + length * (
+                xp.sin(front_hip)
+                + xp.sin(front_hip - front_knee)
+                + xp.sin(rear_hip)
+                + xp.sin(rear_hip - rear_knee)
+            )
+            delta_z = length * (
+                -xp.cos(front_hip)
+                - xp.cos(front_knee - front_hip)
+                + xp.cos(rear_hip)
+                + xp.cos(rear_knee - rear_hip)
+            )
+            distance = xp.sqrt(delta_x * delta_x + delta_z * delta_z)
+            front_dx = -length * xp.cos(front_hip - front_knee)
+            front_dz = -length * xp.sin(front_knee - front_hip)
+            rear_dx = -length * xp.cos(rear_hip - rear_knee)
+            rear_dz = -length * xp.sin(rear_knee - rear_hip)
+            front_gradient = (
+                delta_x * front_dx + delta_z * front_dz
+            ) / xp.maximum(distance, 1.0e-6)
+            rear_gradient = (
+                delta_x * rear_dx + delta_z * rear_dz
+            ) / xp.maximum(distance, 1.0e-6)
+            gradient_norm_squared = (
+                front_gradient * front_gradient
+                + rear_gradient * rear_gradient
+            )
+            scale = xp.maximum(target_distance - distance, 0.0) / xp.maximum(
+                gradient_norm_squared, 1.0e-8
+            )
+            zero = xp.zeros_like(scale)
+            target = target + xp.stack(
+                (
+                    zero,
+                    xp.clip(scale * front_gradient, -0.20, 0.20),
+                    zero,
+                    xp.clip(scale * rear_gradient, -0.20, 0.20),
+                )
+            )
     target = xp.clip(target, joint_low, joint_high)
     return xp.clip((target - compact_ctrl) / action_scales, -1.0, 1.0)
 

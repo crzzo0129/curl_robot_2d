@@ -59,14 +59,16 @@ MAXIMUM_FORBIDDEN_PENETRATION_WEIGHT = 2500.0
 ALLOWED_PENETRATION_EXCESS_INTEGRAL_WEIGHT = 12000.0
 MAXIMUM_ALLOWED_PENETRATION_EXCESS_WEIGHT = 2500.0
 LEG_CROSSING_FAILURE_PENALTY = 1000.0
-FOOT_CONTACT_TIME_WEIGHT = 8.0
+FOOT_CONTACT_TIME_WEIGHT = 40.0
+LONGEST_FOOT_CONTACT_WEIGHT = 100.0
 FOOT_GAP_DEFICIT_INTEGRAL_WEIGHT = 3000.0
 MAXIMUM_FOOT_GAP_DEFICIT_WEIGHT = 1200.0
-FOOT_SURFACE_PENETRATION_WEIGHT = 50000.0
+FOOT_SURFACE_PENETRATION_WEIGHT = 5000.0
 FOOT_GAP_MAXIMUM_AIRBORNE_FRACTION = 0.14
 FOOT_GAP_MAXIMUM_FORBIDDEN_PENETRATION_M = 0.00065
 FOOT_GAP_AIRBORNE_EXCESS_WEIGHT = 200.0
 FOOT_GAP_FORBIDDEN_EXCESS_WEIGHT = 50000.0
+FOOT_GAP_TRACKING_MARGIN_M = 0.004
 
 
 @dataclass(frozen=True)
@@ -91,11 +93,17 @@ def _initialize_rollout_worker(model_path: str) -> None:
 
 
 def _rollout_worker(
-    task: tuple[np.ndarray, float, str, float],
+    task: tuple[np.ndarray, float, str, float, float],
 ) -> ControllerRollout:
     if _WORKER_MODEL is None:
         raise RuntimeError("rollout worker model was not initialized")
-    sample, duration, objective, minimum_foot_surface_gap_m = task
+    (
+        sample,
+        duration,
+        objective,
+        minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m,
+    ) = task
     return rollout_controller(
         _WORKER_MODEL,
         sample[:8],
@@ -104,6 +112,7 @@ def _rollout_worker(
         oscillator_coupling=float(sample[9]),
         objective=objective,
         minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
         detailed=False,
     )
 
@@ -118,6 +127,70 @@ def knee_bias_for_foot_gap(minimum_foot_surface_gap_m: float) -> float:
         compact_foot_surface_gap=minimum_foot_surface_gap_m,
     )
     return separated.compact_knee_angle - FIXED_PARAMETERS.compact_knee_angle
+
+
+def target_foot_center_distance(targets: np.ndarray) -> float:
+    """Return planar foot-center distance for four effective joint targets."""
+
+    front_hip, front_knee, rear_hip, rear_knee = map(float, targets)
+    length = FIXED_PARAMETERS.edge_length
+    delta_x = FIXED_PARAMETERS.torso_length + length * (
+        math.sin(front_hip)
+        + math.sin(front_hip - front_knee)
+        + math.sin(rear_hip)
+        + math.sin(rear_hip - rear_knee)
+    )
+    delta_z = length * (
+        -math.cos(front_hip)
+        - math.cos(front_knee - front_hip)
+        + math.cos(rear_hip)
+        + math.cos(rear_knee - rear_hip)
+    )
+    return math.hypot(delta_x, delta_z)
+
+
+def project_targets_to_foot_gap(
+    targets: np.ndarray,
+    minimum_foot_surface_gap_m: float,
+    *,
+    tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
+) -> np.ndarray:
+    """Minimally shift both knee targets away from foot-foot contact."""
+
+    if minimum_foot_surface_gap_m <= 0.0:
+        return targets
+    projected = np.asarray(targets, dtype=float).copy()
+    target_distance = (
+        2.0 * FIXED_PARAMETERS.foot_radius
+        + minimum_foot_surface_gap_m
+        + tracking_margin_m
+    )
+    epsilon = 1.0e-5
+    for _ in range(6):
+        distance = target_foot_center_distance(projected)
+        deficit = target_distance - distance
+        if deficit <= 1.0e-7:
+            break
+        gradient = np.zeros(2, dtype=float)
+        for gradient_index, joint_index in enumerate((1, 3)):
+            perturbed = projected.copy()
+            perturbed[joint_index] += epsilon
+            gradient[gradient_index] = (
+                target_foot_center_distance(perturbed) - distance
+            ) / epsilon
+        gradient_norm_squared = float(gradient @ gradient)
+        if gradient_norm_squared < 1.0e-10:
+            break
+        correction = deficit * gradient / gradient_norm_squared
+        projected[1] += float(np.clip(correction[0], -0.20, 0.20))
+        projected[3] += float(np.clip(correction[1], -0.20, 0.20))
+        projected[1] = float(
+            np.clip(projected[1], *FIXED_PARAMETERS.knee.safe_range)
+        )
+        projected[3] = float(
+            np.clip(projected[3], *FIXED_PARAMETERS.knee.safe_range)
+        )
+    return projected
 
 
 def _joint_setup(model: mujoco.MjModel) -> list[tuple[str, float, int, int, int]]:
@@ -218,6 +291,8 @@ def controller_targets(
     control_phase: float | None = None,
     ramp_duration: float = 0.25,
     knee_bias_rad: float = 0.0,
+    minimum_foot_surface_gap_m: float = 0.0,
+    foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
 ) -> np.ndarray:
     if coefficients.shape != (8,):
         raise ValueError("phase controller requires 8 coefficients")
@@ -246,7 +321,11 @@ def controller_targets(
             else FIXED_PARAMETERS.knee.shell_compatible_range
         )
         targets.append(float(np.clip(target, *safe_range)))
-    return np.asarray(targets)
+    return project_targets_to_foot_gap(
+        np.asarray(targets),
+        minimum_foot_surface_gap_m,
+        tracking_margin_m=foot_gap_tracking_margin_m,
+    )
 
 
 def rollout_controller(
@@ -258,6 +337,7 @@ def rollout_controller(
     oscillator_coupling: float = 0.0,
     objective: str = "sustained",
     minimum_foot_surface_gap_m: float = 0.0,
+    foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
     detailed: bool = False,
 ) -> ControllerRollout:
     if objective not in {"barrier", "sustained"}:
@@ -457,6 +537,8 @@ def rollout_controller(
         oscillator_rate=oscillator_rate,
         control_phase=oscillator_phase if oscillator_rate is not None else None,
         knee_bias_rad=knee_bias_rad,
+        minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
     )
     data.ctrl[:] = initial_targets
     if detailed:
@@ -481,6 +563,8 @@ def rollout_controller(
                 oscillator_phase if oscillator_rate is not None else None
             ),
             knee_bias_rad=knee_bias_rad,
+            minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
+            foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
         )
         data.ctrl[:] = targets
         mujoco.mj_step(model, data)
@@ -646,6 +730,9 @@ def rollout_controller(
     foot_contact_time = foot_contact_steps * timestep
     foot_separation_penalty = (
         FOOT_CONTACT_TIME_WEIGHT * foot_contact_time
+        + LONGEST_FOOT_CONTACT_WEIGHT
+        * longest_foot_contact_steps
+        * timestep
         + FOOT_GAP_DEFICIT_INTEGRAL_WEIGHT * foot_gap_deficit_integral
         + MAXIMUM_FOOT_GAP_DEFICIT_WEIGHT * maximum_foot_gap_deficit
         + FOOT_SURFACE_PENETRATION_WEIGHT
@@ -821,6 +908,7 @@ def optimize_controller(
     initial_parameters: np.ndarray | None = None,
     workers: int = 1,
     minimum_foot_surface_gap_m: float = 0.0,
+    foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
 ) -> tuple[np.ndarray, list[dict[str, float | int | str]], ControllerRollout]:
     if not 1 <= elite_count <= population:
         raise ValueError("elite_count must be between 1 and population")
@@ -897,6 +985,9 @@ def optimize_controller(
                         minimum_foot_surface_gap_m=(
                             minimum_foot_surface_gap_m
                         ),
+                        foot_gap_tracking_margin_m=(
+                            foot_gap_tracking_margin_m
+                        ),
                         detailed=False,
                     )
                     for sample in samples
@@ -908,6 +999,7 @@ def optimize_controller(
                         rollout_duration,
                         objective,
                         minimum_foot_surface_gap_m,
+                        foot_gap_tracking_margin_m,
                     )
                     for sample in samples
                 ]
@@ -1008,6 +1100,7 @@ def optimize_controller(
 def _coefficient_summary(
     parameters: np.ndarray,
     minimum_foot_surface_gap_m: float = 0.0,
+    foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
 ) -> dict[str, object]:
     coefficients = parameters[:8]
     raw = {
@@ -1034,6 +1127,7 @@ def _coefficient_summary(
         "nominal_knee_bias_rad": knee_bias_for_foot_gap(
             minimum_foot_surface_gap_m
         ),
+        "foot_gap_tracking_margin_m": foot_gap_tracking_margin_m,
         "raw_coefficients": raw,
         "joint_sinusoid": joints,
         "collision_objective": {
@@ -1058,6 +1152,7 @@ def _coefficient_summary(
             ),
             "leg_crossing_failure_penalty": LEG_CROSSING_FAILURE_PENALTY,
             "foot_contact_time_weight": FOOT_CONTACT_TIME_WEIGHT,
+            "longest_foot_contact_weight": LONGEST_FOOT_CONTACT_WEIGHT,
             "foot_gap_deficit_integral_weight": (
                 FOOT_GAP_DEFICIT_INTEGRAL_WEIGHT
             ),
@@ -1073,6 +1168,7 @@ def _coefficient_summary(
             "maximum_forbidden_penetration_m": (
                 FOOT_GAP_MAXIMUM_FORBIDDEN_PENETRATION_M
             ),
+            "tracking_margin_m": foot_gap_tracking_margin_m,
         },
     }
 
@@ -1293,13 +1389,18 @@ def write_outputs(
     baseline: ControllerRollout,
     controlled: ControllerRollout,
     minimum_foot_surface_gap_m: float = 0.0,
+    foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
 ) -> tuple[Path, ...]:
     output_dir.mkdir(parents=True, exist_ok=True)
     controller_path = output_dir / "best_phase_controller.json"
     history_path = output_dir / "cem_history.csv"
     rollout_path = output_dir / "best_rollout.csv"
     plot_path = output_dir / "best_rollout.png"
-    payload = _coefficient_summary(parameters, minimum_foot_surface_gap_m)
+    payload = _coefficient_summary(
+        parameters,
+        minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m,
+    )
     payload["rollout_summary"] = controlled.summary
     controller_path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
@@ -1327,6 +1428,12 @@ def main() -> None:
         default=0.0,
         help="Minimum desired foot surface gap after the startup ramp.",
     )
+    parser.add_argument(
+        "--foot-gap-tracking-margin-mm",
+        type=float,
+        default=1000.0 * FOOT_GAP_TRACKING_MARGIN_M,
+        help="Extra target gap used to cover servo tracking error.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--initial-controller",
@@ -1337,7 +1444,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.minimum_foot_gap_mm < 0.0:
         parser.error("--minimum-foot-gap-mm cannot be negative")
+    if args.foot_gap_tracking_margin_mm < 0.0:
+        parser.error("--foot-gap-tracking-margin-mm cannot be negative")
     minimum_foot_surface_gap_m = args.minimum_foot_gap_mm / 1000.0
+    foot_gap_tracking_margin_m = (
+        args.foot_gap_tracking_margin_mm / 1000.0
+    )
 
     initial_parameters = (
         _load_controller_parameters(args.initial_controller)
@@ -1354,6 +1466,7 @@ def main() -> None:
         initial_parameters=initial_parameters,
         workers=args.workers,
         minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
     )
     baseline_model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
     baseline = rollout_controller(
@@ -1370,6 +1483,7 @@ def main() -> None:
         oscillator_rate=float(parameters[8]),
         oscillator_coupling=float(parameters[9]),
         minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
         detailed=True,
     )
     outputs = write_outputs(
@@ -1379,6 +1493,7 @@ def main() -> None:
         baseline,
         controlled,
         minimum_foot_surface_gap_m,
+        foot_gap_tracking_margin_m,
     )
 
     print("best_parameters=" + np.array2string(parameters, precision=6))

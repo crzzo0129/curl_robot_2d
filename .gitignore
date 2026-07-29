@@ -3,4 +3,4 @@ __pycache__/
 .pytest_cache/
 renders/
 *.log
-walking_*/
+results/walking*/

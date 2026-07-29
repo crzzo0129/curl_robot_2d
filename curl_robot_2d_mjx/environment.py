@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import numpy as np
 
+from curl_robot_2d.parameters import FIXED_PARAMETERS
 from curl_robot_2d_mjx.cem_reference import (
     CEMReferenceConfig,
     advance_oscillator,
@@ -217,6 +219,38 @@ def make_brax_env(
             self.force_limits = jp.asarray(
                 np.abs(self.mj_model.actuator_forcerange[:, 1])
             )
+            if reference_settings is not None:
+                bias_reference = replace(
+                    reference_settings, coefficients=(0.0,) * 8
+                )
+                bias_action = reference_action(
+                    np,
+                    0.0,
+                    bias_reference,
+                    compact_ctrl=np.asarray(self.mj_model.key_ctrl[compact_key_id]),
+                    action_scales=np.asarray(task.action_scales),
+                    joint_low=np.asarray(self.joint_low),
+                    joint_high=np.asarray(self.joint_high),
+                )
+                self.reference_bias_action = jp.asarray(bias_action)
+                weighted_bias = reference_settings.reference_weight * bias_action
+                start_ctrl = (
+                    np.asarray(self.mj_model.key_ctrl[compact_key_id])
+                    + weighted_bias * np.asarray(task.action_scales)
+                )
+                self.reference_start_ctrl = jp.asarray(start_ctrl)
+                self.reference_start_root_z = float(
+                    FIXED_PARAMETERS.leg_extension_height(
+                        float(start_ctrl[0]), float(start_ctrl[1])
+                    )
+                    + FIXED_PARAMETERS.foot_radius
+                )
+            else:
+                self.reference_bias_action = jp.zeros(4, dtype=jp.float32)
+                self.reference_start_ctrl = self.compact_ctrl
+                self.reference_start_root_z = float(
+                    self.mj_model.key_qpos[compact_key_id, self.root_z_qpos]
+                )
 
             self.floor_geom_id = object_id(
                 mujoco.mjtObj.mjOBJ_GEOM, "floor"
@@ -331,10 +365,13 @@ def make_brax_env(
                 minval=-1.0,
                 maxval=1.0,
             )
-            qpos = self.compact_qpos.at[self.joint_qpos_indices].add(
-                joint_noise
+            qpos = self.compact_qpos.at[self.joint_qpos_indices].set(
+                self.reference_start_ctrl + joint_noise
             )
             qpos = qpos.at[self.root_x_qpos].set(0.0)
+            qpos = qpos.at[self.root_z_qpos].set(
+                self.reference_start_root_z
+            )
             qvel = velocity_noise
             target = jp.clip(
                 qpos[self.joint_qpos_indices],
@@ -348,7 +385,12 @@ def make_brax_env(
             )
             data = mjx.forward(self.mjx_model, data)
             contacts = self._contact_metrics(data)
-            last_action = jp.zeros(4)
+            last_action = (
+                reference_settings.reference_weight
+                * self.reference_bias_action
+                if reference_settings is not None
+                else jp.zeros(4)
+            )
             oscillator_phase = jp.zeros((), dtype=jp.float32)
             if reference_settings is not None:
                 cem_action = reference_action(
@@ -498,11 +540,18 @@ def make_brax_env(
                         current_data.time,
                         task.startup_action_ramp_s,
                     )
-                    current_action = current_ramp * effective_residual_action(
+                    effective_action = effective_residual_action(
                         jp,
                         policy_action,
                         current_reference_action,
                         reference_settings,
+                    )
+                    retained_bias_action = (
+                        reference_settings.reference_weight
+                        * self.reference_bias_action
+                    )
+                    current_action = retained_bias_action + current_ramp * (
+                        effective_action - retained_bias_action
                     )
                     current_target = jp.clip(
                         self.compact_ctrl
