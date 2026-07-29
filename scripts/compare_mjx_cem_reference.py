@@ -92,6 +92,16 @@ def parse_args(argv=None):
         help="Ablation cases to run; use '--cases D' for the training default.",
     )
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--environment-seed",
+        type=int,
+        help="Environment fold-in seed; defaults to --seed.",
+    )
+    parser.add_argument(
+        "--rollout-seed",
+        type=int,
+        help="Reset-key seed; defaults to --seed.",
+    )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--memory-fraction", type=float, default=0.50)
     parser.add_argument(
@@ -205,15 +215,20 @@ def _run_case(
     task,
     reference,
     batch_size,
-    seed,
+    environment_seed,
+    rollout_seed,
 ):
     import jax
     import jax.numpy as jp
 
     from curl_robot_2d_mjx.environment import make_brax_env
 
-    env = make_brax_env(task, cem_reference=reference, seed=seed)
-    keys = jax.random.split(jax.random.PRNGKey(seed), batch_size)
+    env = make_brax_env(
+        task, cem_reference=reference, seed=environment_seed
+    )
+    keys = jax.random.split(
+        jax.random.PRNGKey(rollout_seed), batch_size
+    )
     reset_batch = jax.jit(jax.vmap(env.reset))
 
     def step_one(state, action, active):
@@ -337,6 +352,8 @@ def _run_case(
     result = {
         "name": name,
         "batch_size": batch_size,
+        "environment_seed": environment_seed,
+        "rollout_seed": rollout_seed,
         "elapsed_s": elapsed_s,
         "task": asdict(task),
         "phase_turns": _distribution(arrays["phase_turns"]),
@@ -426,6 +443,14 @@ def main(argv=None) -> None:
         raise SystemExit("--episode-length must be at least 1")
     if args.noise_seeds < 1:
         raise SystemExit("--noise-seeds must be at least 1")
+    environment_seed = (
+        args.seed
+        if args.environment_seed is None
+        else args.environment_seed
+    )
+    rollout_seed = (
+        args.seed if args.rollout_seed is None else args.rollout_seed
+    )
 
     configure_cloud_runtime(
         memory_fraction=args.memory_fraction,
@@ -516,6 +541,8 @@ def main(argv=None) -> None:
         f"level_probabilities="
         f"{args.disturbance_level_probabilities} "
         f"backward={args.disturbance_backward_probability:.0%}\n"
+        f"  seeds environment={environment_seed} "
+        f"rollout={rollout_seed}\n"
         f"  policy_action=0 residual_gain=0 "
         f"controller={reference.source}",
         flush=True,
@@ -527,7 +554,8 @@ def main(argv=None) -> None:
             task=task,
             reference=reference,
             batch_size=batch_size,
-            seed=args.seed,
+            environment_seed=environment_seed,
+            rollout_seed=rollout_seed,
         )
         for name, task, batch_size in cases
     ]

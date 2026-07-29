@@ -164,6 +164,8 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(args.disturbance_level_scales, [1.0])
         self.assertEqual(args.disturbance_level_probabilities, [1.0])
         self.assertEqual(args.disturbance_backward_probability, 0.5)
+        self.assertIsNone(args.environment_seed)
+        self.assertIsNone(args.rollout_seed)
 
     def test_cem_reference_ablation_accepts_disturbances(self) -> None:
         args = compare_mjx_cem_reference.parse_args(
@@ -184,6 +186,10 @@ class MJXContractTest(unittest.TestCase):
                 "0.1",
                 "--disturbance-backward-probability",
                 "0.2",
+                "--environment-seed",
+                "20000",
+                "--rollout-seed",
+                "40000",
                 "--cases",
                 "D",
             ]
@@ -197,6 +203,8 @@ class MJXContractTest(unittest.TestCase):
             args.disturbance_level_probabilities, [0.6, 0.3, 0.1]
         )
         self.assertEqual(args.disturbance_backward_probability, 0.2)
+        self.assertEqual(args.environment_seed, 20000)
+        self.assertEqual(args.rollout_seed, 40000)
         self.assertEqual(args.cases, ["D"])
 
     def test_root_damping_can_match_cpu_cem_runtime(self) -> None:
