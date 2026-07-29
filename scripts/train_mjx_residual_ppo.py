@@ -232,6 +232,17 @@ def _distribution_summary(values):
     }
 
 
+def _value_fractions(values):
+    import numpy as np
+
+    array = np.asarray(values, dtype=np.float64)
+    unique, counts = np.unique(array, return_counts=True)
+    return {
+        f"{value:g}": float(count / array.size)
+        for value, count in zip(unique, counts)
+    }
+
+
 def _evaluate_policy_distribution(
     env,
     make_inference_fn,
@@ -310,6 +321,18 @@ def _evaluate_policy_distribution(
         "disturbance_count": np.asarray(
             jax.device_get(disturbance_count)
         ),
+        "disturbance_scheduled": np.asarray(
+            jax.device_get(state.info["disturbance_scheduled"])
+        ),
+        "disturbance_scale": np.asarray(
+            jax.device_get(state.info["disturbance_scale"])
+        ),
+        "disturbance_root_x_velocity_m_s": np.asarray(
+            jax.device_get(state.info["disturbance_root_x_velocity"])
+        ),
+        "disturbance_root_pitch_velocity_rad_s": np.asarray(
+            jax.device_get(state.info["disturbance_root_pitch_velocity"])
+        ),
     }
     return {
         "batch_size": batch_size,
@@ -320,6 +343,15 @@ def _evaluate_policy_distribution(
         "disturbance_count": _distribution_summary(
             arrays["disturbance_count"]
         ),
+        "disturbance_scheduled": _distribution_summary(
+            arrays["disturbance_scheduled"]
+        ),
+        "disturbance_scale": _distribution_summary(
+            arrays["disturbance_scale"]
+        ),
+        "disturbance_scale_fractions": _value_fractions(
+            arrays["disturbance_scale"]
+        ),
         "failure_rate": float(np.mean(arrays["failed"])),
         "samples": [
             {
@@ -329,6 +361,20 @@ def _evaluate_policy_distribution(
                 "failed": bool(arrays["failed"][index]),
                 "disturbance_count": float(
                     arrays["disturbance_count"][index]
+                ),
+                "disturbance_scheduled": bool(
+                    arrays["disturbance_scheduled"][index]
+                ),
+                "disturbance_scale": float(
+                    arrays["disturbance_scale"][index]
+                ),
+                "disturbance_root_x_velocity_m_s": float(
+                    arrays["disturbance_root_x_velocity_m_s"][index]
+                ),
+                "disturbance_root_pitch_velocity_rad_s": float(
+                    arrays[
+                        "disturbance_root_pitch_velocity_rad_s"
+                    ][index]
                 ),
             }
             for index in range(batch_size)
@@ -375,6 +421,22 @@ def _parse_args(argv=None):
         type=float,
         default=0.0,
         help="Maximum signed root-pitch velocity impulse in rad/s per episode.",
+    )
+    parser.add_argument("--disturbance-probability", type=float, default=1.0)
+    parser.add_argument(
+        "--disturbance-level-scales",
+        type=float,
+        nargs="+",
+        default=[1.0],
+    )
+    parser.add_argument(
+        "--disturbance-level-probabilities",
+        type=float,
+        nargs="+",
+        default=[1.0],
+    )
+    parser.add_argument(
+        "--disturbance-backward-probability", type=float, default=0.5
     )
     parser.add_argument("--disturbance-min-step", type=int, default=100)
     parser.add_argument("--disturbance-max-step", type=int, default=400)
@@ -469,6 +531,16 @@ def _parse_args(argv=None):
                 disturbance_root_pitch_velocity_rad_s=(
                     args.disturbance_root_pitch_velocity
                 ),
+                disturbance_probability=args.disturbance_probability,
+                disturbance_level_scales=tuple(
+                    args.disturbance_level_scales
+                ),
+                disturbance_level_probabilities=tuple(
+                    args.disturbance_level_probabilities
+                ),
+                disturbance_backward_probability=(
+                    args.disturbance_backward_probability
+                ),
                 disturbance_min_step=args.disturbance_min_step,
                 disturbance_max_step=args.disturbance_max_step,
             )
@@ -537,6 +609,16 @@ def main() -> None:
             disturbance_root_pitch_velocity_rad_s=(
                 args.disturbance_root_pitch_velocity
             ),
+            disturbance_probability=args.disturbance_probability,
+            disturbance_level_scales=tuple(
+                args.disturbance_level_scales
+            ),
+            disturbance_level_probabilities=tuple(
+                args.disturbance_level_probabilities
+            ),
+            disturbance_backward_probability=(
+                args.disturbance_backward_probability
+            ),
             disturbance_min_step=args.disturbance_min_step,
             disturbance_max_step=args.disturbance_max_step,
         ),
@@ -599,6 +681,12 @@ def main() -> None:
         f"{task.disturbance_root_pitch_velocity_rad_s:g}rad/s "
         f"step=[{task.disturbance_min_step},"
         f"{task.disturbance_max_step}]\n"
+        f"  disturbance_mix probability="
+        f"{task.disturbance_probability:.0%} "
+        f"scales={list(task.disturbance_level_scales)} "
+        f"level_probabilities="
+        f"{list(task.disturbance_level_probabilities)} "
+        f"backward={task.disturbance_backward_probability:.0%}\n"
         f"  gate survival>={args.gate_min_survival:.0%} "
         f"stage_turns>={args.gate_min_turns:g} "
         f"target_turns>={args.target_min_turns:g} "
@@ -1163,6 +1251,12 @@ def main() -> None:
             encoding="utf-8",
         )
         turns = robust_evaluation["turns"]
+        scale_mix = " ".join(
+            f"{scale}={fraction:.1%}"
+            for scale, fraction in robust_evaluation[
+                "disturbance_scale_fractions"
+            ].items()
+        )
         print(
             "[robust evaluation]\n"
             f"  scale={evaluation_reference.residual_gain:.3f} "
@@ -1174,6 +1268,7 @@ def main() -> None:
             f"p90={turns['p90']:+.3f} max={turns['max']:+.3f}\n"
             f"  pushes/episode="
             f"{robust_evaluation['disturbance_count']['mean']:.2f} "
+            f"mix[{scale_mix}] "
             f"output={robust_path.resolve()}",
             flush=True,
         )

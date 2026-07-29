@@ -110,8 +110,11 @@ def make_brax_env(
     task = config or NominalRLConfig()
     validate_nominal_rl_config(task)
     disturbance_enabled = (
-        task.disturbance_root_x_velocity_m_s > 0.0
-        or task.disturbance_root_pitch_velocity_rad_s > 0.0
+        task.disturbance_probability > 0.0
+        and (
+            task.disturbance_root_x_velocity_m_s > 0.0
+            or task.disturbance_root_pitch_velocity_rad_s > 0.0
+        )
     )
     jax, jp, mujoco, mjx, Env, State = _load_dependencies()
     reward_settings = reward_config or RollingRewardConfig()
@@ -340,7 +343,10 @@ def make_brax_env(
                 velocity_key,
                 disturbance_step_key,
                 disturbance_value_key,
-            ) = jax.random.split(rng, 4)
+                disturbance_schedule_key,
+                disturbance_level_key,
+                disturbance_direction_key,
+            ) = jax.random.split(rng, 7)
             joint_noise = jax.random.uniform(
                 joint_key,
                 shape=(4,),
@@ -362,8 +368,29 @@ def make_brax_env(
             disturbance_values = jax.random.uniform(
                 disturbance_value_key,
                 shape=(2,),
-                minval=-1.0,
+                minval=0.0,
                 maxval=1.0,
+            )
+            disturbance_scheduled = jax.random.bernoulli(
+                disturbance_schedule_key,
+                p=task.disturbance_probability,
+            )
+            disturbance_level_index = jax.random.categorical(
+                disturbance_level_key,
+                jp.log(jp.asarray(task.disturbance_level_probabilities)),
+            )
+            sampled_disturbance_scale = jp.asarray(
+                task.disturbance_level_scales
+            )[disturbance_level_index]
+            disturbance_scale = jp.where(
+                disturbance_scheduled, sampled_disturbance_scale, 0.0
+            )
+            disturbance_backward = jax.random.bernoulli(
+                disturbance_direction_key,
+                p=task.disturbance_backward_probability,
+            )
+            disturbance_x_sign = jp.where(
+                disturbance_backward, -1.0, 1.0
             )
             qpos = self.compact_qpos.at[self.joint_qpos_indices].set(
                 self.reference_start_ctrl + joint_noise
@@ -427,12 +454,17 @@ def make_brax_env(
                 ),
                 "step_count": jp.asarray(0, dtype=jp.int32),
                 "disturbance_step": disturbance_step,
+                "disturbance_scheduled": disturbance_scheduled,
+                "disturbance_scale": disturbance_scale,
                 "disturbance_root_x_velocity": (
-                    disturbance_values[0]
+                    disturbance_x_sign
+                    * disturbance_values[0]
+                    * disturbance_scale
                     * task.disturbance_root_x_velocity_m_s
                 ),
                 "disturbance_root_pitch_velocity": (
-                    disturbance_values[1]
+                    (2.0 * disturbance_values[1] - 1.0)
+                    * disturbance_scale
                     * task.disturbance_root_pitch_velocity_rad_s
                 ),
             }
@@ -474,7 +506,11 @@ def make_brax_env(
                 jp, elapsed_s, task.startup_action_ramp_s
             )
             disturbance_applied = jp.asarray(disturbance_enabled) & (
-                state.info["step_count"] == state.info["disturbance_step"]
+                state.info["disturbance_scheduled"]
+                & (
+                    state.info["step_count"]
+                    == state.info["disturbance_step"]
+                )
             )
             disturbed_qvel = state.pipeline_state.qvel
             disturbed_qvel = disturbed_qvel.at[self.root_x_dof].add(

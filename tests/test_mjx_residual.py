@@ -42,6 +42,18 @@ class MJXResidualTest(unittest.TestCase):
                 "0.2",
                 "--disturbance-root-pitch-velocity",
                 "0.8",
+                "--disturbance-probability",
+                "0.5",
+                "--disturbance-level-scales",
+                "0.5",
+                "1.0",
+                "1.5",
+                "--disturbance-level-probabilities",
+                "0.6",
+                "0.3",
+                "0.1",
+                "--disturbance-backward-probability",
+                "0.2",
                 "--disturbance-min-step",
                 "100",
                 "--disturbance-max-step",
@@ -51,8 +63,17 @@ class MJXResidualTest(unittest.TestCase):
 
         self.assertEqual(defaults.disturbance_root_x_velocity, 0.0)
         self.assertEqual(defaults.disturbance_root_pitch_velocity, 0.0)
+        self.assertEqual(defaults.disturbance_probability, 1.0)
         self.assertEqual(disturbed.disturbance_root_x_velocity, 0.2)
         self.assertEqual(disturbed.disturbance_root_pitch_velocity, 0.8)
+        self.assertEqual(disturbed.disturbance_probability, 0.5)
+        self.assertEqual(
+            disturbed.disturbance_level_scales, [0.5, 1.0, 1.5]
+        )
+        self.assertEqual(
+            disturbed.disturbance_level_probabilities, [0.6, 0.3, 0.1]
+        )
+        self.assertEqual(disturbed.disturbance_backward_probability, 0.2)
 
     def test_target_gate_defaults_to_stage_gate_but_can_be_stricter(self) -> None:
         defaults = _parse_args(["--retain-cem", "--gate-min-turns", "7.0"])

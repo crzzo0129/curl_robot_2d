@@ -256,6 +256,34 @@ python -m scripts.train_mjx_residual_ppo \
   --out results/mjx_cem_residual_push_smoke_seed0
 ```
 
+### 混合扰动分布
+
+默认行为保持兼容：只要扰动幅度非零，每个 episode 都会在指定时间窗内接受一次
+单等级扰动。训练真实工况时，可以将采样拆成三层：
+
+1. `--disturbance-probability` 决定本 episode 是否施加扰动；
+2. `--disturbance-level-scales` 和
+   `--disturbance-level-probabilities` 决定扰动等级；
+3. `--disturbance-backward-probability` 决定 root-x 冲击向后的概率，俯仰冲击
+   仍保持正负对称。
+
+例如基准幅度为 `1 m/s` 和 `3 rad/s`，等级 scale 为
+`0.5/1.0/1.5`。当总扰动概率为 `0.5`、等级条件概率为
+`0.6/0.3/0.1` 时，总体分布就是 `50%` 无扰动、`30%` mild、
+`15%` medium、`5%` strong。再将向后概率设为 `0.2`，强向后冲击只占
+所有 episode 的约 `1%`。
+
+```bash
+  --disturbance-root-x-velocity 1.00 \
+  --disturbance-root-pitch-velocity 3.00 \
+  --disturbance-probability 0.50 \
+  --disturbance-level-scales 0.50 1.00 1.50 \
+  --disturbance-level-probabilities 0.60 0.30 0.10 \
+  --disturbance-backward-probability 0.20 \
+  --disturbance-min-step 100 \
+  --disturbance-max-step 400
+```
+
 这项扰动是一次瞬时速度冲击，用于训练恢复能力；它还不是坡度、摩擦、质量或
 质心的 terrain/model randomization。
 

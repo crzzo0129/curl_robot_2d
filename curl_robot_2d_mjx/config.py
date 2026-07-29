@@ -41,6 +41,10 @@ class NominalRLConfig:
     reset_velocity_noise: float = 0.01
     disturbance_root_x_velocity_m_s: float = 0.0
     disturbance_root_pitch_velocity_rad_s: float = 0.0
+    disturbance_probability: float = 1.0
+    disturbance_level_scales: tuple[float, ...] = (1.0,)
+    disturbance_level_probabilities: tuple[float, ...] = (1.0,)
+    disturbance_backward_probability: float = 0.5
     disturbance_min_step: int = 100
     disturbance_max_step: int = 400
     # The CPU CEM and release evaluators model the planar root as free and
@@ -73,13 +77,45 @@ def validate_nominal_rl_config(config: NominalRLConfig) -> None:
     )
     if any(not math.isfinite(value) or value < 0.0 for value in amplitudes):
         raise ValueError("disturbance velocity limits must be finite and nonnegative")
+    probabilities = (
+        config.disturbance_probability,
+        config.disturbance_backward_probability,
+    )
+    if any(
+        not math.isfinite(value) or not 0.0 <= value <= 1.0
+        for value in probabilities
+    ):
+        raise ValueError("disturbance probabilities must be finite and in [0, 1]")
+    level_scales = config.disturbance_level_scales
+    level_probabilities = config.disturbance_level_probabilities
+    if not level_scales or len(level_scales) != len(level_probabilities):
+        raise ValueError(
+            "disturbance level scales and probabilities must have the same "
+            "nonzero length"
+        )
+    if any(
+        not math.isfinite(value) or value <= 0.0 for value in level_scales
+    ):
+        raise ValueError("disturbance level scales must be finite and positive")
+    if any(
+        not math.isfinite(value) or value <= 0.0
+        for value in level_probabilities
+    ):
+        raise ValueError(
+            "disturbance level probabilities must be finite and positive"
+        )
+    if not math.isclose(sum(level_probabilities), 1.0, abs_tol=1.0e-6):
+        raise ValueError("disturbance level probabilities must sum to 1")
     if config.disturbance_min_step < 0:
         raise ValueError("disturbance_min_step must be nonnegative")
     if config.disturbance_max_step < config.disturbance_min_step:
         raise ValueError(
             "disturbance_max_step must be at least disturbance_min_step"
         )
-    if any(value > 0.0 for value in amplitudes):
+    if (
+        config.disturbance_probability > 0.0
+        and any(value > 0.0 for value in amplitudes)
+    ):
         if config.disturbance_max_step >= config.episode_length:
             raise ValueError(
                 "disturbance_max_step must be smaller than episode_length "

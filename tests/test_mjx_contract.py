@@ -43,6 +43,10 @@ class MJXContractTest(unittest.TestCase):
         self.assertTrue(config.disable_root_damping)
         self.assertEqual(config.disturbance_root_x_velocity_m_s, 0.0)
         self.assertEqual(config.disturbance_root_pitch_velocity_rad_s, 0.0)
+        self.assertEqual(config.disturbance_probability, 1.0)
+        self.assertEqual(config.disturbance_level_scales, (1.0,))
+        self.assertEqual(config.disturbance_level_probabilities, (1.0,))
+        self.assertEqual(config.disturbance_backward_probability, 0.5)
         self.assertIsNone(config.terminate_root_z_min)
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
@@ -67,6 +71,32 @@ class MJXContractTest(unittest.TestCase):
                     disturbance_max_step=100,
                 )
             )
+
+    def test_disturbance_mixture_validation(self) -> None:
+        validate_nominal_rl_config(
+            NominalRLConfig(
+                disturbance_root_x_velocity_m_s=1.0,
+                disturbance_probability=0.5,
+                disturbance_level_scales=(0.5, 1.0, 1.5),
+                disturbance_level_probabilities=(0.6, 0.3, 0.1),
+                disturbance_backward_probability=0.2,
+            )
+        )
+        invalid = (
+            {"disturbance_probability": 1.1},
+            {"disturbance_backward_probability": -0.1},
+            {
+                "disturbance_level_scales": (0.5, 1.0),
+                "disturbance_level_probabilities": (1.0,),
+            },
+            {
+                "disturbance_level_scales": (0.5, 1.0),
+                "disturbance_level_probabilities": (0.5, 0.4),
+            },
+        )
+        for values in invalid:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                validate_nominal_rl_config(NominalRLConfig(**values))
 
     def test_startup_action_ramp_matches_cem_smoothstep(self) -> None:
         elapsed = np.asarray([0.0, 0.125, 0.25, 0.5])
@@ -130,6 +160,10 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(tuple(args.cases), ("A", "B", "C", "D"))
         self.assertEqual(args.disturbance_root_x_velocity, 0.0)
         self.assertEqual(args.disturbance_root_pitch_velocity, 0.0)
+        self.assertEqual(args.disturbance_probability, 1.0)
+        self.assertEqual(args.disturbance_level_scales, [1.0])
+        self.assertEqual(args.disturbance_level_probabilities, [1.0])
+        self.assertEqual(args.disturbance_backward_probability, 0.5)
 
     def test_cem_reference_ablation_accepts_disturbances(self) -> None:
         args = compare_mjx_cem_reference.parse_args(
@@ -138,6 +172,18 @@ class MJXContractTest(unittest.TestCase):
                 "0.2",
                 "--disturbance-root-pitch-velocity",
                 "0.8",
+                "--disturbance-probability",
+                "0.5",
+                "--disturbance-level-scales",
+                "0.5",
+                "1.0",
+                "1.5",
+                "--disturbance-level-probabilities",
+                "0.6",
+                "0.3",
+                "0.1",
+                "--disturbance-backward-probability",
+                "0.2",
                 "--cases",
                 "D",
             ]
@@ -145,6 +191,12 @@ class MJXContractTest(unittest.TestCase):
 
         self.assertEqual(args.disturbance_root_x_velocity, 0.2)
         self.assertEqual(args.disturbance_root_pitch_velocity, 0.8)
+        self.assertEqual(args.disturbance_probability, 0.5)
+        self.assertEqual(args.disturbance_level_scales, [0.5, 1.0, 1.5])
+        self.assertEqual(
+            args.disturbance_level_probabilities, [0.6, 0.3, 0.1]
+        )
+        self.assertEqual(args.disturbance_backward_probability, 0.2)
         self.assertEqual(args.cases, ["D"])
 
     def test_root_damping_can_match_cpu_cem_runtime(self) -> None:

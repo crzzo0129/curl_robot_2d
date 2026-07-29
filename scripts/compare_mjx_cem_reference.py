@@ -60,6 +60,22 @@ def parse_args(argv=None):
     parser.add_argument(
         "--disturbance-root-pitch-velocity", type=float, default=0.0
     )
+    parser.add_argument("--disturbance-probability", type=float, default=1.0)
+    parser.add_argument(
+        "--disturbance-level-scales",
+        type=float,
+        nargs="+",
+        default=[1.0],
+    )
+    parser.add_argument(
+        "--disturbance-level-probabilities",
+        type=float,
+        nargs="+",
+        default=[1.0],
+    )
+    parser.add_argument(
+        "--disturbance-backward-probability", type=float, default=0.5
+    )
     parser.add_argument("--disturbance-min-step", type=int, default=100)
     parser.add_argument("--disturbance-max-step", type=int, default=400)
     parser.add_argument(
@@ -94,6 +110,16 @@ def parse_args(argv=None):
                 disturbance_root_pitch_velocity_rad_s=(
                     args.disturbance_root_pitch_velocity
                 ),
+                disturbance_probability=args.disturbance_probability,
+                disturbance_level_scales=tuple(
+                    args.disturbance_level_scales
+                ),
+                disturbance_level_probabilities=tuple(
+                    args.disturbance_level_probabilities
+                ),
+                disturbance_backward_probability=(
+                    args.disturbance_backward_probability
+                ),
                 disturbance_min_step=args.disturbance_min_step,
                 disturbance_max_step=args.disturbance_max_step,
             )
@@ -117,7 +143,16 @@ def _distribution(values) -> dict[str, float]:
     }
 
 
-def _run_cpu_reference(task, controller_path) -> dict[str, object]:
+def _value_fractions(values) -> dict[str, float]:
+    array = np.asarray(values, dtype=np.float64)
+    unique, counts = np.unique(array, return_counts=True)
+    return {
+        f"{value:g}": float(count / array.size)
+        for value, count in zip(unique, counts)
+    }
+
+
+def _run_cpu_reference(task, controller_path, reference) -> dict[str, object]:
     import mujoco
 
     from curl_robot_2d_mjx.environment import MODEL_PATH, apply_physics_options
@@ -137,6 +172,12 @@ def _run_cpu_reference(task, controller_path) -> dict[str, object]:
         oscillator_rate=float(parameters[8]),
         oscillator_coupling=float(parameters[9]),
         objective="sustained",
+        minimum_foot_surface_gap_m=(
+            reference.minimum_foot_surface_gap_m
+        ),
+        foot_gap_tracking_margin_m=(
+            reference.foot_gap_tracking_margin_m
+        ),
         detailed=False,
     )
     elapsed_s = time.perf_counter() - start
@@ -273,6 +314,12 @@ def _run_case(
         "disturbance_root_pitch_velocity_rad_s": np.asarray(
             jax.device_get(state.info["disturbance_root_pitch_velocity"])
         ),
+        "disturbance_scheduled": np.asarray(
+            jax.device_get(state.info["disturbance_scheduled"])
+        ),
+        "disturbance_scale": np.asarray(
+            jax.device_get(state.info["disturbance_scale"])
+        ),
         "failed": np.asarray(jax.device_get(state.metrics["failed"])),
         "failure_root_high": np.asarray(
             jax.device_get(state.metrics["failure_root_high"])
@@ -323,6 +370,15 @@ def _run_case(
         "disturbance_root_pitch_velocity_rad_s": _distribution(
             arrays["disturbance_root_pitch_velocity_rad_s"]
         ),
+        "disturbance_scheduled": _distribution(
+            arrays["disturbance_scheduled"]
+        ),
+        "disturbance_scale": _distribution(
+            arrays["disturbance_scale"]
+        ),
+        "disturbance_scale_fractions": _value_fractions(
+            arrays["disturbance_scale"]
+        ),
         "average_steps": _mean(arrays["steps"]),
         "failure_rate": _mean(arrays["failed"]),
         "failure_rates": {
@@ -344,6 +400,12 @@ def _run_case(
     }
     turns = result["conservative_turns"]
     displacement = result["root_x_displacement_m"]
+    scale_mix = " ".join(
+        f"{scale}={fraction:.1%}"
+        for scale, fraction in result[
+            "disturbance_scale_fractions"
+        ].items()
+    )
     print(
         f"[{name}] batch={batch_size} "
         f"turns={turns['mean']:+.3f} "
@@ -351,6 +413,7 @@ def _run_case(
         f"x={displacement['mean']:+.3f}m "
         f"failed={result['failure_rate']:.1%} "
         f"pushes={result['disturbance_count']['mean']:.2f}/episode "
+        f"mix[{scale_mix}] "
         f"wall={elapsed_s:.1f}s",
         flush=True,
     )
@@ -383,6 +446,16 @@ def main(argv=None) -> None:
             ),
             disturbance_root_pitch_velocity_rad_s=(
                 args.disturbance_root_pitch_velocity
+            ),
+            disturbance_probability=args.disturbance_probability,
+            disturbance_level_scales=tuple(
+                args.disturbance_level_scales
+            ),
+            disturbance_level_probabilities=tuple(
+                args.disturbance_level_probabilities
+            ),
+            disturbance_backward_probability=(
+                args.disturbance_backward_probability
             ),
             disturbance_min_step=args.disturbance_min_step,
             disturbance_max_step=args.disturbance_max_step,
@@ -437,11 +510,17 @@ def main(argv=None) -> None:
         f"{args.disturbance_root_pitch_velocity:g}rad/s "
         f"step=[{args.disturbance_min_step},"
         f"{args.disturbance_max_step}]\n"
+        f"  disturbance_mix probability="
+        f"{args.disturbance_probability:.0%} "
+        f"scales={args.disturbance_level_scales} "
+        f"level_probabilities="
+        f"{args.disturbance_level_probabilities} "
+        f"backward={args.disturbance_backward_probability:.0%}\n"
         f"  policy_action=0 residual_gain=0 "
         f"controller={reference.source}",
         flush=True,
     )
-    cpu_reference = _run_cpu_reference(base_task, args.controller)
+    cpu_reference = _run_cpu_reference(base_task, args.controller, reference)
     results = [
         _run_case(
             name=name,
