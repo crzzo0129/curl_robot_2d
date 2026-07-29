@@ -14,6 +14,7 @@ from curl_robot_2d_mjx.cem_reference import (
     reference_action,
 )
 from scripts.train_mjx_residual_ppo import (
+    _can_advance_stage,
     _distribution_summary,
     _eval_visualization_dir,
     _exact_stage_eval_schedule,
@@ -122,6 +123,20 @@ class MJXResidualTest(unittest.TestCase):
         self.assertTrue(_safe_stage_checkpoint(gate))
         gate["checks"]["failure_rate"] = False
         self.assertFalse(_safe_stage_checkpoint(gate))
+
+    def test_stage_can_advance_from_earlier_best_after_minimum_budget(self) -> None:
+        waiting = {"passed": False}
+        passed = {"passed": True}
+
+        self.assertFalse(
+            _can_advance_stage(0, 4, 32_768, 65_536, waiting, passed)
+        )
+        self.assertTrue(
+            _can_advance_stage(0, 4, 65_536, 65_536, waiting, passed)
+        )
+        self.assertFalse(
+            _can_advance_stage(3, 4, 65_536, 65_536, passed, passed)
+        )
 
     def test_failed_curriculum_evaluates_last_trained_scale(self) -> None:
         plan = [

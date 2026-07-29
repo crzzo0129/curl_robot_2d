@@ -191,6 +191,24 @@ def _safe_stage_checkpoint(gate):
     )
 
 
+def _can_advance_stage(
+    stage_index,
+    stage_count,
+    local_step,
+    minimum_stage_steps,
+    current_gate,
+    best_gate,
+):
+    return (
+        stage_index < stage_count - 1
+        and int(local_step) >= minimum_stage_steps
+        and (
+            current_gate["passed"]
+            or (best_gate is not None and best_gate["passed"])
+        )
+    )
+
+
 def _last_trained_stage_spec(stage_plan, stage_history):
     if not stage_history:
         raise ValueError("stage history is empty")
@@ -867,12 +885,22 @@ def main() -> None:
                 f"missing={','.join(failed_checks) or 'none'}",
                 flush=True,
             )
-            can_advance = (
-                stage_index < len(stage_plan) - 1
-                and int(local_step) >= args.minimum_stage_steps
-                and gate["passed"]
+            can_advance = _can_advance_stage(
+                stage_index,
+                len(stage_plan),
+                local_step,
+                args.minimum_stage_steps,
+                gate,
+                stage["best"]["gate"],
             )
             if can_advance:
+                if not gate["passed"]:
+                    print(
+                        "  curriculum advance_from_best "
+                        f"step={stage['best']['step']:,} "
+                        f"turns={stage['best']['rank'][0]:+.3f}",
+                        flush=True,
+                    )
                 raise _AdvanceCurriculum
 
         train_kwargs = {}
