@@ -120,7 +120,11 @@ PER_STEP_EVAL_METRICS = (
     "forbidden_contact_count",
     "forbidden_penetration_m",
     "allowed_foot_penetration_m",
+    "foot_contact_active",
+    "foot_contact_start",
     "ground_contact_count",
+    "root_low_active",
+    "root_low_step_count",
     "roll_progress_rad",
     "phase_progress_rad",
     "translation_progress_rad",
@@ -539,6 +543,15 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-minibatches", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
+    parser.add_argument("--terminate-root-z-min", type=float, default=0.05)
+    parser.add_argument(
+        "--terminate-root-z-low-duration", type=float, default=0.30
+    )
+    parser.add_argument(
+        "--no-root-low-termination",
+        action="store_true",
+        help="Disable continuous low-root termination for compatibility runs.",
+    )
     parser.add_argument("--unroll-length", type=int, default=20)
     parser.add_argument("--updates-per-batch", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -667,7 +680,17 @@ def main() -> None:
         )
     task = physics_profile(
         args.physics_profile,
-        NominalRLConfig(episode_length=args.episode_length),
+        NominalRLConfig(
+            episode_length=args.episode_length,
+            terminate_root_z_min=(
+                None
+                if args.no_root_low_termination
+                else args.terminate_root_z_min
+            ),
+            terminate_root_z_low_duration_s=(
+                args.terminate_root_z_low_duration
+            ),
+        ),
     )
     reward_config = _reward_config_from_args(args)
     train_env = make_brax_env(
@@ -788,6 +811,14 @@ def main() -> None:
         json.dumps(asdict(reward_config), indent=2) + "\n",
         encoding="utf-8",
     )
+    root_low_text = (
+        "disabled"
+        if task.terminate_root_z_min is None
+        else (
+            f"{task.terminate_root_z_min:g}m/"
+            f"{task.terminate_root_z_low_duration_s:g}s"
+        )
+    )
 
     print(
         "[training]\n"
@@ -803,7 +834,8 @@ def main() -> None:
         f"batch={values['batch_size']} "
         f"minibatches={values['num_minibatches']}\n"
         f"  root_damping="
-        f"{'disabled' if task.disable_root_damping else 'xml'}\n"
+        f"{'disabled' if task.disable_root_damping else 'xml'} "
+        f"root_low={root_low_text}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  reward roll={reward_config.roll_progress:g} "

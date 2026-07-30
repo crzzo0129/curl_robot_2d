@@ -37,8 +37,11 @@ def zero_inputs():
         "forbidden_max_increment": zero,
         "allowed_excess": zero,
         "allowed_max_increment": zero,
+        "allowed_contact_active": zero,
+        "allowed_contact_start": zero,
         "leg_crossing": zero,
         "failed": zero,
+        "failure_root_low": zero,
         "remaining_fraction": zero,
     }
 
@@ -113,6 +116,45 @@ class MJXRewardTest(unittest.TestCase):
             float(terms["termination"]), -config.termination
         )
         self.assertAlmostEqual(float(terms["collision"]), 0.0)
+
+    def test_foot_contact_event_and_dwell_penalties(self) -> None:
+        config = RollingRewardConfig(
+            foot_contact_event=2.0,
+            foot_contact_time=4.0,
+            allowed_excess_integral=8000.0,
+            maximum_allowed_excess=2000.0,
+        )
+        inputs = zero_inputs()
+        inputs["allowed_contact_active"] = np.asarray(
+            1.0, dtype=np.float32
+        )
+        inputs["allowed_contact_start"] = np.asarray(
+            1.0, dtype=np.float32
+        )
+        inputs["allowed_excess"] = np.asarray(0.0005, dtype=np.float32)
+        inputs["allowed_max_increment"] = np.asarray(
+            0.0005, dtype=np.float32
+        )
+
+        collision = reward_terms(np, config, inputs)["collision"]
+
+        self.assertAlmostEqual(float(collision), -3.16, places=5)
+
+    def test_root_low_failure_adds_strong_terminal_penalty(self) -> None:
+        config = RollingRewardConfig(
+            termination=5.0,
+            early_termination_scale=1.0,
+            root_low_extra_termination=35.0,
+        )
+        inputs = zero_inputs()
+        inputs["failed"] = np.asarray(1.0, dtype=np.float32)
+        inputs["failure_root_low"] = np.asarray(1.0, dtype=np.float32)
+        inputs["remaining_fraction"] = np.asarray(1.0, dtype=np.float32)
+
+        terms = reward_terms(np, config, inputs)
+
+        self.assertEqual(float(terms["termination"]), -40.0)
+        self.assertEqual(float(terms["early_termination"]), -40.0)
 
     def test_residual_action_cost_is_explicit_and_optional(self) -> None:
         inputs = zero_inputs()

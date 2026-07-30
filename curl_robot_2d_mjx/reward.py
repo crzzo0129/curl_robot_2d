@@ -45,12 +45,20 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
         * inputs["control_dt"]
         + config.maximum_forbidden_penetration
         * inputs["forbidden_max_increment"]
+        + config.foot_contact_event
+        * inputs["allowed_contact_start"]
+        + config.foot_contact_time
+        * inputs["control_dt"]
+        * inputs["allowed_contact_active"]
         + config.allowed_excess_integral
         * inputs["allowed_excess"]
         * inputs["control_dt"]
         + config.maximum_allowed_excess
         * inputs["allowed_max_increment"]
         + config.leg_crossing * inputs["leg_crossing"]
+    )
+    termination_penalty = config.termination + (
+        config.root_low_extra_termination * inputs["failure_root_low"]
     )
     return {
         "roll_progress": config.roll_progress * clipped_progress,
@@ -72,9 +80,9 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
             )
         ),
         "collision": -collision_cost,
-        "termination": -config.termination * inputs["failed"],
+        "termination": -termination_penalty * inputs["failed"],
         "early_termination": (
-            -config.termination
+            -termination_penalty
             * config.early_termination_scale
             * inputs["remaining_fraction"]
             * inputs["failed"]

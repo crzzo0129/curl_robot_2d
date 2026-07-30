@@ -48,9 +48,13 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(config.disturbance_level_probabilities, (1.0,))
         self.assertEqual(config.disturbance_backward_probability, 0.5)
         self.assertIsNone(config.terminate_root_z_min)
+        self.assertEqual(config.terminate_root_z_low_duration_s, 0.30)
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
+        self.assertEqual(reward.foot_contact_event, 2.0)
+        self.assertEqual(reward.foot_contact_time, 4.0)
         self.assertEqual(reward.termination, 5.0)
+        self.assertEqual(reward.root_low_extra_termination, 35.0)
         self.assertEqual(reward.early_termination_scale, 1.0)
 
     def test_disturbance_configuration_requires_valid_episode_step(self) -> None:
@@ -71,6 +75,25 @@ class MJXContractTest(unittest.TestCase):
                     disturbance_max_step=100,
                 )
             )
+
+    def test_root_low_termination_configuration_is_validated(self) -> None:
+        validate_nominal_rl_config(
+            NominalRLConfig(
+                terminate_root_z_min=0.05,
+                terminate_root_z_low_duration_s=0.30,
+            )
+        )
+        invalid = (
+            {"terminate_root_z_min": -0.01},
+            {"terminate_root_z_min": float("nan")},
+            {
+                "terminate_root_z_min": 0.05,
+                "terminate_root_z_low_duration_s": 0.0,
+            },
+        )
+        for values in invalid:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                validate_nominal_rl_config(NominalRLConfig(**values))
 
     def test_disturbance_mixture_validation(self) -> None:
         validate_nominal_rl_config(
@@ -252,7 +275,11 @@ class MJXContractTest(unittest.TestCase):
             "forbidden_contact_count",
             "forbidden_penetration_m",
             "allowed_foot_penetration_m",
+            "foot_contact_active",
+            "foot_contact_start",
             "leg_crossing",
+            "root_low_active",
+            "root_low_step_count",
             "failure_nonfinite_action",
             "failure_nonfinite_physics",
             "failure_root_low",

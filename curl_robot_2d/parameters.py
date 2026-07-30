@@ -253,5 +253,11 @@ class FixedParameters:
         )
         return max(front_height, rear_height) + self.foot_radius
 
+    @property
+    def side_rail_half_width(self) -> float:
+        """Half-width of the first 3-D curl side-rail layout."""
+
+        return self.source_torso_width / 2.0
+
 
 FIXED_PARAMETERS = FixedParameters()

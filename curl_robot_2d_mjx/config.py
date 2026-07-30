@@ -55,6 +55,7 @@ class NominalRLConfig:
     # collision-constrained CEM baseline reaches 0.0437 m once per turn, so a
     # fixed lower-height termination would reject known-good behavior.
     terminate_root_z_min: float | None = None
+    terminate_root_z_low_duration_s: float = 0.30
     terminate_root_z_max: float = 0.70
     maximum_foot_center_distance_m: float = 0.28
 
@@ -112,6 +113,19 @@ def validate_nominal_rl_config(config: NominalRLConfig) -> None:
         raise ValueError(
             "disturbance_max_step must be at least disturbance_min_step"
         )
+    if config.terminate_root_z_min is not None:
+        if (
+            not math.isfinite(config.terminate_root_z_min)
+            or config.terminate_root_z_min < 0.0
+        ):
+            raise ValueError("terminate_root_z_min must be finite and nonnegative")
+        if (
+            not math.isfinite(config.terminate_root_z_low_duration_s)
+            or config.terminate_root_z_low_duration_s <= 0.0
+        ):
+            raise ValueError(
+                "terminate_root_z_low_duration_s must be finite and positive"
+            )
     if (
         config.disturbance_probability > 0.0
         and any(value > 0.0 for value in amplitudes)

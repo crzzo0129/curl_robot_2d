@@ -280,6 +280,18 @@ def make_brax_env(
                 )
             }
             self.rolling_radius = 0.147547621252806
+            if task.terminate_root_z_min is None:
+                self.root_low_termination_steps = 1
+            else:
+                self.root_low_termination_steps = max(
+                    1,
+                    int(
+                        np.ceil(
+                            task.terminate_root_z_low_duration_s
+                            / task.control_timestep
+                        )
+                    ),
+                )
 
         @property
         def observation_size(self):
@@ -312,9 +324,13 @@ def make_brax_env(
                 "forbidden_contact_count": zero,
                 "forbidden_penetration_m": zero,
                 "allowed_foot_penetration_m": zero,
+                "foot_contact_active": zero,
+                "foot_contact_start": zero,
                 "ground_contact_count": zero,
                 "leg_crossing": zero,
                 "root_height_m": zero,
+                "root_low_active": zero,
+                "root_low_step_count": zero,
                 "foot_center_distance_m": zero,
                 "action_rms": zero,
                 "action_rate_rms": zero,
@@ -452,6 +468,10 @@ def make_brax_env(
                 "maximum_allowed_excess": jp.zeros(
                     (), dtype=jp.float32
                 ),
+                "previous_foot_contact": (
+                    contacts["allowed_count"] > 0
+                ),
+                "root_low_step_count": jp.asarray(0, dtype=jp.int32),
                 "step_count": jp.asarray(0, dtype=jp.int32),
                 "disturbance_step": disturbance_step,
                 "disturbance_scheduled": disturbance_scheduled,
@@ -714,6 +734,10 @@ def make_brax_env(
                 - reward_settings.allowed_foot_penetration_m,
                 0.0,
             )
+            allowed_contact_active = contacts["allowed_count"] > 0
+            allowed_contact_start = allowed_contact_active & (
+                ~state.info["previous_foot_contact"]
+            )
             new_forbidden_max = jp.maximum(
                 state.info["maximum_forbidden_penetration"],
                 forbidden_depth,
@@ -732,11 +756,20 @@ def make_brax_env(
             failure_nonfinite_action = ~action_finite
             failure_nonfinite_physics = action_finite & (~physics_finite)
             failure_nonfinite = ~transition_finite
-            failure_root_low = (
-                jp.asarray(False)
-                if task.terminate_root_z_min is None
-                else root_z < task.terminate_root_z_min
-            )
+            if task.terminate_root_z_min is None:
+                root_low_active = jp.asarray(False)
+                root_low_step_count = jp.asarray(0, dtype=jp.int32)
+                failure_root_low = jp.asarray(False)
+            else:
+                root_low_active = root_z < task.terminate_root_z_min
+                root_low_step_count = jp.where(
+                    root_low_active,
+                    state.info["root_low_step_count"] + 1,
+                    jp.asarray(0, dtype=jp.int32),
+                )
+                failure_root_low = (
+                    root_low_step_count >= self.root_low_termination_steps
+                )
             failure_root_high = root_z > task.terminate_root_z_max
             failure_foot_gap = (
                 foot_distance > task.maximum_foot_center_distance_m
@@ -778,8 +811,17 @@ def make_brax_env(
                     ),
                     "allowed_excess": allowed_excess,
                     "allowed_max_increment": allowed_max_increment,
+                    "allowed_contact_active": (
+                        allowed_contact_active.astype(jp.float32)
+                    ),
+                    "allowed_contact_start": (
+                        allowed_contact_start.astype(jp.float32)
+                    ),
                     "leg_crossing": leg_crossing.astype(jp.float32),
                     "failed": failed_bool.astype(jp.float32),
+                    "failure_root_low": failure_root_low.astype(
+                        jp.float32
+                    ),
                     "remaining_fraction": remaining_fraction,
                 },
             )
@@ -834,6 +876,8 @@ def make_brax_env(
                 "oscillator_phase": oscillator_phase,
                 "maximum_forbidden_penetration": new_forbidden_max,
                 "maximum_allowed_excess": new_allowed_max,
+                "previous_foot_contact": allowed_contact_active,
+                "root_low_step_count": root_low_step_count,
                 "step_count": step_count,
             }
             metrics = {
@@ -848,9 +892,19 @@ def make_brax_env(
                 ],
                 "forbidden_penetration_m": forbidden_depth,
                 "allowed_foot_penetration_m": contacts["allowed_depth"],
+                "foot_contact_active": (
+                    allowed_contact_active.astype(jp.float32)
+                ),
+                "foot_contact_start": (
+                    allowed_contact_start.astype(jp.float32)
+                ),
                 "ground_contact_count": contacts["ground_count"],
                 "leg_crossing": leg_crossing.astype(jp.float32),
                 "root_height_m": root_z,
+                "root_low_active": root_low_active.astype(jp.float32),
+                "root_low_step_count": (
+                    root_low_step_count.astype(jp.float32)
+                ),
                 "foot_center_distance_m": foot_distance,
                 "action_rms": jp.sqrt(jp.mean(jp.square(action))),
                 "action_rate_rms": jp.sqrt(action_rate),
