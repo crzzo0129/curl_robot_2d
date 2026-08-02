@@ -63,6 +63,42 @@ PRESETS = {
     },
 }
 
+RECIPES_3D = {
+    "anchored_v1": {
+        "description": "Original conservative CEM-anchored residual run.",
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.05,
+            "phase_rate_scale": 1.0,
+            "learning_rate": 3e-4,
+            "entropy_cost": 1e-2,
+        },
+        "reward": {},
+    },
+    "push_v2": {
+        "description": (
+            "Give residual enough authority and make forward rolling dominate "
+            "the early learning signal."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.30,
+            "phase_rate_scale": 1.0,
+            "learning_rate": 1e-4,
+            "entropy_cost": 3e-3,
+        },
+        "reward": {
+            "roll_progress": 12.0,
+            "roll_mismatch": 0.25,
+            "backward": 0.4,
+            "lateral_drift": 2.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.01,
+            "residual_action": 0.003,
+        },
+    },
+}
+
 PER_STEP_EVAL_METRICS_3D = (
     "root_x_m",
     "root_y_m",
@@ -115,11 +151,15 @@ def _add_reward_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _reward_config_from_args(args) -> Rolling3DRewardConfig:
-    overrides = {
-        field.name: value
-        for field in fields(Rolling3DRewardConfig)
-        if (value := getattr(args, f"reward_{field.name}", None)) is not None
-    }
+    overrides = dict(RECIPES_3D[args.recipe]["reward"])
+    overrides.update(
+        {
+            field.name: value
+            for field in fields(Rolling3DRewardConfig)
+            if (value := getattr(args, f"reward_{field.name}", None))
+            is not None
+        }
+    )
     return replace(Rolling3DRewardConfig(), **overrides)
 
 
@@ -147,7 +187,7 @@ def _metric(metrics, name, default=0.0):
     return float(metrics.get(name, default))
 
 
-def _checkpoint_selection_3d(metrics, episode_length):
+def _checkpoint_selection_3d(metrics, episode_length, *, target_turns=1.0):
     """Score eval points by 3-D physical behavior, not raw reward scale."""
 
     average_length = metrics.get("eval/avg_episode_length", 0.0)
@@ -160,7 +200,7 @@ def _checkpoint_selection_3d(metrics, episode_length):
     forbidden_contact = metrics.get("eval/avg_forbidden_contact_count", math.inf)
     survival = min(max(average_length / episode_length, 0.0), 1.0)
     turns = roll_total / (2.0 * math.pi)
-    progress_quality = min(max(turns / 3.0, -1.0), 1.0)
+    progress_quality = min(max(turns / target_turns, -1.0), 1.0)
     nonfailure_quality = 1.0 - min(max(failed_rate, 0.0), 1.0)
     lateral_quality = 1.0 - min(max(lateral_drift / 0.05, 0.0), 1.0)
     tilt_quality = 1.0 - min(max(axis_tilt / 0.25, 0.0), 1.0)
@@ -170,8 +210,8 @@ def _checkpoint_selection_3d(metrics, episode_length):
         1.0,
     )
     score = (
-        0.40 * survival
-        + 0.30 * progress_quality
+        0.25 * survival
+        + 0.45 * progress_quality
         + 0.10 * nonfailure_quality
         + 0.10 * lateral_quality
         + 0.05 * tilt_quality
@@ -497,6 +537,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--preset", choices=tuple(PRESETS), default="smoke")
     parser.add_argument(
+        "--recipe",
+        choices=tuple(RECIPES_3D),
+        default="anchored_v1",
+        help=(
+            "3-D training recipe. anchored_v1 reproduces the first run; "
+            "push_v2 is the recommended next attempt."
+        ),
+    )
+    parser.add_argument(
         "--physics-profile",
         choices=PHYSICS_PROFILE_NAMES_3D,
         default="cg12",
@@ -532,13 +581,13 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0.20,
     )
     parser.add_argument("--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER)
-    parser.add_argument("--reference-weight", type=float, default=1.0)
-    parser.add_argument("--minimum-residual-gain", type=float, default=0.05)
-    parser.add_argument("--phase-rate-scale", type=float, default=1.0)
+    parser.add_argument("--reference-weight", type=float)
+    parser.add_argument("--minimum-residual-gain", type=float)
+    parser.add_argument("--phase-rate-scale", type=float)
     parser.add_argument("--unroll-length", type=int, default=20)
     parser.add_argument("--updates-per-batch", type=int, default=4)
-    parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--entropy-cost", type=float, default=1e-2)
+    parser.add_argument("--learning-rate", type=float)
+    parser.add_argument("--entropy-cost", type=float)
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--reward-scaling", type=float, default=1.0)
     parser.add_argument(
@@ -584,18 +633,46 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Explicitly allow writing into a non-empty output directory.",
     )
+    parser.add_argument(
+        "--save-ppo-checkpoints",
+        action="store_true",
+        help=(
+            "Save Brax/Orbax checkpoints during training. This is disabled "
+            "by default because those checkpoints can exceed tight disk quotas."
+        ),
+    )
+    parser.add_argument(
+        "--ppo-checkpoint-dir",
+        type=Path,
+        help=(
+            "Optional directory for periodic Brax/Orbax checkpoints. "
+            "Requires --save-ppo-checkpoints."
+        ),
+    )
     parser.add_argument("--skip-evaluation", action="store_true")
+    parser.add_argument("--selection-target-turns", type=float, default=1.0)
     _add_reward_arguments(parser)
     return parser
+
+
+def _apply_recipe_defaults(args) -> None:
+    for name, value in RECIPES_3D[args.recipe]["args"].items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
 
 
 def parse_args(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
+    _apply_recipe_defaults(args)
     if not 0.0 <= args.reference_weight <= 1.0:
         parser.error("--reference-weight must be in [0, 1]")
     if not 0.0 <= args.minimum_residual_gain <= 1.0:
         parser.error("--minimum-residual-gain must be in [0, 1]")
+    if args.ppo_checkpoint_dir is not None and not args.save_ppo_checkpoints:
+        parser.error("--ppo-checkpoint-dir requires --save-ppo-checkpoints")
+    if args.selection_target_turns <= 0.0:
+        parser.error("--selection-target-turns must be positive")
     for name in (
         "episode_length",
         "unroll_length",
@@ -741,7 +818,11 @@ def main(argv=None) -> None:
         if reward is not None and reward > reward_peak["reward"]:
             reward_peak["reward"] = reward
             reward_peak["step"] = int(step)
-        selection = _checkpoint_selection_3d(clean, args.episode_length)
+        selection = _checkpoint_selection_3d(
+            clean,
+            args.episode_length,
+            target_turns=args.selection_target_turns,
+        )
         selected = (
             not selection["rejected"]
             and selection["score"] > best["score"]
@@ -769,6 +850,7 @@ def main(argv=None) -> None:
 
     config_payload = {
         "preset": args.preset,
+        "recipe": args.recipe,
         **values,
         "episode_length": args.episode_length,
         "unroll_length": args.unroll_length,
@@ -785,6 +867,12 @@ def main(argv=None) -> None:
             if args.restore_checkpoint is not None
             else None
         ),
+        "save_ppo_checkpoints": args.save_ppo_checkpoints,
+        "ppo_checkpoint_dir": (
+            str(args.ppo_checkpoint_dir)
+            if args.ppo_checkpoint_dir is not None
+            else None
+        ),
         "task": asdict(task),
         "reward": asdict(reward_config),
         "reference": asdict(reference),
@@ -792,11 +880,11 @@ def main(argv=None) -> None:
         "evaluation": {"skip": args.skip_evaluation},
         "checkpoint_selection": {
             "description": (
-                "0.40 survival + 0.30 forward turns + 0.10 non-failure + "
+                "0.25 survival + 0.45 forward turns + 0.10 non-failure + "
                 "0.10 lateral stability + 0.05 axis stability + "
                 "0.05 forbidden-contact safety"
             ),
-            "target_turns": 3.0,
+            "target_turns": args.selection_target_turns,
             "lateral_full_score_m": 0.05,
             "axis_tilt_full_score_rad": 0.25,
             "forbidden_depth_limit_m": 0.001,
@@ -821,7 +909,8 @@ def main(argv=None) -> None:
     )
     print(
         "[training]\n"
-        f"  preset={args.preset} physics={args.physics_profile} "
+        f"  preset={args.preset} recipe={args.recipe} "
+        f"physics={args.physics_profile} "
         f"requested_steps={schedule['requested_steps']:,} "
         f"effective_steps={schedule['effective_steps']:,}\n"
         f"  rollout_quantum={schedule['rollout_quantum']:,} "
@@ -835,6 +924,7 @@ def main(argv=None) -> None:
         f"root_low={root_low_text} "
         f"lat_limit={task.terminate_lateral_drift_m:g}m "
         f"axis_limit={task.terminate_axis_tilt_rad:g}rad\n"
+        f"  recipe_note={RECIPES_3D[args.recipe]['description']}\n"
         f"  reference_weight={reference.reference_weight:.2f} "
         f"residual_gain={reference.residual_gain:.3f} "
         f"phase_rate_scale={task.reference_phase_rate_scale:g}\n"
@@ -845,7 +935,8 @@ def main(argv=None) -> None:
         f"tilt={reward_config.axis_tilt:g} "
         f"collision_event={reward_config.foot_contact_event:g} "
         f"termination={reward_config.termination:g}\n"
-        "  selection=physical: survival, turns, lateral, axis, contact safety\n"
+        "  selection=physical: survival, turns, lateral, axis, contact safety "
+        f"(target_turns={args.selection_target_turns:g})\n"
         f"  controller={reference.source}\n"
         f"  output={args.out.resolve()}",
         flush=True,
@@ -854,9 +945,17 @@ def main(argv=None) -> None:
     start = time.perf_counter()
     checkpoint_kwargs = {}
     train_parameters = inspect.signature(ppo.train).parameters
-    if "save_checkpoint_path" in train_parameters:
+    if args.save_ppo_checkpoints and "save_checkpoint_path" in train_parameters:
+        checkpoint_dir = args.ppo_checkpoint_dir or (
+            args.out / "ppo_checkpoint"
+        )
         checkpoint_kwargs["save_checkpoint_path"] = str(
-            (args.out / "ppo_checkpoint").resolve()
+            checkpoint_dir.resolve()
+        )
+        print(
+            "[checkpoint]\n"
+            f"  periodic_save={checkpoint_kwargs['save_checkpoint_path']}",
+            flush=True,
         )
     if args.restore_checkpoint is not None:
         if "restore_checkpoint_path" not in train_parameters:

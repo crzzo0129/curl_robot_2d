@@ -1,4 +1,7 @@
+import io
 import math
+from contextlib import redirect_stderr
+from pathlib import Path
 import unittest
 
 from curl_robot_2d_mjx.environment_3d import DEFAULT_3D_CEM_CONTROLLER
@@ -12,14 +15,35 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(callable(train_mjx_3d_residual_ppo.main))
         self.assertEqual(args.preset, "smoke")
+        self.assertEqual(args.recipe, "anchored_v1")
         self.assertEqual(args.physics_profile, "cg12")
         self.assertEqual(args.controller, DEFAULT_3D_CEM_CONTROLLER)
         self.assertEqual(args.reference_weight, 1.0)
         self.assertEqual(args.minimum_residual_gain, 0.05)
+        self.assertEqual(args.learning_rate, 3e-4)
+        self.assertEqual(args.entropy_cost, 1e-2)
+        self.assertFalse(args.save_ppo_checkpoints)
+        self.assertIsNone(args.ppo_checkpoint_dir)
+
+    def test_push_v2_recipe_applies_training_and_reward_defaults(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(["--recipe", "push_v2"])
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+
+        self.assertEqual(args.reference_weight, 1.0)
+        self.assertEqual(args.minimum_residual_gain, 0.30)
+        self.assertEqual(args.learning_rate, 1e-4)
+        self.assertEqual(args.entropy_cost, 3e-3)
+        self.assertEqual(reward.roll_progress, 12.0)
+        self.assertEqual(reward.roll_mismatch, 0.25)
+        self.assertEqual(reward.backward, 0.4)
+        self.assertEqual(reward.residual_action, 0.003)
 
     def test_reward_overrides_use_3d_reward_config(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             [
+                "--recipe",
+                "push_v2",
                 "--reward-roll-progress",
                 "7.5",
                 "--reward-axis-tilt",
@@ -35,6 +59,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.roll_progress, 7.5)
         self.assertEqual(reward.axis_tilt, 9.0)
         self.assertEqual(reward.cross_side_foot_contact, 40.0)
+        self.assertEqual(reward.roll_mismatch, 0.25)
 
     def test_checkpoint_selection_prefers_stable_forward_roll(self) -> None:
         base = {
@@ -80,6 +105,23 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(rejected["rejected"])
         self.assertLess(rejected["score"], -999_999.0)
+
+    def test_periodic_checkpoint_directory_requires_checkpoint_flag(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            train_mjx_3d_residual_ppo.parse_args(
+                ["--ppo-checkpoint-dir", "/tmp/mjx_3d_ckpt"]
+            )
+
+        args = train_mjx_3d_residual_ppo.parse_args(
+            [
+                "--save-ppo-checkpoints",
+                "--ppo-checkpoint-dir",
+                "mjx_3d_ckpt",
+            ]
+        )
+
+        self.assertTrue(args.save_ppo_checkpoints)
+        self.assertEqual(args.ppo_checkpoint_dir, Path("mjx_3d_ckpt"))
 
 
 if __name__ == "__main__":
