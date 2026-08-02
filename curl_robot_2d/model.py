@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
-from textwrap import dedent
+from textwrap import dedent, indent
 
 from .parameters import FIXED_PARAMETERS, FixedParameters
 
@@ -77,9 +77,37 @@ def _arc_shell_geoms(
     return "\n".join(lines)
 
 
-def build_mjcf(parameters: FixedParameters = FIXED_PARAMETERS) -> str:
+def build_mjcf(
+    parameters: FixedParameters = FIXED_PARAMETERS,
+    *,
+    enable_self_collision: bool = True,
+) -> str:
     p = parameters
     torso_half_length = p.torso_length / 2
+    shell_contype = 4 if enable_self_collision else 0
+    structure_contype = 2 if enable_self_collision else 0
+    robot_conaffinity = 7 if enable_self_collision else 1
+    explicit_foot_contact = (
+        indent(
+            dedent(
+            f"""\
+              <contact>
+                <!--
+                  compact 中允许两个有限尺寸足端表面接触。显式 pair 使用更硬的
+                  内部接触参数，减少软接触导致的数值穿透；并不把足端焊接。
+                -->
+                <pair name="front_rear_foot_contact"
+                      geom1="front_foot_proxy" geom2="rear_foot_proxy"
+                      condim="3" friction="{_f(p.nominal_ground_friction)} 0.02 0.01"
+                      solref="0.002 1" solimp="0.97 0.995 0.001"/>
+              </contact>
+            """
+            ),
+            "          ",
+        ).rstrip()
+        if enable_self_collision
+        else ""
+    )
 
     # Only the out-of-plane inertia is dynamically active.  The remaining
     # diagonal terms are positive proxy values satisfying MuJoCo's 3-D inertia
@@ -185,13 +213,13 @@ def build_mjcf(parameters: FixedParameters = FIXED_PARAMETERS) -> str:
                 因而这些 geom 目前只改变外形和接触，不增加质量或惯量。
               -->
               <geom type="capsule" size="{_f(p.shell_capsule_radius)}"
-                    contype="4" conaffinity="7"
+                    contype="{shell_contype}" conaffinity="{robot_conaffinity}"
                     solref="0.003 1" solimp="0.95 0.99 0.001"
                     group="1" rgba="0.55 0.78 0.95 0.88"/>
             </default>
             <default class="structure_collision">
               <!-- 有限厚度结构代理；参与地面与选择性机器人自碰撞。 -->
-              <geom contype="2" conaffinity="7"
+              <geom contype="{structure_contype}" conaffinity="{robot_conaffinity}"
                     solref="0.003 1" solimp="0.95 0.99 0.001"/>
             </default>
           </default>
@@ -324,16 +352,7 @@ def build_mjcf(parameters: FixedParameters = FIXED_PARAMETERS) -> str:
             </body>
           </worldbody>
 
-          <contact>
-            <!--
-              compact 中允许两个有限尺寸足端表面接触。显式 pair 使用更硬的
-              内部接触参数，减少软接触导致的数值穿透；并不把足端焊接。
-            -->
-            <pair name="front_rear_foot_contact"
-                  geom1="front_foot_proxy" geom2="rear_foot_proxy"
-                  condim="3" friction="{_f(p.nominal_ground_friction)} 0.02 0.01"
-                  solref="0.002 1" solimp="0.97 0.995 0.001"/>
-          </contact>
+{explicit_foot_contact}
 
           <!-- 四个成对位置伺服；ctrl 表示目标关节角。 -->
           <actuator>
@@ -414,7 +433,18 @@ def build_mjcf(parameters: FixedParameters = FIXED_PARAMETERS) -> str:
     )
 
 
-def write_mjcf(path: Path, parameters: FixedParameters = FIXED_PARAMETERS) -> Path:
+def write_mjcf(
+    path: Path,
+    parameters: FixedParameters = FIXED_PARAMETERS,
+    *,
+    enable_self_collision: bool = True,
+) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(build_mjcf(parameters), encoding="utf-8")
+    path.write_text(
+        build_mjcf(
+            parameters,
+            enable_self_collision=enable_self_collision,
+        ),
+        encoding="utf-8",
+    )
     return path

@@ -3,4 +3,26 @@ __pycache__/
 .pytest_cache/
 renders/
 *.log
-results/walking*/
+
+# Generated experiment outputs.
+#
+# Keep results ignored by default: PPO checkpoints, rollout GIFs/NPZ/CSVs,
+# CEM sweeps, torso-COM exploration, walking exploration, diagnostics, and
+# smoke-test scratch directories should stay local unless explicitly force-added.
+results/**
+
+# Keep only controller references required by current training/smoke defaults.
+!results/
+!results/collision_constrained_cem/
+!results/collision_constrained_cem/best_phase_controller.json
+!results/collision_constrained_cem_foot_gap_2mm_short_contact/
+!results/collision_constrained_cem_foot_gap_2mm_short_contact/best_phase_controller.json
+
+# Local training services and logs.
+wandb/
+ppo_logs/
+ppo_logs_cloud/
+ppo_models/
+ppo_models_cloud/
+mjx_runs/
+*.tfevents.*

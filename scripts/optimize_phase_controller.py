@@ -93,7 +93,7 @@ def _initialize_rollout_worker(model_path: str) -> None:
 
 
 def _rollout_worker(
-    task: tuple[np.ndarray, float, str, float, float],
+    task: tuple[np.ndarray, float, str, float, float, bool],
 ) -> ControllerRollout:
     if _WORKER_MODEL is None:
         raise RuntimeError("rollout worker model was not initialized")
@@ -103,6 +103,7 @@ def _rollout_worker(
         objective,
         minimum_foot_surface_gap_m,
         foot_gap_tracking_margin_m,
+        enforce_leg_crossing_constraint,
     ) = task
     return rollout_controller(
         _WORKER_MODEL,
@@ -113,6 +114,7 @@ def _rollout_worker(
         objective=objective,
         minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
         foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
+        enforce_leg_crossing_constraint=enforce_leg_crossing_constraint,
         detailed=False,
     )
 
@@ -338,6 +340,7 @@ def rollout_controller(
     objective: str = "sustained",
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
+    enforce_leg_crossing_constraint: bool = True,
     detailed: bool = False,
 ) -> ControllerRollout:
     if objective not in {"barrier", "sustained"}:
@@ -642,14 +645,18 @@ def rollout_controller(
             consecutive_airborne_steps = 0
 
         crossing_check_interval = max(1, round(0.005 / timestep))
-        if step % crossing_check_interval == 0 and _has_leg_crossing(
-            data,
-            front_thigh_body_id=leg_body_ids["front_thigh"],
-            front_shank_body_id=leg_body_ids["front_shank"],
-            rear_thigh_body_id=leg_body_ids["rear_thigh"],
-            rear_shank_body_id=leg_body_ids["rear_shank"],
-            front_foot_site_id=front_foot_site_id,
-            rear_foot_site_id=rear_foot_site_id,
+        if (
+            enforce_leg_crossing_constraint
+            and step % crossing_check_interval == 0
+            and _has_leg_crossing(
+                data,
+                front_thigh_body_id=leg_body_ids["front_thigh"],
+                front_shank_body_id=leg_body_ids["front_shank"],
+                rear_thigh_body_id=leg_body_ids["rear_thigh"],
+                rear_shank_body_id=leg_body_ids["rear_shank"],
+                front_foot_site_id=front_foot_site_id,
+                rear_foot_site_id=rear_foot_site_id,
+            )
         ):
             leg_crossing_detected = True
             first_leg_crossing_time = float(data.time)
@@ -864,6 +871,7 @@ def rollout_controller(
             allowed_penetration_excess_integral
         ),
         "collision_penalty": collision_penalty,
+        "leg_crossing_constraint_enabled": enforce_leg_crossing_constraint,
         "leg_crossing_detected": leg_crossing_detected,
         "first_leg_crossing_time_s": first_leg_crossing_time,
         "reached_one_turn": maximum_phase >= 2.0 * math.pi,
@@ -899,6 +907,7 @@ def _update_distribution(
 
 def optimize_controller(
     *,
+    model_path: Path = MODEL_PATH,
     generations: int,
     population: int,
     elite_count: int,
@@ -909,6 +918,7 @@ def optimize_controller(
     workers: int = 1,
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
+    enforce_leg_crossing_constraint: bool = True,
 ) -> tuple[np.ndarray, list[dict[str, float | int | str]], ControllerRollout]:
     if not 1 <= elite_count <= population:
         raise ValueError("elite_count must be between 1 and population")
@@ -939,16 +949,13 @@ def optimize_controller(
     best_rollout: ControllerRollout | None = None
     history: list[dict[str, float | int | str]] = []
 
-    model = (
-        mujoco.MjModel.from_xml_path(str(MODEL_PATH))
-        if workers == 1
-        else None
-    )
+    model_path = Path(model_path)
+    model = mujoco.MjModel.from_xml_path(str(model_path)) if workers == 1 else None
     executor = (
         ProcessPoolExecutor(
             max_workers=workers,
             initializer=_initialize_rollout_worker,
-            initargs=(str(MODEL_PATH),),
+            initargs=(str(model_path),),
         )
         if workers > 1
         else None
@@ -988,6 +995,9 @@ def optimize_controller(
                         foot_gap_tracking_margin_m=(
                             foot_gap_tracking_margin_m
                         ),
+                        enforce_leg_crossing_constraint=(
+                            enforce_leg_crossing_constraint
+                        ),
                         detailed=False,
                     )
                     for sample in samples
@@ -1000,6 +1010,7 @@ def optimize_controller(
                         objective,
                         minimum_foot_surface_gap_m,
                         foot_gap_tracking_margin_m,
+                        enforce_leg_crossing_constraint,
                     )
                     for sample in samples
                 ]
@@ -1414,6 +1425,7 @@ def write_outputs(
 
 def main() -> None:
     parser = argparse.ArgumentParser()
+    parser.add_argument("--model", type=Path, default=MODEL_PATH)
     parser.add_argument("--generations", type=int, default=12)
     parser.add_argument("--population", type=int, default=48)
     parser.add_argument("--elite-count", type=int, default=8)
@@ -1441,6 +1453,11 @@ def main() -> None:
         default=None,
         help="Warm-start CEM from a previously saved controller JSON.",
     )
+    parser.add_argument(
+        "--allow-leg-crossing",
+        action="store_true",
+        help="Disable the geometric leg-crossing failure constraint.",
+    )
     args = parser.parse_args()
     if args.minimum_foot_gap_mm < 0.0:
         parser.error("--minimum-foot-gap-mm cannot be negative")
@@ -1457,6 +1474,7 @@ def main() -> None:
         else None
     )
     parameters, history, _ = optimize_controller(
+        model_path=args.model,
         generations=args.generations,
         population=args.population,
         elite_count=args.elite_count,
@@ -1467,15 +1485,17 @@ def main() -> None:
         workers=args.workers,
         minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
         foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
+        enforce_leg_crossing_constraint=not args.allow_leg_crossing,
     )
-    baseline_model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+    baseline_model = mujoco.MjModel.from_xml_path(str(args.model))
     baseline = rollout_controller(
         baseline_model,
         np.zeros(8),
         duration=args.final_duration,
+        enforce_leg_crossing_constraint=not args.allow_leg_crossing,
         detailed=True,
     )
-    controlled_model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+    controlled_model = mujoco.MjModel.from_xml_path(str(args.model))
     controlled = rollout_controller(
         controlled_model,
         parameters[:8],
@@ -1484,6 +1504,7 @@ def main() -> None:
         oscillator_coupling=float(parameters[9]),
         minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
         foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
+        enforce_leg_crossing_constraint=not args.allow_leg_crossing,
         detailed=True,
     )
     outputs = write_outputs(

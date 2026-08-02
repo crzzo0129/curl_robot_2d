@@ -78,6 +78,31 @@ class ModelContractTest(unittest.TestCase):
             float(model.body_mass.sum()), FIXED_PARAMETERS.total_mass
         )
 
+    def test_no_self_collision_model_keeps_only_ground_collision(self) -> None:
+        model = mujoco.MjModel.from_xml_string(
+            build_mjcf(enable_self_collision=False)
+        )
+        self.assertEqual(model.npair, 0)
+        for geom_id in range(model.ngeom):
+            name = mujoco.mj_id2name(
+                model, mujoco.mjtObj.mjOBJ_GEOM, geom_id
+            )
+            if name == "floor":
+                continue
+            self.assertEqual(int(model.geom_contype[geom_id]), 0)
+            self.assertEqual(int(model.geom_conaffinity[geom_id]), 1)
+
+        rollout = rollout_controller(
+            model,
+            np.zeros(8),
+            duration=0.02,
+            enforce_leg_crossing_constraint=False,
+        )
+        self.assertFalse(
+            rollout.summary["leg_crossing_constraint_enabled"]
+        )
+        self.assertEqual(rollout.summary["self_contact_total_s"], 0.0)
+
     def test_five_centerline_edges_have_one_length(self) -> None:
         p = FIXED_PARAMETERS
         self.assertAlmostEqual(p.torso_length, p.edge_length)
