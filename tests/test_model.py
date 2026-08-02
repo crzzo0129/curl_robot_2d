@@ -23,6 +23,9 @@ from scripts.run_release_baseline import run_release
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = PROJECT_ROOT / "assets" / "curl_robot_2d.xml"
+NO_SELF_COLLISION_MODEL_PATH = (
+    PROJECT_ROOT / "assets" / "curl_robot_2d_no_self_collision.xml"
+)
 
 
 class ModelContractTest(unittest.TestCase):
@@ -55,6 +58,10 @@ class ModelContractTest(unittest.TestCase):
 
     def test_checked_in_model_matches_generator(self) -> None:
         self.assertEqual(MODEL_PATH.read_text(encoding="utf-8"), build_mjcf())
+        self.assertEqual(
+            NO_SELF_COLLISION_MODEL_PATH.read_text(encoding="utf-8"),
+            build_mjcf(enable_self_collision=False),
+        )
 
     def test_model_contract(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))

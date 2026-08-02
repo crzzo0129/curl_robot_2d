@@ -9,7 +9,11 @@ from curl_robot_2d_mjx.config import (
     smoothstep_ramp,
     validate_nominal_rl_config,
 )
-from curl_robot_2d_mjx.environment import JOINT_NAMES, MODEL_PATH
+from curl_robot_2d_mjx.environment import (
+    JOINT_NAMES,
+    MODEL_PATH,
+    resolve_model_path,
+)
 from curl_robot_2d_mjx.reward import REWARD_TERM_NAMES
 from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 from curl_robot_2d_mjx.runtime import (
@@ -37,6 +41,7 @@ class MJXContractTest(unittest.TestCase):
     def test_nominal_task_control_rate_and_action_shape(self) -> None:
         config = NominalRLConfig()
         self.assertAlmostEqual(config.control_timestep, 0.02)
+        self.assertIsNone(config.model_xml)
         self.assertEqual(len(config.action_scales), 4)
         self.assertEqual(config.episode_length, 500)
         self.assertEqual(config.startup_action_ramp_s, 0.25)
@@ -49,6 +54,9 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(config.disturbance_backward_probability, 0.5)
         self.assertIsNone(config.terminate_root_z_min)
         self.assertEqual(config.terminate_root_z_low_duration_s, 0.30)
+        self.assertEqual(config.terminate_root_z_max, 0.70)
+        self.assertEqual(config.maximum_foot_center_distance_m, 0.28)
+        self.assertTrue(config.terminate_leg_crossing)
         reward = RollingRewardConfig()
         self.assertEqual(reward.allowed_foot_penetration_m, 0.0005)
         self.assertEqual(reward.foot_contact_event, 2.0)
@@ -94,6 +102,35 @@ class MJXContractTest(unittest.TestCase):
         for values in invalid:
             with self.subTest(values=values), self.assertRaises(ValueError):
                 validate_nominal_rl_config(NominalRLConfig(**values))
+
+    def test_hard_termination_configuration_can_be_relaxed(self) -> None:
+        validate_nominal_rl_config(
+            NominalRLConfig(
+                terminate_root_z_max=None,
+                maximum_foot_center_distance_m=None,
+                terminate_leg_crossing=False,
+            )
+        )
+        invalid = (
+            {"terminate_root_z_max": 0.0},
+            {"terminate_root_z_max": float("nan")},
+            {"maximum_foot_center_distance_m": -0.1},
+            {"maximum_foot_center_distance_m": float("nan")},
+        )
+        for values in invalid:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                validate_nominal_rl_config(NominalRLConfig(**values))
+
+    def test_task_can_select_explicit_model_xml(self) -> None:
+        self.assertEqual(resolve_model_path(NominalRLConfig()), MODEL_PATH)
+        self.assertEqual(
+            resolve_model_path(
+                NominalRLConfig(
+                    model_xml="assets/curl_robot_2d_no_self_collision.xml"
+                )
+            ),
+            PROJECT_ROOT / "assets" / "curl_robot_2d_no_self_collision.xml",
+        )
 
     def test_disturbance_mixture_validation(self) -> None:
         validate_nominal_rl_config(

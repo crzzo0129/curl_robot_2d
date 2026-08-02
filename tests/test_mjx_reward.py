@@ -229,6 +229,21 @@ class MJXRewardTest(unittest.TestCase):
         self.assertGreater(longer_score["turns"], 0.0)
         self.assertFalse(longer_score["rejected"])
 
+    def test_checkpoint_selection_target_turns_is_configurable(self) -> None:
+        metrics = {
+            "eval/avg_episode_length": 500.0,
+            "eval/episode_failed": 0.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_roll_progress_rad": 4.0 * 2.0 * np.pi,
+            "eval/avg_forbidden_penetration_m": 0.0,
+        }
+
+        loose = _checkpoint_selection(metrics, 500, target_turns=3.0)
+        strict = _checkpoint_selection(metrics, 500, target_turns=8.0)
+
+        self.assertGreater(loose["score"], strict["score"])
+        self.assertEqual(loose["turns"], strict["turns"])
+
     def test_checkpoint_selection_rejects_nonfinite_policy(self) -> None:
         metrics = {
             "eval/avg_episode_length": 500.0,

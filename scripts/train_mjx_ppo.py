@@ -201,7 +201,7 @@ def _training_step_schedule(
     }
 
 
-def _checkpoint_selection(metrics, episode_length):
+def _checkpoint_selection(metrics, episode_length, *, target_turns=3.0):
     """Score an eval point by physical behavior, independent of reward scale."""
 
     avg_length = metrics.get("eval/avg_episode_length", 0.0)
@@ -215,7 +215,7 @@ def _checkpoint_selection(metrics, episode_length):
     )
     survival = min(max(avg_length / episode_length, 0.0), 1.0)
     turns = roll_total / (2.0 * math.pi)
-    progress_quality = min(max(turns / 3.0, -1.0), 1.0)
+    progress_quality = min(max(turns / target_turns, -1.0), 1.0)
     safety_quality = 1.0 - min(
         max(penetration / 0.001, 0.0), 1.0
     )
@@ -536,6 +536,14 @@ def main() -> None:
         choices=PHYSICS_PROFILE_NAMES,
         default="cg12",
     )
+    parser.add_argument(
+        "--model-xml",
+        type=Path,
+        help=(
+            "MuJoCo XML to load. Relative paths are resolved from the "
+            "curl_robot_2d project root."
+        ),
+    )
     parser.add_argument("--steps", type=int)
     parser.add_argument("--envs", type=int)
     parser.add_argument("--eval-envs", type=int)
@@ -552,12 +560,32 @@ def main() -> None:
         action="store_true",
         help="Disable continuous low-root termination for compatibility runs.",
     )
+    parser.add_argument("--terminate-root-z-max", type=float, default=0.70)
+    parser.add_argument(
+        "--no-root-high-termination",
+        action="store_true",
+        help="Disable high-root termination during early curriculum stages.",
+    )
+    parser.add_argument(
+        "--maximum-foot-center-distance", type=float, default=0.28
+    )
+    parser.add_argument(
+        "--no-foot-gap-termination",
+        action="store_true",
+        help="Disable hard front/rear foot-distance termination.",
+    )
+    parser.add_argument(
+        "--no-leg-crossing-termination",
+        action="store_true",
+        help="Keep logging leg crossings but do not terminate on them.",
+    )
     parser.add_argument("--unroll-length", type=int, default=20)
     parser.add_argument("--updates-per-batch", type=int, default=4)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--entropy-cost", type=float, default=1e-2)
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--reward-scaling", type=float, default=1.0)
+    parser.add_argument("--selection-target-turns", type=float, default=3.0)
     parser.add_argument(
         "--hidden-layers", type=int, nargs="+", default=[256, 256, 128]
     )
@@ -622,6 +650,11 @@ def main() -> None:
     )
     _add_reward_arguments(parser)
     args = parser.parse_args()
+    if (
+        not math.isfinite(args.selection_target_turns)
+        or args.selection_target_turns <= 0.0
+    ):
+        raise SystemExit("--selection-target-turns must be finite and positive")
 
     values = PRESETS[args.preset].copy()
     for name in (
@@ -681,6 +714,11 @@ def main() -> None:
     task = physics_profile(
         args.physics_profile,
         NominalRLConfig(
+            model_xml=(
+                str(args.model_xml)
+                if args.model_xml is not None
+                else None
+            ),
             episode_length=args.episode_length,
             terminate_root_z_min=(
                 None
@@ -689,6 +727,19 @@ def main() -> None:
             ),
             terminate_root_z_low_duration_s=(
                 args.terminate_root_z_low_duration
+            ),
+            terminate_root_z_max=(
+                None
+                if args.no_root_high_termination
+                else args.terminate_root_z_max
+            ),
+            maximum_foot_center_distance_m=(
+                None
+                if args.no_foot_gap_termination
+                else args.maximum_foot_center_distance
+            ),
+            terminate_leg_crossing=(
+                not args.no_leg_crossing_termination
             ),
         ),
     )
@@ -733,7 +784,11 @@ def main() -> None:
         if reward is not None and reward > reward_peak["reward"]:
             reward_peak["reward"] = reward
             reward_peak["step"] = int(step)
-        selection = _checkpoint_selection(clean, args.episode_length)
+        selection = _checkpoint_selection(
+            clean,
+            args.episode_length,
+            target_turns=args.selection_target_turns,
+        )
         selected = (
             not selection["rejected"]
             and selection["score"] > best["score"]
@@ -780,6 +835,7 @@ def main() -> None:
         "task": asdict(task),
         "reward": asdict(reward_config),
         "runtime": runtime,
+        "model_xml_resolved": str(train_env.model_path.resolve()),
         "evaluation": {
             "skip": args.skip_evaluation,
             "skip_visualization": args.skip_visualization,
@@ -798,7 +854,7 @@ def main() -> None:
                 "0.50 survival + 0.35 forward turns + "
                 "0.10 non-failure + 0.05 contact safety"
             ),
-            "target_turns": 3.0,
+            "target_turns": args.selection_target_turns,
             "penetration_limit_m": 0.001,
             "reject_nonfinite": True,
         },
@@ -819,10 +875,24 @@ def main() -> None:
             f"{task.terminate_root_z_low_duration_s:g}s"
         )
     )
+    root_high_text = (
+        "disabled"
+        if task.terminate_root_z_max is None
+        else f"{task.terminate_root_z_max:g}m"
+    )
+    foot_gap_text = (
+        "disabled"
+        if task.maximum_foot_center_distance_m is None
+        else f"{task.maximum_foot_center_distance_m:g}m"
+    )
+    leg_crossing_text = (
+        "enabled" if task.terminate_leg_crossing else "disabled"
+    )
 
     print(
         "[training]\n"
         f"  preset={args.preset} physics={args.physics_profile} "
+        f"model={train_env.model_path} "
         f"requested_steps={schedule['requested_steps']:,} "
         f"effective_steps={schedule['effective_steps']:,}\n"
         f"  rollout_quantum={schedule['rollout_quantum']:,} "
@@ -835,7 +905,10 @@ def main() -> None:
         f"minibatches={values['num_minibatches']}\n"
         f"  root_damping="
         f"{'disabled' if task.disable_root_damping else 'xml'} "
-        f"root_low={root_low_text}\n"
+        f"root_low={root_low_text} "
+        f"root_high={root_high_text} "
+        f"foot_gap={foot_gap_text} "
+        f"leg_crossing={leg_crossing_text}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  reward roll={reward_config.roll_progress:g} "
@@ -843,7 +916,8 @@ def main() -> None:
         f"termination={reward_config.termination:g} "
         f"early={reward_config.early_termination_scale:g}\n"
         "  selection=physical: 50% survival, 35% turns, "
-        "10% non-failure, 5% contact safety\n"
+        "10% non-failure, 5% contact safety "
+        f"target_turns={args.selection_target_turns:g}\n"
         f"  output={args.out.resolve()}",
         flush=True,
     )
@@ -1005,6 +1079,7 @@ def main() -> None:
                     render_summary = render_rollout(
                         directory / "evaluation_rollout.npz",
                         gif_path,
+                        model_path=train_env.model_path,
                         control_dt=task.control_timestep,
                         fps=args.visualization_fps,
                         width=args.visualization_width,

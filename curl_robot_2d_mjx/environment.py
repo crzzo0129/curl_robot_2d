@@ -37,6 +37,17 @@ JOINT_NAMES = (
 )
 
 
+def resolve_model_path(task: NominalRLConfig) -> Path:
+    """Resolve the MuJoCo XML used by this task."""
+
+    if task.model_xml is None:
+        return MODEL_PATH
+    path = Path(task.model_xml).expanduser()
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return path
+
+
 def apply_physics_options(model, task: NominalRLConfig) -> None:
     """Apply an MJX/CPU-comparable runtime profile to one MuJoCo model."""
 
@@ -126,7 +137,8 @@ def make_brax_env(
             self.reward_config = reward_settings
             self.cem_reference = reference_settings
             self.seed = seed
-            self.mj_model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+            self.model_path = resolve_model_path(task)
+            self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
             apply_physics_options(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)
             self.mjx_model = mjx.put_model(self.mj_model)
@@ -770,11 +782,21 @@ def make_brax_env(
                 failure_root_low = (
                     root_low_step_count >= self.root_low_termination_steps
                 )
-            failure_root_high = root_z > task.terminate_root_z_max
-            failure_foot_gap = (
-                foot_distance > task.maximum_foot_center_distance_m
+            failure_root_high = (
+                jp.asarray(False)
+                if task.terminate_root_z_max is None
+                else root_z > task.terminate_root_z_max
             )
-            failure_leg_crossing = leg_crossing
+            failure_foot_gap = (
+                jp.asarray(False)
+                if task.maximum_foot_center_distance_m is None
+                else foot_distance > task.maximum_foot_center_distance_m
+            )
+            failure_leg_crossing = (
+                leg_crossing
+                if task.terminate_leg_crossing
+                else jp.asarray(False)
+            )
             failed_bool = (
                 failure_nonfinite
                 | failure_root_low

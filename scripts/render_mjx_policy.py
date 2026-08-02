@@ -53,6 +53,7 @@ def render_rollout(
     rollout_path: Path,
     output_path: Path,
     *,
+    model_path: Path = MODEL_PATH,
     control_dt: float,
     fps: int,
     width: int,
@@ -63,7 +64,7 @@ def render_rollout(
     import mujoco
 
     qpos, reward = _load_rollout(rollout_path)
-    model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
+    model = mujoco.MjModel.from_xml_path(str(model_path))
     if qpos.shape[1] != model.nq:
         raise ValueError(
             f"rollout nq={qpos.shape[1]} does not match model nq={model.nq}"
@@ -162,6 +163,7 @@ def render_rollout(
 def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("rollout", type=Path)
+    parser.add_argument("--model-xml", type=Path, default=MODEL_PATH)
     parser.add_argument("--output", type=Path)
     parser.add_argument("--control-dt", type=float, default=0.02)
     parser.add_argument("--fps", type=int, default=20)
@@ -187,6 +189,7 @@ def main() -> None:
     summary = render_rollout(
         args.rollout,
         output,
+        model_path=args.model_xml,
         control_dt=args.control_dt,
         fps=args.fps,
         width=args.width,
