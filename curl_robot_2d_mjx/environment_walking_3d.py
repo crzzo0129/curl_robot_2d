@@ -1,16 +1,15 @@
-"""Brax-compatible MJX environment for 3-D curl robot walking."""
+"""Brax-compatible MJX environment for reference-free 3-D walking."""
 
 from __future__ import annotations
 
-import math
 from pathlib import Path
 
 import numpy as np
 
 from curl_robot_2d.model_3d import FOOT_SITE_NAMES_3D, JOINT_NAMES_3D
+from curl_robot_2d.parameters import FIXED_PARAMETERS
 from curl_robot_2d_mjx.config_walking_3d import (
     Walking3DConfig,
-    WalkingReference3DConfig,
     smoothstep_ramp,
     validate_walking_3d_config,
 )
@@ -20,13 +19,12 @@ from curl_robot_2d_mjx.reward_walking_3d import (
     Walking3DRewardConfig,
     reward_terms_walking_3d,
 )
-from curl_robot_2d_mjx.walking_reference_3d import walking_reference_3d
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WALKING_MODEL_PATH_3D = PROJECT_ROOT / "assets" / "curl_robot_3d.xml"
 WALKING_ACTION_SIZE_3D = 8
-WALKING_OBSERVATION_SIZE_3D = 74
+WALKING_OBSERVATION_SIZE_3D = 50
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -45,15 +43,12 @@ EXPECTED_WALKING_JOINT_AXES_3D = {
 }
 
 
-def validate_walking_morphology_3d(
-    model,
-    reference: WalkingReference3DConfig | None = None,
-) -> None:
+def validate_walking_morphology_3d(model) -> None:
     """Reject models that do not match the mirrored planar-leg convention."""
 
     import mujoco
 
-    geometry = reference or WalkingReference3DConfig()
+    geometry = FIXED_PARAMETERS
     if tuple(JOINT_NAMES_3D) != tuple(EXPECTED_WALKING_JOINT_AXES_3D):
         raise ValueError("unexpected 3-D walking joint order")
     for joint_name, expected_axis in EXPECTED_WALKING_JOINT_AXES_3D.items():
@@ -81,20 +76,20 @@ def validate_walking_morphology_3d(
             raise ValueError(f"incomplete walking leg chain: {prefix}")
         if not np.isclose(
             abs(model.body_pos[shank_id, 2]),
-            geometry.upper_length_m,
-            atol=1.0e-8,
+            geometry.upper_length,
+            atol=1e-8,
         ):
             raise ValueError(f"walking upper-link length changed: {prefix}")
         if not np.isclose(
             abs(model.geom_pos[foot_id, 2]),
-            geometry.lower_length_m,
-            atol=1.0e-8,
+            geometry.lower_length,
+            atol=1e-8,
         ):
             raise ValueError(f"walking lower-link length changed: {prefix}")
         if not np.isclose(
             model.geom_size[foot_id, 0],
-            geometry.foot_radius_m,
-            atol=1.0e-8,
+            geometry.foot_radius,
+            atol=1e-8,
         ):
             raise ValueError(f"walking foot radius changed: {prefix}")
         thigh_position = model.body_pos[thigh_id]
@@ -127,7 +122,7 @@ def make_brax_walking_env_3d(
     reward_config: Walking3DRewardConfig | None = None,
     seed: int = 0,
 ):
-    """Create the morphology-aware 3-D walking residual environment."""
+    """Create a direct-action walking task with no gait trajectory."""
 
     task = config or Walking3DConfig()
     validate_walking_3d_config(task)
@@ -142,7 +137,7 @@ def make_brax_walking_env_3d(
             self.mj_model = mujoco.MjModel.from_xml_path(
                 str(WALKING_MODEL_PATH_3D)
             )
-            validate_walking_morphology_3d(self.mj_model, task.reference)
+            validate_walking_morphology_3d(self.mj_model)
             apply_physics_options_3d(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)
             self.mjx_model = mjx.put_model(self.mj_model)
@@ -158,7 +153,7 @@ def make_brax_walking_env_3d(
                 mujoco.mjtObj.mjOBJ_KEY, task.reset_keyframe_name
             )
             self.reset_qpos = jp.asarray(self.mj_model.key_qpos[key_id])
-            self.reset_ctrl = jp.asarray(self.mj_model.key_ctrl[key_id])
+            self.nominal_ctrl = jp.asarray(self.mj_model.key_ctrl[key_id])
             self.action_scales = jp.asarray(task.action_scales)
             self.torso_body_id = object_id(
                 mujoco.mjtObj.mjOBJ_BODY, "torso"
@@ -204,22 +199,17 @@ def make_brax_walking_env_3d(
             self.joint_high = jp.asarray(
                 [self.mj_model.jnt_range[joint_id, 1] for joint_id in joint_ids]
             )
-            self.initial_phase = jp.asarray(
-                2.0 * math.pi * task.reference.initial_phase_fraction,
-                dtype=jp.float32,
+            joint_mid = 0.5 * (self.joint_low + self.joint_high)
+            soft_half_range = (
+                0.5
+                * (self.joint_high - self.joint_low)
+                * task.soft_joint_limit_fraction
             )
-            self.initial_reference = walking_reference_3d(
-                jp, self.initial_phase, task.reference
-            )
-            self.startup_ctrl = jp.clip(
-                self.reset_ctrl
-                + task.reset_reference_weight
-                * (
-                    self.initial_reference["joint_targets"]
-                    - self.reset_ctrl
-                ),
-                self.joint_low,
-                self.joint_high,
+            self.soft_joint_low = joint_mid - soft_half_range
+            self.soft_joint_high = joint_mid + soft_half_range
+            self.soft_joint_margin = jp.maximum(
+                self.soft_joint_low - self.joint_low,
+                self.joint_high - self.soft_joint_high,
             )
             actuator_ids = [
                 object_id(mujoco.mjtObj.mjOBJ_ACTUATOR, f"{name}_servo")
@@ -272,6 +262,8 @@ def make_brax_walking_env_3d(
                 "forward_velocity_m_s": zero,
                 "forward_progress_m": zero,
                 "velocity_error_m_s": zero,
+                "vertical_velocity_m_s": zero,
+                "roll_pitch_angular_velocity_rms": zero,
                 "root_x_m": zero,
                 "root_y_m": zero,
                 "root_z_m": zero,
@@ -281,9 +273,9 @@ def make_brax_walking_env_3d(
                 "upright_tilt_rad": zero,
                 "heading_error_rad": zero,
                 "foot_contact_count": zero,
-                "stance_miss_fraction": zero,
-                "swing_contact_fraction": zero,
+                "foot_air_time_reward": zero,
                 "swing_clearance_cost": zero,
+                "foot_slip_rms_m_s": zero,
                 "nonfoot_ground_contact_count": zero,
                 "nonfoot_ground_depth_m": zero,
                 "self_contact_count": zero,
@@ -294,15 +286,13 @@ def make_brax_walking_env_3d(
                 "upright_tilt_step_count": zero,
                 "nonfoot_contact_step_count": zero,
                 "self_contact_step_count": zero,
-                "joint_tracking_rms": zero,
-                "residual_action_rms": zero,
+                "action_rms": zero,
                 "action_rate_rms": zero,
+                "joint_velocity_rms_rad_s": zero,
+                "joint_limit_cost": zero,
                 "normalized_torque_rms": zero,
-                "reference_blend": zero,
                 "startup_action_ramp": zero,
-                "oscillator_phase_rad": zero,
                 "desired_speed_m_s": zero,
-                "reset_reference_weight": zero,
                 "failed": zero,
                 "timeout": zero,
                 "failure_nonfinite": zero,
@@ -335,7 +325,7 @@ def make_brax_walking_env_3d(
                 maxval=task.reset_velocity_noise,
             )
             start_target = jp.clip(
-                self.startup_ctrl + joint_noise,
+                self.nominal_ctrl + joint_noise,
                 self.joint_low,
                 self.joint_high,
             )
@@ -350,17 +340,18 @@ def make_brax_walking_env_3d(
             data = mjx.forward(self.mjx_model, data)
             contacts = self._contact_metrics(data)
             body = self._body_metrics(data)
-            phase = self.initial_phase
-            reference = self.initial_reference
+            foot_position = data.site_xpos[self.foot_site_ids]
+            last_foot_contact = contacts["foot_ground"] > 0.0
             info = {
-                "initial_root_x": data.qpos[0],
                 "initial_root_y": data.qpos[1],
                 "previous_root_x": data.qpos[0],
+                "previous_foot_position": foot_position,
+                "last_foot_contact": last_foot_contact,
+                "foot_air_time": jp.zeros((4,), dtype=jp.float32),
                 "last_policy_action": jp.zeros(
                     (WALKING_ACTION_SIZE_3D,), dtype=jp.float32
                 ),
                 "last_target": start_target,
-                "oscillator_phase": phase,
                 "root_low_step_count": jp.asarray(0, dtype=jp.int32),
                 "upright_tilt_step_count": jp.asarray(0, dtype=jp.int32),
                 "airborne_step_count": jp.asarray(0, dtype=jp.int32),
@@ -374,11 +365,6 @@ def make_brax_walking_env_3d(
                 body,
                 initial_root_y=data.qpos[1],
                 policy_action=info["last_policy_action"],
-                reference_target=start_target,
-                stance=reference["stance"],
-                oscillator_phase=phase,
-                reference_blend=jp.zeros((), dtype=jp.float32),
-                action_ramp=jp.zeros((), dtype=jp.float32),
             )
             return State(
                 data,
@@ -399,28 +385,12 @@ def make_brax_walking_env_3d(
             )
             control_dt = task.control_timestep
             elapsed_s = state.info["step_count"].astype(jp.float32) * control_dt
-            reference_blend = smoothstep_ramp(
-                jp, elapsed_s, task.startup_reference_ramp_s
-            )
             action_ramp = smoothstep_ramp(
                 jp, elapsed_s, task.startup_action_ramp_s
             )
-            reference = walking_reference_3d(
-                jp, state.info["oscillator_phase"], task.reference
-            )
-            reference_target = jp.clip(
-                self.startup_ctrl
-                + reference_blend
-                * (reference["joint_targets"] - self.startup_ctrl),
-                self.joint_low,
-                self.joint_high,
-            )
             target = jp.clip(
-                reference_target
-                + action_ramp
-                * task.residual_gain
-                * policy_action
-                * self.action_scales,
+                self.nominal_ctrl
+                + action_ramp * policy_action * self.action_scales,
                 self.joint_low,
                 self.joint_high,
             )
@@ -460,66 +430,95 @@ def make_brax_walking_env_3d(
             target = jp.where(
                 transition_finite, target, state.info["last_target"]
             )
-            oscillator_phase = jp.where(
-                transition_finite,
-                jp.mod(
-                    state.info["oscillator_phase"]
-                    + 2.0 * math.pi * task.reference.frequency_hz * control_dt,
-                    2.0 * math.pi,
-                ),
-                state.info["oscillator_phase"],
-            )
             contacts = self._contact_metrics(data)
             body = self._body_metrics(data)
             root_x, root_y, root_z = data.qpos[:3]
             forward_velocity = data.qvel[0]
             lateral_velocity = data.qvel[1]
+            vertical_velocity = data.qvel[2]
+            roll_pitch_angular_velocity_squared = jp.mean(
+                jp.square(data.qvel[3:5])
+            )
             forward_progress = root_x - state.info["previous_root_x"]
             lateral_drift = root_y - state.info["initial_root_y"]
-            root_height_error = root_z - task.reference.root_height_m
-            desired_speed = task.reference.desired_speed_m_s
+            root_height_error = root_z - task.nominal_root_height_m
 
             foot_contact = contacts["foot_ground"] > 0.0
-            stance = reference["stance"]
-            stance_count = jp.maximum(jp.sum(stance), 1)
-            swing = ~stance
+            foot_position = data.site_xpos[self.foot_site_ids]
+            foot_height = jp.maximum(
+                foot_position[:, 2] - task.foot_radius_m, 0.0
+            )
+            swing = ~foot_contact
             swing_count = jp.maximum(jp.sum(swing), 1)
-            stance_miss_fraction = (
-                jp.sum(stance & (~foot_contact)).astype(jp.float32)
-                / stance_count.astype(jp.float32)
-            )
-            swing_contact_fraction = (
-                jp.sum(swing & foot_contact).astype(jp.float32)
-                / swing_count.astype(jp.float32)
-            )
-            foot_clearance = jp.maximum(
-                data.site_xpos[self.foot_site_ids, 2]
-                - task.reference.foot_radius_m,
-                0.0,
-            )
-            desired_clearance = 0.75 * reference["foot_lift_m"]
             clearance_shortfall = jp.maximum(
-                desired_clearance - foot_clearance, 0.0
+                reward_settings.swing_clearance_m - foot_height, 0.0
             )
             swing_clearance_cost = (
                 jp.sum(
                     swing
                     * jp.square(
                         clearance_shortfall
-                        / max(task.reference.foot_lift_m, 1.0e-4)
+                        / max(reward_settings.swing_clearance_m, 1.0e-4)
                     )
                 )
                 / swing_count.astype(jp.float32)
             )
+            foot_velocity_xy = (
+                foot_position[:, :2]
+                - state.info["previous_foot_position"][:, :2]
+            ) / control_dt
+            foot_slip_velocity_squared = (
+                jp.sum(
+                    foot_contact
+                    * jp.sum(jp.square(foot_velocity_xy), axis=1)
+                )
+                / jp.maximum(jp.sum(foot_contact), 1).astype(jp.float32)
+            )
+            air_time_at_touchdown = state.info["foot_air_time"] + control_dt
+            touchdown = foot_contact & (~state.info["last_foot_contact"])
+            air_time_span = max(
+                reward_settings.foot_air_time_cap_s
+                - reward_settings.foot_air_time_threshold_s,
+                1.0e-4,
+            )
+            foot_air_time_reward = jp.mean(
+                jp.where(
+                    touchdown,
+                    jp.clip(
+                        air_time_at_touchdown
+                        - reward_settings.foot_air_time_threshold_s,
+                        0.0,
+                        air_time_span,
+                    )
+                    / air_time_span,
+                    0.0,
+                )
+            )
+            foot_air_time = jp.where(
+                foot_contact,
+                0.0,
+                air_time_at_touchdown,
+            )
+
             joint_position = data.qpos[self.joint_qpos_indices]
-            normalized_joint_error = (
-                joint_position - reference_target
-            ) / self.action_scales
-            joint_tracking_cost = jp.mean(jp.square(normalized_joint_error))
+            joint_velocity = data.qvel[self.joint_dof_indices]
             action_rate_cost = jp.mean(
                 jp.square(policy_action - state.info["last_policy_action"])
             )
-            residual_action_cost = jp.mean(jp.square(policy_action))
+            action_magnitude_cost = jp.mean(jp.square(policy_action))
+            joint_velocity_squared = jp.mean(jp.square(joint_velocity))
+            lower_violation = jp.maximum(
+                self.soft_joint_low - joint_position, 0.0
+            )
+            upper_violation = jp.maximum(
+                joint_position - self.soft_joint_high, 0.0
+            )
+            normalized_limit_violation = (
+                lower_violation + upper_violation
+            ) / jp.maximum(self.soft_joint_margin, 1.0e-4)
+            joint_limit_cost = jp.mean(
+                jp.square(normalized_limit_violation)
+            )
             normalized_torque = (
                 data.actuator_force[self.actuator_ids]
                 / jp.maximum(self.force_limits, 1.0e-6)
@@ -606,10 +605,11 @@ def make_brax_walking_env_3d(
                 reward_settings,
                 {
                     "forward_velocity_error": (
-                        forward_velocity - desired_speed
+                        forward_velocity - task.desired_speed_m_s
                     ),
                     "normalized_forward_velocity": jp.clip(
-                        forward_velocity / max(desired_speed, 1.0e-4),
+                        forward_velocity
+                        / max(task.desired_speed_m_s, 1.0e-4),
                         -1.0,
                         1.5,
                     ),
@@ -618,22 +618,27 @@ def make_brax_walking_env_3d(
                     "heading_error": body["heading_error"],
                     "lateral_velocity": lateral_velocity,
                     "lateral_drift": lateral_drift,
-                    "stance_miss_fraction": (
-                        reference_blend * stance_miss_fraction
+                    "vertical_velocity": vertical_velocity,
+                    "roll_pitch_angular_velocity_squared": (
+                        roll_pitch_angular_velocity_squared
                     ),
-                    "swing_contact_fraction": (
-                        reference_blend * swing_contact_fraction
+                    "foot_air_time_reward": foot_air_time_reward,
+                    "swing_clearance_cost": swing_clearance_cost,
+                    "foot_slip_velocity_squared": (
+                        foot_slip_velocity_squared
                     ),
-                    "swing_clearance_cost": (
-                        reference_blend * swing_clearance_cost
-                    ),
-                    "joint_tracking_cost": joint_tracking_cost,
                     "action_rate_cost": action_rate_cost,
-                    "residual_action_cost": residual_action_cost,
+                    "action_magnitude_cost": action_magnitude_cost,
+                    "joint_velocity_squared": joint_velocity_squared,
+                    "joint_limit_cost": joint_limit_cost,
                     "torque_cost": torque_cost,
-                    "nonfoot_contact_active": nonfoot_active.astype(jp.float32),
+                    "nonfoot_contact_active": nonfoot_active.astype(
+                        jp.float32
+                    ),
                     "nonfoot_depth": contacts["nonfoot_ground_depth"],
-                    "self_contact_active": self_contact_active.astype(jp.float32),
+                    "self_contact_active": self_contact_active.astype(
+                        jp.float32
+                    ),
                     "self_contact_depth": contacts["self_contact_depth"],
                     "failed": failed_bool.astype(jp.float32),
                     "failure_severe": failure_severe.astype(jp.float32),
@@ -662,29 +667,14 @@ def make_brax_walking_env_3d(
                 for name, value in raw_reward_terms.items()
             }
 
-            next_elapsed_s = step_count.astype(jp.float32) * control_dt
-            next_reference_blend = smoothstep_ramp(
-                jp, next_elapsed_s, task.startup_reference_ramp_s
-            )
-            next_action_ramp = smoothstep_ramp(
-                jp, next_elapsed_s, task.startup_action_ramp_s
-            )
-            next_reference = walking_reference_3d(
-                jp, oscillator_phase, task.reference
-            )
-            next_reference_target = jp.clip(
-                self.startup_ctrl
-                + next_reference_blend
-                * (next_reference["joint_targets"] - self.startup_ctrl),
-                self.joint_low,
-                self.joint_high,
-            )
             info = {
                 **state.info,
                 "previous_root_x": root_x,
+                "previous_foot_position": foot_position,
+                "last_foot_contact": foot_contact,
+                "foot_air_time": foot_air_time,
                 "last_policy_action": policy_action,
                 "last_target": target,
-                "oscillator_phase": oscillator_phase,
                 "root_low_step_count": root_low_step_count,
                 "upright_tilt_step_count": upright_tilt_step_count,
                 "airborne_step_count": airborne_step_count,
@@ -698,7 +688,13 @@ def make_brax_walking_env_3d(
                 **rewards,
                 "forward_velocity_m_s": forward_velocity,
                 "forward_progress_m": forward_progress,
-                "velocity_error_m_s": forward_velocity - desired_speed,
+                "velocity_error_m_s": (
+                    forward_velocity - task.desired_speed_m_s
+                ),
+                "vertical_velocity_m_s": vertical_velocity,
+                "roll_pitch_angular_velocity_rms": jp.sqrt(
+                    roll_pitch_angular_velocity_squared
+                ),
                 "root_x_m": root_x,
                 "root_y_m": root_y,
                 "root_z_m": root_z,
@@ -708,13 +704,15 @@ def make_brax_walking_env_3d(
                 "upright_tilt_rad": body["upright_tilt"],
                 "heading_error_rad": body["heading_error"],
                 "foot_contact_count": contacts["foot_ground_count"],
-                "stance_miss_fraction": stance_miss_fraction,
-                "swing_contact_fraction": swing_contact_fraction,
+                "foot_air_time_reward": foot_air_time_reward,
                 "swing_clearance_cost": swing_clearance_cost,
+                "foot_slip_rms_m_s": jp.sqrt(foot_slip_velocity_squared),
                 "nonfoot_ground_contact_count": contacts[
                     "nonfoot_ground_count"
                 ],
-                "nonfoot_ground_depth_m": contacts["nonfoot_ground_depth"],
+                "nonfoot_ground_depth_m": contacts[
+                    "nonfoot_ground_depth"
+                ],
                 "self_contact_count": contacts["self_contact_count"],
                 "self_contact_depth_m": contacts["self_contact_depth"],
                 "airborne_active": airborne_active.astype(jp.float32),
@@ -723,45 +721,49 @@ def make_brax_walking_env_3d(
                 "upright_tilt_step_count": upright_tilt_step_count.astype(
                     jp.float32
                 ),
-                "nonfoot_contact_step_count": nonfoot_contact_step_count.astype(
-                    jp.float32
+                "nonfoot_contact_step_count": (
+                    nonfoot_contact_step_count.astype(jp.float32)
                 ),
                 "self_contact_step_count": self_contact_step_count.astype(
                     jp.float32
                 ),
-                "joint_tracking_rms": jp.sqrt(joint_tracking_cost),
-                "residual_action_rms": jp.sqrt(residual_action_cost),
+                "action_rms": jp.sqrt(action_magnitude_cost),
                 "action_rate_rms": jp.sqrt(action_rate_cost),
+                "joint_velocity_rms_rad_s": jp.sqrt(joint_velocity_squared),
+                "joint_limit_cost": joint_limit_cost,
                 "normalized_torque_rms": jp.sqrt(torque_cost),
-                "reference_blend": reference_blend,
                 "startup_action_ramp": action_ramp,
-                "oscillator_phase_rad": oscillator_phase,
-                "desired_speed_m_s": jp.asarray(desired_speed),
-                "reset_reference_weight": jp.asarray(
-                    task.reset_reference_weight
-                ),
+                "desired_speed_m_s": jp.asarray(task.desired_speed_m_s),
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),
-                "failure_nonfinite_action": failure_nonfinite_action.astype(
-                    jp.float32
+                "failure_nonfinite_action": (
+                    failure_nonfinite_action.astype(jp.float32)
                 ),
-                "failure_nonfinite_physics": failure_nonfinite_physics.astype(
-                    jp.float32
+                "failure_nonfinite_physics": (
+                    failure_nonfinite_physics.astype(jp.float32)
                 ),
                 "failure_root_low": failure_root_low.astype(jp.float32),
                 "failure_root_high": failure_root_high.astype(jp.float32),
-                "failure_upright_tilt": failure_upright_tilt.astype(jp.float32),
-                "failure_lateral_drift": failure_lateral_drift.astype(jp.float32),
+                "failure_upright_tilt": failure_upright_tilt.astype(
+                    jp.float32
+                ),
+                "failure_lateral_drift": failure_lateral_drift.astype(
+                    jp.float32
+                ),
                 "failure_airborne": failure_airborne.astype(jp.float32),
-                "failure_nonfoot_depth": failure_nonfoot_depth.astype(jp.float32),
+                "failure_nonfoot_depth": failure_nonfoot_depth.astype(
+                    jp.float32
+                ),
                 "failure_nonfoot_contact": failure_nonfoot_contact.astype(
                     jp.float32
                 ),
-                "failure_self_contact_depth": failure_self_contact_depth.astype(
+                "failure_self_contact_depth": (
+                    failure_self_contact_depth.astype(jp.float32)
+                ),
+                "failure_self_contact": failure_self_contact.astype(
                     jp.float32
                 ),
-                "failure_self_contact": failure_self_contact.astype(jp.float32),
             }
             observation = self._observation(
                 data,
@@ -769,11 +771,6 @@ def make_brax_walking_env_3d(
                 body,
                 initial_root_y=state.info["initial_root_y"],
                 policy_action=policy_action,
-                reference_target=next_reference_target,
-                stance=next_reference["stance"],
-                oscillator_phase=oscillator_phase,
-                reference_blend=next_reference_blend,
-                action_ramp=next_action_ramp,
             )
             metrics = {
                 name: jp.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
@@ -809,8 +806,7 @@ def make_brax_walking_env_3d(
             foot_ground = jp.stack(
                 [
                     jp.any(
-                        ground
-                        & ((geom1 == foot_id) | (geom2 == foot_id))
+                        ground & ((geom1 == foot_id) | (geom2 == foot_id))
                     ).astype(jp.float32)
                     for foot_id in self.foot_geom_id_values
                 ]
@@ -855,17 +851,11 @@ def make_brax_walking_env_3d(
             *,
             initial_root_y,
             policy_action,
-            reference_target,
-            stance,
-            oscillator_phase,
-            reference_blend,
-            action_ramp,
         ):
             joint_position = data.qpos[self.joint_qpos_indices]
             joint_velocity = data.qvel[self.joint_dof_indices]
             foot_height = (
-                data.site_xpos[self.foot_site_ids, 2]
-                - task.reference.foot_radius_m
+                data.site_xpos[self.foot_site_ids, 2] - task.foot_radius_m
             )
             return jp.concatenate(
                 (
@@ -875,23 +865,12 @@ def make_brax_walking_env_3d(
                     body["body_z_axis"],
                     data.qvel[:3],
                     data.qvel[3:6],
-                    joint_position,
+                    joint_position - self.nominal_ctrl,
                     joint_velocity,
                     policy_action,
-                    reference_target,
-                    joint_position - reference_target,
                     contacts["foot_ground"],
                     foot_height,
-                    stance.astype(jp.float32),
-                    jp.asarray(
-                        (
-                            jp.sin(oscillator_phase),
-                            jp.cos(oscillator_phase),
-                            reference_blend,
-                            action_ramp,
-                            task.reference.desired_speed_m_s,
-                        )
-                    ),
+                    jp.asarray((task.desired_speed_m_s,)),
                 )
             )
 

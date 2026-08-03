@@ -2,59 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 import math
 
 from curl_robot_2d.parameters import FIXED_PARAMETERS
 
 
 WALKING_PHYSICS_PROFILE_NAMES_3D = (
-    "reference",
+    "accurate",
     "newton4",
     "cg12",
 )
 
 
 @dataclass(frozen=True)
-class WalkingReference3DConfig:
-    """Open-loop foot reference for the mirrored curl leg mechanism."""
-
-    frequency_hz: float = 0.70
-    duty_factor: float = 0.90
-    step_length_m: float = 0.040
-    foot_lift_m: float = 0.010
-    body_height_m: float = (
-        FIXED_PARAMETERS.walk_root_height - FIXED_PARAMETERS.foot_radius
-    )
-    fore_aft_center_m: float = 0.0
-    # Left/right legs stay synchronized because each side is a duplicated
-    # sagittal chain without a hip-abduction degree of freedom.
-    phase_offsets: tuple[float, ...] = (0.0, 0.0, 0.5, 0.5)
-    initial_phase_fraction: float = 0.0
-    upper_length_m: float = FIXED_PARAMETERS.upper_length
-    lower_length_m: float = FIXED_PARAMETERS.lower_length
-    foot_radius_m: float = FIXED_PARAMETERS.foot_radius
-    hip_range: tuple[float, float] = (
-        FIXED_PARAMETERS.hip.shell_compatible_range
-    )
-    knee_range: tuple[float, float] = (
-        FIXED_PARAMETERS.knee.shell_compatible_range
-    )
-
-    @property
-    def desired_speed_m_s(self) -> float:
-        return self.step_length_m * self.frequency_hz
-
-    @property
-    def root_height_m(self) -> float:
-        return self.body_height_m + self.foot_radius_m
-
-
-@dataclass(frozen=True)
 class Walking3DConfig:
-    """Task constants for residual PPO around a morphology-aware gait."""
+    """Task constants for reference-free 3-D locomotion PPO."""
 
-    physics_profile: str = "reference"
+    physics_profile: str = "accurate"
     physics_timestep: float = 0.001
     solver_name: str = "newton"
     integrator_name: str = "implicitfast"
@@ -62,28 +27,24 @@ class Walking3DConfig:
     jacobian_name: str = "dense"
     action_repeat: int = 20
     episode_length: int = 500
-    reset_keyframe_name: str = "walk"
-    reference: WalkingReference3DConfig = field(
-        default_factory=WalkingReference3DConfig
-    )
+    reset_keyframe_name: str = "stand"
+    desired_speed_m_s: float = 0.080
+    nominal_root_height_m: float = FIXED_PARAMETERS.stand_3d_root_height
+    foot_radius_m: float = FIXED_PARAMETERS.foot_radius
     action_scales: tuple[float, ...] = (
-        0.25,
-        0.35,
-        0.25,
-        0.35,
-        0.25,
-        0.35,
-        0.25,
-        0.35,
+        0.40,
+        0.55,
+        0.40,
+        0.55,
+        0.40,
+        0.55,
+        0.40,
+        0.55,
     )
-    residual_gain: float = 0.65
-    # The XML walk keyframe currently has only its front feet on the floor.
-    # Anneal this to zero after the keyframe itself has been optimized.
-    reset_reference_weight: float = 1.0
-    startup_reference_ramp_s: float = 0.20
-    startup_action_ramp_s: float = 0.25
-    reset_joint_noise_rad: float = 0.008
-    reset_velocity_noise: float = 0.008
+    startup_action_ramp_s: float = 0.50
+    reset_joint_noise_rad: float = 0.015
+    reset_velocity_noise: float = 0.015
+    soft_joint_limit_fraction: float = 0.90
     disable_root_damping: bool = True
 
     terminate_root_z_min: float = 0.145
@@ -107,7 +68,6 @@ class Walking3DConfig:
 
 
 def validate_walking_3d_config(config: Walking3DConfig) -> None:
-    reference = config.reference
     if len(config.action_scales) != 8:
         raise ValueError("walking 3-D action_scales must contain 8 values")
     if any(
@@ -121,7 +81,9 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         raise ValueError("reset_keyframe_name must not be empty")
     for value, name in (
         (config.physics_timestep, "physics_timestep"),
-        (config.residual_gain, "residual_gain"),
+        (config.desired_speed_m_s, "desired_speed_m_s"),
+        (config.nominal_root_height_m, "nominal_root_height_m"),
+        (config.foot_radius_m, "foot_radius_m"),
         (config.terminate_root_z_min, "terminate_root_z_min"),
         (config.terminate_root_z_max, "terminate_root_z_max"),
         (config.terminate_upright_tilt_rad, "terminate_upright_tilt_rad"),
@@ -130,12 +92,11 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         (config.terminate_self_contact_depth_m, "terminate_self_contact_depth_m"),
     ):
         _validate_positive(value, name)
-    if not 0.0 <= config.reset_reference_weight <= 1.0:
-        raise ValueError("reset_reference_weight must be between 0 and 1")
     if config.terminate_root_z_min >= config.terminate_root_z_max:
         raise ValueError("root-z termination bounds must be ordered")
+    if not 0.0 < config.soft_joint_limit_fraction <= 1.0:
+        raise ValueError("soft_joint_limit_fraction must be in (0, 1]")
     for value, name in (
-        (config.startup_reference_ramp_s, "startup_reference_ramp_s"),
         (config.startup_action_ramp_s, "startup_action_ramp_s"),
         (config.terminate_root_z_low_duration_s, "terminate_root_z_low_duration_s"),
         (
@@ -153,32 +114,6 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         ),
     ):
         _validate_nonnegative(value, name)
-    if len(reference.phase_offsets) != 4:
-        raise ValueError("walking reference phase_offsets must contain 4 values")
-    if any(not math.isfinite(value) for value in reference.phase_offsets):
-        raise ValueError("walking reference phase offsets must be finite")
-    if not 0.0 <= reference.initial_phase_fraction < 1.0:
-        raise ValueError(
-            "reference.initial_phase_fraction must be in [0, 1)"
-        )
-    for value, name in (
-        (reference.frequency_hz, "reference.frequency_hz"),
-        (reference.step_length_m, "reference.step_length_m"),
-        (reference.body_height_m, "reference.body_height_m"),
-        (reference.upper_length_m, "reference.upper_length_m"),
-        (reference.lower_length_m, "reference.lower_length_m"),
-        (reference.foot_radius_m, "reference.foot_radius_m"),
-    ):
-        _validate_positive(value, name)
-    _validate_nonnegative(reference.foot_lift_m, "reference.foot_lift_m")
-    if not 0.5 < reference.duty_factor < 1.0:
-        raise ValueError("reference.duty_factor must be between 0.5 and 1")
-    if not reference.hip_range[0] < reference.hip_range[1]:
-        raise ValueError("reference hip range must be ordered")
-    if not reference.knee_range[0] < reference.knee_range[1]:
-        raise ValueError("reference knee range must be ordered")
-
-
 def smoothstep_ramp(xp, elapsed_s, duration_s: float):
     if duration_s <= 0.0:
         return xp.ones_like(elapsed_s)
@@ -191,10 +126,10 @@ def walking_physics_profile_3d(
     config: Walking3DConfig | None = None,
 ) -> Walking3DConfig:
     base = config or Walking3DConfig()
-    if name == "reference":
+    if name == "accurate":
         return replace(
             base,
-            physics_profile="reference",
+            physics_profile="accurate",
             physics_timestep=0.001,
             solver_name="newton",
             action_repeat=20,

@@ -1,4 +1,4 @@
-"""Reward terms for the 3-D walking MJX environment."""
+"""Reference-free reward terms for direct 3-D locomotion training."""
 
 from __future__ import annotations
 
@@ -13,11 +13,15 @@ WALKING_REWARD_TERM_NAMES_3D = (
     "height",
     "heading",
     "lateral",
-    "contact_schedule",
+    "vertical_velocity",
+    "angular_velocity",
+    "foot_air_time",
     "swing_clearance",
-    "joint_tracking",
+    "foot_slip",
     "action_rate",
-    "residual_action",
+    "action_magnitude",
+    "joint_velocity",
+    "joint_limits",
     "torque",
     "collision",
     "termination",
@@ -27,29 +31,43 @@ WALKING_REWARD_TERM_NAMES_3D = (
 
 @dataclass(frozen=True)
 class Walking3DRewardConfig:
+    """Scales for command tracking plus generic locomotion regularization."""
+
     alive: float = 0.05
-    velocity_tracking: float = 1.40
-    velocity_tracking_sigma_m_s: float = 0.040
-    forward_progress: float = 0.40
-    upright: float = 0.45
+    velocity_tracking: float = 2.00
+    velocity_tracking_sigma_m_s: float = 0.050
+    forward_progress: float = 0.15
+    upright: float = 0.50
     upright_sigma_rad: float = 0.30
-    height: float = 0.50
+    height: float = 0.25
     height_sigma_m: float = 0.050
-    heading: float = 0.10
+    heading: float = 0.15
     heading_sigma_rad: float = 0.50
-    lateral_velocity: float = 0.12
-    lateral_drift: float = 0.18
+    lateral_velocity: float = 0.10
+    lateral_drift: float = 0.15
     lateral_velocity_sigma_m_s: float = 0.20
     lateral_drift_sigma_m: float = 0.10
-    stance_miss: float = 0.18
-    swing_contact: float = 0.22
-    swing_clearance: float = 0.12
-    joint_tracking: float = 0.06
-    action_rate: float = 0.015
-    residual_action: float = 0.004
-    torque: float = 0.008
+    vertical_velocity: float = 0.05
+    vertical_velocity_sigma_m_s: float = 0.20
+    angular_velocity: float = 0.08
+    angular_velocity_sigma_rad_s: float = 0.75
 
-    nonfoot_contact: float = 1.5
+    foot_air_time: float = 0.15
+    foot_air_time_threshold_s: float = 0.08
+    foot_air_time_cap_s: float = 0.30
+    swing_clearance: float = 0.05
+    swing_clearance_m: float = 0.015
+    foot_slip: float = 0.05
+    foot_slip_sigma_m_s: float = 0.15
+
+    action_rate: float = 0.020
+    action_magnitude: float = 0.004
+    joint_velocity: float = 0.005
+    joint_velocity_sigma_rad_s: float = 8.0
+    joint_limits: float = 0.10
+    torque: float = 0.010
+
+    nonfoot_contact: float = 2.0
     nonfoot_depth: float = 350.0
     self_contact: float = 0.8
     self_contact_depth: float = 250.0
@@ -87,6 +105,21 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
             inputs["lateral_drift"] / config.lateral_drift_sigma_m
         )
     )
+    vertical_velocity_cost = xp.square(
+        inputs["vertical_velocity"] / config.vertical_velocity_sigma_m_s
+    )
+    angular_velocity_cost = (
+        inputs["roll_pitch_angular_velocity_squared"]
+        / (config.angular_velocity_sigma_rad_s**2)
+    )
+    foot_slip_cost = (
+        inputs["foot_slip_velocity_squared"]
+        / (config.foot_slip_sigma_m_s**2)
+    )
+    joint_velocity_cost = (
+        inputs["joint_velocity_squared"]
+        / (config.joint_velocity_sigma_rad_s**2)
+    )
     collision_cost = (
         config.nonfoot_contact * inputs["nonfoot_contact_active"]
         + config.nonfoot_depth * inputs["nonfoot_depth"]
@@ -109,19 +142,28 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
         "height": -config.height * height_cost,
         "heading": -config.heading * heading_cost,
         "lateral": -lateral_cost,
-        "contact_schedule": -(
-            config.stance_miss * inputs["stance_miss_fraction"]
-            + config.swing_contact * inputs["swing_contact_fraction"]
+        "vertical_velocity": (
+            -config.vertical_velocity * vertical_velocity_cost
+        ),
+        "angular_velocity": (
+            -config.angular_velocity * angular_velocity_cost
+        ),
+        "foot_air_time": (
+            config.foot_air_time * inputs["foot_air_time_reward"]
         ),
         "swing_clearance": (
             -config.swing_clearance * inputs["swing_clearance_cost"]
         ),
-        "joint_tracking": (
-            -config.joint_tracking * inputs["joint_tracking_cost"]
-        ),
+        "foot_slip": -config.foot_slip * foot_slip_cost,
         "action_rate": -config.action_rate * inputs["action_rate_cost"],
-        "residual_action": (
-            -config.residual_action * inputs["residual_action_cost"]
+        "action_magnitude": (
+            -config.action_magnitude * inputs["action_magnitude_cost"]
+        ),
+        "joint_velocity": (
+            -config.joint_velocity * joint_velocity_cost
+        ),
+        "joint_limits": (
+            -config.joint_limits * inputs["joint_limit_cost"]
         ),
         "torque": -config.torque * inputs["torque_cost"],
         "collision": -collision_cost,

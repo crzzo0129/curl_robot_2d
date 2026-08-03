@@ -19,12 +19,15 @@ def zero_inputs():
         "heading_error": zero,
         "lateral_velocity": zero,
         "lateral_drift": zero,
-        "stance_miss_fraction": zero,
-        "swing_contact_fraction": zero,
+        "vertical_velocity": zero,
+        "roll_pitch_angular_velocity_squared": zero,
+        "foot_air_time_reward": zero,
         "swing_clearance_cost": zero,
-        "joint_tracking_cost": zero,
+        "foot_slip_velocity_squared": zero,
         "action_rate_cost": zero,
-        "residual_action_cost": zero,
+        "action_magnitude_cost": zero,
+        "joint_velocity_squared": zero,
+        "joint_limit_cost": zero,
         "torque_cost": zero,
         "nonfoot_contact_active": zero,
         "nonfoot_depth": zero,
@@ -38,7 +41,7 @@ def zero_inputs():
 
 
 class MJX3DWalkingRewardTest(unittest.TestCase):
-    def test_nominal_forward_step_has_all_positive_task_terms(self) -> None:
+    def test_commanded_forward_step_has_positive_task_terms(self) -> None:
         inputs = zero_inputs()
         inputs["normalized_forward_velocity"] = np.asarray(1.0)
 
@@ -48,23 +51,41 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
 
         self.assertEqual(tuple(terms), WALKING_REWARD_TERM_NAMES_3D)
         self.assertAlmostEqual(float(terms["alive"]), 0.05)
-        self.assertAlmostEqual(float(terms["velocity_tracking"]), 1.40)
-        self.assertAlmostEqual(float(terms["forward_progress"]), 0.40)
-        self.assertAlmostEqual(float(terms["upright"]), 0.45)
+        self.assertAlmostEqual(float(terms["velocity_tracking"]), 2.00)
+        self.assertAlmostEqual(float(terms["forward_progress"]), 0.15)
+        self.assertAlmostEqual(float(terms["upright"]), 0.50)
 
-    def test_height_contact_and_clearance_costs_are_independent(self) -> None:
+    def test_generic_motion_costs_are_independent(self) -> None:
         config = Walking3DRewardConfig()
         inputs = zero_inputs()
         inputs["root_height_error"] = np.asarray(config.height_sigma_m)
+        inputs["vertical_velocity"] = np.asarray(
+            config.vertical_velocity_sigma_m_s
+        )
+        inputs["foot_slip_velocity_squared"] = np.asarray(
+            config.foot_slip_sigma_m_s**2
+        )
         inputs["swing_clearance_cost"] = np.asarray(0.5)
         inputs["nonfoot_contact_active"] = np.asarray(1.0)
         inputs["nonfoot_depth"] = np.asarray(0.002)
 
         terms = reward_terms_walking_3d(np, config, inputs)
 
-        self.assertAlmostEqual(float(terms["height"]), -0.50)
-        self.assertAlmostEqual(float(terms["swing_clearance"]), -0.06)
-        self.assertAlmostEqual(float(terms["collision"]), -2.20, places=6)
+        self.assertAlmostEqual(float(terms["height"]), -0.25)
+        self.assertAlmostEqual(float(terms["vertical_velocity"]), -0.05)
+        self.assertAlmostEqual(float(terms["foot_slip"]), -0.05)
+        self.assertAlmostEqual(float(terms["swing_clearance"]), -0.025)
+        self.assertAlmostEqual(float(terms["collision"]), -2.70, places=6)
+
+    def test_touchdown_air_time_is_rewarded_without_phase_schedule(self) -> None:
+        inputs = zero_inputs()
+        inputs["foot_air_time_reward"] = np.asarray(0.5)
+
+        terms = reward_terms_walking_3d(
+            np, Walking3DRewardConfig(), inputs
+        )
+
+        self.assertAlmostEqual(float(terms["foot_air_time"]), 0.075)
 
     def test_severe_and_nonfinite_termination_are_strong(self) -> None:
         severe = zero_inputs()

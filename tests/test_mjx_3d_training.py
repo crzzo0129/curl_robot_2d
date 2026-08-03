@@ -23,6 +23,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.learning_rate, 3e-4)
         self.assertEqual(args.entropy_cost, 1e-2)
         self.assertEqual(args.selection_target_turns, 1.0)
+        self.assertFalse(args.zero_residual_policy_init)
+        self.assertEqual(args.initial_policy_std, 1.0)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
 
@@ -50,14 +52,38 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.reference_weight, 1.0)
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertEqual(args.phase_rate_scale, 1.0)
-        self.assertEqual(args.learning_rate, 1e-4)
+        self.assertEqual(args.learning_rate, 5e-5)
         self.assertEqual(args.entropy_cost, 1e-3)
         self.assertEqual(args.selection_target_turns, 10.0)
+        self.assertTrue(args.zero_residual_policy_init)
+        self.assertEqual(args.initial_policy_std, 0.20)
         self.assertEqual(reward.roll_progress, 8.0)
         self.assertEqual(reward.roll_mismatch, 0.8)
         self.assertEqual(reward.backward, 1.0)
         self.assertEqual(reward.axis_tilt, 10.0)
         self.assertEqual(reward.residual_action, 0.01)
+
+    def test_tanh_normal_scale_logit_recovers_requested_std(self) -> None:
+        scale_logit = (
+            train_mjx_3d_residual_ppo._tanh_normal_scale_logit(0.20)
+        )
+        softplus = math.log1p(math.exp(scale_logit))
+
+        self.assertAlmostEqual(
+            softplus + train_mjx_3d_residual_ppo.TANH_NORMAL_MIN_STD,
+            0.20,
+        )
+
+    def test_initial_policy_std_must_exceed_distribution_floor(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            train_mjx_3d_residual_ppo.parse_args(
+                [
+                    "--recipe",
+                    "phase_locked_v3",
+                    "--initial-policy-std",
+                    "0.001",
+                ]
+            )
 
     def test_reward_overrides_use_3d_reward_config(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(

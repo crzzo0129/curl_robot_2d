@@ -1,9 +1,8 @@
-"""Compile and step the 3-D curl walking residual environment."""
+"""Compile and step the reference-free 3-D walking environment."""
 
 from __future__ import annotations
 
 import argparse
-from dataclasses import replace
 import json
 import time
 
@@ -26,12 +25,10 @@ def parse_args(argv=None):
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--frequency-hz", type=float, default=0.70)
-    parser.add_argument("--step-length-m", type=float, default=0.040)
-    parser.add_argument("--foot-lift-m", type=float, default=0.010)
-    parser.add_argument("--duty-factor", type=float, default=0.90)
-    parser.add_argument("--residual-gain", type=float, default=0.65)
-    parser.add_argument("--reset-reference-weight", type=float, default=1.0)
+    parser.add_argument("--desired-speed", type=float, default=0.080)
+    parser.add_argument("--action-scale-hip", type=float, default=0.40)
+    parser.add_argument("--action-scale-knee", type=float, default=0.55)
+    parser.add_argument("--startup-action-ramp", type=float, default=0.50)
     parser.add_argument("--memory-fraction", type=float, default=0.90)
     parser.add_argument(
         "--mujoco-gl",
@@ -73,19 +70,15 @@ def main(argv=None) -> None:
     print(json.dumps(describe_runtime(), indent=2), flush=True)
     base = Walking3DConfig(
         episode_length=args.episode_length,
-        residual_gain=args.residual_gain,
-        reset_reference_weight=args.reset_reference_weight,
+        desired_speed_m_s=args.desired_speed,
+        action_scales=(
+            args.action_scale_hip,
+            args.action_scale_knee,
+        )
+        * 4,
+        startup_action_ramp_s=args.startup_action_ramp,
     )
-    reference = replace(
-        base.reference,
-        frequency_hz=args.frequency_hz,
-        step_length_m=args.step_length_m,
-        foot_lift_m=args.foot_lift_m,
-        duty_factor=args.duty_factor,
-    )
-    task = walking_physics_profile_3d(
-        args.physics_profile, replace(base, reference=reference)
-    )
+    task = walking_physics_profile_3d(args.physics_profile, base)
     print("stage=environment_create_start", flush=True)
     env = make_brax_walking_env_3d(task, seed=args.seed)
     print(
@@ -160,7 +153,7 @@ def main(argv=None) -> None:
         "action_size": env.action_size,
         "physics_profile": env.config.physics_profile,
         "reset_keyframe": env.config.reset_keyframe_name,
-        "reset_reference_weight": env.config.reset_reference_weight,
+        "desired_speed_m_s": env.config.desired_speed_m_s,
         "reset_compile_s": reset_compile_s,
         "step_compile_s": step_compile_s,
         "step_signature_check_s": signature_check_s,

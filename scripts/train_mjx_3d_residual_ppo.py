@@ -63,6 +63,8 @@ PRESETS = {
     },
 }
 
+TANH_NORMAL_MIN_STD = 1e-3
+
 RECIPES_3D = {
     "anchored_v1": {
         "description": "Original conservative CEM-anchored residual run.",
@@ -73,6 +75,8 @@ RECIPES_3D = {
             "learning_rate": 3e-4,
             "entropy_cost": 1e-2,
             "selection_target_turns": 1.0,
+            "zero_residual_policy_init": False,
+            "initial_policy_std": 1.0,
         },
         "reward": {},
     },
@@ -88,6 +92,8 @@ RECIPES_3D = {
             "learning_rate": 1e-4,
             "entropy_cost": 3e-3,
             "selection_target_turns": 1.0,
+            "zero_residual_policy_init": False,
+            "initial_policy_std": 1.0,
         },
         "reward": {
             "roll_progress": 12.0,
@@ -108,9 +114,11 @@ RECIPES_3D = {
             "reference_weight": 1.0,
             "minimum_residual_gain": 0.15,
             "phase_rate_scale": 1.0,
-            "learning_rate": 1e-4,
+            "learning_rate": 5e-5,
             "entropy_cost": 1e-3,
             "selection_target_turns": 10.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.20,
         },
         "reward": {
             "roll_progress": 8.0,
@@ -123,6 +131,108 @@ RECIPES_3D = {
         },
     },
 }
+
+
+def _tanh_normal_scale_logit(
+    initial_std: float,
+    minimum_std: float = TANH_NORMAL_MIN_STD,
+) -> float:
+    """Invert Brax's softplus scale transform for a requested initial std."""
+
+    adjusted_std = initial_std - minimum_std
+    if adjusted_std <= 0.0:
+        raise ValueError("initial_std must exceed minimum_std")
+    if adjusted_std > 20.0:
+        return adjusted_std
+    return math.log(math.expm1(adjusted_std))
+
+
+def _zero_centered_residual_network_factory(
+    hidden_layers,
+    activation_name,
+    initial_std,
+):
+    """Build PPO networks whose initial residual policy is centered at zero."""
+
+    import jax.numpy as jnp
+    import jax.nn as jnn
+    from brax.training import networks as training_networks
+    from brax.training import types as training_types
+    from brax.training.agents.ppo import networks as ppo_networks
+    from flax import linen
+
+    activation = {
+        "elu": jnn.elu,
+        "relu": jnn.relu,
+        "swish": jnn.swish,
+        "tanh": jnn.tanh,
+    }[activation_name]
+    hidden_layer_sizes = tuple(hidden_layers)
+    scale_logit = _tanh_normal_scale_logit(initial_std)
+
+    class ResidualPolicyModule(linen.Module):
+        action_size: int
+
+        @linen.compact
+        def __call__(self, observation):
+            hidden = observation
+            for index, layer_size in enumerate(hidden_layer_sizes):
+                hidden = linen.Dense(
+                    layer_size,
+                    kernel_init=jnn.initializers.lecun_uniform(),
+                    name=f"hidden_{index}",
+                )(hidden)
+                hidden = activation(hidden)
+            location = linen.Dense(
+                self.action_size,
+                kernel_init=jnn.initializers.zeros,
+                bias_init=jnn.initializers.zeros,
+                name="location",
+            )(hidden)
+            scale = linen.Dense(
+                self.action_size,
+                kernel_init=jnn.initializers.zeros,
+                bias_init=jnn.initializers.constant(scale_logit),
+                name="scale",
+            )(hidden)
+            return jnp.concatenate((location, scale), axis=-1)
+
+    def factory(
+        observation_size,
+        action_size,
+        preprocess_observations_fn=(
+            training_types.identity_observation_preprocessor
+        ),
+    ):
+        base_networks = ppo_networks.make_ppo_networks(
+            observation_size,
+            action_size,
+            preprocess_observations_fn=preprocess_observations_fn,
+            policy_hidden_layer_sizes=hidden_layer_sizes,
+            activation=activation,
+        )
+        policy_module = ResidualPolicyModule(action_size=action_size)
+        dummy_observation = jnp.zeros((1, observation_size))
+
+        def apply(processor_params, policy_params, observation):
+            observation = preprocess_observations_fn(
+                observation, processor_params
+            )
+            return policy_module.apply(policy_params, observation)
+
+        policy_network = training_networks.FeedForwardNetwork(
+            init=lambda key: policy_module.init(key, dummy_observation),
+            apply=apply,
+        )
+        return ppo_networks.PPONetworks(
+            policy_network=policy_network,
+            value_network=base_networks.value_network,
+            parametric_action_distribution=(
+                base_networks.parametric_action_distribution
+            ),
+        )
+
+    return factory
 
 PER_STEP_EVAL_METRICS_3D = (
     "root_x_m",
@@ -578,7 +688,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default="anchored_v1",
         help=(
             "3-D training recipe. anchored_v1 reproduces the first run; "
-            "push_v2 is the recommended next attempt."
+            "phase_locked_v3 starts residual learning from the restored "
+            "phase-locked reference."
         ),
     )
     parser.add_argument(
@@ -624,6 +735,20 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--updates-per-batch", type=int, default=4)
     parser.add_argument("--learning-rate", type=float)
     parser.add_argument("--entropy-cost", type=float)
+    parser.add_argument(
+        "--zero-residual-policy-init",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Initialize the residual policy with exactly zero deterministic "
+            "action. The selected recipe supplies the default."
+        ),
+    )
+    parser.add_argument(
+        "--initial-policy-std",
+        type=float,
+        help="Initial pre-tanh policy standard deviation.",
+    )
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--reward-scaling", type=float, default=1.0)
     parser.add_argument(
@@ -709,6 +834,11 @@ def parse_args(argv=None):
         parser.error("--ppo-checkpoint-dir requires --save-ppo-checkpoints")
     if args.selection_target_turns <= 0.0:
         parser.error("--selection-target-turns must be positive")
+    if args.initial_policy_std <= TANH_NORMAL_MIN_STD:
+        parser.error(
+            "--initial-policy-std must be greater than "
+            f"{TANH_NORMAL_MIN_STD:g}"
+        )
     for name in (
         "episode_length",
         "unroll_length",
@@ -897,6 +1027,8 @@ def main(argv=None) -> None:
         "reward_scaling": args.reward_scaling,
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
+        "zero_residual_policy_init": args.zero_residual_policy_init,
+        "initial_policy_std": args.initial_policy_std,
         "seed": args.seed,
         "restore_checkpoint": (
             str(args.restore_checkpoint)
@@ -943,6 +1075,11 @@ def main(argv=None) -> None:
             f"{task.terminate_root_z_low_duration_s:g}s"
         )
     )
+    policy_init_text = (
+        f"zero-residual/std={args.initial_policy_std:g}"
+        if args.zero_residual_policy_init
+        else "brax-default"
+    )
     print(
         "[training]\n"
         f"  preset={args.preset} recipe={args.recipe} "
@@ -966,6 +1103,7 @@ def main(argv=None) -> None:
         f"phase_rate_scale={task.reference_phase_rate_scale:g}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
+        f"  policy_init={policy_init_text}\n"
         f"  reward roll={reward_config.roll_progress:g} "
         f"lat={reward_config.lateral_drift:g} "
         f"tilt={reward_config.axis_tilt:g} "
@@ -1007,6 +1145,15 @@ def main(argv=None) -> None:
             flush=True,
         )
 
+    network_factory = (
+        _zero_centered_residual_network_factory(
+            args.hidden_layers,
+            args.activation,
+            args.initial_policy_std,
+        )
+        if args.zero_residual_policy_init
+        else _network_factory(args.hidden_layers, args.activation)
+    )
     make_inference_fn, final_params, final_metrics = ppo.train(
         environment=train_env,
         eval_env=eval_env,
@@ -1025,9 +1172,7 @@ def main(argv=None) -> None:
         num_minibatches=values["num_minibatches"],
         num_updates_per_batch=args.updates_per_batch,
         normalize_observations=True,
-        network_factory=_network_factory(
-            args.hidden_layers, args.activation
-        ),
+        network_factory=network_factory,
         seed=args.seed,
         progress_fn=progress_fn,
         policy_params_fn=policy_params_fn,

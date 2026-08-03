@@ -1,4 +1,4 @@
-"""Train a residual PPO walking policy for the 3-D curl robot."""
+"""Train a reference-free PPO walking policy for the 3-D curl robot."""
 
 from __future__ import annotations
 
@@ -15,7 +15,6 @@ import numpy as np
 from curl_robot_2d_mjx.config_walking_3d import (
     WALKING_PHYSICS_PROFILE_NAMES_3D,
     Walking3DConfig,
-    WalkingReference3DConfig,
     walking_physics_profile_3d,
 )
 from curl_robot_2d_mjx.reward_walking_3d import (
@@ -61,52 +60,23 @@ PRESETS_WALKING_3D = {
 
 
 WALKING_RECIPES_3D = {
-    "stability_v1": {
+    "direct_v1": {
         "description": (
-            "Long double-support curriculum around the morphology-aware "
-            "paired-leg reference."
+            "Direct joint-position locomotion with no gait phase, contact "
+            "schedule, or trajectory tracking."
         ),
         "args": {
-            "frequency_hz": 0.70,
-            "step_length_m": 0.040,
-            "foot_lift_m": 0.010,
-            "duty_factor": 0.90,
-            "reset_reference_weight": 1.0,
-            "residual_gain": 0.65,
-            "startup_action_ramp_s": 0.25,
-            "terminate_airborne_duration": 0.14,
-            "terminate_nonfoot_contact_duration": 0.06,
-            "terminate_self_contact_duration": 0.08,
-            "learning_rate": 1e-4,
-            "entropy_cost": 3e-3,
+            "desired_speed_m_s": 0.080,
+            "action_scale_hip": 0.40,
+            "action_scale_knee": 0.55,
+            "startup_action_ramp_s": 0.50,
+            "terminate_airborne_duration": 0.25,
+            "terminate_nonfoot_contact_duration": 0.12,
+            "terminate_self_contact_duration": 0.10,
+            "learning_rate": 2e-4,
+            "entropy_cost": 1e-2,
         },
         "reward": {},
-    },
-    "stability_v2": {
-        "description": (
-            "Keep the initial policy close to the viable paired-leg "
-            "reference and allow recovery from shallow ground brushes."
-        ),
-        "args": {
-            "frequency_hz": 0.70,
-            "step_length_m": 0.040,
-            "foot_lift_m": 0.010,
-            "duty_factor": 0.90,
-            "reset_reference_weight": 1.0,
-            "residual_gain": 0.05,
-            "startup_action_ramp_s": 1.00,
-            "terminate_airborne_duration": 0.25,
-            "terminate_nonfoot_contact_duration": 0.20,
-            "terminate_self_contact_duration": 0.15,
-            "learning_rate": 5e-5,
-            "entropy_cost": 1e-3,
-        },
-        "reward": {
-            "forward_progress": 0.15,
-            "action_rate": 0.025,
-            "residual_action": 0.020,
-            "nonfoot_contact": 2.0,
-        },
     },
 }
 
@@ -115,6 +85,8 @@ PER_STEP_WALKING_METRICS_3D = (
     "forward_velocity_m_s",
     "forward_progress_m",
     "velocity_error_m_s",
+    "vertical_velocity_m_s",
+    "roll_pitch_angular_velocity_rms",
     "root_x_m",
     "root_y_m",
     "root_z_m",
@@ -124,9 +96,9 @@ PER_STEP_WALKING_METRICS_3D = (
     "upright_tilt_rad",
     "heading_error_rad",
     "foot_contact_count",
-    "stance_miss_fraction",
-    "swing_contact_fraction",
+    "foot_air_time_reward",
     "swing_clearance_cost",
+    "foot_slip_rms_m_s",
     "nonfoot_ground_contact_count",
     "nonfoot_ground_depth_m",
     "self_contact_count",
@@ -137,15 +109,13 @@ PER_STEP_WALKING_METRICS_3D = (
     "upright_tilt_step_count",
     "nonfoot_contact_step_count",
     "self_contact_step_count",
-    "joint_tracking_rms",
-    "residual_action_rms",
+    "action_rms",
     "action_rate_rms",
+    "joint_velocity_rms_rad_s",
+    "joint_limit_cost",
     "normalized_torque_rms",
-    "reference_blend",
     "startup_action_ramp",
-    "oscillator_phase_rad",
     "desired_speed_m_s",
-    "reset_reference_weight",
 )
 
 
@@ -325,10 +295,11 @@ def _format_eval_report_walking_3d(
             f"lateral={selection['lateral_drift_m']:.3f}m"
         ),
         (
-            f"  gait    feet={_metric(metrics, 'eval/avg_foot_contact_count'):.2f} "
-            f"stance_miss={_metric(metrics, 'eval/avg_stance_miss_fraction'):.2%} "
-            f"swing_contact={_metric(metrics, 'eval/avg_swing_contact_fraction'):.2%} "
-            f"clearance_cost={_metric(metrics, 'eval/avg_swing_clearance_cost'):.3f}"
+            f"  feet    contacts="
+            f"{_metric(metrics, 'eval/avg_foot_contact_count'):.2f} "
+            f"air_time={_metric(metrics, 'eval/avg_foot_air_time_reward'):.3f} "
+            f"clearance={_metric(metrics, 'eval/avg_swing_clearance_cost'):.3f} "
+            f"slip={_metric(metrics, 'eval/avg_foot_slip_rms_m_s'):.3f}m/s"
         ),
         (
             f"  safety  nonfoot="
@@ -337,10 +308,12 @@ def _format_eval_report_walking_3d(
             f"air={_metric(metrics, 'eval/avg_airborne_active'):.2%}"
         ),
         (
-            f"  control residual="
-            f"{_metric(metrics, 'eval/avg_residual_action_rms'):.3f} "
+            f"  control action="
+            f"{_metric(metrics, 'eval/avg_action_rms'):.3f} "
             f"rate={_metric(metrics, 'eval/avg_action_rate_rms'):.3f} "
-            f"tracking={_metric(metrics, 'eval/avg_joint_tracking_rms'):.3f} "
+            f"joint_vel="
+            f"{_metric(metrics, 'eval/avg_joint_velocity_rms_rad_s'):.3f} "
+            f"limit={_metric(metrics, 'eval/avg_joint_limit_cost'):.3f} "
             f"torque={_metric(metrics, 'eval/avg_normalized_torque_rms'):.3f}"
         ),
     ]
@@ -475,7 +448,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--preset", choices=tuple(PRESETS_WALKING_3D), default="smoke"
     )
     parser.add_argument(
-        "--recipe", choices=tuple(WALKING_RECIPES_3D), default="stability_v2"
+        "--recipe", choices=tuple(WALKING_RECIPES_3D), default="direct_v1"
     )
     parser.add_argument(
         "--physics-profile",
@@ -489,13 +462,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-minibatches", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
-    parser.add_argument("--frequency-hz", type=float)
-    parser.add_argument("--step-length-m", type=float)
-    parser.add_argument("--foot-lift-m", type=float)
-    parser.add_argument("--duty-factor", type=float)
-    parser.add_argument("--reset-keyframe", default="walk")
-    parser.add_argument("--reset-reference-weight", type=float)
-    parser.add_argument("--residual-gain", type=float)
+    parser.add_argument("--desired-speed", dest="desired_speed_m_s", type=float)
+    parser.add_argument("--action-scale-hip", type=float)
+    parser.add_argument("--action-scale-knee", type=float)
+    parser.add_argument("--reset-keyframe", default="stand")
     parser.add_argument(
         "--startup-action-ramp",
         dest="startup_action_ramp_s",
@@ -567,7 +537,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("results") / "mjx_3d_walking_stability_v2",
+        default=Path("results") / "mjx_3d_walking_direct_v1",
     )
     parser.add_argument("--allow-existing-output", action="store_true")
     parser.add_argument("--save-ppo-checkpoints", action="store_true")
@@ -588,14 +558,8 @@ def parse_args(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
     _apply_recipe_defaults(args)
-    if not 0.0 <= args.reset_reference_weight <= 1.0:
-        parser.error("--reset-reference-weight must be in [0, 1]")
-    if not 0.0 <= args.residual_gain <= 1.0:
-        parser.error("--residual-gain must be in [0, 1]")
     if args.startup_action_ramp_s < 0.0:
         parser.error("--startup-action-ramp must be nonnegative")
-    if not 0.5 < args.duty_factor < 1.0:
-        parser.error("--duty-factor must be between 0.5 and 1")
     if args.ppo_checkpoint_dir is not None and not args.save_ppo_checkpoints:
         parser.error("--ppo-checkpoint-dir requires --save-ppo-checkpoints")
     if (
@@ -607,9 +571,9 @@ def parse_args(argv=None):
         "episode_length",
         "unroll_length",
         "updates_per_batch",
-        "frequency_hz",
-        "step_length_m",
-        "foot_lift_m",
+        "desired_speed_m_s",
+        "action_scale_hip",
+        "action_scale_knee",
     ):
         if getattr(args, name) <= 0.0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
@@ -673,21 +637,17 @@ def main(argv=None) -> None:
             flush=True,
         )
 
-    reference = replace(
-        WalkingReference3DConfig(),
-        frequency_hz=args.frequency_hz,
-        step_length_m=args.step_length_m,
-        foot_lift_m=args.foot_lift_m,
-        duty_factor=args.duty_factor,
-    )
+    action_scales = (
+        args.action_scale_hip,
+        args.action_scale_knee,
+    ) * 4
     task = walking_physics_profile_3d(
         args.physics_profile,
         Walking3DConfig(
             episode_length=args.episode_length,
             reset_keyframe_name=args.reset_keyframe,
-            reference=reference,
-            residual_gain=args.residual_gain,
-            reset_reference_weight=args.reset_reference_weight,
+            desired_speed_m_s=args.desired_speed_m_s,
+            action_scales=action_scales,
             startup_action_ramp_s=args.startup_action_ramp_s,
             terminate_root_z_min=args.terminate_root_z_min,
             terminate_root_z_low_duration_s=(
@@ -722,7 +682,7 @@ def main(argv=None) -> None:
         task, reward_config=reward_config, seed=args.seed + 10_000
     )
     target_distance_m = args.selection_target_distance or (
-        reference.desired_speed_m_s
+        task.desired_speed_m_s
         * args.episode_length
         * task.control_timestep
     )
@@ -763,7 +723,7 @@ def main(argv=None) -> None:
             clean,
             args.episode_length,
             target_distance_m=target_distance_m,
-            desired_speed_m_s=reference.desired_speed_m_s,
+            desired_speed_m_s=task.desired_speed_m_s,
         )
         selected = (
             not selection["rejected"]
@@ -785,7 +745,7 @@ def main(argv=None) -> None:
                 episode_length=args.episode_length,
                 control_dt=task.control_timestep,
                 target_distance_m=target_distance_m,
-                desired_speed_m_s=reference.desired_speed_m_s,
+                desired_speed_m_s=task.desired_speed_m_s,
                 selection=selection,
                 selected=selected,
             ),
@@ -835,14 +795,11 @@ def main(argv=None) -> None:
         f"batch={values['batch_size']} "
         f"minibatches={values['num_minibatches']}\n"
         f"  episode={args.episode_length * task.control_timestep:.2f}s "
-        f"speed={reference.desired_speed_m_s:.3f}m/s "
+        f"speed={task.desired_speed_m_s:.3f}m/s "
         f"target_distance={target_distance_m:.3f}m\n"
-        f"  gait={reference.frequency_hz:.2f}Hz "
-        f"stride={reference.step_length_m:.3f}m "
-        f"lift={reference.foot_lift_m:.3f}m "
-        f"duty={reference.duty_factor:.2f}\n"
-        f"  reset_reference_weight={task.reset_reference_weight:.2f} "
-        f"residual_gain={task.residual_gain:.2f}\n"
+        f"  control=direct_joint_position reset={task.reset_keyframe_name} "
+        f"hip_scale={args.action_scale_hip:.2f}rad "
+        f"knee_scale={args.action_scale_knee:.2f}rad\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  output={args.out.resolve()}",
