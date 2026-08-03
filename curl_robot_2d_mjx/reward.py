@@ -15,6 +15,7 @@ REWARD_TERM_NAMES = (
     "residual_action",
     "torque",
     "airborne",
+    "stuck",
     "foot_gap",
     "collision",
     "termination",
@@ -44,13 +45,23 @@ def stuck_termination_state(
 ):
     """Track continuous low-and-stalled behavior after a startup grace period."""
 
-    active = (
-        (step_count >= grace_steps)
-        & (root_z < root_z_max)
-        & (rolling_window_progress < minimum_progress_rad)
+    eligible = (step_count >= grace_steps) & (root_z < root_z_max)
+    progress_scale = xp.maximum(
+        xp.asarray(minimum_progress_rad), 1.0e-6
     )
+    deficit = xp.where(
+        eligible,
+        xp.clip(
+            (minimum_progress_rad - rolling_window_progress)
+            / progress_scale,
+            0.0,
+            1.0,
+        ),
+        0.0,
+    )
+    active = deficit > 0.0
     count = xp.where(active, previous_count + 1, xp.asarray(0, dtype=xp.int32))
-    return active, count, count >= termination_steps
+    return active, deficit, count, count >= termination_steps
 
 
 def reward_terms(xp, config: RollingRewardConfig, inputs):
@@ -115,6 +126,7 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
         ),
         "torque": -config.torque * inputs["torque_cost"],
         "airborne": -config.airborne * inputs["airborne"],
+        "stuck": -config.stuck * inputs["stuck_deficit"],
         "foot_gap": (
             -config.foot_gap
             * xp.maximum(

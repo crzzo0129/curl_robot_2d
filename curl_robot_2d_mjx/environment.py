@@ -385,6 +385,7 @@ def make_brax_env(
                 "root_low_active": zero,
                 "root_low_step_count": zero,
                 "stuck_active": zero,
+                "stuck_deficit": zero,
                 "stuck_step_count": zero,
                 "rolling_window_progress_rad": zero,
                 "foot_center_distance_m": zero,
@@ -845,10 +846,16 @@ def make_brax_env(
                 )
             if task.terminate_stuck_root_z_max is None:
                 stuck_active = jp.asarray(False)
+                stuck_deficit = jp.zeros((), dtype=jp.float32)
                 stuck_step_count = jp.asarray(0, dtype=jp.int32)
                 failure_stuck = jp.asarray(False)
             else:
-                stuck_active, stuck_step_count, failure_stuck = (
+                (
+                    stuck_active,
+                    stuck_deficit,
+                    stuck_step_count,
+                    failure_stuck,
+                ) = (
                     stuck_termination_state(
                         jp,
                         root_z=root_z,
@@ -907,6 +914,7 @@ def make_brax_env(
                     ),
                     "torque_cost": torque_cost,
                     "airborne": airborne,
+                    "stuck_deficit": stuck_deficit,
                     "foot_distance": foot_distance,
                     "control_dt": control_dt,
                     "forbidden_count": contacts["forbidden_count"],
@@ -1020,6 +1028,7 @@ def make_brax_env(
                     root_low_step_count.astype(jp.float32)
                 ),
                 "stuck_active": stuck_active.astype(jp.float32),
+                "stuck_deficit": stuck_deficit,
                 "stuck_step_count": stuck_step_count.astype(jp.float32),
                 "rolling_window_progress_rad": rolling_window_progress,
                 "foot_center_distance_m": foot_distance,

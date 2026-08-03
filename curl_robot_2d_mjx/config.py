@@ -62,7 +62,7 @@ class NominalRLConfig:
     terminate_stuck_root_z_max: float | None = None
     terminate_stuck_progress_window_s: float = 1.0
     terminate_stuck_min_progress_rad: float = 0.20
-    terminate_stuck_duration_s: float = 0.75
+    terminate_stuck_duration_s: float = 3.0
     terminate_stuck_grace_s: float = 1.50
     tail_progress_window_s: float = 2.0
     terminate_root_z_max: float | None = 0.70

@@ -19,6 +19,7 @@ class RollingRewardConfig:
     residual_action: float = 0.0
     torque: float = 0.01
     airborne: float = 0.15
+    stuck: float = 0.20
     foot_gap: float = 5.0
     foot_gap_threshold_m: float = 0.20
     termination: float = 5.0

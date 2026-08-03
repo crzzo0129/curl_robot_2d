@@ -33,6 +33,7 @@ def zero_inputs():
         "residual_action_cost": zero,
         "torque_cost": zero,
         "airborne": zero,
+        "stuck_deficit": zero,
         "foot_distance": zero,
         "control_dt": np.asarray(0.02, dtype=np.float32),
         "forbidden_count": zero,
@@ -210,13 +211,14 @@ class MJXRewardTest(unittest.TestCase):
             "grace_steps": 75,
             "termination_steps": 38,
         }
-        active, count, failed = stuck_termination_state(
+        active, deficit, count, failed = stuck_termination_state(
             np,
             root_z=np.asarray(0.07, dtype=np.float32),
             rolling_window_progress=np.asarray(0.05, dtype=np.float32),
             **common,
         )
         self.assertTrue(bool(active))
+        self.assertAlmostEqual(float(deficit), 0.75)
         self.assertEqual(int(count), 8)
         self.assertFalse(bool(failed))
 
@@ -225,7 +227,7 @@ class MJXRewardTest(unittest.TestCase):
             (0.07, 0.30, 100),
             (0.07, 0.05, 74),
         ):
-            active, count, failed = stuck_termination_state(
+            active, deficit, count, failed = stuck_termination_state(
                 np,
                 root_z=np.asarray(root_z, dtype=np.float32),
                 rolling_window_progress=np.asarray(
@@ -234,11 +236,12 @@ class MJXRewardTest(unittest.TestCase):
                 **{**common, "step_count": np.asarray(step_count)},
             )
             self.assertFalse(bool(active))
+            self.assertEqual(float(deficit), 0.0)
             self.assertEqual(int(count), 0)
             self.assertFalse(bool(failed))
 
     def test_stuck_termination_fires_after_continuous_duration(self) -> None:
-        active, count, failed = stuck_termination_state(
+        active, deficit, count, failed = stuck_termination_state(
             np,
             root_z=np.asarray(0.07, dtype=np.float32),
             rolling_window_progress=np.asarray(0.0, dtype=np.float32),
@@ -251,8 +254,19 @@ class MJXRewardTest(unittest.TestCase):
         )
 
         self.assertTrue(bool(active))
+        self.assertEqual(float(deficit), 1.0)
         self.assertEqual(int(count), 38)
         self.assertTrue(bool(failed))
+
+    def test_stuck_progress_deficit_is_a_soft_per_step_penalty(self) -> None:
+        inputs = zero_inputs()
+        inputs["stuck_deficit"] = np.asarray(0.75, dtype=np.float32)
+
+        terms = reward_terms(
+            np, RollingRewardConfig(stuck=0.20), inputs
+        )
+
+        self.assertAlmostEqual(float(terms["stuck"]), -0.15)
 
     def test_residual_action_cost_is_explicit_and_optional(self) -> None:
         inputs = zero_inputs()

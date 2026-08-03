@@ -129,6 +129,7 @@ PER_STEP_EVAL_METRICS = (
     "phase_progress_rad",
     "translation_progress_rad",
     "stuck_active",
+    "stuck_deficit",
 )
 
 
@@ -338,6 +339,7 @@ def _format_eval_report(
             "safety  ",
             (
                 ("air", "airborne"),
+                ("stuck", "stuck"),
                 ("gap", "foot_gap"),
                 ("collision", "collision"),
                 ("terminal", "termination"),
@@ -605,7 +607,7 @@ def main() -> None:
     parser.add_argument("--stuck-root-z-max", type=float, default=0.10)
     parser.add_argument("--stuck-progress-window", type=float, default=1.0)
     parser.add_argument("--stuck-min-progress-rad", type=float, default=0.20)
-    parser.add_argument("--stuck-duration", type=float, default=0.75)
+    parser.add_argument("--stuck-duration", type=float, default=3.0)
     parser.add_argument("--stuck-grace", type=float, default=1.50)
     parser.add_argument("--tail-progress-window", type=float, default=2.0)
     parser.add_argument(

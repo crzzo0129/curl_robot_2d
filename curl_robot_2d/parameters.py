@@ -132,6 +132,13 @@ class FixedParameters:
     walk_rear_hip_angle: float = 0.35
     walk_rear_knee_angle: float = 0.78
 
+    # Static four-foot support pose for direct 3-D locomotion training.  This
+    # is a reset and PD action center, not a time-varying gait reference.
+    stand_3d_front_hip_angle: float = 0.33532733
+    stand_3d_front_knee_angle: float = 0.53234438
+    stand_3d_rear_hip_angle: float = 0.28239372
+    stand_3d_rear_knee_angle: float = 0.54939539
+
     @property
     def torso_length(self) -> float:
         return self.edge_length
@@ -250,6 +257,20 @@ class FixedParameters:
         rear_height = self.leg_extension_height(
             self.walk_rear_hip_angle,
             self.walk_rear_knee_angle,
+        )
+        return max(front_height, rear_height) + self.foot_radius
+
+    @property
+    def stand_3d_root_height(self) -> float:
+        """Root height placing all four 3-D feet on the floor."""
+
+        front_height = self.leg_extension_height(
+            self.stand_3d_front_hip_angle,
+            self.stand_3d_front_knee_angle,
+        )
+        rear_height = self.leg_extension_height(
+            self.stand_3d_rear_hip_angle,
+            self.stand_3d_rear_knee_angle,
         )
         return max(front_height, rear_height) + self.foot_radius
 

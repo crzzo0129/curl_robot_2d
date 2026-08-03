@@ -57,7 +57,7 @@ class MJXContractTest(unittest.TestCase):
         self.assertIsNone(config.terminate_stuck_root_z_max)
         self.assertEqual(config.terminate_stuck_progress_window_s, 1.0)
         self.assertEqual(config.terminate_stuck_min_progress_rad, 0.20)
-        self.assertEqual(config.terminate_stuck_duration_s, 0.75)
+        self.assertEqual(config.terminate_stuck_duration_s, 3.0)
         self.assertEqual(config.terminate_stuck_grace_s, 1.50)
         self.assertEqual(config.tail_progress_window_s, 2.0)
         self.assertEqual(config.terminate_root_z_max, 0.70)
@@ -70,6 +70,7 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(reward.termination, 5.0)
         self.assertEqual(reward.root_low_extra_termination, 35.0)
         self.assertEqual(reward.stuck_extra_termination, 35.0)
+        self.assertEqual(reward.stuck, 0.20)
         self.assertEqual(reward.early_termination_scale, 1.0)
 
     def test_disturbance_configuration_requires_valid_episode_step(self) -> None:
@@ -356,6 +357,7 @@ class MJXContractTest(unittest.TestCase):
             "root_low_active",
             "root_low_step_count",
             "stuck_active",
+            "stuck_deficit",
             "stuck_step_count",
             "rolling_window_progress_rad",
             "tail_roll_progress_rad",

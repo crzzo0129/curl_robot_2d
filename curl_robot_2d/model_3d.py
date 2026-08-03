@@ -168,8 +168,14 @@ def build_mjcf_3d(parameters: FixedParameters = FIXED_PARAMETERS) -> str:
         max(p.torso_planar_inertia, 1.0e-5),
     )
     compact = (p.compact_hip_angle, p.compact_knee_angle)
-    walk_front = (p.walk_front_hip_angle, p.walk_front_knee_angle)
-    walk_rear = (p.walk_rear_hip_angle, p.walk_rear_knee_angle)
+    stand_front = (
+        p.stand_3d_front_hip_angle,
+        p.stand_3d_front_knee_angle,
+    )
+    stand_rear = (
+        p.stand_3d_rear_hip_angle,
+        p.stand_3d_rear_knee_angle,
+    )
 
     return dedent(
         f"""\
@@ -330,9 +336,9 @@ def build_mjcf_3d(parameters: FixedParameters = FIXED_PARAMETERS) -> str:
             <key name="open"
                  qpos="0 0 {_f(p.open_root_height)} 1 0 0 0 0 0 0 0 0 0 0 0"
                  ctrl="0 0 0 0 0 0 0 0"/>
-            <key name="walk"
-                 qpos="0 0 {_f(p.walk_root_height)} 1 0 0 0 {_f(walk_front[0])} {_f(walk_front[1])} {_f(walk_front[0])} {_f(walk_front[1])} {_f(walk_rear[0])} {_f(walk_rear[1])} {_f(walk_rear[0])} {_f(walk_rear[1])}"
-                 ctrl="{_f(walk_front[0])} {_f(walk_front[1])} {_f(walk_front[0])} {_f(walk_front[1])} {_f(walk_rear[0])} {_f(walk_rear[1])} {_f(walk_rear[0])} {_f(walk_rear[1])}"/>
+            <key name="stand"
+                 qpos="0 0 {_f(p.stand_3d_root_height)} 1 0 0 0 {_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_rear[0])} {_f(stand_rear[1])} {_f(stand_rear[0])} {_f(stand_rear[1])}"
+                 ctrl="{_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_rear[0])} {_f(stand_rear[1])} {_f(stand_rear[0])} {_f(stand_rear[1])}"/>
             <key name="compact"
                  qpos="0 0 {_f(p.compact_root_height)} 1 0 0 0 {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])}"
                  ctrl="{_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])}"/>
