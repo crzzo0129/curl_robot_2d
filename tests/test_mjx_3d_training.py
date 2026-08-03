@@ -74,6 +74,14 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
             0.20,
         )
 
+    def test_observation_width_accepts_brax_shape_tuple(self) -> None:
+        self.assertEqual(
+            train_mjx_3d_residual_ppo._observation_width(59), 59
+        )
+        self.assertEqual(
+            train_mjx_3d_residual_ppo._observation_width((59,)), 59
+        )
+
     def test_initial_policy_std_must_exceed_distribution_floor(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             train_mjx_3d_residual_ppo.parse_args(

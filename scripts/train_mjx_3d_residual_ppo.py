@@ -147,6 +147,22 @@ def _tanh_normal_scale_logit(
     return math.log(math.expm1(adjusted_std))
 
 
+def _observation_width(observation_size) -> int:
+    """Return the final state width from Brax's int or shape tuple."""
+
+    if isinstance(observation_size, (int, np.integer)):
+        width = int(observation_size)
+    elif isinstance(observation_size, (tuple, list)) and observation_size:
+        width = int(observation_size[-1])
+    else:
+        raise ValueError(
+            f"Unsupported policy observation size: {observation_size!r}"
+        )
+    if width <= 0:
+        raise ValueError("Policy observation width must be positive")
+    return width
+
+
 def _zero_centered_residual_network_factory(
     hidden_layers,
     activation_name,
@@ -212,7 +228,9 @@ def _zero_centered_residual_network_factory(
             activation=activation,
         )
         policy_module = ResidualPolicyModule(action_size=action_size)
-        dummy_observation = jnp.zeros((1, observation_size))
+        dummy_observation = jnp.zeros(
+            (1, _observation_width(observation_size))
+        )
 
         def apply(processor_params, policy_params, observation):
             observation = preprocess_observations_fn(
