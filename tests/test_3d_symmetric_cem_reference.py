@@ -60,6 +60,13 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
         args = bridge.parse_args(["--phase-rate-scale", "-1.0"])
         self.assertEqual(args.phase_rate_scale, -1.0)
 
+    def test_phase_lock_is_default_and_linear_mode_is_explicit(self) -> None:
+        feedback = bridge.parse_args([])
+        linear = bridge.parse_args(["--linear-phase"])
+
+        self.assertFalse(feedback.linear_phase)
+        self.assertTrue(linear.linear_phase)
+
     def test_planar_to_curl_3d_mapping_duplicates_left_and_right(self) -> None:
         mapped = bridge.map_planar_to_curl_3d_targets(
             np.asarray((0.3, 0.8, 0.4, 1.0)),

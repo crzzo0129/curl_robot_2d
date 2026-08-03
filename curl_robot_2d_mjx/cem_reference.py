@@ -113,15 +113,28 @@ def advance_oscillator(
     oscillator_phase,
     timestep,
     config: CEMReferenceConfig,
+    *,
+    rate_scale=1.0,
 ):
     """Match the feedback phase update used by the CPU CEM controller."""
 
-    phase_rate = (
-        config.oscillator_rate_rad_s
-        + config.oscillator_coupling_per_s
-        * xp.sin(body_phase - oscillator_phase)
+    scale = xp.asarray(rate_scale)
+    direction = xp.where(scale < 0.0, -1.0, 1.0)
+    directed_error = direction * (body_phase - oscillator_phase)
+    phase_speed = (
+        xp.abs(scale) * config.oscillator_rate_rad_s
+        + config.oscillator_coupling_per_s * xp.sin(directed_error)
     )
-    return oscillator_phase + timestep * xp.maximum(0.1, phase_rate)
+    phase_rate = direction * xp.maximum(0.1, phase_speed)
+    phase_rate = xp.where(scale == 0.0, 0.0, phase_rate)
+    return oscillator_phase + timestep * phase_rate
+
+
+def wrapped_phase_error(xp, body_phase, oscillator_phase):
+    """Return body-minus-oscillator phase error in [-pi, pi]."""
+
+    difference = body_phase - oscillator_phase
+    return xp.arctan2(xp.sin(difference), xp.cos(difference))
 
 
 def reference_action(

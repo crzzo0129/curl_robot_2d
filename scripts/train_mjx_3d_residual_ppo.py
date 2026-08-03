@@ -127,6 +127,10 @@ PER_STEP_EVAL_METRICS_3D = (
     "residual_action_rms",
     "reference_weight",
     "residual_gain",
+    "rolling_phase_rad",
+    "oscillator_phase_rad",
+    "phase_error_rad",
+    "oscillator_rate_rad_s",
     "roll_progress_rad",
     "rotation_progress_rad",
     "translation_progress_rad",
@@ -301,6 +305,13 @@ def _format_eval_report_3d(
             f"ref={_metric(metrics, 'eval/avg_reference_action_rms'):.3f} "
             f"residual={_metric(metrics, 'eval/avg_residual_action_rms'):.3f} "
             f"gain={_metric(metrics, 'eval/avg_residual_gain'):.3f}"
+        ),
+        (
+            "  phase   "
+            f"theta={_metric(metrics, 'eval/avg_rolling_phase_rad'):+.3f} "
+            f"phi={_metric(metrics, 'eval/avg_oscillator_phase_rad'):+.3f} "
+            f"error={_metric(metrics, 'eval/avg_phase_error_rad'):+.3f} "
+            f"rate={_metric(metrics, 'eval/avg_oscillator_rate_rad_s'):+.3f}rad/s"
         ),
     ]
     for group, reward_labels in (

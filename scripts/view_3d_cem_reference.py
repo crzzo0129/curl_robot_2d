@@ -17,7 +17,11 @@ from scripts.evaluate_3d_symmetric_cem_reference import (
 )
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
 from curl_robot_2d.parameters import FIXED_PARAMETERS
-from curl_robot_2d_mjx.cem_reference import load_cem_reference
+from curl_robot_2d_mjx.cem_reference import (
+    advance_oscillator,
+    load_cem_reference,
+    wrapped_phase_error,
+)
 
 
 def parse_args(argv=None):
@@ -29,6 +33,7 @@ def parse_args(argv=None):
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
+    parser.add_argument("--linear-phase", action="store_true")
     parser.add_argument("--kp", type=float, default=5.0)
     parser.add_argument("--kd", type=float, default=0.1)
     parser.add_argument("--torque-limit", type=float, default=3.0)
@@ -84,6 +89,7 @@ def run(argv=None):
     model.actuator_forcerange[actuator_ids, 1] = args.torque_limit
 
     phase = float(args.initial_phase_rad)
+    rolling_phase = 0.0
     initial_ctrl = _target_for_phase(phase, config, args.target_scale, ctrl_low, ctrl_high)
     _reset(model, data, qpos_indices, actuator_ids, initial_ctrl)
     start_x = float(data.qpos[0])
@@ -94,6 +100,7 @@ def run(argv=None):
     control_steps = max(1, round(args.duration / control_dt))
     tilt_values = []
     saturation_values = []
+    phase_rate_values = []
 
     viewer_context = _null_viewer()
     if not args.headless:
@@ -116,10 +123,34 @@ def run(argv=None):
             if viewer is not None and not viewer.is_running():
                 break
             wall_start = time.perf_counter()
-            ctrl = _target_for_phase(phase, config, args.target_scale, ctrl_low, ctrl_high)
-            data.ctrl[actuator_ids] = ctrl
             for _ in range(control_repeat):
+                previous_phase = phase
+                if not args.linear_phase:
+                    phase = float(
+                        advance_oscillator(
+                            np,
+                            rolling_phase,
+                            phase,
+                            float(model.opt.timestep),
+                            config,
+                            rate_scale=args.phase_rate_scale,
+                        )
+                    )
+                ctrl = _target_for_phase(
+                    phase,
+                    config,
+                    args.target_scale,
+                    ctrl_low,
+                    ctrl_high,
+                )
+                data.ctrl[actuator_ids] = ctrl
                 mujoco.mj_step(model, data)
+                rolling_phase += float(data.qvel[4]) * float(model.opt.timestep)
+                phase_rate_values.append(
+                    args.phase_rate_scale * config.oscillator_rate_rad_s
+                    if args.linear_phase
+                    else (phase - previous_phase) / float(model.opt.timestep)
+                )
             rotation = data.xmat[torso_id].reshape(3, 3)
             tilt_values.append(_rolling_axis_tilt(rotation))
             saturation_values.append(
@@ -130,7 +161,12 @@ def run(argv=None):
                     )
                 )
             )
-            phase += args.phase_rate_scale * config.oscillator_rate_rad_s * control_dt
+            if args.linear_phase:
+                phase += (
+                    args.phase_rate_scale
+                    * config.oscillator_rate_rad_s
+                    * control_dt
+                )
             if viewer is not None:
                 viewer.sync()
                 remaining = control_dt / args.realtime - (time.perf_counter() - wall_start)
@@ -147,6 +183,15 @@ def run(argv=None):
             (data.qpos[0] - start_x)
             / max(2.0 * math.pi * FIXED_PARAMETERS.shell_contact_radius, 1.0e-9)
         ),
+        "phase_lock_enabled": not args.linear_phase,
+        "reference_turns": float(
+            (phase - args.initial_phase_rad) / (2.0 * math.pi)
+        ),
+        "rolling_phase_turns": float(rolling_phase / (2.0 * math.pi)),
+        "phase_error_final_rad": float(
+            wrapped_phase_error(np, rolling_phase, phase)
+        ),
+        "oscillator_rate_mean_rad_s": float(np.mean(phase_rate_values)),
         "rolling_axis_tilt_rms_rad": float(np.sqrt(np.mean(np.square(tilt_values)))),
         "rolling_axis_tilt_max_rad": float(np.max(tilt_values)),
         "torque_saturation_fraction": float(np.mean(saturation_values)),

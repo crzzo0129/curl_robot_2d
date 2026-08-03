@@ -12,6 +12,7 @@ from curl_robot_2d_mjx.cem_reference import (
     expected_budget_steps,
     load_cem_reference,
     reference_action,
+    wrapped_phase_error,
 )
 from scripts.train_mjx_residual_ppo import (
     _can_advance_stage,
@@ -303,6 +304,42 @@ class MJXResidualTest(unittest.TestCase):
         self.assertGreater(oscillator_phase, 0.0)
         self.assertTrue(np.isfinite(action).all())
         self.assertTrue(np.all(np.abs(action) <= 1.0))
+
+    def test_reference_oscillator_feedback_speeds_up_and_slows_down(self) -> None:
+        reference = load_cem_reference(DEFAULT_CEM_CONTROLLER)
+        timestep = 0.01
+
+        nominal = advance_oscillator(
+            np, 0.0, 0.0, timestep, reference
+        )
+        faster = advance_oscillator(
+            np, math.pi / 2.0, 0.0, timestep, reference
+        )
+        slower = advance_oscillator(
+            np, -math.pi / 2.0, 0.0, timestep, reference
+        )
+
+        self.assertGreater(faster, nominal)
+        self.assertGreater(nominal, slower)
+        self.assertAlmostEqual(float(slower), 0.1 * timestep)
+
+    def test_reference_oscillator_rate_scale_preserves_direction(self) -> None:
+        reference = load_cem_reference(DEFAULT_CEM_CONTROLLER)
+
+        stopped = advance_oscillator(
+            np, 0.0, 0.3, 0.01, reference, rate_scale=0.0
+        )
+        reversed_phase = advance_oscillator(
+            np, -math.pi / 2.0, 0.0, 0.01, reference, rate_scale=-1.0
+        )
+
+        self.assertAlmostEqual(float(stopped), 0.3)
+        self.assertLess(float(reversed_phase), 0.0)
+
+    def test_wrapped_phase_error_uses_shortest_difference(self) -> None:
+        error = wrapped_phase_error(np, 0.1, 2.0 * math.pi - 0.1)
+
+        self.assertAlmostEqual(float(error), 0.2)
 
     def test_reference_target_matches_existing_cem_policy(self) -> None:
         reference = load_cem_reference(DEFAULT_CEM_CONTROLLER)

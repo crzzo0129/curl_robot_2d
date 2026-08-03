@@ -15,6 +15,7 @@ from curl_robot_2d_mjx.environment_3d import (
     DEFAULT_3D_CEM_CONTROLLER,
     MODEL_PATH_3D,
     OBSERVATION_SIZE_3D,
+    advance_rolling_phase_3d,
     apply_physics_options_3d,
     duplicate_planar_action_3d,
 )
@@ -85,6 +86,13 @@ class MJX3DContractTest(unittest.TestCase):
             np.asarray((0.1, 0.2, 0.1, 0.2, 0.3, 0.4, 0.3, 0.4)),
         )
 
+    def test_rolling_phase_integrates_signed_local_y_velocity(self) -> None:
+        forward = advance_rolling_phase_3d(np, 0.2, 3.0, 0.01)
+        backward = advance_rolling_phase_3d(np, 0.2, -3.0, 0.01)
+
+        self.assertAlmostEqual(float(forward), 0.23)
+        self.assertAlmostEqual(float(backward), 0.17)
+
     def test_3d_physics_options_can_disable_freejoint_damping(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(MODEL_PATH_3D))
         task = Rolling3DConfig(disable_root_damping=True)
@@ -120,6 +128,8 @@ class MJX3DContractTest(unittest.TestCase):
             "jax.lax.cond",
             "transition_finite",
             "jp.nan_to_num",
+            "advance_oscillator",
+            'state.info["rolling_phase"]',
         ):
             self.assertIn(token, source)
 

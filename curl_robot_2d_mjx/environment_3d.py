@@ -10,8 +10,10 @@ from curl_robot_2d.model_3d import JOINT_NAMES_3D
 from curl_robot_2d.parameters import FIXED_PARAMETERS
 from curl_robot_2d_mjx.cem_reference import (
     CEMReferenceConfig,
+    advance_oscillator,
     load_cem_reference,
     reference_action,
+    wrapped_phase_error,
 )
 from curl_robot_2d_mjx.config_3d import (
     Rolling3DConfig,
@@ -88,6 +90,17 @@ def duplicate_planar_action_3d(xp, planar_action):
             rear_knee,
         )
     )
+
+
+def advance_rolling_phase_3d(
+    xp,
+    rolling_phase,
+    local_y_angular_velocity,
+    timestep,
+):
+    """Integrate signed spin around the torso's local rolling axis."""
+
+    return rolling_phase + timestep * local_y_angular_velocity
 
 
 def apply_physics_options_3d(model, task: Rolling3DConfig) -> None:
@@ -327,6 +340,10 @@ def make_brax_env_3d(
                 "residual_action_rms": zero,
                 "reference_weight": zero,
                 "residual_gain": zero,
+                "rolling_phase_rad": zero,
+                "oscillator_phase_rad": zero,
+                "phase_error_rad": zero,
+                "oscillator_rate_rad_s": zero,
                 "failed": zero,
                 "timeout": zero,
                 "failure_nonfinite": zero,
@@ -398,6 +415,7 @@ def make_brax_env_3d(
                 ),
                 "last_reference_action": cem_action,
                 "oscillator_phase": oscillator_phase,
+                "rolling_phase": jp.zeros((), dtype=jp.float32),
                 "maximum_forbidden_penetration": jp.zeros(
                     (), dtype=jp.float32
                 ),
@@ -443,43 +461,84 @@ def make_brax_env_3d(
             control_dt = (
                 float(self.mj_model.opt.timestep) * task.action_repeat
             )
-            elapsed_s = (
-                state.info["step_count"].astype(jp.float32) * control_dt
-            )
-            action_ramp = smoothstep_ramp(
-                jp, elapsed_s, task.startup_action_ramp_s
-            )
-            cem_action = self._reference_action_8d(
-                state.info["oscillator_phase"]
-            )
             residual_gain_value = jp.asarray(
                 reference_settings.residual_gain, dtype=jp.float32
             )
             reference_weight_value = jp.asarray(
                 reference_settings.reference_weight, dtype=jp.float32
             )
-            effective_action = jp.clip(
-                reference_weight_value * cem_action
-                + action_ramp * residual_gain_value * policy_action,
-                -1.0,
-                1.0,
-            )
-            target = jp.clip(
-                self.compact_ctrl + effective_action * self.action_scales,
-                self.joint_low,
-                self.joint_high,
-            )
-            data = state.pipeline_state.replace(ctrl=target)
+            physics_dt = float(self.mj_model.opt.timestep)
 
-            def physics_step(carry, _):
-                return mjx.step(self.mjx_model, carry), None
+            def reference_physics_step(carry, _):
+                current_data, current_phase, current_rolling_phase = carry
+                next_phase = advance_oscillator(
+                    jp,
+                    current_rolling_phase,
+                    current_phase,
+                    physics_dt,
+                    reference_settings,
+                    rate_scale=task.reference_phase_rate_scale,
+                )
+                current_reference_action = self._reference_action_8d(
+                    next_phase
+                )
+                current_ramp = smoothstep_ramp(
+                    jp,
+                    current_data.time,
+                    task.startup_action_ramp_s,
+                )
+                current_action = jp.clip(
+                    reference_weight_value * current_reference_action
+                    + current_ramp * residual_gain_value * policy_action,
+                    -1.0,
+                    1.0,
+                )
+                current_target = jp.clip(
+                    self.compact_ctrl
+                    + current_action * self.action_scales,
+                    self.joint_low,
+                    self.joint_high,
+                )
+                next_data = mjx.step(
+                    self.mjx_model,
+                    current_data.replace(ctrl=current_target),
+                )
+                next_rolling_phase = advance_rolling_phase_3d(
+                    jp,
+                    current_rolling_phase,
+                    next_data.qvel[4],
+                    physics_dt,
+                )
+                phase_rate = (next_phase - current_phase) / physics_dt
+                return (
+                    next_data,
+                    next_phase,
+                    next_rolling_phase,
+                ), (
+                    current_action,
+                    current_reference_action,
+                    current_ramp,
+                    phase_rate,
+                )
 
-            candidate_data = jax.lax.scan(
-                physics_step,
-                data,
+            (
+                candidate_data,
+                candidate_oscillator_phase,
+                candidate_rolling_phase,
+            ), reference_trace = jax.lax.scan(
+                reference_physics_step,
+                (
+                    state.pipeline_state,
+                    state.info["oscillator_phase"],
+                    state.info["rolling_phase"],
+                ),
                 (),
                 length=task.action_repeat,
-            )[0]
+            )
+            effective_action = reference_trace[0][-1]
+            cem_action = reference_trace[1][-1]
+            action_ramp = reference_trace[2][-1]
+            oscillator_rate = reference_trace[3][-1]
             _, _, candidate_contact_distance = self._contact_arrays(
                 candidate_data
             )
@@ -512,16 +571,27 @@ def make_brax_env_3d(
             )
             oscillator_phase = jp.where(
                 transition_finite,
-                state.info["oscillator_phase"]
-                + (
-                    task.reference_phase_rate_scale
-                    * reference_settings.oscillator_rate_rad_s
-                    * control_dt
-                ),
+                candidate_oscillator_phase,
                 state.info["oscillator_phase"],
             )
-            next_reference_action = self._reference_action_8d(
-                oscillator_phase
+            rolling_phase = jp.where(
+                transition_finite,
+                candidate_rolling_phase,
+                state.info["rolling_phase"],
+            )
+            oscillator_rate = jp.where(
+                transition_finite,
+                oscillator_rate,
+                jp.zeros_like(oscillator_rate),
+            )
+            cem_action = jp.where(
+                transition_finite,
+                cem_action,
+                state.info["last_reference_action"],
+            )
+            next_reference_action = cem_action
+            phase_error = wrapped_phase_error(
+                jp, rolling_phase, oscillator_phase
             )
             contacts = self._contact_metrics(data)
             axis_tilt = self._rolling_axis_tilt(data)
@@ -731,6 +801,7 @@ def make_brax_env_3d(
                 "last_policy_action": policy_action,
                 "last_reference_action": next_reference_action,
                 "oscillator_phase": oscillator_phase,
+                "rolling_phase": rolling_phase,
                 "maximum_forbidden_penetration": new_forbidden_max,
                 "maximum_same_side_foot_excess": new_same_side_foot_max,
                 "previous_same_side_foot_contact": same_side_foot_active,
@@ -796,6 +867,10 @@ def make_brax_env_3d(
                 ),
                 "reference_weight": reference_weight_value,
                 "residual_gain": residual_gain_value,
+                "rolling_phase_rad": rolling_phase,
+                "oscillator_phase_rad": oscillator_phase,
+                "phase_error_rad": phase_error,
+                "oscillator_rate_rad_s": oscillator_rate,
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),

@@ -11,7 +11,12 @@ import numpy as np
 
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
 from curl_robot_2d.parameters import FIXED_PARAMETERS
-from curl_robot_2d_mjx.cem_reference import CEMReferenceConfig, load_cem_reference
+from curl_robot_2d_mjx.cem_reference import (
+    CEMReferenceConfig,
+    advance_oscillator,
+    load_cem_reference,
+    wrapped_phase_error,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -164,6 +169,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--linear-phase",
+        action="store_true",
+        help="Use the old fixed-rate phase update for an A/B comparison.",
+    )
     parser.add_argument("--kp", type=float, default=5.0)
     parser.add_argument("--kd", type=float, default=0.1)
     parser.add_argument("--torque-limit", type=float, default=3.0)
@@ -229,29 +239,55 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
     start_x = float(data.qpos[0])
     start_y = float(data.qpos[1])
     phase = float(args.initial_phase_rad)
+    rolling_phase = 0.0
     control_repeat = max(1, round(args.control_dt / model.opt.timestep))
     control_dt = control_repeat * float(model.opt.timestep)
     steps = max(1, round(args.duration / control_dt))
     records = []
     nonfinite = False
     for _ in range(steps):
-        planar = planar_cem_target(
-            phase,
-            config,
-            apply_foot_gap_projection=not args.no_foot_gap_projection,
-        )
-        planar = scaled_planar_target(planar, args.target_scale)
-        ctrl = np.clip(map_planar_to_curl_3d_targets(planar), ctrl_low, ctrl_high)
-        data.ctrl[actuator_ids] = ctrl
         saturated = []
         shell_contacts = []
         foot_contacts = []
         self_contacts = []
+        phase_rates = []
         for _ in range(control_repeat):
+            previous_phase = phase
+            if not args.linear_phase:
+                phase = float(
+                    advance_oscillator(
+                        np,
+                        rolling_phase,
+                        phase,
+                        float(model.opt.timestep),
+                        config,
+                        rate_scale=args.phase_rate_scale,
+                    )
+                )
+            planar = planar_cem_target(
+                phase,
+                config,
+                apply_foot_gap_projection=not args.no_foot_gap_projection,
+            )
+            planar = scaled_planar_target(planar, args.target_scale)
+            ctrl = np.clip(
+                map_planar_to_curl_3d_targets(planar),
+                ctrl_low,
+                ctrl_high,
+            )
+            data.ctrl[actuator_ids] = ctrl
             mujoco.mj_step(model, data)
+            rolling_phase += float(data.qvel[4]) * float(model.opt.timestep)
             if not (np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all()):
                 nonfinite = True
                 break
+            phase_rates.append(
+                (
+                    args.phase_rate_scale * config.oscillator_rate_rad_s
+                    if args.linear_phase
+                    else (phase - previous_phase) / float(model.opt.timestep)
+                )
+            )
             saturated.append(
                 np.mean(
                     np.abs(data.actuator_force[actuator_ids])
@@ -267,6 +303,12 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
             shell_contacts.append(shell_contact)
             foot_contacts.append(foot_contact)
             self_contacts.append(self_contact)
+        if args.linear_phase:
+            phase += (
+                args.phase_rate_scale
+                * config.oscillator_rate_rad_s
+                * control_dt
+            )
         rotation = data.xmat[torso_body_id].reshape(3, 3)
         roll, pitch, yaw = _rpy_from_rotation(rotation)
         rolling_axis_tilt = _rolling_axis_tilt(rotation)
@@ -285,11 +327,14 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
                 float(np.mean(shell_contacts)) if shell_contacts else 0.0,
                 float(np.mean(foot_contacts)) if foot_contacts else 0.0,
                 float(np.mean(self_contacts)) if self_contacts else 0.0,
+                phase,
+                rolling_phase,
+                float(wrapped_phase_error(np, rolling_phase, phase)),
+                float(np.mean(phase_rates)) if phase_rates else 0.0,
             )
         )
         if nonfinite:
             break
-        phase += args.phase_rate_scale * config.oscillator_rate_rad_s * control_dt
 
     values = np.asarray(records, dtype=np.float64)
     elapsed = len(records) * control_dt
@@ -304,12 +349,23 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         "controller": str(args.controller.resolve()),
         "elapsed_s": float(elapsed),
         "control_dt_s": float(control_dt),
+        "phase_lock_enabled": not args.linear_phase,
         "reference_turns": float(
-            args.phase_rate_scale
-            * config.oscillator_rate_rad_s
-            * elapsed
+            (phase - args.initial_phase_rad) / (2.0 * math.pi)
+        ),
+        "nominal_reference_turns": float(
+            args.phase_rate_scale * config.oscillator_rate_rad_s * elapsed
             / (2.0 * math.pi)
         ),
+        "rolling_phase_turns": float(rolling_phase / (2.0 * math.pi)),
+        "phase_error_final_rad": float(values[-1, 14]),
+        "phase_error_rms_rad": float(
+            np.sqrt(np.mean(np.square(values[:, 14])))
+        ),
+        "phase_error_abs_max_rad": float(np.max(np.abs(values[:, 14]))),
+        "oscillator_rate_mean_rad_s": float(np.mean(values[:, 15])),
+        "oscillator_rate_min_rad_s": float(np.min(values[:, 15])),
+        "oscillator_rate_max_rad_s": float(np.max(values[:, 15])),
         "distance_x_m": distance_x,
         "distance_y_m": distance_y,
         "distance_as_shell_turns": float(
