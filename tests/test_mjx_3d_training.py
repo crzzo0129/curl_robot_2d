@@ -22,6 +22,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.minimum_residual_gain, 0.05)
         self.assertEqual(args.learning_rate, 3e-4)
         self.assertEqual(args.entropy_cost, 1e-2)
+        self.assertEqual(args.selection_target_turns, 1.0)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
 
@@ -38,6 +39,25 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.roll_mismatch, 0.25)
         self.assertEqual(reward.backward, 0.4)
         self.assertEqual(reward.residual_action, 0.003)
+
+    def test_phase_locked_v3_uses_bounded_independent_residual_recipe(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_v3"]
+        )
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+
+        self.assertEqual(args.reference_weight, 1.0)
+        self.assertEqual(args.minimum_residual_gain, 0.15)
+        self.assertEqual(args.phase_rate_scale, 1.0)
+        self.assertEqual(args.learning_rate, 1e-4)
+        self.assertEqual(args.entropy_cost, 1e-3)
+        self.assertEqual(args.selection_target_turns, 10.0)
+        self.assertEqual(reward.roll_progress, 8.0)
+        self.assertEqual(reward.roll_mismatch, 0.8)
+        self.assertEqual(reward.backward, 1.0)
+        self.assertEqual(reward.axis_tilt, 10.0)
+        self.assertEqual(reward.residual_action, 0.01)
 
     def test_reward_overrides_use_3d_reward_config(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(

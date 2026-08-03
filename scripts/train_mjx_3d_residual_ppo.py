@@ -72,6 +72,7 @@ RECIPES_3D = {
             "phase_rate_scale": 1.0,
             "learning_rate": 3e-4,
             "entropy_cost": 1e-2,
+            "selection_target_turns": 1.0,
         },
         "reward": {},
     },
@@ -86,6 +87,7 @@ RECIPES_3D = {
             "phase_rate_scale": 1.0,
             "learning_rate": 1e-4,
             "entropy_cost": 3e-3,
+            "selection_target_turns": 1.0,
         },
         "reward": {
             "roll_progress": 12.0,
@@ -95,6 +97,29 @@ RECIPES_3D = {
             "axis_tilt": 10.0,
             "action_rate": 0.01,
             "residual_action": 0.003,
+        },
+    },
+    "phase_locked_v3": {
+        "description": (
+            "Learn independent left/right residuals around the restored "
+            "phase-locked 3-D CEM reference."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "learning_rate": 1e-4,
+            "entropy_cost": 1e-3,
+            "selection_target_turns": 10.0,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_drift": 2.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
         },
     },
 }
@@ -661,7 +686,7 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--skip-evaluation", action="store_true")
-    parser.add_argument("--selection-target-turns", type=float, default=1.0)
+    parser.add_argument("--selection-target-turns", type=float)
     _add_reward_arguments(parser)
     return parser
 
