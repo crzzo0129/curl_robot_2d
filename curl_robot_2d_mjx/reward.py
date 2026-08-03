@@ -7,6 +7,8 @@ from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 
 REWARD_TERM_NAMES = (
     "roll_progress",
+    "phase_progress",
+    "translation_progress",
     "roll_mismatch",
     "backward",
     "action_rate",
@@ -36,6 +38,16 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
         -config.progress_clip_rad,
         config.progress_clip_rad,
     )
+    clipped_phase_progress = xp.clip(
+        inputs["phase_progress"],
+        -config.progress_clip_rad,
+        config.progress_clip_rad,
+    )
+    clipped_translation_progress = xp.clip(
+        inputs["translation_progress"],
+        -config.progress_clip_rad,
+        config.progress_clip_rad,
+    )
     collision_cost = (
         config.forbidden_contact_time
         * inputs["control_dt"]
@@ -62,6 +74,12 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
     )
     return {
         "roll_progress": config.roll_progress * clipped_progress,
+        "phase_progress": (
+            config.phase_progress * clipped_phase_progress
+        ),
+        "translation_progress": (
+            config.translation_progress * clipped_translation_progress
+        ),
         "roll_mismatch": (
             -config.roll_mismatch * inputs["mismatch_progress"]
         ),

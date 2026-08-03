@@ -11,6 +11,8 @@ class RollingRewardConfig:
 
     progress_clip_rad: float = 0.25
     roll_progress: float = 5.0
+    phase_progress: float = 0.0
+    translation_progress: float = 0.0
     roll_mismatch: float = 0.5
     backward: float = 2.0
     action_rate: float = 0.02

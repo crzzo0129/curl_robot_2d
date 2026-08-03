@@ -201,7 +201,13 @@ def _training_step_schedule(
     }
 
 
-def _checkpoint_selection(metrics, episode_length, *, target_turns=3.0):
+def _checkpoint_selection(
+    metrics,
+    episode_length,
+    *,
+    target_turns=3.0,
+    minimum_turns=None,
+):
     """Score an eval point by physical behavior, independent of reward scale."""
 
     avg_length = metrics.get("eval/avg_episode_length", 0.0)
@@ -227,6 +233,7 @@ def _checkpoint_selection(metrics, episode_length, *, target_turns=3.0):
     )
     rejected = (
         nonfinite_rate > 0.0
+        or (minimum_turns is not None and turns < minimum_turns)
         or not math.isfinite(turns)
         or not math.isfinite(penetration)
         or not math.isfinite(score)
@@ -297,6 +304,8 @@ def _format_eval_report(
             "progress",
             (
                 ("roll", "roll_progress"),
+                ("phase", "phase_progress"),
+                ("x", "translation_progress"),
                 ("mismatch", "roll_mismatch"),
                 ("back", "backward"),
             ),
@@ -586,6 +595,7 @@ def main() -> None:
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--reward-scaling", type=float, default=1.0)
     parser.add_argument("--selection-target-turns", type=float, default=3.0)
+    parser.add_argument("--selection-min-turns", type=float)
     parser.add_argument(
         "--hidden-layers", type=int, nargs="+", default=[256, 256, 128]
     )
@@ -655,6 +665,10 @@ def main() -> None:
         or args.selection_target_turns <= 0.0
     ):
         raise SystemExit("--selection-target-turns must be finite and positive")
+    if args.selection_min_turns is not None and not math.isfinite(
+        args.selection_min_turns
+    ):
+        raise SystemExit("--selection-min-turns must be finite")
 
     values = PRESETS[args.preset].copy()
     for name in (
@@ -761,7 +775,11 @@ def main() -> None:
         "candidate_step": None,
         "candidate_params": None,
     }
-    reward_peak = {"reward": float("-inf"), "step": None}
+    reward_peak = {
+        "reward": float("-inf"),
+        "step": None,
+        "params": None,
+    }
     eval_counter = {"value": 0}
 
     def policy_params_fn(step, make_policy, params):
@@ -784,10 +802,13 @@ def main() -> None:
         if reward is not None and reward > reward_peak["reward"]:
             reward_peak["reward"] = reward
             reward_peak["step"] = int(step)
+            if best["candidate_step"] == int(step):
+                reward_peak["params"] = best["candidate_params"]
         selection = _checkpoint_selection(
             clean,
             args.episode_length,
             target_turns=args.selection_target_turns,
+            minimum_turns=args.selection_min_turns,
         )
         selected = (
             not selection["rejected"]
@@ -855,6 +876,7 @@ def main() -> None:
                 "0.10 non-failure + 0.05 contact safety"
             ),
             "target_turns": args.selection_target_turns,
+            "minimum_turns": args.selection_min_turns,
             "penetration_limit_m": 0.001,
             "reject_nonfinite": True,
         },
@@ -917,7 +939,8 @@ def main() -> None:
         f"early={reward_config.early_termination_scale:g}\n"
         "  selection=physical: 50% survival, 35% turns, "
         "10% non-failure, 5% contact safety "
-        f"target_turns={args.selection_target_turns:g}\n"
+        f"target_turns={args.selection_target_turns:g} "
+        f"min_turns={args.selection_min_turns}\n"
         f"  output={args.out.resolve()}",
         flush=True,
     )
@@ -970,8 +993,14 @@ def main() -> None:
     )
     elapsed = time.perf_counter() - start
     best_params = best["params"] if best["params"] is not None else final_params
+    reward_peak_params = (
+        reward_peak["params"]
+        if reward_peak["params"] is not None
+        else final_params
+    )
     model_io.save_params(args.out / "params_final", final_params)
     model_io.save_params(args.out / "params_best", best_params)
+    model_io.save_params(args.out / "params_reward_peak", reward_peak_params)
     (args.out / "metrics_history.json").write_text(
         json.dumps(metric_history, indent=2) + "\n", encoding="utf-8"
     )
@@ -1029,6 +1058,7 @@ def main() -> None:
         f"  physical_best {best_source}\n"
         f"  reward_peak {reward_peak_source}\n"
         f"  checkpoints best={args.out / 'params_best'} "
+        f"reward_peak={args.out / 'params_reward_peak'} "
         f"final={args.out / 'params_final'}",
         flush=True,
     )

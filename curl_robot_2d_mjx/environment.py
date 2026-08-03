@@ -816,6 +816,8 @@ def make_brax_env(
                 reward_settings,
                 {
                     "conservative_progress": conservative_progress,
+                    "phase_progress": phase_progress,
+                    "translation_progress": translation_progress,
                     "mismatch_progress": mismatch_progress,
                     "backward": backward,
                     "action_rate": action_rate,

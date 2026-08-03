@@ -24,6 +24,8 @@ def zero_inputs():
     zero = np.asarray(0.0, dtype=np.float32)
     return {
         "conservative_progress": zero,
+        "phase_progress": zero,
+        "translation_progress": zero,
         "mismatch_progress": zero,
         "backward": zero,
         "action_rate": zero,
@@ -112,10 +114,33 @@ class MJXRewardTest(unittest.TestCase):
 
         self.assertEqual(tuple(terms), REWARD_TERM_NAMES)
         self.assertAlmostEqual(float(terms["roll_progress"]), 0.5)
+        self.assertAlmostEqual(float(terms["phase_progress"]), 0.0)
+        self.assertAlmostEqual(
+            float(terms["translation_progress"]), 0.0
+        )
         self.assertAlmostEqual(
             float(terms["termination"]), -config.termination
         )
         self.assertAlmostEqual(float(terms["collision"]), 0.0)
+
+    def test_stage0_dense_progress_rewards_are_optional(self) -> None:
+        config = RollingRewardConfig(
+            roll_progress=0.0,
+            phase_progress=1.0,
+            translation_progress=2.0,
+        )
+        inputs = zero_inputs()
+        inputs["phase_progress"] = np.asarray(0.1, dtype=np.float32)
+        inputs["translation_progress"] = np.asarray(
+            0.2, dtype=np.float32
+        )
+
+        terms = reward_terms(np, config, inputs)
+
+        self.assertAlmostEqual(float(terms["phase_progress"]), 0.1)
+        self.assertAlmostEqual(
+            float(terms["translation_progress"]), 0.4
+        )
 
     def test_foot_contact_event_and_dwell_penalties(self) -> None:
         config = RollingRewardConfig(
@@ -243,6 +268,23 @@ class MJXRewardTest(unittest.TestCase):
 
         self.assertGreater(loose["score"], strict["score"])
         self.assertEqual(loose["turns"], strict["turns"])
+
+    def test_checkpoint_selection_can_reject_low_turn_policy(self) -> None:
+        metrics = {
+            "eval/avg_episode_length": 500.0,
+            "eval/episode_failed": 0.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_roll_progress_rad": 0.25 * 2.0 * np.pi,
+            "eval/avg_forbidden_penetration_m": 0.0,
+        }
+
+        loose = _checkpoint_selection(metrics, 500)
+        gated = _checkpoint_selection(
+            metrics, 500, minimum_turns=0.5
+        )
+
+        self.assertFalse(loose["rejected"])
+        self.assertTrue(gated["rejected"])
 
     def test_checkpoint_selection_rejects_nonfinite_policy(self) -> None:
         metrics = {
