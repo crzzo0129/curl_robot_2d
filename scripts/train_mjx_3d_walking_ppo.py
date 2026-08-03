@@ -73,10 +73,40 @@ WALKING_RECIPES_3D = {
             "duty_factor": 0.90,
             "reset_reference_weight": 1.0,
             "residual_gain": 0.65,
+            "startup_action_ramp_s": 0.25,
+            "terminate_airborne_duration": 0.14,
+            "terminate_nonfoot_contact_duration": 0.06,
+            "terminate_self_contact_duration": 0.08,
             "learning_rate": 1e-4,
             "entropy_cost": 3e-3,
         },
         "reward": {},
+    },
+    "stability_v2": {
+        "description": (
+            "Keep the initial policy close to the viable paired-leg "
+            "reference and allow recovery from shallow ground brushes."
+        ),
+        "args": {
+            "frequency_hz": 0.70,
+            "step_length_m": 0.040,
+            "foot_lift_m": 0.010,
+            "duty_factor": 0.90,
+            "reset_reference_weight": 1.0,
+            "residual_gain": 0.05,
+            "startup_action_ramp_s": 1.00,
+            "terminate_airborne_duration": 0.25,
+            "terminate_nonfoot_contact_duration": 0.20,
+            "terminate_self_contact_duration": 0.15,
+            "learning_rate": 5e-5,
+            "entropy_cost": 1e-3,
+        },
+        "reward": {
+            "forward_progress": 0.15,
+            "action_rate": 0.025,
+            "residual_action": 0.020,
+            "nonfoot_contact": 2.0,
+        },
     },
 }
 
@@ -204,9 +234,10 @@ def _checkpoint_selection_walking_3d(
     )
     self_contact = metrics.get("eval/avg_self_contact_count", math.inf)
     survival = min(max(average_length / episode_length, 0.0), 1.0)
-    progress_quality = min(
+    raw_progress_quality = min(
         max(distance / max(target_distance_m, 1.0e-6), -1.0), 1.0
     )
+    progress_quality = survival * raw_progress_quality
     velocity_quality = 1.0 - min(
         abs(velocity - desired_speed_m_s)
         / max(abs(desired_speed_m_s), 1.0e-4),
@@ -243,6 +274,8 @@ def _checkpoint_selection_walking_3d(
         "rejected": rejected,
         "survival": survival,
         "distance_m": distance,
+        "raw_progress_quality": raw_progress_quality,
+        "progress_quality": progress_quality,
         "forward_velocity_m_s": velocity,
         "velocity_quality": velocity_quality,
         "upright_tilt_rad": upright_tilt,
@@ -442,7 +475,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--preset", choices=tuple(PRESETS_WALKING_3D), default="smoke"
     )
     parser.add_argument(
-        "--recipe", choices=tuple(WALKING_RECIPES_3D), default="stability_v1"
+        "--recipe", choices=tuple(WALKING_RECIPES_3D), default="stability_v2"
     )
     parser.add_argument(
         "--physics-profile",
@@ -463,6 +496,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reset-keyframe", default="walk")
     parser.add_argument("--reset-reference-weight", type=float)
     parser.add_argument("--residual-gain", type=float)
+    parser.add_argument(
+        "--startup-action-ramp",
+        dest="startup_action_ramp_s",
+        type=float,
+    )
     parser.add_argument("--terminate-root-z-min", type=float, default=0.145)
     parser.add_argument(
         "--terminate-root-z-low-duration", type=float, default=0.08
@@ -476,19 +514,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--terminate-lateral-drift", type=float, default=0.25
     )
     parser.add_argument(
-        "--terminate-airborne-duration", type=float, default=0.14
+        "--terminate-airborne-duration", type=float
     )
     parser.add_argument(
         "--terminate-nonfoot-depth", type=float, default=0.004
     )
     parser.add_argument(
-        "--terminate-nonfoot-contact-duration", type=float, default=0.06
+        "--terminate-nonfoot-contact-duration", type=float
     )
     parser.add_argument(
         "--terminate-self-contact-depth", type=float, default=0.004
     )
     parser.add_argument(
-        "--terminate-self-contact-duration", type=float, default=0.08
+        "--terminate-self-contact-duration", type=float
     )
     parser.add_argument("--unroll-length", type=int, default=20)
     parser.add_argument("--updates-per-batch", type=int, default=4)
@@ -529,7 +567,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--out",
         type=Path,
-        default=Path("results") / "mjx_3d_walking_stability_v1",
+        default=Path("results") / "mjx_3d_walking_stability_v2",
     )
     parser.add_argument("--allow-existing-output", action="store_true")
     parser.add_argument("--save-ppo-checkpoints", action="store_true")
@@ -554,6 +592,8 @@ def parse_args(argv=None):
         parser.error("--reset-reference-weight must be in [0, 1]")
     if not 0.0 <= args.residual_gain <= 1.0:
         parser.error("--residual-gain must be in [0, 1]")
+    if args.startup_action_ramp_s < 0.0:
+        parser.error("--startup-action-ramp must be nonnegative")
     if not 0.5 < args.duty_factor < 1.0:
         parser.error("--duty-factor must be between 0.5 and 1")
     if args.ppo_checkpoint_dir is not None and not args.save_ppo_checkpoints:
@@ -648,6 +688,7 @@ def main(argv=None) -> None:
             reference=reference,
             residual_gain=args.residual_gain,
             reset_reference_weight=args.reset_reference_weight,
+            startup_action_ramp_s=args.startup_action_ramp_s,
             terminate_root_z_min=args.terminate_root_z_min,
             terminate_root_z_low_duration_s=(
                 args.terminate_root_z_low_duration

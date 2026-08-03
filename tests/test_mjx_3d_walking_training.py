@@ -13,16 +13,20 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(callable(train_mjx_3d_walking_ppo.main))
         self.assertEqual(args.preset, "smoke")
-        self.assertEqual(args.recipe, "stability_v1")
+        self.assertEqual(args.recipe, "stability_v2")
         self.assertEqual(args.physics_profile, "cg12")
         self.assertEqual(args.frequency_hz, 0.70)
         self.assertEqual(args.step_length_m, 0.040)
         self.assertEqual(args.foot_lift_m, 0.010)
         self.assertEqual(args.duty_factor, 0.90)
         self.assertEqual(args.reset_reference_weight, 1.0)
-        self.assertEqual(args.residual_gain, 0.65)
-        self.assertEqual(args.learning_rate, 1e-4)
-        self.assertEqual(args.entropy_cost, 3e-3)
+        self.assertEqual(args.residual_gain, 0.05)
+        self.assertEqual(args.startup_action_ramp_s, 1.00)
+        self.assertEqual(args.terminate_airborne_duration, 0.25)
+        self.assertEqual(args.terminate_nonfoot_contact_duration, 0.20)
+        self.assertEqual(args.terminate_self_contact_duration, 0.15)
+        self.assertEqual(args.learning_rate, 5e-5)
+        self.assertEqual(args.entropy_cost, 1e-3)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
 
@@ -90,6 +94,31 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertGreater(stable["score"], drifted["score"])
         self.assertGreater(stable["score"], tilted["score"])
         self.assertGreater(stable["score"], stopped["score"])
+
+    def test_checkpoint_progress_is_gated_by_survival(self) -> None:
+        crash = {
+            "eval/avg_episode_length": 50.0,
+            "eval/episode_failed": 1.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_forward_progress_m": 0.28,
+            "eval/avg_forward_velocity_m_s": 0.28,
+            "eval/avg_upright_tilt_rad": 0.05,
+            "eval/avg_lateral_drift_m": 0.0,
+            "eval/avg_nonfoot_ground_contact_count": 0.1,
+            "eval/avg_self_contact_count": 0.0,
+        }
+
+        selection = (
+            train_mjx_3d_walking_ppo._checkpoint_selection_walking_3d(
+                crash,
+                500,
+                target_distance_m=0.28,
+                desired_speed_m_s=0.028,
+            )
+        )
+
+        self.assertEqual(selection["raw_progress_quality"], 1.0)
+        self.assertAlmostEqual(selection["progress_quality"], 0.1)
 
     def test_checkpoint_selection_rejects_nonfinite_eval(self) -> None:
         rejected = (

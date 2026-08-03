@@ -3,10 +3,12 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from pathlib import Path
 import time
 
 import mujoco
 import numpy as np
+from PIL import Image
 
 from scripts.evaluate_3d_symmetric_cem_reference import (
     DEFAULT_CONTROLLER_PATH,
@@ -42,6 +44,10 @@ def parse_args(argv=None):
     parser.add_argument("--azimuth", type=float, default=135.0)
     parser.add_argument("--elevation", type=float, default=-18.0)
     parser.add_argument("--headless", action="store_true")
+    parser.add_argument("--gif", type=Path, default=None)
+    parser.add_argument("--gif-fps", type=float, default=20.0)
+    parser.add_argument("--gif-width", type=int, default=720)
+    parser.add_argument("--gif-height", type=int, default=540)
     return parser.parse_args(argv)
 
 
@@ -71,6 +77,8 @@ def run(argv=None):
         raise SystemExit("--duration, --control-dt and --realtime must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
         raise SystemExit("--kp/--kd must be nonnegative and --torque-limit positive")
+    if args.gif_fps <= 0.0 or args.gif_width <= 0 or args.gif_height <= 0:
+        raise SystemExit("--gif-fps/--gif-width/--gif-height must be positive")
 
     config = load_cem_reference(args.controller)
     model = mujoco.MjModel.from_xml_path(str(args.xml))
@@ -101,6 +109,15 @@ def run(argv=None):
     tilt_values = []
     saturation_values = []
     phase_rate_values = []
+    frames = []
+    next_frame_time = 0.0
+    renderer = None
+    if args.gif is not None:
+        renderer = mujoco.Renderer(
+            model,
+            height=args.gif_height,
+            width=args.gif_width,
+        )
 
     viewer_context = _null_viewer()
     if not args.headless:
@@ -167,11 +184,31 @@ def run(argv=None):
                     * config.oscillator_rate_rad_s
                     * control_dt
                 )
+            if renderer is not None and float(data.time) >= next_frame_time:
+                renderer.update_scene(data, camera="tracking")
+                frames.append(Image.fromarray(renderer.render()))
+                next_frame_time += 1.0 / args.gif_fps
             if viewer is not None:
                 viewer.sync()
                 remaining = control_dt / args.realtime - (time.perf_counter() - wall_start)
                 if remaining > 0:
                     time.sleep(remaining)
+
+    if renderer is not None:
+        renderer.close()
+    if args.gif is not None:
+        if not frames:
+            raise RuntimeError("No GIF frames were rendered")
+        args.gif.parent.mkdir(parents=True, exist_ok=True)
+        frame_duration_ms = max(1, round(1000.0 / args.gif_fps))
+        frames[0].save(
+            args.gif,
+            save_all=True,
+            append_images=frames[1:],
+            duration=frame_duration_ms,
+            loop=0,
+            optimize=False,
+        )
 
     elapsed = len(tilt_values) * control_dt
     return {
@@ -192,6 +229,8 @@ def run(argv=None):
             wrapped_phase_error(np, rolling_phase, phase)
         ),
         "oscillator_rate_mean_rad_s": float(np.mean(phase_rate_values)),
+        "gif": str(args.gif.resolve()) if args.gif is not None else "",
+        "gif_frames": len(frames),
         "rolling_axis_tilt_rms_rad": float(np.sqrt(np.mean(np.square(tilt_values)))),
         "rolling_axis_tilt_max_rad": float(np.max(tilt_values)),
         "torque_saturation_fraction": float(np.mean(saturation_values)),
