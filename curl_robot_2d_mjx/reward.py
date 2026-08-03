@@ -30,6 +30,29 @@ def conservative_rolling_potential(
     return xp.minimum(cumulative_phase, cumulative_translation)
 
 
+def stuck_termination_state(
+    xp,
+    *,
+    root_z,
+    rolling_window_progress,
+    previous_count,
+    step_count,
+    root_z_max,
+    minimum_progress_rad,
+    grace_steps,
+    termination_steps,
+):
+    """Track continuous low-and-stalled behavior after a startup grace period."""
+
+    active = (
+        (step_count >= grace_steps)
+        & (root_z < root_z_max)
+        & (rolling_window_progress < minimum_progress_rad)
+    )
+    count = xp.where(active, previous_count + 1, xp.asarray(0, dtype=xp.int32))
+    return active, count, count >= termination_steps
+
+
 def reward_terms(xp, config: RollingRewardConfig, inputs):
     """Return independently logged scalar reward terms."""
 
@@ -69,9 +92,11 @@ def reward_terms(xp, config: RollingRewardConfig, inputs):
         * inputs["allowed_max_increment"]
         + config.leg_crossing * inputs["leg_crossing"]
     )
-    termination_penalty = config.termination + (
-        config.root_low_extra_termination * inputs["failure_root_low"]
+    extra_termination_penalty = xp.maximum(
+        config.root_low_extra_termination * inputs["failure_root_low"],
+        config.stuck_extra_termination * inputs["failure_stuck"],
     )
+    termination_penalty = config.termination + extra_termination_penalty
     return {
         "roll_progress": config.roll_progress * clipped_progress,
         "phase_progress": (

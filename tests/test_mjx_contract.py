@@ -54,6 +54,12 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(config.disturbance_backward_probability, 0.5)
         self.assertIsNone(config.terminate_root_z_min)
         self.assertEqual(config.terminate_root_z_low_duration_s, 0.30)
+        self.assertIsNone(config.terminate_stuck_root_z_max)
+        self.assertEqual(config.terminate_stuck_progress_window_s, 1.0)
+        self.assertEqual(config.terminate_stuck_min_progress_rad, 0.20)
+        self.assertEqual(config.terminate_stuck_duration_s, 0.75)
+        self.assertEqual(config.terminate_stuck_grace_s, 1.50)
+        self.assertEqual(config.tail_progress_window_s, 2.0)
         self.assertEqual(config.terminate_root_z_max, 0.70)
         self.assertEqual(config.maximum_foot_center_distance_m, 0.28)
         self.assertTrue(config.terminate_leg_crossing)
@@ -63,6 +69,7 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(reward.foot_contact_time, 4.0)
         self.assertEqual(reward.termination, 5.0)
         self.assertEqual(reward.root_low_extra_termination, 35.0)
+        self.assertEqual(reward.stuck_extra_termination, 35.0)
         self.assertEqual(reward.early_termination_scale, 1.0)
 
     def test_disturbance_configuration_requires_valid_episode_step(self) -> None:
@@ -109,6 +116,7 @@ class MJXContractTest(unittest.TestCase):
                 terminate_root_z_max=None,
                 maximum_foot_center_distance_m=None,
                 terminate_leg_crossing=False,
+                terminate_stuck_root_z_max=None,
             )
         )
         invalid = (
@@ -116,6 +124,36 @@ class MJXContractTest(unittest.TestCase):
             {"terminate_root_z_max": float("nan")},
             {"maximum_foot_center_distance_m": -0.1},
             {"maximum_foot_center_distance_m": float("nan")},
+        )
+        for values in invalid:
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                validate_nominal_rl_config(NominalRLConfig(**values))
+
+    def test_stuck_termination_configuration_is_validated(self) -> None:
+        validate_nominal_rl_config(
+            NominalRLConfig(
+                terminate_stuck_root_z_max=0.10,
+                terminate_stuck_progress_window_s=1.0,
+                terminate_stuck_min_progress_rad=0.20,
+                terminate_stuck_duration_s=0.75,
+                terminate_stuck_grace_s=1.50,
+            )
+        )
+        invalid = (
+            {"terminate_stuck_root_z_max": 0.0},
+            {
+                "terminate_stuck_root_z_max": 0.10,
+                "terminate_stuck_progress_window_s": 0.0,
+            },
+            {
+                "terminate_stuck_root_z_max": 0.10,
+                "terminate_stuck_min_progress_rad": -0.1,
+            },
+            {
+                "terminate_stuck_root_z_max": 0.10,
+                "terminate_stuck_grace_s": 0.5,
+            },
+            {"tail_progress_window_s": 20.0},
         )
         for values in invalid:
             with self.subTest(values=values), self.assertRaises(ValueError):
@@ -317,9 +355,14 @@ class MJXContractTest(unittest.TestCase):
             "leg_crossing",
             "root_low_active",
             "root_low_step_count",
+            "stuck_active",
+            "stuck_step_count",
+            "rolling_window_progress_rad",
+            "tail_roll_progress_rad",
             "failure_nonfinite_action",
             "failure_nonfinite_physics",
             "failure_root_low",
+            "failure_stuck",
             "failure_root_high",
             "failure_foot_gap",
         ):

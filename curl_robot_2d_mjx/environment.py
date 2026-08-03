@@ -23,6 +23,7 @@ from curl_robot_2d_mjx.reward import (
     REWARD_TERM_NAMES,
     conservative_rolling_potential,
     reward_terms,
+    stuck_termination_state,
 )
 from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 
@@ -291,7 +292,7 @@ def make_brax_env(
                     "rear_shank",
                 )
             }
-            self.rolling_radius = 0.147547621252806
+            self.rolling_radius = FIXED_PARAMETERS.shell_contact_radius
             if task.terminate_root_z_min is None:
                 self.root_low_termination_steps = 1
             else:
@@ -304,6 +305,45 @@ def make_brax_env(
                         )
                     ),
                 )
+            self.stuck_progress_window_steps = max(
+                1,
+                int(
+                    np.ceil(
+                        task.terminate_stuck_progress_window_s
+                        / task.control_timestep
+                    )
+                ),
+            )
+            self.stuck_termination_steps = max(
+                1,
+                int(
+                    np.ceil(
+                        task.terminate_stuck_duration_s
+                        / task.control_timestep
+                    )
+                ),
+            )
+            self.stuck_grace_steps = max(
+                self.stuck_progress_window_steps,
+                int(
+                    np.ceil(
+                        task.terminate_stuck_grace_s
+                        / task.control_timestep
+                    )
+                ),
+            )
+            self.tail_progress_window_steps = max(
+                1,
+                min(
+                    task.episode_length,
+                    int(
+                        np.ceil(
+                            task.tail_progress_window_s
+                            / task.control_timestep
+                        )
+                    ),
+                ),
+            )
 
         @property
         def observation_size(self):
@@ -333,6 +373,7 @@ def make_brax_env(
                 "roll_progress_rad": zero,
                 "phase_progress_rad": zero,
                 "translation_progress_rad": zero,
+                "tail_roll_progress_rad": zero,
                 "forbidden_contact_count": zero,
                 "forbidden_penetration_m": zero,
                 "allowed_foot_penetration_m": zero,
@@ -343,6 +384,9 @@ def make_brax_env(
                 "root_height_m": zero,
                 "root_low_active": zero,
                 "root_low_step_count": zero,
+                "stuck_active": zero,
+                "stuck_step_count": zero,
+                "rolling_window_progress_rad": zero,
                 "foot_center_distance_m": zero,
                 "action_rms": zero,
                 "action_rate_rms": zero,
@@ -358,6 +402,7 @@ def make_brax_env(
                 "failure_nonfinite_action": zero,
                 "failure_nonfinite_physics": zero,
                 "failure_root_low": zero,
+                "failure_stuck": zero,
                 "failure_root_high": zero,
                 "failure_foot_gap": zero,
                 "failure_leg_crossing": zero,
@@ -484,6 +529,10 @@ def make_brax_env(
                     contacts["allowed_count"] > 0
                 ),
                 "root_low_step_count": jp.asarray(0, dtype=jp.int32),
+                "stuck_step_count": jp.asarray(0, dtype=jp.int32),
+                "roll_potential_history": jp.zeros(
+                    (self.stuck_progress_window_steps,), dtype=jp.float32
+                ),
                 "step_count": jp.asarray(0, dtype=jp.int32),
                 "disturbance_step": disturbance_step,
                 "disturbance_scheduled": disturbance_scheduled,
@@ -723,6 +772,18 @@ def make_brax_env(
                 -translation_progress, 0.0
             )
 
+            step_count = state.info["step_count"] + 1
+            history_index = (
+                state.info["step_count"] % self.stuck_progress_window_steps
+            )
+            rolling_window_progress = (
+                roll_potential
+                - state.info["roll_potential_history"][history_index]
+            )
+            roll_potential_history = state.info[
+                "roll_potential_history"
+            ].at[history_index].set(roll_potential)
+
             action_rate = jp.mean(
                 jp.square(action - state.info["last_action"])
             )
@@ -782,6 +843,26 @@ def make_brax_env(
                 failure_root_low = (
                     root_low_step_count >= self.root_low_termination_steps
                 )
+            if task.terminate_stuck_root_z_max is None:
+                stuck_active = jp.asarray(False)
+                stuck_step_count = jp.asarray(0, dtype=jp.int32)
+                failure_stuck = jp.asarray(False)
+            else:
+                stuck_active, stuck_step_count, failure_stuck = (
+                    stuck_termination_state(
+                        jp,
+                        root_z=root_z,
+                        rolling_window_progress=rolling_window_progress,
+                        previous_count=state.info["stuck_step_count"],
+                        step_count=step_count,
+                        root_z_max=task.terminate_stuck_root_z_max,
+                        minimum_progress_rad=(
+                            task.terminate_stuck_min_progress_rad
+                        ),
+                        grace_steps=self.stuck_grace_steps,
+                        termination_steps=self.stuck_termination_steps,
+                    )
+                )
             failure_root_high = (
                 jp.asarray(False)
                 if task.terminate_root_z_max is None
@@ -800,11 +881,11 @@ def make_brax_env(
             failed_bool = (
                 failure_nonfinite
                 | failure_root_low
+                | failure_stuck
                 | failure_root_high
                 | failure_foot_gap
                 | failure_leg_crossing
             )
-            step_count = state.info["step_count"] + 1
             timeout_bool = step_count >= task.episode_length
             done = (failed_bool | timeout_bool).astype(jp.float32)
             remaining_fraction = jp.maximum(
@@ -846,6 +927,7 @@ def make_brax_env(
                     "failure_root_low": failure_root_low.astype(
                         jp.float32
                     ),
+                    "failure_stuck": failure_stuck.astype(jp.float32),
                     "remaining_fraction": remaining_fraction,
                 },
             )
@@ -902,6 +984,8 @@ def make_brax_env(
                 "maximum_allowed_excess": new_allowed_max,
                 "previous_foot_contact": allowed_contact_active,
                 "root_low_step_count": root_low_step_count,
+                "stuck_step_count": stuck_step_count,
+                "roll_potential_history": roll_potential_history,
                 "step_count": step_count,
             }
             metrics = {
@@ -911,6 +995,12 @@ def make_brax_env(
                 "roll_progress_rad": conservative_progress,
                 "phase_progress_rad": phase_progress,
                 "translation_progress_rad": translation_progress,
+                "tail_roll_progress_rad": jp.where(
+                    step_count
+                    > task.episode_length - self.tail_progress_window_steps,
+                    conservative_progress,
+                    0.0,
+                ),
                 "forbidden_contact_count": contacts[
                     "forbidden_count"
                 ],
@@ -929,6 +1019,9 @@ def make_brax_env(
                 "root_low_step_count": (
                     root_low_step_count.astype(jp.float32)
                 ),
+                "stuck_active": stuck_active.astype(jp.float32),
+                "stuck_step_count": stuck_step_count.astype(jp.float32),
+                "rolling_window_progress_rad": rolling_window_progress,
                 "foot_center_distance_m": foot_distance,
                 "action_rms": jp.sqrt(jp.mean(jp.square(action))),
                 "action_rate_rms": jp.sqrt(action_rate),
@@ -966,6 +1059,7 @@ def make_brax_env(
                     failure_nonfinite_physics.astype(jp.float32)
                 ),
                 "failure_root_low": failure_root_low.astype(jp.float32),
+                "failure_stuck": failure_stuck.astype(jp.float32),
                 "failure_root_high": failure_root_high.astype(jp.float32),
                 "failure_foot_gap": failure_foot_gap.astype(jp.float32),
                 "failure_leg_crossing": (

@@ -7,6 +7,7 @@ from curl_robot_2d_mjx.reward import (
     REWARD_TERM_NAMES,
     conservative_rolling_potential,
     reward_terms,
+    stuck_termination_state,
 )
 from curl_robot_2d_mjx.reward_config import RollingRewardConfig
 from scripts.train_mjx_ppo import (
@@ -44,6 +45,7 @@ def zero_inputs():
         "leg_crossing": zero,
         "failed": zero,
         "failure_root_low": zero,
+        "failure_stuck": zero,
         "remaining_fraction": zero,
     }
 
@@ -181,6 +183,77 @@ class MJXRewardTest(unittest.TestCase):
         self.assertEqual(float(terms["termination"]), -40.0)
         self.assertEqual(float(terms["early_termination"]), -40.0)
 
+    def test_stuck_failure_adds_strong_terminal_penalty(self) -> None:
+        config = RollingRewardConfig(
+            termination=5.0,
+            early_termination_scale=1.0,
+            stuck_extra_termination=35.0,
+        )
+        inputs = zero_inputs()
+        inputs["failed"] = np.asarray(1.0, dtype=np.float32)
+        inputs["failure_stuck"] = np.asarray(1.0, dtype=np.float32)
+        inputs["remaining_fraction"] = np.asarray(0.5, dtype=np.float32)
+
+        terms = reward_terms(np, config, inputs)
+
+        self.assertEqual(float(terms["termination"]), -40.0)
+        self.assertEqual(float(terms["early_termination"]), -20.0)
+
+    def test_stuck_termination_requires_low_root_and_stalled_progress(
+        self,
+    ) -> None:
+        common = {
+            "previous_count": np.asarray(7, dtype=np.int32),
+            "step_count": np.asarray(100, dtype=np.int32),
+            "root_z_max": 0.10,
+            "minimum_progress_rad": 0.20,
+            "grace_steps": 75,
+            "termination_steps": 38,
+        }
+        active, count, failed = stuck_termination_state(
+            np,
+            root_z=np.asarray(0.07, dtype=np.float32),
+            rolling_window_progress=np.asarray(0.05, dtype=np.float32),
+            **common,
+        )
+        self.assertTrue(bool(active))
+        self.assertEqual(int(count), 8)
+        self.assertFalse(bool(failed))
+
+        for root_z, progress, step_count in (
+            (0.12, 0.05, 100),
+            (0.07, 0.30, 100),
+            (0.07, 0.05, 74),
+        ):
+            active, count, failed = stuck_termination_state(
+                np,
+                root_z=np.asarray(root_z, dtype=np.float32),
+                rolling_window_progress=np.asarray(
+                    progress, dtype=np.float32
+                ),
+                **{**common, "step_count": np.asarray(step_count)},
+            )
+            self.assertFalse(bool(active))
+            self.assertEqual(int(count), 0)
+            self.assertFalse(bool(failed))
+
+    def test_stuck_termination_fires_after_continuous_duration(self) -> None:
+        active, count, failed = stuck_termination_state(
+            np,
+            root_z=np.asarray(0.07, dtype=np.float32),
+            rolling_window_progress=np.asarray(0.0, dtype=np.float32),
+            previous_count=np.asarray(37, dtype=np.int32),
+            step_count=np.asarray(112, dtype=np.int32),
+            root_z_max=0.10,
+            minimum_progress_rad=0.20,
+            grace_steps=75,
+            termination_steps=38,
+        )
+
+        self.assertTrue(bool(active))
+        self.assertEqual(int(count), 38)
+        self.assertTrue(bool(failed))
+
     def test_residual_action_cost_is_explicit_and_optional(self) -> None:
         inputs = zero_inputs()
         inputs["residual_action_cost"] = np.asarray(0.25, dtype=np.float32)
@@ -285,6 +358,46 @@ class MJXRewardTest(unittest.TestCase):
 
         self.assertFalse(loose["rejected"])
         self.assertTrue(gated["rejected"])
+
+    def test_checkpoint_selection_rejects_stuck_or_missing_tail_progress(
+        self,
+    ) -> None:
+        metrics = {
+            "eval/avg_episode_length": 500.0,
+            "eval/episode_failed": 0.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_failure_stuck": 0.0,
+            "eval/episode_roll_progress_rad": 2.5 * 2.0 * np.pi,
+            "eval/episode_tail_roll_progress_rad": 0.30 * 2.0 * np.pi,
+            "eval/avg_forbidden_penetration_m": 0.0,
+        }
+
+        accepted = _checkpoint_selection(
+            metrics,
+            500,
+            minimum_turns=2.0,
+            minimum_tail_turns=0.25,
+        )
+        stalled = _checkpoint_selection(
+            {
+                **metrics,
+                "eval/episode_tail_roll_progress_rad": 0.10 * 2.0 * np.pi,
+            },
+            500,
+            minimum_turns=2.0,
+            minimum_tail_turns=0.25,
+        )
+        failed_stuck = _checkpoint_selection(
+            {**metrics, "eval/episode_failure_stuck": 0.25},
+            500,
+            minimum_turns=2.0,
+            minimum_tail_turns=0.25,
+        )
+
+        self.assertFalse(accepted["rejected"])
+        self.assertAlmostEqual(accepted["tail_turns"], 0.30)
+        self.assertTrue(stalled["rejected"])
+        self.assertTrue(failed_stuck["rejected"])
 
     def test_checkpoint_selection_rejects_nonfinite_policy(self) -> None:
         metrics = {

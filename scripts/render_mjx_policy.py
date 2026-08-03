@@ -10,6 +10,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
+from curl_robot_2d.parameters import FIXED_PARAMETERS
 from curl_robot_2d_mjx.environment import MODEL_PATH
 from curl_robot_2d_mjx.runtime import select_mujoco_gl_backend
 
@@ -112,14 +113,21 @@ def render_rollout(
             )
             frame = Image.fromarray(renderer.render())
             draw = ImageDraw.Draw(frame)
-            turns = (
+            phase_turns = (
                 float(data.qpos[root_pitch_qpos]) - initial_phase
             ) / (2.0 * math.pi)
             displacement = float(data.qpos[root_x_qpos]) - initial_x
-            draw.rectangle((12, 10, 300, 78), fill=(20, 26, 35))
+            translation_turns = displacement / (
+                2.0
+                * math.pi
+                * FIXED_PARAMETERS.shell_contact_radius
+            )
+            turns = min(phase_turns, translation_turns)
+            draw.rectangle((12, 10, 360, 78), fill=(20, 26, 35))
             draw.text(
                 (22, 18),
-                f"time {data.time:4.2f} s   roll {turns:6.2f} turns",
+                f"time {data.time:4.2f} s   roll {turns:6.2f} turns "
+                f"phase {phase_turns:6.2f}",
                 fill=(244, 247, 251),
             )
             draw.text(
@@ -151,8 +159,28 @@ def render_rollout(
         "frames": len(frames),
         "duration_s": float((qpos.shape[0] - 1) * control_dt),
         "net_turns": float(
+            min(
+                (qpos[-1, root_pitch_qpos] - initial_phase)
+                / (2.0 * math.pi),
+                (qpos[-1, root_x_qpos] - initial_x)
+                / (
+                    2.0
+                    * math.pi
+                    * FIXED_PARAMETERS.shell_contact_radius
+                ),
+            )
+        ),
+        "net_phase_turns": float(
             (qpos[-1, root_pitch_qpos] - initial_phase)
             / (2.0 * math.pi)
+        ),
+        "translation_equivalent_turns": float(
+            (qpos[-1, root_x_qpos] - initial_x)
+            / (
+                2.0
+                * math.pi
+                * FIXED_PARAMETERS.shell_contact_radius
+            )
         ),
         "root_x_displacement_m": float(
             qpos[-1, root_x_qpos] - initial_x

@@ -57,6 +57,14 @@ class NominalRLConfig:
     # fixed lower-height termination would reject known-good behavior.
     terminate_root_z_min: float | None = None
     terminate_root_z_low_duration_s: float = 0.30
+    # A low root is valid while the robot is actively rolling.  Treat it as
+    # unrecoverable only when conservative rolling progress has also stalled.
+    terminate_stuck_root_z_max: float | None = None
+    terminate_stuck_progress_window_s: float = 1.0
+    terminate_stuck_min_progress_rad: float = 0.20
+    terminate_stuck_duration_s: float = 0.75
+    terminate_stuck_grace_s: float = 1.50
+    tail_progress_window_s: float = 2.0
     terminate_root_z_max: float | None = 0.70
     maximum_foot_center_distance_m: float | None = 0.28
     terminate_leg_crossing: bool = True
@@ -133,6 +141,50 @@ def validate_nominal_rl_config(config: NominalRLConfig) -> None:
         or config.terminate_root_z_max <= 0.0
     ):
         raise ValueError("terminate_root_z_max must be finite and positive")
+    if config.terminate_stuck_root_z_max is not None:
+        if (
+            not math.isfinite(config.terminate_stuck_root_z_max)
+            or config.terminate_stuck_root_z_max <= 0.0
+        ):
+            raise ValueError(
+                "terminate_stuck_root_z_max must be finite and positive"
+            )
+        positive_stuck_values = (
+            config.terminate_stuck_progress_window_s,
+            config.terminate_stuck_duration_s,
+        )
+        if any(
+            not math.isfinite(value) or value <= 0.0
+            for value in positive_stuck_values
+        ):
+            raise ValueError(
+                "stuck progress window and duration must be finite and positive"
+            )
+        if (
+            not math.isfinite(config.terminate_stuck_min_progress_rad)
+            or config.terminate_stuck_min_progress_rad < 0.0
+        ):
+            raise ValueError(
+                "terminate_stuck_min_progress_rad must be finite and nonnegative"
+            )
+        if (
+            not math.isfinite(config.terminate_stuck_grace_s)
+            or config.terminate_stuck_grace_s
+            < config.terminate_stuck_progress_window_s
+        ):
+            raise ValueError(
+                "terminate_stuck_grace_s must be finite and at least the "
+                "progress window"
+            )
+    if (
+        not math.isfinite(config.tail_progress_window_s)
+        or config.tail_progress_window_s <= 0.0
+        or config.tail_progress_window_s
+        > config.episode_length * config.control_timestep
+    ):
+        raise ValueError(
+            "tail_progress_window_s must fit inside the episode"
+        )
     if config.maximum_foot_center_distance_m is not None and (
         not math.isfinite(config.maximum_foot_center_distance_m)
         or config.maximum_foot_center_distance_m <= 0.0

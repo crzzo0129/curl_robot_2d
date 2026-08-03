@@ -128,6 +128,7 @@ PER_STEP_EVAL_METRICS = (
     "roll_progress_rad",
     "phase_progress_rad",
     "translation_progress_rad",
+    "stuck_active",
 )
 
 
@@ -207,6 +208,7 @@ def _checkpoint_selection(
     *,
     target_turns=3.0,
     minimum_turns=None,
+    minimum_tail_turns=None,
 ):
     """Score an eval point by physical behavior, independent of reward scale."""
 
@@ -216,11 +218,15 @@ def _checkpoint_selection(
         "eval/episode_failure_nonfinite", 0.0
     )
     roll_total = metrics.get("eval/episode_roll_progress_rad", -math.inf)
+    tail_metric_present = "eval/episode_tail_roll_progress_rad" in metrics
+    tail_total = metrics.get("eval/episode_tail_roll_progress_rad", 0.0)
+    stuck_failure_rate = metrics.get("eval/episode_failure_stuck", 0.0)
     penetration = metrics.get(
         "eval/avg_forbidden_penetration_m", math.inf
     )
     survival = min(max(avg_length / episode_length, 0.0), 1.0)
     turns = roll_total / (2.0 * math.pi)
+    tail_turns = tail_total / (2.0 * math.pi)
     progress_quality = min(max(turns / target_turns, -1.0), 1.0)
     safety_quality = 1.0 - min(
         max(penetration / 0.001, 0.0), 1.0
@@ -233,7 +239,15 @@ def _checkpoint_selection(
     )
     rejected = (
         nonfinite_rate > 0.0
+        or stuck_failure_rate > 0.0
         or (minimum_turns is not None and turns < minimum_turns)
+        or (
+            minimum_tail_turns is not None
+            and (
+                not tail_metric_present
+                or tail_turns < minimum_tail_turns
+            )
+        )
         or not math.isfinite(turns)
         or not math.isfinite(penetration)
         or not math.isfinite(score)
@@ -243,6 +257,7 @@ def _checkpoint_selection(
         "rejected": rejected,
         "survival": survival,
         "turns": turns,
+        "tail_turns": tail_turns,
     }
 
 
@@ -284,7 +299,8 @@ def _format_eval_report(
             f"translation="
             f"{_metric(metrics, 'eval/avg_translation_progress_rad'):+.5f} "
             f"roll={_metric(metrics, 'eval/avg_roll_progress_rad'):+.5f} "
-            f"turns/episode={selection['turns']:+.3f}"
+            f"turns/episode={selection['turns']:+.3f} "
+            f"tail_turns={selection['tail_turns']:+.3f}"
         ),
         (
             "  state   "
@@ -340,6 +356,7 @@ def _format_eval_report(
     lines.append(
         "  failures "
         f"low={_metric(metrics, 'eval/episode_failure_root_low'):.1%} "
+        f"stuck={_metric(metrics, 'eval/episode_failure_stuck'):.1%} "
         f"gap={_metric(metrics, 'eval/episode_failure_foot_gap'):.1%} "
         f"high={_metric(metrics, 'eval/episode_failure_root_high'):.1%} "
         f"cross={_metric(metrics, 'eval/episode_failure_leg_crossing'):.1%} "
@@ -479,6 +496,13 @@ def _evaluate_policy(
         state.pipeline_state.qpos[env.root_pitch_qpos]
     )
     final_x = _float(state.pipeline_state.qpos[env.root_x_qpos])
+    net_phase_rad = final_phase - initial_phase
+    translation_equivalent_rad = (
+        final_x - initial_x
+    ) / env.rolling_radius
+    conservative_roll_rad = min(
+        net_phase_rad, translation_equivalent_rad
+    )
     steps = len(reward_rows)
     metric_averages = {
         name: value / max(steps, 1)
@@ -491,6 +515,7 @@ def _evaluate_policy(
             "failure_nonfinite_action",
             "failure_nonfinite_physics",
             "failure_root_low",
+            "failure_stuck",
             "failure_root_high",
             "failure_foot_gap",
             "failure_leg_crossing",
@@ -504,8 +529,16 @@ def _evaluate_policy(
             * env.config.action_repeat
         ),
         "total_reward": float(sum(reward_rows)),
-        "net_phase_rad": final_phase - initial_phase,
-        "net_turns": (final_phase - initial_phase) / (2.0 * math.pi),
+        "net_phase_rad": net_phase_rad,
+        "net_phase_turns": net_phase_rad / (2.0 * math.pi),
+        "translation_equivalent_turns": (
+            translation_equivalent_rad / (2.0 * math.pi)
+        ),
+        "net_turns": conservative_roll_rad / (2.0 * math.pi),
+        "tail_turns": metric_totals.get(
+            "tail_roll_progress_rad", 0.0
+        )
+        / (2.0 * math.pi),
         "root_x_displacement_m": final_x - initial_x,
         "terminated": bool(_float(state.done) > 0.5),
         "reward_breakdown": {
@@ -569,6 +602,17 @@ def main() -> None:
         action="store_true",
         help="Disable continuous low-root termination for compatibility runs.",
     )
+    parser.add_argument("--stuck-root-z-max", type=float, default=0.10)
+    parser.add_argument("--stuck-progress-window", type=float, default=1.0)
+    parser.add_argument("--stuck-min-progress-rad", type=float, default=0.20)
+    parser.add_argument("--stuck-duration", type=float, default=0.75)
+    parser.add_argument("--stuck-grace", type=float, default=1.50)
+    parser.add_argument("--tail-progress-window", type=float, default=2.0)
+    parser.add_argument(
+        "--no-stuck-termination",
+        action="store_true",
+        help="Disable low-root plus stalled-progress termination.",
+    )
     parser.add_argument("--terminate-root-z-max", type=float, default=0.70)
     parser.add_argument(
         "--no-root-high-termination",
@@ -596,6 +640,7 @@ def main() -> None:
     parser.add_argument("--reward-scaling", type=float, default=1.0)
     parser.add_argument("--selection-target-turns", type=float, default=3.0)
     parser.add_argument("--selection-min-turns", type=float)
+    parser.add_argument("--selection-min-tail-turns", type=float)
     parser.add_argument(
         "--hidden-layers", type=int, nargs="+", default=[256, 256, 128]
     )
@@ -669,6 +714,16 @@ def main() -> None:
         args.selection_min_turns
     ):
         raise SystemExit("--selection-min-turns must be finite")
+    if (
+        args.selection_min_tail_turns is not None
+        and (
+            not math.isfinite(args.selection_min_tail_turns)
+            or args.selection_min_tail_turns < 0.0
+        )
+    ):
+        raise SystemExit(
+            "--selection-min-tail-turns must be finite and nonnegative"
+        )
 
     values = PRESETS[args.preset].copy()
     for name in (
@@ -742,6 +797,20 @@ def main() -> None:
             terminate_root_z_low_duration_s=(
                 args.terminate_root_z_low_duration
             ),
+            terminate_stuck_root_z_max=(
+                None
+                if args.no_stuck_termination
+                else args.stuck_root_z_max
+            ),
+            terminate_stuck_progress_window_s=(
+                args.stuck_progress_window
+            ),
+            terminate_stuck_min_progress_rad=(
+                args.stuck_min_progress_rad
+            ),
+            terminate_stuck_duration_s=args.stuck_duration,
+            terminate_stuck_grace_s=args.stuck_grace,
+            tail_progress_window_s=args.tail_progress_window,
             terminate_root_z_max=(
                 None
                 if args.no_root_high_termination
@@ -809,6 +878,7 @@ def main() -> None:
             args.episode_length,
             target_turns=args.selection_target_turns,
             minimum_turns=args.selection_min_turns,
+            minimum_tail_turns=args.selection_min_tail_turns,
         )
         selected = (
             not selection["rejected"]
@@ -877,8 +947,11 @@ def main() -> None:
             ),
             "target_turns": args.selection_target_turns,
             "minimum_turns": args.selection_min_turns,
+            "minimum_tail_turns": args.selection_min_tail_turns,
+            "tail_window_s": task.tail_progress_window_s,
             "penetration_limit_m": 0.001,
             "reject_nonfinite": True,
+            "reject_stuck": True,
         },
         "training_step_schedule": schedule,
     }
@@ -901,6 +974,17 @@ def main() -> None:
         "disabled"
         if task.terminate_root_z_max is None
         else f"{task.terminate_root_z_max:g}m"
+    )
+    stuck_text = (
+        "disabled"
+        if task.terminate_stuck_root_z_max is None
+        else (
+            f"z<{task.terminate_stuck_root_z_max:g}m "
+            f"progress<{task.terminate_stuck_min_progress_rad:g}rad/"
+            f"{task.terminate_stuck_progress_window_s:g}s "
+            f"for {task.terminate_stuck_duration_s:g}s "
+            f"after {task.terminate_stuck_grace_s:g}s"
+        )
     )
     foot_gap_text = (
         "disabled"
@@ -928,6 +1012,7 @@ def main() -> None:
         f"  root_damping="
         f"{'disabled' if task.disable_root_damping else 'xml'} "
         f"root_low={root_low_text} "
+        f"stuck={stuck_text} "
         f"root_high={root_high_text} "
         f"foot_gap={foot_gap_text} "
         f"leg_crossing={leg_crossing_text}\n"
@@ -940,7 +1025,9 @@ def main() -> None:
         "  selection=physical: 50% survival, 35% turns, "
         "10% non-failure, 5% contact safety "
         f"target_turns={args.selection_target_turns:g} "
-        f"min_turns={args.selection_min_turns}\n"
+        f"min_turns={args.selection_min_turns} "
+        f"min_tail_turns={args.selection_min_tail_turns} "
+        f"tail_window={task.tail_progress_window_s:g}s\n"
         f"  output={args.out.resolve()}",
         flush=True,
     )
@@ -992,14 +1079,15 @@ def main() -> None:
         **checkpoint_kwargs,
     )
     elapsed = time.perf_counter() - start
-    best_params = best["params"] if best["params"] is not None else final_params
+    best_params = best["params"]
     reward_peak_params = (
         reward_peak["params"]
         if reward_peak["params"] is not None
         else final_params
     )
     model_io.save_params(args.out / "params_final", final_params)
-    model_io.save_params(args.out / "params_best", best_params)
+    if best_params is not None:
+        model_io.save_params(args.out / "params_best", best_params)
     model_io.save_params(args.out / "params_reward_peak", reward_peak_params)
     (args.out / "metrics_history.json").write_text(
         json.dumps(metric_history, indent=2) + "\n", encoding="utf-8"
@@ -1031,6 +1119,7 @@ def main() -> None:
         "best_eval_reward": best_reward_value,
         "best_step": best["step"],
         "best_selection_score": best_score_value,
+        "valid_best_found": best_params is not None,
         "reward_peak": reward_peak_value,
         "reward_peak_step": reward_peak["step"],
         "final_metrics": final_ordinary_metrics,
@@ -1044,7 +1133,7 @@ def main() -> None:
         f"step={best['step']} score={best['score']:.4f} "
         f"reward={best['reward']:+.3f}"
         if best["step"] is not None
-        else "final parameters (all eval points rejected)"
+        else "none (all eval points rejected)"
     )
     reward_peak_source = (
         f"step={reward_peak['step']} reward={reward_peak['reward']:+.3f}"
@@ -1057,7 +1146,8 @@ def main() -> None:
         f"throughput={throughput:,.0f} steps/s\n"
         f"  physical_best {best_source}\n"
         f"  reward_peak {reward_peak_source}\n"
-        f"  checkpoints best={args.out / 'params_best'} "
+        f"  checkpoints best="
+        f"{args.out / 'params_best' if best_params is not None else 'unavailable'} "
         f"reward_peak={args.out / 'params_reward_peak'} "
         f"final={args.out / 'params_final'}",
         flush=True,
@@ -1066,14 +1156,16 @@ def main() -> None:
     if not args.skip_evaluation:
         evaluation_best_dir = args.out / "evaluation_best"
         evaluation_final_dir = args.out / "evaluation_final"
-        evaluation_best = _evaluate_policy(
-            eval_env,
-            make_inference_fn,
-            best_params,
-            seed=args.seed + 20_000,
-            episode_length=args.episode_length,
-            output_dir=evaluation_best_dir,
-        )
+        evaluation_best = None
+        if best_params is not None:
+            evaluation_best = _evaluate_policy(
+                eval_env,
+                make_inference_fn,
+                best_params,
+                seed=args.seed + 20_000,
+                episode_length=args.episode_length,
+                output_dir=evaluation_best_dir,
+            )
         evaluation_final = _evaluate_policy(
             eval_env,
             make_inference_fn,
@@ -1094,17 +1186,18 @@ def main() -> None:
         (args.out / "policy_comparison.json").write_text(
             json.dumps(comparison, indent=2) + "\n", encoding="utf-8"
         )
-        print(_format_rollout_report("best", evaluation_best), flush=True)
+        if evaluation_best is not None:
+            print(_format_rollout_report("best", evaluation_best), flush=True)
         print(_format_rollout_report("final", evaluation_final), flush=True)
 
         if not args.skip_visualization:
             try:
                 from scripts.render_mjx_policy import render_rollout
 
-                for label, directory in (
-                    ("best", evaluation_best_dir),
-                    ("final", evaluation_final_dir),
-                ):
+                render_targets = [("final", evaluation_final_dir)]
+                if evaluation_best is not None:
+                    render_targets.insert(0, ("best", evaluation_best_dir))
+                for label, directory in render_targets:
                     gif_path = directory / "policy_rollout.gif"
                     render_summary = render_rollout(
                         directory / "evaluation_rollout.npz",
@@ -1138,7 +1231,8 @@ def main() -> None:
             "[artifacts]\n"
             f"  summary={args.out / 'training_summary.json'}\n"
             f"  comparison={args.out / 'policy_comparison.json'}\n"
-            f"  best={evaluation_best_dir}\n"
+            f"  best="
+            f"{evaluation_best_dir if evaluation_best is not None else 'unavailable'}\n"
             f"  final={evaluation_final_dir}",
             flush=True,
         )

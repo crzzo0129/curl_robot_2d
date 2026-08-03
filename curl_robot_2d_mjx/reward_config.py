@@ -24,6 +24,7 @@ class RollingRewardConfig:
     termination: float = 5.0
     early_termination_scale: float = 1.0
     root_low_extra_termination: float = 35.0
+    stuck_extra_termination: float = 35.0
 
     # Collision reward terms mirror the collision-constrained CEM objective.
     allowed_foot_penetration_m: float = 0.0005
