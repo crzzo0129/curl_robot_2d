@@ -8,6 +8,7 @@ import inspect
 import json
 import math
 from pathlib import Path
+import sys
 import time
 
 from curl_robot_2d_mjx.cem_reference import (
@@ -49,6 +50,15 @@ PRESETS = {
         "unroll_length": 16,
         "updates_per_batch": 2,
     },
+    "4090": {
+        "steps": 2_000_000,
+        "envs": 512,
+        "eval_envs": 64,
+        "batch_size": 256,
+        "num_minibatches": 8,
+        "unroll_length": 16,
+        "updates_per_batch": 2,
+    },
     "h200": {
         "steps": 2_000_000,
         "envs": 2048,
@@ -57,6 +67,40 @@ PRESETS = {
         "num_minibatches": 16,
         "unroll_length": 16,
         "updates_per_batch": 2,
+    },
+}
+
+RECIPE_OVERRIDES = {
+    "motion_v1": {
+        "description": "Original performance-gated residual curriculum.",
+        "args": {
+            "selection_objective": "motion",
+            "save_ppo_checkpoints": True,
+        },
+    },
+    "energy_v1": {
+        "description": (
+            "Keep the CEM reference as the locomotion constraint and train "
+            "the residual to reduce normalized torque/action cost."
+        ),
+        "args": {
+            "retain_cem": True,
+            "save_ppo_checkpoints": False,
+            "residual_scales": [0.05, 0.10, 0.20, 0.35],
+            "selection_objective": "energy",
+            "learning_rate": 1.0e-5,
+            "entropy_cost": 3.0e-4,
+            "gate_min_survival": 0.90,
+            "gate_min_turns": 2.85,
+            "target_min_turns": 2.85,
+            "gate_max_failure_rate": 0.10,
+            "reward_roll_progress": 1.0,
+            "reward_roll_mismatch": 0.25,
+            "reward_backward": 1.0,
+            "reward_action_rate": 0.05,
+            "reward_residual_action": 0.02,
+            "reward_torque": 0.20,
+        },
     },
 }
 
@@ -170,9 +214,60 @@ def _target_eval_eligible(
     )
 
 
-def _residual_checkpoint_rank(selection, metrics):
+def _energy_proxy(metrics, *, residual_gain=1.0):
+    """Dense energy proxy normalized by useful rolling progress."""
+
+    turns = float(
+        metrics.get("eval/episode_roll_progress_rad", 0.0)
+    ) / (2.0 * math.pi)
+    average_length = float(metrics.get("eval/avg_episode_length", 0.0))
+    turn_floor = max(abs(turns), 1.0e-6)
+    torque_rms = float(metrics.get("eval/avg_normalized_torque_rms", math.inf))
+    action_rate_rms = float(metrics.get("eval/avg_action_rate_rms", math.inf))
+    residual_rms = float(
+        metrics.get("eval/avg_residual_action_rms", math.inf)
+    )
+    effective_residual_rms = residual_gain * residual_rms
+    torque_episode = torque_rms * torque_rms * average_length
+    action_rate_episode = action_rate_rms * action_rate_rms * average_length
+    residual_episode = (
+        effective_residual_rms * effective_residual_rms * average_length
+    )
+    return {
+        "turns": turns,
+        "torque_rms": torque_rms,
+        "action_rate_rms": action_rate_rms,
+        "effective_residual_rms": effective_residual_rms,
+        "torque_per_turn": torque_episode / turn_floor,
+        "action_rate_per_turn": action_rate_episode / turn_floor,
+        "residual_per_turn": residual_episode / turn_floor,
+    }
+
+
+def _residual_checkpoint_rank(
+    selection,
+    metrics,
+    *,
+    objective="motion",
+    residual_gain=1.0,
+):
     """Rank safe residual checkpoints by motion before tie breakers."""
 
+    if objective == "energy":
+        energy = _energy_proxy(metrics, residual_gain=residual_gain)
+        return (
+            -float(energy["torque_per_turn"]),
+            -float(energy["action_rate_per_turn"]),
+            -float(energy["residual_per_turn"]),
+            float(selection["turns"]),
+            float(selection["survival"]),
+            -float(metrics.get("eval/episode_failed", 1.0)),
+            -float(
+                metrics.get("eval/avg_forbidden_penetration_m", math.inf)
+            ),
+        )
+    if objective != "motion":
+        raise ValueError(f"unknown residual checkpoint objective: {objective}")
     return (
         float(selection["turns"]),
         float(selection["survival"]),
@@ -189,6 +284,12 @@ def _safe_stage_checkpoint(gate):
         for name, passed in gate["checks"].items()
         if name != "turns"
     )
+
+
+def _stage_checkpoint_eligible(gate, *, objective):
+    if objective == "energy":
+        return bool(gate.get("passed", all(gate["checks"].values())))
+    return _safe_stage_checkpoint(gate)
 
 
 def _can_advance_stage(
@@ -394,8 +495,42 @@ def _eval_visualization_dir(output_dir, eval_index, step, weight):
     )
 
 
+def _provided_dests(parser, argv):
+    if argv is None:
+        argv = sys.argv[1:]
+    option_to_dest = {
+        option: action.dest
+        for action in parser._actions
+        for option in action.option_strings
+    }
+    provided = set()
+    for token in argv:
+        if not token.startswith("--"):
+            continue
+        option = token.split("=", 1)[0]
+        dest = option_to_dest.get(option)
+        if dest is not None:
+            provided.add(dest)
+    return provided
+
+
+def _apply_recipe_overrides(args, provided_dests):
+    for name, value in RECIPE_OVERRIDES[args.recipe]["args"].items():
+        if name not in provided_dests:
+            setattr(args, name, value)
+
+
 def _parse_args(argv=None):
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--recipe",
+        choices=tuple(RECIPE_OVERRIDES),
+        default="motion_v1",
+        help=(
+            "motion_v1 keeps the original residual curriculum; energy_v1 "
+            "keeps CEM as a motion constraint and optimizes control cost."
+        ),
+    )
     parser.add_argument("--preset", choices=tuple(PRESETS), default="h200")
     parser.add_argument(
         "--physics-profile",
@@ -490,6 +625,14 @@ def _parse_args(argv=None):
     )
     parser.add_argument("--gate-max-failure-rate", type=float, default=0.20)
     parser.add_argument(
+        "--selection-objective",
+        choices=("motion", "energy"),
+        help=(
+            "How to rank safe checkpoints. energy ranks by lower normalized "
+            "torque/action cost per turn after the motion gate passes."
+        ),
+    )
+    parser.add_argument(
         "--robust-eval-envs",
         type=int,
         default=128,
@@ -509,8 +652,26 @@ def _parse_args(argv=None):
     parser.add_argument("--allow-existing-output", action="store_true")
     parser.add_argument("--skip-visualization", action="store_true")
     parser.add_argument("--visualization-diagnostics", action="store_true")
+    parser.add_argument(
+        "--save-ppo-checkpoints",
+        dest="save_ppo_checkpoints",
+        action="store_true",
+        help="Save periodic Brax/Orbax checkpoints inside ppo_checkpoints/.",
+    )
+    parser.add_argument(
+        "--no-save-ppo-checkpoints",
+        dest="save_ppo_checkpoints",
+        action="store_false",
+        help=(
+            "Skip periodic Brax/Orbax checkpoints; stage/final params are "
+            "still saved."
+        ),
+    )
+    parser.set_defaults(save_ppo_checkpoints=None)
     _add_reward_arguments(parser)
+    provided_dests = _provided_dests(parser, argv)
     args = parser.parse_args(argv)
+    _apply_recipe_overrides(args, provided_dests)
     if args.retain_cem:
         _validate_residual_scales(parser, args.residual_scales)
     else:
@@ -519,6 +680,10 @@ def _parse_args(argv=None):
         parser.error("--minimum-residual-gain must be in [0, 1]")
     if args.target_min_turns is None:
         args.target_min_turns = args.gate_min_turns
+    if args.selection_objective is None:
+        args.selection_objective = "motion"
+    if args.save_ppo_checkpoints is None:
+        args.save_ppo_checkpoints = True
     if args.robust_eval_envs < 0:
         parser.error("--robust-eval-envs must be nonnegative")
     try:
@@ -630,6 +795,8 @@ def main() -> None:
     )
     runtime = describe_runtime()
     config_payload = {
+        "recipe": args.recipe,
+        "recipe_description": RECIPE_OVERRIDES[args.recipe]["description"],
         "preset": args.preset,
         **values,
         "requested_steps": values["steps"],
@@ -651,6 +818,8 @@ def main() -> None:
         "stage_plan": stage_plan,
         "reference_weights": args.reference_weights,
         "residual_scales": args.residual_scales,
+        "selection_objective": args.selection_objective,
+        "save_ppo_checkpoints": args.save_ppo_checkpoints,
         "minimum_stage_steps": args.minimum_stage_steps,
         "gate_check_steps": args.gate_check_steps,
         "gate": {
@@ -667,6 +836,9 @@ def main() -> None:
     )
     print(
         "[residual curriculum]\n"
+        f"  recipe={args.recipe} "
+        f"objective={args.selection_objective}\n"
+        f"  recipe_note={RECIPE_OVERRIDES[args.recipe]['description']}\n"
         f"  mode={'retain_cem' if args.retain_cem else 'withdraw_reference'}\n"
         f"  requested_steps={values['steps']:,} "
         f"fixed_budget={effective_budget:,} "
@@ -691,6 +863,12 @@ def main() -> None:
         f"stage_turns>={args.gate_min_turns:g} "
         f"target_turns>={args.target_min_turns:g} "
         f"failure<={args.gate_max_failure_rate:.0%}\n"
+        f"  reward roll={reward_config.roll_progress:g} "
+        f"mismatch={reward_config.roll_mismatch:g} "
+        f"torque={reward_config.torque:g} "
+        f"action_rate={reward_config.action_rate:g} "
+        f"residual={reward_config.residual_action:g}\n"
+        f"  save_ppo_checkpoints={args.save_ppo_checkpoints}\n"
         f"  controller={base_reference.source}\n"
         f"  output={args.out.resolve()}",
         flush=True,
@@ -711,6 +889,7 @@ def main() -> None:
         "rank": None,
         "score": float("-inf"),
         "turns": None,
+        "energy": None,
         "step": None,
         "params": None,
     }
@@ -882,12 +1061,19 @@ def main() -> None:
                     "metrics": ordinary_metrics,
                 }
             )
-            checkpoint_rank = _residual_checkpoint_rank(selection, clean)
+            checkpoint_rank = _residual_checkpoint_rank(
+                selection,
+                clean,
+                objective=args.selection_objective,
+                residual_gain=reference.residual_gain,
+            )
             if (
                 int(local_step) > 0
                 and stage["params"] is not None
                 and not selection["rejected"]
-                and _safe_stage_checkpoint(gate)
+                and _stage_checkpoint_eligible(
+                    gate, objective=args.selection_objective
+                )
                 and (
                     stage["best"]["rank"] is None
                     or checkpoint_rank > stage["best"]["rank"]
@@ -920,9 +1106,13 @@ def main() -> None:
                     target_stage_gate_passed or gate["passed"]
                 )
             if selected and stage["params"] is not None:
+                target_energy = _energy_proxy(
+                    clean, residual_gain=reference.residual_gain
+                )
                 best_target["rank"] = checkpoint_rank
                 best_target["score"] = selection["score"]
                 best_target["turns"] = selection["turns"]
+                best_target["energy"] = target_energy
                 best_target["step"] = global_step
                 best_target["params"] = stage["params"]
             eval_counter += 1
@@ -949,6 +1139,9 @@ def main() -> None:
                 flush=True,
             )
             policy_rms = clean.get("eval/avg_residual_action_rms", 0.0)
+            energy = _energy_proxy(
+                clean, residual_gain=reference.residual_gain
+            )
             print(
                 "  residual "
                 f"ref_weight={weight:.2f} "
@@ -958,6 +1151,15 @@ def main() -> None:
                 f"policy_rms={policy_rms:.3f} "
                 f"effective_residual_rms="
                 f"{reference.residual_gain * policy_rms:.3f}",
+                flush=True,
+            )
+            print(
+                "  energy   "
+                f"torque_rms={energy['torque_rms']:.4f} "
+                f"torque_per_turn={energy['torque_per_turn']:.4f} "
+                f"action_rate_per_turn="
+                f"{energy['action_rate_per_turn']:.4f} "
+                f"residual_per_turn={energy['residual_per_turn']:.4f}",
                 flush=True,
             )
             visualize_eval(local_step)
@@ -983,10 +1185,16 @@ def main() -> None:
             )
             if can_advance:
                 if not gate["passed"]:
+                    advance_energy = _energy_proxy(
+                        stage["best"]["metrics"],
+                        residual_gain=reference.residual_gain,
+                    )
                     print(
                         "  curriculum advance_from_best "
                         f"step={stage['best']['step']:,} "
-                        f"turns={stage['best']['rank'][0]:+.3f}",
+                        f"turns={advance_energy['turns']:+.3f} "
+                        f"torque_per_turn="
+                        f"{advance_energy['torque_per_turn']:.4f}",
                         flush=True,
                     )
                 raise _AdvanceCurriculum
@@ -995,7 +1203,10 @@ def main() -> None:
         if restored_params is not None:
             train_kwargs["restore_params"] = restored_params
         checkpoint_path = args.out / "ppo_checkpoints" / f"stage_{stage_index}"
-        if "save_checkpoint_path" in inspect.signature(ppo.train).parameters:
+        if (
+            args.save_ppo_checkpoints
+            and "save_checkpoint_path" in inspect.signature(ppo.train).parameters
+        ):
             train_kwargs["save_checkpoint_path"] = str(
                 checkpoint_path.resolve()
             )
@@ -1056,6 +1267,23 @@ def main() -> None:
         consumed_steps += local_trained
         if stage_index == len(stage_plan) - 1:
             target_stage_steps += local_trained
+        best_energy = (
+            _energy_proxy(
+                stage["best"]["metrics"],
+                residual_gain=reference.residual_gain,
+            )
+            if stage["best"]["metrics"] is not None
+            else None
+        )
+        best_turns = (
+            best_energy["turns"]
+            if best_energy is not None
+            else (
+                stage["best"]["rank"][0]
+                if stage["best"]["rank"] is not None
+                else None
+            )
+        )
         stage_history.append(
             {
                 "stage_index": stage_index,
@@ -1067,11 +1295,8 @@ def main() -> None:
                 "gate": stage["gate"],
                 "advanced": advanced,
                 "best_local_step": stage["best"]["step"],
-                "best_turns": (
-                    stage["best"]["rank"][0]
-                    if stage["best"]["rank"] is not None
-                    else None
-                ),
+                "best_turns": best_turns,
+                "best_energy": best_energy,
             }
         )
         model_io.save_params(
@@ -1146,6 +1371,8 @@ def main() -> None:
         "curriculum_mode": (
             "retain_cem" if args.retain_cem else "withdraw_reference"
         ),
+        "recipe": args.recipe,
+        "selection_objective": args.selection_objective,
         "curriculum_success": curriculum_success,
         "reached_target_stage": reached_target_stage,
         "target_stage_gate_passed": target_stage_gate_passed,
@@ -1166,6 +1393,7 @@ def main() -> None:
         "final_residual_gain": last_trained_reference.residual_gain,
         "best_target_step": best_target["step"],
         "best_target_turns": best_target["turns"],
+        "best_target_energy": best_target["energy"],
         "best_target_score": (
             best_target["score"]
             if math.isfinite(best_target["score"])
@@ -1187,6 +1415,7 @@ def main() -> None:
     )
     print(
         "[curriculum complete]\n"
+        f"  recipe={args.recipe} objective={args.selection_objective}\n"
         f"  mode={'retain_cem' if args.retain_cem else 'withdraw_reference'}\n"
         f"  status={'SUCCESS' if curriculum_success else 'FAILED'} "
         f"consumed={consumed_steps:,}/{effective_budget:,}\n"

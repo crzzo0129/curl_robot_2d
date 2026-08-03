@@ -16,13 +16,16 @@ from curl_robot_2d_mjx.cem_reference import (
 from scripts.train_mjx_residual_ppo import (
     _can_advance_stage,
     _distribution_summary,
+    _energy_proxy,
     _eval_visualization_dir,
     _exact_stage_eval_schedule,
     _gate_assessment,
     _last_trained_stage_spec,
     _parse_args,
+    _reward_config_from_args,
     _residual_checkpoint_rank,
     _safe_stage_checkpoint,
+    _stage_checkpoint_eligible,
     _stage_plan,
     _target_eval_eligible,
 )
@@ -115,6 +118,35 @@ class MJXResidualTest(unittest.TestCase):
             [stage["reference_weight"] for stage in _stage_plan(args)],
             [1.0, 0.5, 0.0],
         )
+        self.assertEqual(args.recipe, "motion_v1")
+        self.assertEqual(args.selection_objective, "motion")
+        self.assertTrue(args.save_ppo_checkpoints)
+
+    def test_energy_recipe_keeps_reference_and_optimizes_cost(self) -> None:
+        args = _parse_args(["--recipe", "energy_v1"])
+        reward = _reward_config_from_args(args)
+
+        self.assertTrue(args.retain_cem)
+        self.assertEqual(args.selection_objective, "energy")
+        self.assertFalse(args.save_ppo_checkpoints)
+        self.assertEqual(
+            _stage_plan(args),
+            [
+                {
+                    "reference_weight": 1.0,
+                    "minimum_residual_gain": scale,
+                }
+                for scale in (0.05, 0.10, 0.20, 0.35)
+            ],
+        )
+        self.assertEqual(args.gate_min_turns, 2.85)
+        self.assertEqual(args.target_min_turns, 2.85)
+        self.assertEqual(args.learning_rate, 1.0e-5)
+        self.assertEqual(args.entropy_cost, 3.0e-4)
+        self.assertEqual(reward.roll_progress, 1.0)
+        self.assertEqual(reward.torque, 0.20)
+        self.assertEqual(reward.action_rate, 0.05)
+        self.assertEqual(reward.residual_action, 0.02)
 
     def test_target_gate_ignores_untrained_step_zero(self) -> None:
         self.assertFalse(_target_eval_eligible(0, 1, 0, 131_072))
@@ -142,8 +174,44 @@ class MJXResidualTest(unittest.TestCase):
             _residual_checkpoint_rank(slower, metrics),
         )
         self.assertTrue(_safe_stage_checkpoint(gate))
+        self.assertFalse(_stage_checkpoint_eligible(gate, objective="energy"))
         gate["checks"]["failure_rate"] = False
         self.assertFalse(_safe_stage_checkpoint(gate))
+
+    def test_energy_checkpoint_rank_prefers_lower_cost_after_gate(self) -> None:
+        selection = {"turns": 3.2, "survival": 1.0}
+        efficient = {
+            "eval/episode_roll_progress_rad": 3.2 * 2.0 * math.pi,
+            "eval/avg_episode_length": 500.0,
+            "eval/avg_normalized_torque_rms": 0.05,
+            "eval/avg_action_rate_rms": 0.10,
+            "eval/avg_residual_action_rms": 0.20,
+            "eval/episode_failed": 0.0,
+            "eval/avg_forbidden_penetration_m": 0.0,
+        }
+        wasteful = {
+            **efficient,
+            "eval/avg_normalized_torque_rms": 0.08,
+        }
+
+        self.assertLess(
+            _energy_proxy(efficient, residual_gain=0.2)["torque_per_turn"],
+            _energy_proxy(wasteful, residual_gain=0.2)["torque_per_turn"],
+        )
+        self.assertGreater(
+            _residual_checkpoint_rank(
+                selection,
+                efficient,
+                objective="energy",
+                residual_gain=0.2,
+            ),
+            _residual_checkpoint_rank(
+                selection,
+                wasteful,
+                objective="energy",
+                residual_gain=0.2,
+            ),
+        )
 
     def test_stage_can_advance_from_earlier_best_after_minimum_budget(self) -> None:
         waiting = {"passed": False}
