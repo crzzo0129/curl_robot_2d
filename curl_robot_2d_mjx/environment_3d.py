@@ -92,6 +92,39 @@ def duplicate_planar_action_3d(xp, planar_action):
     )
 
 
+def pair_coupled_residual_action_3d(
+    xp,
+    raw_action,
+    differential_scale,
+):
+    """Map common/differential channels into actuator-ordered residuals."""
+
+    if differential_scale is None:
+        return raw_action
+    common = raw_action[:4]
+    differential = differential_scale * raw_action[4:]
+    front_hip, front_knee, rear_hip, rear_knee = common
+    front_hip_diff, front_knee_diff, rear_hip_diff, rear_knee_diff = (
+        differential
+    )
+    return xp.clip(
+        xp.stack(
+            (
+                front_hip + front_hip_diff,
+                front_knee + front_knee_diff,
+                front_hip - front_hip_diff,
+                front_knee - front_knee_diff,
+                rear_hip + rear_hip_diff,
+                rear_knee + rear_knee_diff,
+                rear_hip - rear_hip_diff,
+                rear_knee - rear_knee_diff,
+            )
+        ),
+        -1.0,
+        1.0,
+    )
+
+
 def advance_rolling_phase_3d(
     xp,
     rolling_phase,
@@ -452,11 +485,16 @@ def make_brax_env_3d(
 
         def step(self, state, action):
             action_finite = jp.all(jp.isfinite(action))
-            policy_action = jp.nan_to_num(
+            raw_policy_action = jp.nan_to_num(
                 jp.clip(action, -1.0, 1.0),
                 nan=0.0,
                 posinf=1.0,
                 neginf=-1.0,
+            )
+            policy_action = pair_coupled_residual_action_3d(
+                jp,
+                raw_policy_action,
+                task.residual_pair_differential_scale,
             )
             control_dt = (
                 float(self.mj_model.opt.timestep) * task.action_repeat

@@ -18,6 +18,7 @@ from curl_robot_2d_mjx.environment_3d import (
     advance_rolling_phase_3d,
     apply_physics_options_3d,
     duplicate_planar_action_3d,
+    pair_coupled_residual_action_3d,
 )
 from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
 from scripts import mjx_3d_smoke
@@ -48,6 +49,7 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.terminate_lateral_drift_m, 0.20)
         self.assertEqual(config.terminate_axis_tilt_rad, 0.50)
         self.assertEqual(config.terminate_forbidden_depth_m, 0.004)
+        self.assertIsNone(config.residual_pair_differential_scale)
         reward = Rolling3DRewardConfig()
         self.assertEqual(reward.roll_progress, 6.0)
         self.assertEqual(reward.cross_side_foot_contact, 30.0)
@@ -58,6 +60,7 @@ class MJX3DContractTest(unittest.TestCase):
         invalid = (
             {"action_scales": (1.0,)},
             {"reference_phase_rate_scale": float("nan")},
+            {"residual_pair_differential_scale": 1.1},
             {"terminate_root_z_min": -0.01},
             {"terminate_axis_tilt_duration_s": 0.0},
             {"terminate_forbidden_contact_duration_s": -1.0},
@@ -92,6 +95,28 @@ class MJX3DContractTest(unittest.TestCase):
 
         self.assertAlmostEqual(float(forward), 0.23)
         self.assertAlmostEqual(float(backward), 0.17)
+
+    def test_pair_coupled_residual_preserves_common_and_limits_difference(
+        self,
+    ) -> None:
+        raw_action = np.asarray(
+            (0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
+        )
+
+        coupled = pair_coupled_residual_action_3d(
+            np, raw_action, differential_scale=0.25
+        )
+
+        np.testing.assert_allclose(
+            coupled,
+            np.asarray((0.225, 0.35, -0.025, 0.05, 0.475, 0.6, 0.125, 0.2)),
+        )
+        np.testing.assert_allclose(
+            pair_coupled_residual_action_3d(
+                np, raw_action, differential_scale=None
+            ),
+            raw_action,
+        )
 
     def test_3d_physics_options_can_disable_freejoint_damping(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(MODEL_PATH_3D))

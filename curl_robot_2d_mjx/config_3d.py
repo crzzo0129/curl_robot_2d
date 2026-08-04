@@ -39,6 +39,7 @@ class Rolling3DConfig:
     reset_joint_noise_rad: float = 0.005
     reset_velocity_noise: float = 0.005
     reference_phase_rate_scale: float = 1.0
+    residual_pair_differential_scale: float | None = None
     disable_root_damping: bool = True
 
     terminate_root_z_min: float | None = 0.025
@@ -67,6 +68,14 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("action_repeat and episode_length must be positive")
     if not math.isfinite(config.reference_phase_rate_scale):
         raise ValueError("reference_phase_rate_scale must be finite")
+    if config.residual_pair_differential_scale is not None:
+        if (
+            not math.isfinite(config.residual_pair_differential_scale)
+            or not 0.0 <= config.residual_pair_differential_scale <= 1.0
+        ):
+            raise ValueError(
+                "residual_pair_differential_scale must be in [0, 1]"
+            )
     if config.terminate_root_z_min is not None:
         if (
             not math.isfinite(config.terminate_root_z_min)

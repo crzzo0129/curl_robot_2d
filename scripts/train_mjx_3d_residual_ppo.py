@@ -189,6 +189,36 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "phase_locked_coupled_v6": {
+        "description": (
+            "Explore mainly through symmetric rolling residuals while "
+            "retaining lower-authority left/right correction channels."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "learning_rate": 5e-5,
+            "entropy_cost": 1e-3,
+            "selection_target_turns": 10.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.20,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 2.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
 }
 
 
@@ -768,8 +798,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "3-D training recipe. anchored_v1 reproduces the first run; "
             "phase_locked_v3 starts residual learning from the restored "
-            "phase-locked reference; phase_locked_safe_v5 partially claws "
-            "back progress that ends in failure."
+            "phase-locked reference; phase_locked_coupled_v6 uses common "
+            "and differential residual channels."
         ),
     )
     parser.add_argument(
@@ -811,6 +841,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference-weight", type=float)
     parser.add_argument("--minimum-residual-gain", type=float)
     parser.add_argument("--phase-rate-scale", type=float)
+    parser.add_argument("--residual-pair-differential-scale", type=float)
     parser.add_argument("--unroll-length", type=int, default=20)
     parser.add_argument("--updates-per-batch", type=int, default=4)
     parser.add_argument("--learning-rate", type=float)
@@ -919,6 +950,11 @@ def parse_args(argv=None):
         parser.error("--reference-weight must be in [0, 1]")
     if not 0.0 <= args.minimum_residual_gain <= 1.0:
         parser.error("--minimum-residual-gain must be in [0, 1]")
+    if (
+        args.residual_pair_differential_scale is not None
+        and not 0.0 <= args.residual_pair_differential_scale <= 1.0
+    ):
+        parser.error("--residual-pair-differential-scale must be in [0, 1]")
     if args.ppo_checkpoint_dir is not None and not args.save_ppo_checkpoints:
         parser.error("--ppo-checkpoint-dir requires --save-ppo-checkpoints")
     if args.selection_target_turns <= 0.0:
@@ -1001,6 +1037,9 @@ def main(argv=None) -> None:
         Rolling3DConfig(
             episode_length=args.episode_length,
             reference_phase_rate_scale=args.phase_rate_scale,
+            residual_pair_differential_scale=(
+                args.residual_pair_differential_scale
+            ),
             terminate_root_z_min=(
                 None
                 if args.no_root_low_termination
@@ -1174,6 +1213,14 @@ def main(argv=None) -> None:
         if args.zero_residual_policy_init
         else "brax-default"
     )
+    residual_pair_text = (
+        "direct"
+        if task.residual_pair_differential_scale is None
+        else (
+            "common-differential/"
+            f"{task.residual_pair_differential_scale:g}"
+        )
+    )
     print(
         "[training]\n"
         f"  preset={args.preset} recipe={args.recipe} "
@@ -1195,6 +1242,7 @@ def main(argv=None) -> None:
         f"  reference_weight={reference.reference_weight:.2f} "
         f"residual_gain={reference.residual_gain:.3f} "
         f"phase_rate_scale={task.reference_phase_rate_scale:g}\n"
+        f"  residual_channels={residual_pair_text}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  policy_init={policy_init_text}\n"

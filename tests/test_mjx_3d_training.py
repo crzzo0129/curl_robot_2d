@@ -25,6 +25,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.selection_target_turns, 1.0)
         self.assertFalse(args.zero_residual_policy_init)
         self.assertEqual(args.initial_policy_std, 1.0)
+        self.assertIsNone(args.residual_pair_differential_scale)
         self.assertTrue(args.deterministic_eval)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
@@ -104,6 +105,21 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.lateral_drift, 6.0)
         self.assertEqual(reward.termination, 40.0)
         self.assertEqual(reward.severe_extra_termination, 40.0)
+
+    def test_phase_locked_coupled_v6_limits_differential_exploration(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_coupled_v6"]
+        )
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+
+        self.assertEqual(args.residual_pair_differential_scale, 0.25)
+        self.assertEqual(args.minimum_residual_gain, 0.15)
+        self.assertEqual(args.initial_policy_std, 0.20)
+        self.assertEqual(reward.failure_progress_clawback, 2.0)
+        self.assertEqual(reward.lateral_drift, 6.0)
 
     def test_observation_width_accepts_brax_shape_tuple(self) -> None:
         self.assertEqual(
