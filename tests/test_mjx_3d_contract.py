@@ -15,10 +15,12 @@ from curl_robot_2d_mjx.environment_3d import (
     DEFAULT_3D_CEM_CONTROLLER,
     MODEL_PATH_3D,
     OBSERVATION_SIZE_3D,
+    PHASE_FEEDBACK_SIZE_3D,
     advance_rolling_phase_3d,
     apply_physics_options_3d,
     duplicate_planar_action_3d,
     pair_coupled_residual_action_3d,
+    phase_feedback_observation_3d,
 )
 from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
 from scripts import mjx_3d_smoke
@@ -50,6 +52,7 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.terminate_axis_tilt_rad, 0.50)
         self.assertEqual(config.terminate_forbidden_depth_m, 0.004)
         self.assertIsNone(config.residual_pair_differential_scale)
+        self.assertFalse(config.explicit_phase_observation)
         reward = Rolling3DRewardConfig()
         self.assertEqual(reward.roll_progress, 6.0)
         self.assertEqual(reward.cross_side_foot_contact, 30.0)
@@ -61,6 +64,7 @@ class MJX3DContractTest(unittest.TestCase):
             {"action_scales": (1.0,)},
             {"reference_phase_rate_scale": float("nan")},
             {"residual_pair_differential_scale": 1.1},
+            {"explicit_phase_observation": 1},
             {"terminate_root_z_min": -0.01},
             {"terminate_axis_tilt_duration_s": 0.0},
             {"terminate_forbidden_contact_duration_s": -1.0},
@@ -116,6 +120,28 @@ class MJX3DContractTest(unittest.TestCase):
                 np, raw_action, differential_scale=None
             ),
             raw_action,
+        )
+
+    def test_phase_feedback_observation_exposes_actual_and_target_error(
+        self,
+    ) -> None:
+        features = phase_feedback_observation_3d(
+            np,
+            rolling_phase=0.25,
+            oscillator_phase=0.75,
+        )
+
+        self.assertEqual(features.shape, (PHASE_FEEDBACK_SIZE_3D,))
+        np.testing.assert_allclose(
+            features,
+            np.asarray(
+                (
+                    np.sin(0.25),
+                    np.cos(0.25),
+                    np.sin(-0.5),
+                    np.cos(-0.5),
+                )
+            ),
         )
 
     def test_3d_physics_options_can_disable_freejoint_damping(self) -> None:

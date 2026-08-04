@@ -38,6 +38,7 @@ DEFAULT_3D_CEM_CONTROLLER = (
 )
 ACTION_SIZE_3D = 8
 OBSERVATION_SIZE_3D = 59
+PHASE_FEEDBACK_SIZE_3D = 4
 PLANAR_ACTION_SCALES = np.asarray((0.8, 1.2, 0.8, 1.2), dtype=np.float64)
 PLANAR_COMPACT = np.asarray(
     (
@@ -122,6 +123,26 @@ def pair_coupled_residual_action_3d(
         ),
         -1.0,
         1.0,
+    )
+
+
+def phase_feedback_observation_3d(
+    xp,
+    rolling_phase,
+    oscillator_phase,
+):
+    """Encode actual rolling phase and phase-lock error without wrap jumps."""
+
+    phase_error = wrapped_phase_error(
+        xp, rolling_phase, oscillator_phase
+    )
+    return xp.asarray(
+        (
+            xp.sin(rolling_phase),
+            xp.cos(rolling_phase),
+            xp.sin(phase_error),
+            xp.cos(phase_error),
+        )
     )
 
 
@@ -323,7 +344,11 @@ def make_brax_env_3d(
 
         @property
         def observation_size(self):
-            return OBSERVATION_SIZE_3D
+            return OBSERVATION_SIZE_3D + (
+                PHASE_FEEDBACK_SIZE_3D
+                if task.explicit_phase_observation
+                else 0
+            )
 
         @property
         def action_size(self):
@@ -472,6 +497,7 @@ def make_brax_env_3d(
                 axis_tilt=axis_tilt,
                 reference_action_value=cem_action,
                 oscillator_phase=oscillator_phase,
+                rolling_phase=jp.zeros((), dtype=jp.float32),
                 action_ramp=jp.zeros((), dtype=jp.float32),
             )
             return State(
@@ -941,6 +967,7 @@ def make_brax_env_3d(
                 axis_tilt=axis_tilt,
                 reference_action_value=next_reference_action,
                 oscillator_phase=oscillator_phase,
+                rolling_phase=rolling_phase,
                 action_ramp=action_ramp,
             )
             metrics = {
@@ -1045,6 +1072,7 @@ def make_brax_env_3d(
             axis_tilt,
             reference_action_value,
             oscillator_phase,
+            rolling_phase,
             action_ramp,
         ):
             body_y_axis, body_z_axis = self._body_axes(data)
@@ -1069,8 +1097,7 @@ def make_brax_env_3d(
                     axis_tilt,
                 )
             )
-            return jp.concatenate(
-                (
+            observation_parts = (
                     root_position_features,
                     body_y_axis,
                     body_z_axis,
@@ -1094,7 +1121,13 @@ def make_brax_env_3d(
                         )
                     ),
                 )
-            )
+            if task.explicit_phase_observation:
+                observation_parts += (
+                    phase_feedback_observation_3d(
+                        jp, rolling_phase, oscillator_phase
+                    ),
+                )
+            return jp.concatenate(observation_parts)
 
     return CurlRobot3DMJXEnv()
 

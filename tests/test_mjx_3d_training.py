@@ -26,6 +26,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertFalse(args.zero_residual_policy_init)
         self.assertEqual(args.initial_policy_std, 1.0)
         self.assertIsNone(args.residual_pair_differential_scale)
+        self.assertIsNone(args.explicit_phase_observation)
         self.assertTrue(args.deterministic_eval)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
@@ -116,6 +117,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
 
         self.assertEqual(args.residual_pair_differential_scale, 0.25)
+        self.assertTrue(args.explicit_phase_observation)
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertEqual(args.initial_policy_std, 0.20)
         self.assertEqual(reward.failure_progress_clawback, 2.0)

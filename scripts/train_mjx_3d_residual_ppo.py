@@ -199,6 +199,7 @@ RECIPES_3D = {
             "minimum_residual_gain": 0.15,
             "phase_rate_scale": 1.0,
             "residual_pair_differential_scale": 0.25,
+            "explicit_phase_observation": True,
             "learning_rate": 5e-5,
             "entropy_cost": 1e-3,
             "selection_target_turns": 10.0,
@@ -842,6 +843,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--minimum-residual-gain", type=float)
     parser.add_argument("--phase-rate-scale", type=float)
     parser.add_argument("--residual-pair-differential-scale", type=float)
+    parser.add_argument(
+        "--explicit-phase-observation",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+    )
     parser.add_argument("--unroll-length", type=int, default=20)
     parser.add_argument("--updates-per-batch", type=int, default=4)
     parser.add_argument("--learning-rate", type=float)
@@ -1039,6 +1045,9 @@ def main(argv=None) -> None:
             reference_phase_rate_scale=args.phase_rate_scale,
             residual_pair_differential_scale=(
                 args.residual_pair_differential_scale
+            ),
+            explicit_phase_observation=bool(
+                args.explicit_phase_observation
             ),
             terminate_root_z_min=(
                 None
@@ -1243,6 +1252,8 @@ def main(argv=None) -> None:
         f"residual_gain={reference.residual_gain:.3f} "
         f"phase_rate_scale={task.reference_phase_rate_scale:g}\n"
         f"  residual_channels={residual_pair_text}\n"
+        f"  explicit_phase_obs={task.explicit_phase_observation} "
+        f"obs_size={train_env.observation_size}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  policy_init={policy_init_text}\n"
