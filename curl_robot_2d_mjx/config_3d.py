@@ -9,6 +9,7 @@ import math
 PHYSICS_PROFILE_NAMES_3D = (
     "reference",
     "newton4",
+    "newton8",
     "cg12",
 )
 
@@ -144,6 +145,19 @@ def physics_profile_3d(
             action_repeat=20,
             solver_iterations=4,
             solver_ls_iterations=4,
+        )
+    if name == "newton8":
+        return replace(
+            base,
+            physics_profile="newton8",
+            physics_timestep=0.001,
+            solver_name="newton",
+            integrator_name="implicitfast",
+            cone_name="elliptic",
+            jacobian_name="dense",
+            action_repeat=20,
+            solver_iterations=8,
+            solver_ls_iterations=8,
         )
     if name == "cg12":
         return replace(

@@ -23,6 +23,15 @@ DEFAULT_OUTPUT = (
 )
 CASE_NAMES = (
     "cpu_newton_exact",
+    "cpu_newton8_exact",
+    "cpu_cg12_exact",
+    "mjx_newton8_exact",
+    "mjx_newton8_noisy",
+    "mjx_cg12_exact",
+    "mjx_cg12_noisy",
+)
+DEFAULT_CASE_NAMES = (
+    "cpu_newton_exact",
     "cpu_cg12_exact",
     "mjx_cg12_exact",
     "mjx_cg12_noisy",
@@ -47,7 +56,7 @@ def parse_args(argv=None):
     parser.add_argument("--noise-seeds", type=int, default=64)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
-        "--cases", nargs="+", choices=CASE_NAMES, default=CASE_NAMES
+        "--cases", nargs="+", choices=CASE_NAMES, default=DEFAULT_CASE_NAMES
     )
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--memory-fraction", type=float, default=0.50)
@@ -72,9 +81,12 @@ def _distribution(values) -> dict[str, float]:
 
 
 def _cpu_result(summary, *, name=None) -> dict[str, object]:
-    rotation_turns = float(summary["rolling_phase_turns"])
+    net_rotation_turns = float(summary["rolling_phase_turns"])
+    absolute_rotation_turns = float(
+        summary.get("absolute_rotation_turns", abs(net_rotation_turns))
+    )
     translation_turns = float(summary["distance_as_shell_turns"])
-    conservative_turns = min(rotation_turns, translation_turns)
+    conservative_turns = min(absolute_rotation_turns, translation_turns)
     profile = str(summary.get("physics_profile", "reference"))
     solver = str(summary.get("solver", "newton"))
     return {
@@ -84,10 +96,13 @@ def _cpu_result(summary, *, name=None) -> dict[str, object]:
         "physics_profile": profile,
         "reset": "exact",
         "batch_size": 1,
-        "rotation_turns": _distribution([rotation_turns]),
+        "net_rotation_turns": _distribution([net_rotation_turns]),
+        "absolute_rotation_turns": _distribution([absolute_rotation_turns]),
         "translation_turns": _distribution([translation_turns]),
         "conservative_turns": _distribution([conservative_turns]),
-        "slip_turns": _distribution([rotation_turns - translation_turns]),
+        "rotation_translation_mismatch_turns": _distribution(
+            [absolute_rotation_turns - translation_turns]
+        ),
         "failure_rate": float(bool(summary.get("nonfinite", False))),
         "source_summary": summary,
     }
@@ -125,6 +140,16 @@ def _mjx_case_specs(episode_length: int):
     base = Rolling3DConfig(episode_length=episode_length)
     exact = {"reset_joint_noise_rad": 0.0, "reset_velocity_noise": 0.0}
     return {
+        "mjx_newton8_exact": (
+            physics_profile_3d("newton8", replace(base, **exact)),
+            1,
+            "exact",
+        ),
+        "mjx_newton8_noisy": (
+            physics_profile_3d("newton8", base),
+            None,
+            "noise",
+        ),
         "mjx_cg12_exact": (
             physics_profile_3d("cg12", replace(base, **exact)),
             1,
@@ -162,6 +187,11 @@ def _run_mjx_case(
 
     step_batch = jax.jit(jax.vmap(step_one))
     start = time.perf_counter()
+    print(
+        f"[{name}] compiling/running MJX; low GPU utilization is expected "
+        "during the first XLA compile",
+        flush=True,
+    )
     state = reset_batch(keys)
     jax.block_until_ready(state.obs)
     initial_x = state.pipeline_state.qpos[:, 0]
@@ -169,7 +199,7 @@ def _run_mjx_case(
     actions = jp.zeros((batch_size, env.action_size), dtype=jp.float32)
     active = jp.ones((batch_size,), dtype=bool)
     steps = jp.zeros((batch_size,), dtype=jp.int32)
-    rotation_progress = jp.zeros((batch_size,), dtype=jp.float32)
+    absolute_rotation_progress = jp.zeros((batch_size,), dtype=jp.float32)
     translation_progress = jp.zeros((batch_size,), dtype=jp.float32)
     conservative_progress = jp.zeros((batch_size,), dtype=jp.float32)
 
@@ -178,7 +208,9 @@ def _run_mjx_case(
         state = step_batch(state, actions, active)
         weight = was_active.astype(jp.float32)
         steps = steps + was_active.astype(jp.int32)
-        rotation_progress += weight * state.metrics["rotation_progress_rad"]
+        absolute_rotation_progress += (
+            weight * state.metrics["rotation_progress_rad"]
+        )
         translation_progress += weight * state.metrics[
             "translation_progress_rad"
         ]
@@ -190,8 +222,11 @@ def _run_mjx_case(
     scale = 1.0 / (2.0 * math.pi)
     arrays = {
         "steps": np.asarray(jax.device_get(steps)),
-        "rotation_turns": np.asarray(
-            jax.device_get(rotation_progress * scale)
+        "net_rotation_turns": np.asarray(
+            jax.device_get(state.info["rolling_phase"] * scale)
+        ),
+        "absolute_rotation_turns": np.asarray(
+            jax.device_get(absolute_rotation_progress * scale)
         ),
         "translation_turns": np.asarray(
             jax.device_get(translation_progress * scale)
@@ -209,8 +244,8 @@ def _run_mjx_case(
     }
     for metric in FAILURE_METRICS:
         arrays[metric] = np.asarray(jax.device_get(state.metrics[metric]))
-    arrays["slip_turns"] = (
-        arrays["rotation_turns"] - arrays["translation_turns"]
+    arrays["rotation_translation_mismatch_turns"] = (
+        arrays["absolute_rotation_turns"] - arrays["translation_turns"]
     )
     result = {
         "name": name,
@@ -223,10 +258,15 @@ def _run_mjx_case(
         "wall_time_s": wall_time,
         "task": asdict(task),
         "average_steps": float(np.mean(arrays["steps"])),
-        "rotation_turns": _distribution(arrays["rotation_turns"]),
+        "net_rotation_turns": _distribution(arrays["net_rotation_turns"]),
+        "absolute_rotation_turns": _distribution(
+            arrays["absolute_rotation_turns"]
+        ),
         "translation_turns": _distribution(arrays["translation_turns"]),
         "conservative_turns": _distribution(arrays["conservative_turns"]),
-        "slip_turns": _distribution(arrays["slip_turns"]),
+        "rotation_translation_mismatch_turns": _distribution(
+            arrays["rotation_translation_mismatch_turns"]
+        ),
         "root_x_displacement_m": _distribution(
             arrays["root_x_displacement_m"]
         ),
@@ -252,9 +292,11 @@ def _print_case(result) -> None:
         f"  conservative={turns['mean']:+.3f} "
         f"median={turns['median']:+.3f} "
         f"range=[{turns['min']:+.3f}, {turns['max']:+.3f}]\n"
-        f"  rotation={result['rotation_turns']['mean']:+.3f} "
+        f"  net_rotation={result['net_rotation_turns']['mean']:+.3f} "
+        f"abs_rotation={result['absolute_rotation_turns']['mean']:+.3f} "
         f"translation={result['translation_turns']['mean']:+.3f} "
-        f"slip={result['slip_turns']['mean']:+.3f} "
+        f"mismatch="
+        f"{result['rotation_translation_mismatch_turns']['mean']:+.3f} "
         f"failed={result['failure_rate']:.1%} "
         f"wall={result['wall_time_s']:.1f}s",
         flush=True,
@@ -285,6 +327,7 @@ def main(argv=None) -> None:
     results = []
     cpu_cases = {
         "cpu_newton_exact": "reference",
+        "cpu_newton8_exact": "newton8",
         "cpu_cg12_exact": "cg12",
     }
     for case_name in args.cases:

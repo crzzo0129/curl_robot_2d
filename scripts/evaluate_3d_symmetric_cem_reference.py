@@ -253,6 +253,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
     start_y = float(data.qpos[1])
     phase = float(args.initial_phase_rad)
     rolling_phase = 0.0
+    absolute_rolling_phase = 0.0
     control_repeat = max(1, round(args.control_dt / model.opt.timestep))
     control_dt = control_repeat * float(model.opt.timestep)
     steps = max(1, round(args.duration / control_dt))
@@ -290,7 +291,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
             )
             data.ctrl[actuator_ids] = ctrl
             mujoco.mj_step(model, data)
-            rolling_phase += float(data.qvel[4]) * float(model.opt.timestep)
+            rolling_increment = float(data.qvel[4]) * float(model.opt.timestep)
+            rolling_phase += rolling_increment
+            absolute_rolling_phase += abs(rolling_increment)
             if not (np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all()):
                 nonfinite = True
                 break
@@ -373,6 +376,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
             / (2.0 * math.pi)
         ),
         "rolling_phase_turns": float(rolling_phase / (2.0 * math.pi)),
+        "absolute_rotation_turns": float(
+            absolute_rolling_phase / (2.0 * math.pi)
+        ),
         "phase_error_final_rad": float(values[-1, 14]),
         "phase_error_rms_rad": float(
             np.sqrt(np.mean(np.square(values[:, 14])))

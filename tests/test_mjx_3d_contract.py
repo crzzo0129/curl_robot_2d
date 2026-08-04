@@ -76,10 +76,15 @@ class MJX3DContractTest(unittest.TestCase):
     def test_3d_physics_profiles_keep_control_rate(self) -> None:
         reference = physics_profile_3d("reference")
         newton4 = physics_profile_3d("newton4")
+        newton8 = physics_profile_3d("newton8")
         cg12 = physics_profile_3d("cg12")
 
         self.assertAlmostEqual(reference.control_timestep, 0.02)
         self.assertAlmostEqual(newton4.control_timestep, 0.02)
+        self.assertAlmostEqual(newton8.control_timestep, 0.02)
+        self.assertEqual(newton8.solver_name, "newton")
+        self.assertEqual(newton8.solver_iterations, 8)
+        self.assertEqual(newton8.solver_ls_iterations, 8)
         self.assertAlmostEqual(cg12.control_timestep, 0.02)
         self.assertEqual(cg12.solver_name, "cg")
         self.assertLess(cg12.solver_iterations, reference.solver_iterations)

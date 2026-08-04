@@ -7,7 +7,7 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
     def test_default_matrix_contains_all_parity_cases(self) -> None:
         args = comparison.parse_args([])
 
-        self.assertEqual(tuple(args.cases), comparison.CASE_NAMES)
+        self.assertEqual(tuple(args.cases), comparison.DEFAULT_CASE_NAMES)
         self.assertEqual(args.episode_length, 500)
         self.assertEqual(args.noise_seeds, 64)
 
@@ -23,6 +23,7 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         result = comparison._cpu_result(
             {
                 "rolling_phase_turns": 7.9,
+                "absolute_rotation_turns": 8.0,
                 "distance_as_shell_turns": 8.2,
                 "nonfinite": False,
                 "physics_profile": "cg12",
@@ -32,15 +33,23 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
 
         self.assertEqual(result["name"], "cpu_cg12_exact")
         self.assertEqual(result["solver"], "cg")
-        self.assertEqual(result["conservative_turns"]["mean"], 7.9)
-        self.assertAlmostEqual(result["slip_turns"]["mean"], -0.3)
+        self.assertEqual(result["conservative_turns"]["mean"], 8.0)
+        self.assertAlmostEqual(
+            result["rotation_translation_mismatch_turns"]["mean"], -0.2
+        )
         self.assertEqual(result["failure_rate"], 0.0)
 
     def test_mjx_matrix_isolates_solver_and_reset_noise(self) -> None:
         specs = comparison._mjx_case_specs(500)
+        newton8, newton8_batch, newton8_reset = specs["mjx_newton8_exact"]
         cg_exact, cg_exact_batch, cg_exact_reset = specs["mjx_cg12_exact"]
         cg_noisy, cg_noisy_batch, cg_noisy_reset = specs["mjx_cg12_noisy"]
 
+        self.assertEqual(newton8.solver_name, "newton")
+        self.assertEqual(newton8.solver_iterations, 8)
+        self.assertEqual(newton8.solver_ls_iterations, 8)
+        self.assertEqual(newton8_batch, 1)
+        self.assertEqual(newton8_reset, "exact")
         self.assertEqual(cg_exact.solver_name, "cg")
         self.assertEqual(cg_exact.reset_velocity_noise, 0.0)
         self.assertEqual(cg_exact_batch, 1)
