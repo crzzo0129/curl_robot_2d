@@ -91,6 +91,20 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.termination, 40.0)
         self.assertEqual(reward.severe_extra_termination, 40.0)
 
+    def test_phase_locked_safe_v5_uses_partial_progress_clawback(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_safe_v5"]
+        )
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+
+        self.assertTrue(args.zero_residual_policy_init)
+        self.assertEqual(reward.roll_progress, 8.0)
+        self.assertEqual(reward.failure_progress_clawback, 2.0)
+        self.assertEqual(reward.lateral_drift, 6.0)
+        self.assertEqual(reward.termination, 40.0)
+        self.assertEqual(reward.severe_extra_termination, 40.0)
+
     def test_observation_width_accepts_brax_shape_tuple(self) -> None:
         self.assertEqual(
             train_mjx_3d_residual_ppo._observation_width(59), 59

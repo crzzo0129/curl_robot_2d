@@ -160,6 +160,35 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "phase_locked_safe_v5": {
+        "description": (
+            "Use a partial failed-progress clawback so stable rolling beats "
+            "lateral failure without collapsing exploration."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "learning_rate": 5e-5,
+            "entropy_cost": 1e-3,
+            "selection_target_turns": 10.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.20,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 2.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
 }
 
 
@@ -739,8 +768,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "3-D training recipe. anchored_v1 reproduces the first run; "
             "phase_locked_v3 starts residual learning from the restored "
-            "phase-locked reference; phase_locked_safe_v4 rejects progress "
-            "that ends in failure."
+            "phase-locked reference; phase_locked_safe_v5 partially claws "
+            "back progress that ends in failure."
         ),
     )
     parser.add_argument(
