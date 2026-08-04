@@ -6,6 +6,7 @@ import numpy as np
 from curl_robot_2d.parameters import FIXED_PARAMETERS
 from curl_robot_2d_mjx.cem_reference import load_cem_reference
 from scripts import evaluate_3d_symmetric_cem_reference as bridge
+from scripts import view_3d_cem_reference as viewer
 
 
 class SymmetricCEM3DBridgeTest(unittest.TestCase):
@@ -70,6 +71,13 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
     def test_reference_physics_is_default_and_cg12_is_selectable(self) -> None:
         reference = bridge.parse_args([])
         cg12 = bridge.parse_args(["--physics-profile", "cg12"])
+
+        self.assertEqual(reference.physics_profile, "reference")
+        self.assertEqual(cg12.physics_profile, "cg12")
+
+    def test_viewer_can_render_the_same_physics_profiles(self) -> None:
+        reference = viewer.parse_args([])
+        cg12 = viewer.parse_args(["--physics-profile", "cg12"])
 
         self.assertEqual(reference.physics_profile, "reference")
         self.assertEqual(cg12.physics_profile, "cg12")
