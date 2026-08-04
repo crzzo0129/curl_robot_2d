@@ -10,6 +10,13 @@ from scripts import train_mjx_3d_residual_ppo
 
 
 class MJX3DTrainingEntrypointTest(unittest.TestCase):
+    def test_cg20_physics_profile_is_selectable(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--physics-profile", "cg20"]
+        )
+
+        self.assertEqual(args.physics_profile, "cg20")
+
     def test_training_entry_imports_without_jax(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args([])
 

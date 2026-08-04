@@ -11,6 +11,7 @@ PHYSICS_PROFILE_NAMES_3D = (
     "newton4",
     "newton8",
     "cg12",
+    "cg20",
 )
 
 
@@ -171,6 +172,19 @@ def physics_profile_3d(
             action_repeat=20,
             solver_iterations=12,
             solver_ls_iterations=6,
+        )
+    if name == "cg20":
+        return replace(
+            base,
+            physics_profile="cg20",
+            physics_timestep=0.001,
+            solver_name="cg",
+            integrator_name="implicitfast",
+            cone_name="elliptic",
+            jacobian_name="dense",
+            action_repeat=20,
+            solver_iterations=20,
+            solver_ls_iterations=10,
         )
     raise ValueError(f"unknown 3-D physics profile: {name}")
 

@@ -44,6 +44,7 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         newton8, newton8_batch, newton8_reset = specs["mjx_newton8_exact"]
         cg_exact, cg_exact_batch, cg_exact_reset = specs["mjx_cg12_exact"]
         cg_noisy, cg_noisy_batch, cg_noisy_reset = specs["mjx_cg12_noisy"]
+        cg20, cg20_batch, cg20_reset = specs["mjx_cg20_exact"]
 
         self.assertEqual(newton8.solver_name, "newton")
         self.assertEqual(newton8.solver_iterations, 8)
@@ -54,6 +55,11 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         self.assertEqual(cg_exact.reset_velocity_noise, 0.0)
         self.assertEqual(cg_exact_batch, 1)
         self.assertEqual(cg_exact_reset, "exact")
+        self.assertEqual(cg20.solver_name, "cg")
+        self.assertEqual(cg20.solver_iterations, 20)
+        self.assertEqual(cg20.solver_ls_iterations, 10)
+        self.assertEqual(cg20_batch, 1)
+        self.assertEqual(cg20_reset, "exact")
         self.assertGreater(cg_noisy.reset_joint_noise_rad, 0.0)
         self.assertIsNone(cg_noisy_batch)
         self.assertEqual(cg_noisy_reset, "noise")

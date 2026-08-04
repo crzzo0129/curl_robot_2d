@@ -78,6 +78,7 @@ class MJX3DContractTest(unittest.TestCase):
         newton4 = physics_profile_3d("newton4")
         newton8 = physics_profile_3d("newton8")
         cg12 = physics_profile_3d("cg12")
+        cg20 = physics_profile_3d("cg20")
 
         self.assertAlmostEqual(reference.control_timestep, 0.02)
         self.assertAlmostEqual(newton4.control_timestep, 0.02)
@@ -88,6 +89,9 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertAlmostEqual(cg12.control_timestep, 0.02)
         self.assertEqual(cg12.solver_name, "cg")
         self.assertLess(cg12.solver_iterations, reference.solver_iterations)
+        self.assertEqual(cg20.solver_name, "cg")
+        self.assertEqual(cg20.solver_iterations, 20)
+        self.assertEqual(cg20.solver_ls_iterations, 10)
 
     def test_duplicate_planar_action_maps_front_rear_to_left_right(self) -> None:
         mapped = duplicate_planar_action_3d(

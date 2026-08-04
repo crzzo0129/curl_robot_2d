@@ -25,10 +25,13 @@ CASE_NAMES = (
     "cpu_newton_exact",
     "cpu_newton8_exact",
     "cpu_cg12_exact",
+    "cpu_cg20_exact",
     "mjx_newton8_exact",
     "mjx_newton8_noisy",
     "mjx_cg12_exact",
     "mjx_cg12_noisy",
+    "mjx_cg20_exact",
+    "mjx_cg20_noisy",
 )
 DEFAULT_CASE_NAMES = (
     "cpu_newton_exact",
@@ -157,6 +160,16 @@ def _mjx_case_specs(episode_length: int):
         ),
         "mjx_cg12_noisy": (
             physics_profile_3d("cg12", base),
+            None,
+            "noise",
+        ),
+        "mjx_cg20_exact": (
+            physics_profile_3d("cg20", replace(base, **exact)),
+            1,
+            "exact",
+        ),
+        "mjx_cg20_noisy": (
+            physics_profile_3d("cg20", base),
             None,
             "noise",
         ),
@@ -329,6 +342,7 @@ def main(argv=None) -> None:
         "cpu_newton_exact": "reference",
         "cpu_newton8_exact": "newton8",
         "cpu_cg12_exact": "cg12",
+        "cpu_cg20_exact": "cg20",
     }
     for case_name in args.cases:
         if case_name in cpu_cases:
