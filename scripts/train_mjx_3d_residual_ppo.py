@@ -767,6 +767,15 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         help="Initial pre-tanh policy standard deviation.",
     )
+    parser.add_argument(
+        "--deterministic-eval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Use the deterministic policy for periodic evaluation and best "
+            "checkpoint selection."
+        ),
+    )
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--reward-scaling", type=float, default=1.0)
     parser.add_argument(
@@ -1047,6 +1056,7 @@ def main(argv=None) -> None:
         "activation": args.activation,
         "zero_residual_policy_init": args.zero_residual_policy_init,
         "initial_policy_std": args.initial_policy_std,
+        "deterministic_eval": args.deterministic_eval,
         "seed": args.seed,
         "restore_checkpoint": (
             str(args.restore_checkpoint)
@@ -1122,6 +1132,7 @@ def main(argv=None) -> None:
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  policy_init={policy_init_text}\n"
+        f"  eval_policy={'deterministic' if args.deterministic_eval else 'stochastic'}\n"
         f"  reward roll={reward_config.roll_progress:g} "
         f"lat={reward_config.lateral_drift:g} "
         f"tilt={reward_config.axis_tilt:g} "
@@ -1190,6 +1201,7 @@ def main(argv=None) -> None:
         num_minibatches=values["num_minibatches"],
         num_updates_per_batch=args.updates_per_batch,
         normalize_observations=True,
+        deterministic_eval=args.deterministic_eval,
         network_factory=network_factory,
         seed=args.seed,
         progress_fn=progress_fn,

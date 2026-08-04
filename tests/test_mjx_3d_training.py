@@ -25,6 +25,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.selection_target_turns, 1.0)
         self.assertFalse(args.zero_residual_policy_init)
         self.assertEqual(args.initial_policy_std, 1.0)
+        self.assertTrue(args.deterministic_eval)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
 
@@ -81,6 +82,13 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(
             train_mjx_3d_residual_ppo._observation_width((59,)), 59
         )
+
+    def test_stochastic_eval_requires_explicit_opt_in(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--no-deterministic-eval"]
+        )
+
+        self.assertFalse(args.deterministic_eval)
 
     def test_initial_policy_std_must_exceed_distribution_floor(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
