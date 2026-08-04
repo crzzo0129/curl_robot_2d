@@ -75,6 +75,22 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
             0.20,
         )
 
+    def test_phase_locked_safe_v4_claws_back_failed_progress(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_safe_v4"]
+        )
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+
+        self.assertTrue(args.zero_residual_policy_init)
+        self.assertEqual(args.minimum_residual_gain, 0.15)
+        self.assertEqual(reward.roll_progress, 8.0)
+        self.assertEqual(reward.lateral_velocity, 4.0)
+        self.assertEqual(reward.lateral_drift, 6.0)
+        self.assertEqual(reward.failure_progress_clawback, 8.0)
+        self.assertEqual(reward.termination, 40.0)
+        self.assertEqual(reward.severe_extra_termination, 40.0)
+
     def test_observation_width_accepts_brax_shape_tuple(self) -> None:
         self.assertEqual(
             train_mjx_3d_residual_ppo._observation_width(59), 59
@@ -167,6 +183,23 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(rejected["rejected"])
         self.assertLess(rejected["score"], -999_999.0)
+
+    def test_checkpoint_selection_rejects_excess_failure_rate(self) -> None:
+        rejected = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+            {
+                "eval/avg_episode_length": 490.0,
+                "eval/episode_failed": 0.125,
+                "eval/episode_failure_nonfinite": 0.0,
+                "eval/episode_roll_progress_rad": 12.0 * math.pi,
+                "eval/avg_lateral_drift_m": 0.01,
+                "eval/avg_axis_tilt_rad": 0.05,
+                "eval/avg_forbidden_penetration_m": 0.0,
+                "eval/avg_forbidden_contact_count": 0.0,
+            },
+            episode_length=500,
+        )
+
+        self.assertTrue(rejected["rejected"])
 
     def test_periodic_checkpoint_directory_requires_checkpoint_flag(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

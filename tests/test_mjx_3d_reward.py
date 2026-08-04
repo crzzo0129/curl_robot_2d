@@ -31,6 +31,7 @@ def zero_inputs():
         "same_side_foot_excess": zero,
         "same_side_foot_max_increment": zero,
         "cross_side_foot_contact": zero,
+        "roll_potential_positive": zero,
         "failed": zero,
         "failure_severe": zero,
         "failure_nonfinite": zero,
@@ -127,6 +128,25 @@ class MJX3DRewardTest(unittest.TestCase):
         )
 
         self.assertEqual(float(nonfinite_terms["termination"]), -80.0)
+
+    def test_failure_claws_back_accumulated_progress_reward(self) -> None:
+        inputs = zero_inputs()
+        inputs["failed"] = np.asarray(1.0, dtype=np.float32)
+        inputs["roll_potential_positive"] = np.asarray(
+            2.0 * np.pi, dtype=np.float32
+        )
+
+        terms = reward_terms_3d(
+            np,
+            Rolling3DRewardConfig(failure_progress_clawback=8.0),
+            inputs,
+        )
+
+        self.assertAlmostEqual(
+            float(terms["failure_progress_clawback"]),
+            -16.0 * np.pi,
+            places=5,
+        )
 
 
 if __name__ == "__main__":

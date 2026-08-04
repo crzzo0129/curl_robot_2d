@@ -16,6 +16,7 @@ REWARD_3D_TERM_NAMES = (
     "residual_action",
     "torque",
     "collision",
+    "failure_progress_clawback",
     "termination",
     "early_termination",
 )
@@ -44,6 +45,7 @@ class Rolling3DRewardConfig:
     maximum_forbidden_penetration: float = 2500.0
     cross_side_foot_contact: float = 30.0
 
+    failure_progress_clawback: float = 0.0
     termination: float = 20.0
     severe_extra_termination: float = 20.0
     nonfinite_termination: float = 80.0
@@ -105,6 +107,11 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         ),
         "torque": -config.torque * inputs["torque_cost"],
         "collision": -collision_cost,
+        "failure_progress_clawback": (
+            -config.failure_progress_clawback
+            * inputs["roll_potential_positive"]
+            * inputs["failed"]
+        ),
         "termination": -terminal_penalty * inputs["failed"],
         "early_termination": (
             -terminal_penalty

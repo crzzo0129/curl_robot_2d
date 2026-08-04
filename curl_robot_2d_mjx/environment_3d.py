@@ -759,6 +759,9 @@ def make_brax_env_3d(
                     "cross_side_foot_contact": (
                         cross_side_foot_active.astype(jp.float32)
                     ),
+                    "roll_potential_positive": jp.maximum(
+                        roll_potential, 0.0
+                    ),
                     "failed": failed_bool.astype(jp.float32),
                     "failure_severe": failure_severe.astype(jp.float32),
                     "failure_nonfinite": failure_nonfinite.astype(

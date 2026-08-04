@@ -64,6 +64,7 @@ PRESETS = {
 }
 
 TANH_NORMAL_MIN_STD = 1e-3
+MAX_CHECKPOINT_FAILURE_RATE = 0.05
 
 RECIPES_3D = {
     "anchored_v1": {
@@ -128,6 +129,35 @@ RECIPES_3D = {
             "axis_tilt": 10.0,
             "action_rate": 0.02,
             "residual_action": 0.01,
+        },
+    },
+    "phase_locked_safe_v4": {
+        "description": (
+            "Keep the phase-locked residual policy centered while making "
+            "late lateral failure worse than stable forward rolling."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "learning_rate": 5e-5,
+            "entropy_cost": 1e-3,
+            "selection_target_turns": 10.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.20,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 8.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
         },
     },
 }
@@ -376,6 +406,7 @@ def _checkpoint_selection_3d(metrics, episode_length, *, target_turns=1.0):
     )
     rejected = (
         nonfinite_rate > 0.0
+        or failed_rate > MAX_CHECKPOINT_FAILURE_RATE
         or not math.isfinite(turns)
         or not math.isfinite(lateral_drift)
         or not math.isfinite(axis_tilt)
@@ -496,6 +527,7 @@ def _format_eval_report_3d(
             "safety  ",
             (
                 ("collision", "collision"),
+                ("clawback", "failure_progress_clawback"),
                 ("terminal", "termination"),
                 ("early", "early_termination"),
             ),
@@ -707,7 +739,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "3-D training recipe. anchored_v1 reproduces the first run; "
             "phase_locked_v3 starts residual learning from the restored "
-            "phase-locked reference."
+            "phase-locked reference; phase_locked_safe_v4 rejects progress "
+            "that ends in failure."
         ),
     )
     parser.add_argument(
@@ -993,10 +1026,13 @@ def main(argv=None) -> None:
 
     def policy_params_fn(step, make_policy, params):
         del make_policy
+        params_snapshot = jax.tree_util.tree_map(
+            lambda value: np.asarray(value).copy(), params
+        )
         best["candidate_step"] = int(step)
-        best["candidate_params"] = params
+        best["candidate_params"] = params_snapshot
         if best["step"] == int(step):
-            best["params"] = params
+            best["params"] = params_snapshot
 
     def progress_fn(step, metrics):
         clean = {name: _float(value) for name, value in metrics.items()}
@@ -1084,6 +1120,7 @@ def main(argv=None) -> None:
             "lateral_full_score_m": 0.05,
             "axis_tilt_full_score_rad": 0.25,
             "forbidden_depth_limit_m": 0.001,
+            "maximum_failure_rate": MAX_CHECKPOINT_FAILURE_RATE,
             "reject_nonfinite": True,
         },
         "training_step_schedule": schedule,
