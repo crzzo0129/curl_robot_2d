@@ -10,6 +10,9 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         self.assertEqual(tuple(args.cases), comparison.DEFAULT_CASE_NAMES)
         self.assertEqual(args.episode_length, 500)
         self.assertEqual(args.noise_seeds, 64)
+        self.assertEqual(args.reference_action_scale, 1.0)
+        self.assertEqual(args.reference_startup_boost, 0.0)
+        self.assertEqual(args.reference_startup_boost_duration_s, 0.25)
 
     def test_distribution_reports_median_and_range(self) -> None:
         result = comparison._distribution([1.0, 2.0, 9.0])
@@ -33,6 +36,9 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
 
         self.assertEqual(result["name"], "cpu_cg12_exact")
         self.assertEqual(result["solver"], "cg")
+        self.assertEqual(result["physics_profile"], "cg12")
+        self.assertEqual(result["reference_action_scale"], 1.0)
+        self.assertEqual(result["reference_startup_boost"], 0.0)
         self.assertEqual(result["conservative_turns"]["mean"], 8.0)
         self.assertAlmostEqual(
             result["rotation_translation_mismatch_turns"]["mean"], -0.2
@@ -63,6 +69,19 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         self.assertGreater(cg_noisy.reset_joint_noise_rad, 0.0)
         self.assertIsNone(cg_noisy_batch)
         self.assertEqual(cg_noisy_reset, "noise")
+
+    def test_mjx_matrix_applies_reference_startup_boost(self) -> None:
+        specs = comparison._mjx_case_specs(
+            500,
+            reference_action_scale=1.05,
+            reference_startup_boost=0.20,
+            reference_startup_boost_duration_s=0.4,
+        )
+
+        task, _, _ = specs["mjx_cg20_exact"]
+        self.assertEqual(task.reference_action_scale, 1.05)
+        self.assertEqual(task.reference_startup_boost, 0.20)
+        self.assertEqual(task.reference_startup_boost_duration_s, 0.4)
 
 
 if __name__ == "__main__":

@@ -27,6 +27,9 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.controller, DEFAULT_3D_CEM_CONTROLLER)
         self.assertEqual(args.reference_weight, 1.0)
         self.assertEqual(args.minimum_residual_gain, 0.05)
+        self.assertEqual(args.reference_action_scale, 1.0)
+        self.assertEqual(args.reference_startup_boost, 0.0)
+        self.assertEqual(args.reference_startup_boost_duration_s, 0.25)
         self.assertEqual(args.learning_rate, 3e-4)
         self.assertEqual(args.entropy_cost, 1e-2)
         self.assertEqual(args.selection_target_turns, 1.0)
@@ -129,6 +132,22 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.initial_policy_std, 0.20)
         self.assertEqual(reward.failure_progress_clawback, 2.0)
         self.assertEqual(reward.lateral_drift, 6.0)
+
+    def test_reference_startup_boost_args_are_exposed(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            [
+                "--reference-action-scale",
+                "1.05",
+                "--reference-startup-boost",
+                "0.2",
+                "--reference-startup-boost-duration-s",
+                "0.4",
+            ]
+        )
+
+        self.assertEqual(args.reference_action_scale, 1.05)
+        self.assertEqual(args.reference_startup_boost, 0.2)
+        self.assertEqual(args.reference_startup_boost_duration_s, 0.4)
 
     def test_observation_width_accepts_brax_shape_tuple(self) -> None:
         self.assertEqual(

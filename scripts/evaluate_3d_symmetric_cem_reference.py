@@ -98,6 +98,22 @@ def scaled_planar_target(target: np.ndarray, target_scale: float) -> np.ndarray:
     return PLANAR_COMPACT + target_scale * (np.asarray(target) - PLANAR_COMPACT)
 
 
+def startup_target_scale(
+    elapsed_s: float,
+    *,
+    target_scale: float,
+    startup_boost: float,
+    startup_boost_duration_s: float,
+) -> float:
+    if startup_boost_duration_s <= 0.0:
+        boost_decay = 0.0
+    else:
+        normalized = np.clip(elapsed_s / startup_boost_duration_s, 0.0, 1.0)
+        ramp = normalized * normalized * (3.0 - 2.0 * normalized)
+        boost_decay = 1.0 - ramp
+    return float(target_scale * (1.0 + startup_boost * boost_decay))
+
+
 def map_planar_to_curl_3d_targets(planar_target: np.ndarray) -> np.ndarray:
     """Copy one 2-D sagittal reference to the left and right side rails."""
 
@@ -180,6 +196,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
+    parser.add_argument("--startup-target-boost", type=float, default=0.0)
+    parser.add_argument(
+        "--startup-target-boost-duration-s",
+        type=float,
+        default=0.25,
+    )
     parser.add_argument(
         "--linear-phase",
         action="store_true",
@@ -204,8 +226,18 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         raise SystemExit("--kp/--kd must be nonnegative and --torque-limit positive")
     if not math.isfinite(args.phase_rate_scale):
         raise SystemExit("--phase-rate-scale must be finite")
-    if args.target_scale < 0.0:
+    if not math.isfinite(args.target_scale) or args.target_scale < 0.0:
         raise SystemExit("--target-scale must be nonnegative")
+    if (
+        not math.isfinite(args.startup_target_boost)
+        or args.startup_target_boost < 0.0
+    ):
+        raise SystemExit("--startup-target-boost must be nonnegative")
+    if (
+        not math.isfinite(args.startup_target_boost_duration_s)
+        or args.startup_target_boost_duration_s <= 0.0
+    ):
+        raise SystemExit("--startup-target-boost-duration-s must be positive")
     if not args.xml.exists():
         raise SystemExit(f"3-D XML not found: {args.xml}")
     if not args.controller.exists():
@@ -241,7 +273,15 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         config,
         apply_foot_gap_projection=not args.no_foot_gap_projection,
     )
-    initial_planar = scaled_planar_target(initial_planar, args.target_scale)
+    initial_planar = scaled_planar_target(
+        initial_planar,
+        startup_target_scale(
+            0.0,
+            target_scale=args.target_scale,
+            startup_boost=args.startup_target_boost,
+            startup_boost_duration_s=args.startup_target_boost_duration_s,
+        ),
+    )
     initial_ctrl = np.clip(
         map_planar_to_curl_3d_targets(initial_planar),
         ctrl_low,
@@ -283,7 +323,15 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
                 config,
                 apply_foot_gap_projection=not args.no_foot_gap_projection,
             )
-            planar = scaled_planar_target(planar, args.target_scale)
+            planar = scaled_planar_target(
+                planar,
+                startup_target_scale(
+                    float(data.time),
+                    target_scale=args.target_scale,
+                    startup_boost=args.startup_target_boost,
+                    startup_boost_duration_s=args.startup_target_boost_duration_s,
+                ),
+            )
             ctrl = np.clip(
                 map_planar_to_curl_3d_targets(planar),
                 ctrl_low,
@@ -406,6 +454,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         "self_contact_fraction": float(np.mean(values[:, 11])),
         "nonfinite": bool(nonfinite),
         "target_scale": float(args.target_scale),
+        "startup_target_boost": float(args.startup_target_boost),
+        "startup_target_boost_duration_s": (
+            float(args.startup_target_boost_duration_s)
+        ),
         "phase_rate_scale": float(args.phase_rate_scale),
     }
 

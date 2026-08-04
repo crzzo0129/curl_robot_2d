@@ -146,6 +146,17 @@ def phase_feedback_observation_3d(
     )
 
 
+def reference_startup_scale_3d(xp, elapsed_s, task: Rolling3DConfig):
+    boost_decay = 1.0 - smoothstep_ramp(
+        xp,
+        elapsed_s,
+        task.reference_startup_boost_duration_s,
+    )
+    return task.reference_action_scale * (
+        1.0 + task.reference_startup_boost * boost_decay
+    )
+
+
 def advance_rolling_phase_3d(
     xp,
     rolling_phase,
@@ -431,7 +442,10 @@ def make_brax_env_3d(
                 maxval=task.reset_velocity_noise,
             )
             oscillator_phase = jp.zeros((), dtype=jp.float32)
-            cem_action = self._reference_action_8d(oscillator_phase)
+            cem_action = self._scaled_reference_action_8d(
+                oscillator_phase,
+                jp.zeros((), dtype=jp.float32),
+            )
             start_ctrl = jp.clip(
                 self.compact_ctrl + cem_action * self.action_scales,
                 self.joint_low,
@@ -543,8 +557,9 @@ def make_brax_env_3d(
                     reference_settings,
                     rate_scale=task.reference_phase_rate_scale,
                 )
-                current_reference_action = self._reference_action_8d(
-                    next_phase
+                current_reference_action = self._scaled_reference_action_8d(
+                    next_phase,
+                    current_data.time,
                 )
                 current_ramp = smoothstep_ramp(
                     jp,
@@ -996,6 +1011,14 @@ def make_brax_env_3d(
                 joint_high=self.planar_joint_high,
             )
             return duplicate_planar_action_3d(jp, planar_action)
+
+        def _scaled_reference_action_8d(self, oscillator_phase, elapsed_s):
+            scale = reference_startup_scale_3d(jp, elapsed_s, task)
+            return jp.clip(
+                scale * self._reference_action_8d(oscillator_phase),
+                -1.0,
+                1.0,
+            )
 
         def _contact_arrays(self, data):
             contact = data.contact

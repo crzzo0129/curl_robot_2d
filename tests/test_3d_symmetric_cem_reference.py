@@ -57,9 +57,45 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
             bridge.PLANAR_COMPACT,
         )
 
+    def test_startup_target_boost_decays_to_target_scale(self) -> None:
+        self.assertAlmostEqual(
+            bridge.startup_target_scale(
+                0.0,
+                target_scale=1.0,
+                startup_boost=0.20,
+                startup_boost_duration_s=0.5,
+            ),
+            1.20,
+        )
+        self.assertAlmostEqual(
+            bridge.startup_target_scale(
+                0.5,
+                target_scale=1.0,
+                startup_boost=0.20,
+                startup_boost_duration_s=0.5,
+            ),
+            1.0,
+        )
+
     def test_phase_rate_scale_is_exposed_for_direction_smokes(self) -> None:
         args = bridge.parse_args(["--phase-rate-scale", "-1.0"])
         self.assertEqual(args.phase_rate_scale, -1.0)
+
+    def test_startup_reference_boost_is_exposed_for_transfer_smokes(self) -> None:
+        args = bridge.parse_args(
+            [
+                "--target-scale",
+                "1.1",
+                "--startup-target-boost",
+                "0.2",
+                "--startup-target-boost-duration-s",
+                "0.4",
+            ]
+        )
+
+        self.assertEqual(args.target_scale, 1.1)
+        self.assertEqual(args.startup_target_boost, 0.2)
+        self.assertEqual(args.startup_target_boost_duration_s, 0.4)
 
     def test_phase_lock_is_default_and_linear_mode_is_explicit(self) -> None:
         feedback = bridge.parse_args([])
@@ -81,6 +117,22 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
 
         self.assertEqual(reference.physics_profile, "reference")
         self.assertEqual(cg12.physics_profile, "cg12")
+
+    def test_viewer_exposes_reference_startup_boost(self) -> None:
+        args = viewer.parse_args(
+            [
+                "--target-scale",
+                "1.1",
+                "--startup-target-boost",
+                "0.2",
+                "--startup-target-boost-duration-s",
+                "0.4",
+            ]
+        )
+
+        self.assertEqual(args.target_scale, 1.1)
+        self.assertEqual(args.startup_target_boost, 0.2)
+        self.assertEqual(args.startup_target_boost_duration_s, 0.4)
 
     def test_planar_to_curl_3d_mapping_duplicates_left_and_right(self) -> None:
         mapped = bridge.map_planar_to_curl_3d_targets(

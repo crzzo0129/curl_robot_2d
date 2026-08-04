@@ -64,21 +64,48 @@ def parse_args(argv=None):
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--memory-fraction", type=float, default=0.50)
     parser.add_argument("--mujoco-gl", default="disable")
+    parser.add_argument("--reference-action-scale", type=float, default=1.0)
+    parser.add_argument("--reference-startup-boost", type=float, default=0.0)
+    parser.add_argument(
+        "--reference-startup-boost-duration-s",
+        type=float,
+        default=0.25,
+    )
     args = parser.parse_args(argv)
     if args.episode_length < 1:
         parser.error("--episode-length must be at least 1")
     if args.noise_seeds < 1:
         parser.error("--noise-seeds must be at least 1")
+    if (
+        not math.isfinite(args.reference_action_scale)
+        or args.reference_action_scale <= 0.0
+    ):
+        parser.error("--reference-action-scale must be positive")
+    if (
+        not math.isfinite(args.reference_startup_boost)
+        or args.reference_startup_boost < 0.0
+    ):
+        parser.error("--reference-startup-boost must be nonnegative")
+    if (
+        not math.isfinite(args.reference_startup_boost_duration_s)
+        or args.reference_startup_boost_duration_s <= 0.0
+    ):
+        parser.error("--reference-startup-boost-duration-s must be positive")
     return args
 
 
 def _distribution(values) -> dict[str, float]:
     array = np.asarray(values, dtype=np.float64)
     return {
+        "count": int(array.size),
         "mean": float(np.mean(array)),
         "median": float(np.median(array)),
         "std": float(np.std(array)),
         "min": float(np.min(array)),
+        "p05": float(np.percentile(array, 5.0)),
+        "p25": float(np.percentile(array, 25.0)),
+        "p75": float(np.percentile(array, 75.0)),
+        "p95": float(np.percentile(array, 95.0)),
         "max": float(np.max(array)),
     }
 
@@ -97,6 +124,13 @@ def _cpu_result(summary, *, name=None) -> dict[str, object]:
         "backend": "cpu_mujoco",
         "solver": solver,
         "physics_profile": profile,
+        "reference_action_scale": float(summary.get("target_scale", 1.0)),
+        "reference_startup_boost": float(
+            summary.get("startup_target_boost", 0.0)
+        ),
+        "reference_startup_boost_duration_s": float(
+            summary.get("startup_target_boost_duration_s", 0.25)
+        ),
         "reset": "exact",
         "batch_size": 1,
         "net_rotation_turns": _distribution([net_rotation_turns]),
@@ -128,6 +162,12 @@ def _run_cpu_case(args, *, name, physics_profile):
             "0.02",
             "--physics-profile",
             physics_profile,
+            "--target-scale",
+            str(args.reference_action_scale),
+            "--startup-target-boost",
+            str(args.reference_startup_boost),
+            "--startup-target-boost-duration-s",
+            str(args.reference_startup_boost_duration_s),
         ]
     )
     start = time.perf_counter()
@@ -137,10 +177,21 @@ def _run_cpu_case(args, *, name, physics_profile):
     return result
 
 
-def _mjx_case_specs(episode_length: int):
+def _mjx_case_specs(
+    episode_length: int,
+    *,
+    reference_action_scale: float = 1.0,
+    reference_startup_boost: float = 0.0,
+    reference_startup_boost_duration_s: float = 0.25,
+):
     from curl_robot_2d_mjx.config_3d import Rolling3DConfig, physics_profile_3d
 
-    base = Rolling3DConfig(episode_length=episode_length)
+    base = Rolling3DConfig(
+        episode_length=episode_length,
+        reference_action_scale=reference_action_scale,
+        reference_startup_boost=reference_startup_boost,
+        reference_startup_boost_duration_s=reference_startup_boost_duration_s,
+    )
     exact = {"reset_joint_noise_rad": 0.0, "reset_velocity_noise": 0.0}
     return {
         "mjx_newton8_exact": (
@@ -264,7 +315,17 @@ def _run_mjx_case(
         "name": name,
         "backend": "mjx",
         "solver": task.solver_name,
+        "physics_profile": task.physics_profile,
+        "solver_iterations": task.solver_iterations,
+        "solver_ls_iterations": task.solver_ls_iterations,
+        "reference_action_scale": task.reference_action_scale,
+        "reference_startup_boost": task.reference_startup_boost,
+        "reference_startup_boost_duration_s": (
+            task.reference_startup_boost_duration_s
+        ),
         "reset": reset_name,
+        "reset_joint_noise_rad": task.reset_joint_noise_rad,
+        "reset_velocity_noise": task.reset_velocity_noise,
         "batch_size": batch_size,
         "environment_seed": environment_seed,
         "rollout_seed": rollout_seed,
@@ -298,12 +359,35 @@ def _run_mjx_case(
 
 def _print_case(result) -> None:
     turns = result["conservative_turns"]
+    profile = result.get("physics_profile", "")
+    profile_text = f" profile={profile}" if profile else ""
+    solver_detail = ""
+    if "solver_iterations" in result:
+        solver_detail = (
+            f" iter={result['solver_iterations']}"
+            f" ls={result['solver_ls_iterations']}"
+        )
+    reference_detail = ""
+    if "reference_action_scale" in result:
+        reference_detail = (
+            f" ref_scale={result['reference_action_scale']:.4g}"
+            f" ref_boost={result['reference_startup_boost']:.4g}"
+            f" boost_s={result['reference_startup_boost_duration_s']:.4g}"
+        )
+    noise_detail = ""
+    if "reset_joint_noise_rad" in result:
+        noise_detail = (
+            f" q_noise={result['reset_joint_noise_rad']:.4g}"
+            f" v_noise={result['reset_velocity_noise']:.4g}"
+        )
     print(
         f"[{result['name']}] backend={result['backend']} "
-        f"solver={result['solver']} reset={result['reset']} "
+        f"solver={result['solver']}{profile_text}{solver_detail} "
+        f"reset={result['reset']}{noise_detail}{reference_detail} "
         f"batch={result['batch_size']}\n"
         f"  conservative={turns['mean']:+.3f} "
         f"median={turns['median']:+.3f} "
+        f"p95={turns['p95']:+.3f} "
         f"range=[{turns['min']:+.3f}, {turns['max']:+.3f}]\n"
         f"  net_rotation={result['net_rotation_turns']['mean']:+.3f} "
         f"abs_rotation={result['absolute_rotation_turns']['mean']:+.3f} "
@@ -353,7 +437,14 @@ def main(argv=None) -> None:
                     physics_profile=cpu_cases[case_name],
                 )
             )
-    specs = _mjx_case_specs(args.episode_length)
+    specs = _mjx_case_specs(
+        args.episode_length,
+        reference_action_scale=args.reference_action_scale,
+        reference_startup_boost=args.reference_startup_boost,
+        reference_startup_boost_duration_s=(
+            args.reference_startup_boost_duration_s
+        ),
+    )
     for case_name in args.cases:
         if case_name in cpu_cases:
             continue

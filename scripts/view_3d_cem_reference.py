@@ -16,6 +16,7 @@ from scripts.evaluate_3d_symmetric_cem_reference import (
     map_planar_to_curl_3d_targets,
     planar_cem_target,
     scaled_planar_target,
+    startup_target_scale,
 )
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
 from curl_robot_2d.parameters import FIXED_PARAMETERS
@@ -46,6 +47,12 @@ def parse_args(argv=None):
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
+    parser.add_argument("--startup-target-boost", type=float, default=0.0)
+    parser.add_argument(
+        "--startup-target-boost-duration-s",
+        type=float,
+        default=0.25,
+    )
     parser.add_argument("--linear-phase", action="store_true")
     parser.add_argument("--kp", type=float, default=5.0)
     parser.add_argument("--kd", type=float, default=0.1)
@@ -76,9 +83,26 @@ def _rolling_axis_tilt(rotation):
     return math.acos(alignment)
 
 
-def _target_for_phase(phase, config, target_scale, ctrl_low, ctrl_high):
+def _target_for_phase(
+    phase,
+    config,
+    target_scale,
+    startup_boost,
+    startup_boost_duration_s,
+    elapsed_s,
+    ctrl_low,
+    ctrl_high,
+):
     planar = planar_cem_target(phase, config)
-    planar = scaled_planar_target(planar, target_scale)
+    planar = scaled_planar_target(
+        planar,
+        startup_target_scale(
+            elapsed_s,
+            target_scale=target_scale,
+            startup_boost=startup_boost,
+            startup_boost_duration_s=startup_boost_duration_s,
+        ),
+    )
     return np.clip(map_planar_to_curl_3d_targets(planar), ctrl_low, ctrl_high)
 
 
@@ -88,6 +112,18 @@ def run(argv=None):
         raise SystemExit("--duration, --control-dt and --realtime must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
         raise SystemExit("--kp/--kd must be nonnegative and --torque-limit positive")
+    if not math.isfinite(args.target_scale) or args.target_scale < 0.0:
+        raise SystemExit("--target-scale must be nonnegative")
+    if (
+        not math.isfinite(args.startup_target_boost)
+        or args.startup_target_boost < 0.0
+    ):
+        raise SystemExit("--startup-target-boost must be nonnegative")
+    if (
+        not math.isfinite(args.startup_target_boost_duration_s)
+        or args.startup_target_boost_duration_s <= 0.0
+    ):
+        raise SystemExit("--startup-target-boost-duration-s must be positive")
     if args.gif_fps <= 0.0 or args.gif_width <= 0 or args.gif_height <= 0:
         raise SystemExit("--gif-fps/--gif-width/--gif-height must be positive")
 
@@ -111,7 +147,16 @@ def run(argv=None):
 
     phase = float(args.initial_phase_rad)
     rolling_phase = 0.0
-    initial_ctrl = _target_for_phase(phase, config, args.target_scale, ctrl_low, ctrl_high)
+    initial_ctrl = _target_for_phase(
+        phase,
+        config,
+        args.target_scale,
+        args.startup_target_boost,
+        args.startup_target_boost_duration_s,
+        0.0,
+        ctrl_low,
+        ctrl_high,
+    )
     _reset(model, data, qpos_indices, actuator_ids, initial_ctrl)
     start_x = float(data.qpos[0])
     start_y = float(data.qpos[1])
@@ -170,6 +215,9 @@ def run(argv=None):
                     phase,
                     config,
                     args.target_scale,
+                    args.startup_target_boost,
+                    args.startup_target_boost_duration_s,
+                    float(data.time),
                     ctrl_low,
                     ctrl_high,
                 )
@@ -236,6 +284,11 @@ def run(argv=None):
             / max(2.0 * math.pi * FIXED_PARAMETERS.shell_contact_radius, 1.0e-9)
         ),
         "phase_lock_enabled": not args.linear_phase,
+        "target_scale": float(args.target_scale),
+        "startup_target_boost": float(args.startup_target_boost),
+        "startup_target_boost_duration_s": (
+            float(args.startup_target_boost_duration_s)
+        ),
         "reference_turns": float(
             (phase - args.initial_phase_rad) / (2.0 * math.pi)
         ),

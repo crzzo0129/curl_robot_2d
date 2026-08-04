@@ -858,6 +858,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reference-weight", type=float)
     parser.add_argument("--minimum-residual-gain", type=float)
     parser.add_argument("--phase-rate-scale", type=float)
+    parser.add_argument("--reference-action-scale", type=float, default=1.0)
+    parser.add_argument("--reference-startup-boost", type=float, default=0.0)
+    parser.add_argument(
+        "--reference-startup-boost-duration-s",
+        type=float,
+        default=0.25,
+    )
     parser.add_argument("--residual-pair-differential-scale", type=float)
     parser.add_argument(
         "--explicit-phase-observation",
@@ -973,6 +980,21 @@ def parse_args(argv=None):
     if not 0.0 <= args.minimum_residual_gain <= 1.0:
         parser.error("--minimum-residual-gain must be in [0, 1]")
     if (
+        not math.isfinite(args.reference_action_scale)
+        or args.reference_action_scale <= 0.0
+    ):
+        parser.error("--reference-action-scale must be positive")
+    if (
+        not math.isfinite(args.reference_startup_boost)
+        or args.reference_startup_boost < 0.0
+    ):
+        parser.error("--reference-startup-boost must be nonnegative")
+    if (
+        not math.isfinite(args.reference_startup_boost_duration_s)
+        or args.reference_startup_boost_duration_s <= 0.0
+    ):
+        parser.error("--reference-startup-boost-duration-s must be positive")
+    if (
         args.residual_pair_differential_scale is not None
         and not 0.0 <= args.residual_pair_differential_scale <= 1.0
     ):
@@ -1059,6 +1081,11 @@ def main(argv=None) -> None:
         Rolling3DConfig(
             episode_length=args.episode_length,
             reference_phase_rate_scale=args.phase_rate_scale,
+            reference_action_scale=args.reference_action_scale,
+            reference_startup_boost=args.reference_startup_boost,
+            reference_startup_boost_duration_s=(
+                args.reference_startup_boost_duration_s
+            ),
             residual_pair_differential_scale=(
                 args.residual_pair_differential_scale
             ),
@@ -1270,6 +1297,9 @@ def main(argv=None) -> None:
         f"  reference_weight={reference.reference_weight:.2f} "
         f"residual_gain={reference.residual_gain:.3f} "
         f"phase_rate_scale={task.reference_phase_rate_scale:g}\n"
+        f"  reference_action_scale={task.reference_action_scale:g} "
+        f"startup_boost={task.reference_startup_boost:g} "
+        f"startup_boost_duration={task.reference_startup_boost_duration_s:g}s\n"
         f"  residual_channels={residual_pair_text}\n"
         f"  explicit_phase_obs={task.explicit_phase_observation} "
         f"obs_size={train_env.observation_size}\n"
