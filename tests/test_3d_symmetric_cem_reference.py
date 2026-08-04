@@ -67,6 +67,13 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
         self.assertFalse(feedback.linear_phase)
         self.assertTrue(linear.linear_phase)
 
+    def test_reference_physics_is_default_and_cg12_is_selectable(self) -> None:
+        reference = bridge.parse_args([])
+        cg12 = bridge.parse_args(["--physics-profile", "cg12"])
+
+        self.assertEqual(reference.physics_profile, "reference")
+        self.assertEqual(cg12.physics_profile, "cg12")
+
     def test_planar_to_curl_3d_mapping_duplicates_left_and_right(self) -> None:
         mapped = bridge.map_planar_to_curl_3d_targets(
             np.asarray((0.3, 0.8, 0.4, 1.0)),

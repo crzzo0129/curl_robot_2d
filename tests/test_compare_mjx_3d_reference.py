@@ -25,23 +25,22 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
                 "rolling_phase_turns": 7.9,
                 "distance_as_shell_turns": 8.2,
                 "nonfinite": False,
+                "physics_profile": "cg12",
+                "solver": "cg",
             }
         )
 
+        self.assertEqual(result["name"], "cpu_cg12_exact")
+        self.assertEqual(result["solver"], "cg")
         self.assertEqual(result["conservative_turns"]["mean"], 7.9)
         self.assertAlmostEqual(result["slip_turns"]["mean"], -0.3)
         self.assertEqual(result["failure_rate"], 0.0)
 
     def test_mjx_matrix_isolates_solver_and_reset_noise(self) -> None:
         specs = comparison._mjx_case_specs(500)
-        newton, newton_batch, newton_reset = specs["mjx_newton_exact"]
         cg_exact, cg_exact_batch, cg_exact_reset = specs["mjx_cg12_exact"]
         cg_noisy, cg_noisy_batch, cg_noisy_reset = specs["mjx_cg12_noisy"]
 
-        self.assertEqual(newton.solver_name, "newton")
-        self.assertEqual(newton.reset_joint_noise_rad, 0.0)
-        self.assertEqual(newton_batch, 1)
-        self.assertEqual(newton_reset, "exact")
         self.assertEqual(cg_exact.solver_name, "cg")
         self.assertEqual(cg_exact.reset_velocity_noise, 0.0)
         self.assertEqual(cg_exact_batch, 1)

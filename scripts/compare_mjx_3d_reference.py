@@ -23,7 +23,7 @@ DEFAULT_OUTPUT = (
 )
 CASE_NAMES = (
     "cpu_newton_exact",
-    "mjx_newton_exact",
+    "cpu_cg12_exact",
     "mjx_cg12_exact",
     "mjx_cg12_noisy",
 )
@@ -71,14 +71,17 @@ def _distribution(values) -> dict[str, float]:
     }
 
 
-def _cpu_result(summary) -> dict[str, object]:
+def _cpu_result(summary, *, name=None) -> dict[str, object]:
     rotation_turns = float(summary["rolling_phase_turns"])
     translation_turns = float(summary["distance_as_shell_turns"])
     conservative_turns = min(rotation_turns, translation_turns)
+    profile = str(summary.get("physics_profile", "reference"))
+    solver = str(summary.get("solver", "newton"))
     return {
-        "name": "cpu_newton_exact",
+        "name": name or f"cpu_{profile}_exact",
         "backend": "cpu_mujoco",
-        "solver": "newton",
+        "solver": solver,
+        "physics_profile": profile,
         "reset": "exact",
         "batch_size": 1,
         "rotation_turns": _distribution([rotation_turns]),
@@ -90,7 +93,7 @@ def _cpu_result(summary) -> dict[str, object]:
     }
 
 
-def _run_cpu_case(args):
+def _run_cpu_case(args, *, name, physics_profile):
     from scripts.evaluate_3d_symmetric_cem_reference import (
         parse_args as parse_cpu_args,
         run_smoke,
@@ -105,10 +108,12 @@ def _run_cpu_case(args):
             str(duration),
             "--control-dt",
             "0.02",
+            "--physics-profile",
+            physics_profile,
         ]
     )
     start = time.perf_counter()
-    result = _cpu_result(run_smoke(cpu_args))
+    result = _cpu_result(run_smoke(cpu_args), name=name)
     result["wall_time_s"] = time.perf_counter() - start
     _print_case(result)
     return result
@@ -120,11 +125,6 @@ def _mjx_case_specs(episode_length: int):
     base = Rolling3DConfig(episode_length=episode_length)
     exact = {"reset_joint_noise_rad": 0.0, "reset_velocity_noise": 0.0}
     return {
-        "mjx_newton_exact": (
-            physics_profile_3d("reference", replace(base, **exact)),
-            1,
-            "exact",
-        ),
         "mjx_cg12_exact": (
             physics_profile_3d("cg12", replace(base, **exact)),
             1,
@@ -283,11 +283,22 @@ def main(argv=None) -> None:
         flush=True,
     )
     results = []
-    if "cpu_newton_exact" in args.cases:
-        results.append(_run_cpu_case(args))
+    cpu_cases = {
+        "cpu_newton_exact": "reference",
+        "cpu_cg12_exact": "cg12",
+    }
+    for case_name in args.cases:
+        if case_name in cpu_cases:
+            results.append(
+                _run_cpu_case(
+                    args,
+                    name=case_name,
+                    physics_profile=cpu_cases[case_name],
+                )
+            )
     specs = _mjx_case_specs(args.episode_length)
     for case_name in args.cases:
-        if case_name == "cpu_newton_exact":
+        if case_name in cpu_cases:
             continue
         task, fixed_batch_size, reset_name = specs[case_name]
         results.append(
