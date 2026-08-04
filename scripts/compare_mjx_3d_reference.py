@@ -65,6 +65,8 @@ def parse_args(argv=None):
     parser.add_argument("--memory-fraction", type=float, default=0.50)
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--reference-action-scale", type=float, default=1.0)
+    parser.add_argument("--reference-ramp-start-scale", type=float, default=None)
+    parser.add_argument("--reference-ramp-duration-s", type=float, default=0.25)
     parser.add_argument("--reference-startup-boost", type=float, default=0.0)
     parser.add_argument(
         "--reference-startup-boost-duration-s",
@@ -81,6 +83,17 @@ def parse_args(argv=None):
         or args.reference_action_scale <= 0.0
     ):
         parser.error("--reference-action-scale must be positive")
+    if args.reference_ramp_start_scale is not None:
+        if (
+            not math.isfinite(args.reference_ramp_start_scale)
+            or args.reference_ramp_start_scale < 0.0
+        ):
+            parser.error("--reference-ramp-start-scale must be nonnegative")
+    if (
+        not math.isfinite(args.reference_ramp_duration_s)
+        or args.reference_ramp_duration_s <= 0.0
+    ):
+        parser.error("--reference-ramp-duration-s must be positive")
     if (
         not math.isfinite(args.reference_startup_boost)
         or args.reference_startup_boost < 0.0
@@ -125,6 +138,10 @@ def _cpu_result(summary, *, name=None) -> dict[str, object]:
         "solver": solver,
         "physics_profile": profile,
         "reference_action_scale": float(summary.get("target_scale", 1.0)),
+        "reference_ramp_start_scale": summary.get("startup_target_scale"),
+        "reference_ramp_duration_s": float(
+            summary.get("target_ramp_duration_s", 0.25)
+        ),
         "reference_startup_boost": float(
             summary.get("startup_target_boost", 0.0)
         ),
@@ -164,6 +181,16 @@ def _run_cpu_case(args, *, name, physics_profile):
             physics_profile,
             "--target-scale",
             str(args.reference_action_scale),
+            "--target-ramp-duration-s",
+            str(args.reference_ramp_duration_s),
+            *(
+                []
+                if args.reference_ramp_start_scale is None
+                else [
+                    "--startup-target-scale",
+                    str(args.reference_ramp_start_scale),
+                ]
+            ),
             "--startup-target-boost",
             str(args.reference_startup_boost),
             "--startup-target-boost-duration-s",
@@ -181,6 +208,8 @@ def _mjx_case_specs(
     episode_length: int,
     *,
     reference_action_scale: float = 1.0,
+    reference_ramp_start_scale: float | None = None,
+    reference_ramp_duration_s: float = 0.25,
     reference_startup_boost: float = 0.0,
     reference_startup_boost_duration_s: float = 0.25,
 ):
@@ -189,6 +218,8 @@ def _mjx_case_specs(
     base = Rolling3DConfig(
         episode_length=episode_length,
         reference_action_scale=reference_action_scale,
+        reference_ramp_start_scale=reference_ramp_start_scale,
+        reference_ramp_duration_s=reference_ramp_duration_s,
         reference_startup_boost=reference_startup_boost,
         reference_startup_boost_duration_s=reference_startup_boost_duration_s,
     )
@@ -319,6 +350,8 @@ def _run_mjx_case(
         "solver_iterations": task.solver_iterations,
         "solver_ls_iterations": task.solver_ls_iterations,
         "reference_action_scale": task.reference_action_scale,
+        "reference_ramp_start_scale": task.reference_ramp_start_scale,
+        "reference_ramp_duration_s": task.reference_ramp_duration_s,
         "reference_startup_boost": task.reference_startup_boost,
         "reference_startup_boost_duration_s": (
             task.reference_startup_boost_duration_s
@@ -369,8 +402,14 @@ def _print_case(result) -> None:
         )
     reference_detail = ""
     if "reference_action_scale" in result:
+        ramp_start = result.get("reference_ramp_start_scale")
+        ramp_start_text = (
+            "auto" if ramp_start is None else f"{float(ramp_start):.4g}"
+        )
         reference_detail = (
             f" ref_scale={result['reference_action_scale']:.4g}"
+            f" ramp_start={ramp_start_text}"
+            f" ramp_s={result['reference_ramp_duration_s']:.4g}"
             f" ref_boost={result['reference_startup_boost']:.4g}"
             f" boost_s={result['reference_startup_boost_duration_s']:.4g}"
         )
@@ -440,6 +479,8 @@ def main(argv=None) -> None:
     specs = _mjx_case_specs(
         args.episode_length,
         reference_action_scale=args.reference_action_scale,
+        reference_ramp_start_scale=args.reference_ramp_start_scale,
+        reference_ramp_duration_s=args.reference_ramp_duration_s,
         reference_startup_boost=args.reference_startup_boost,
         reference_startup_boost_duration_s=(
             args.reference_startup_boost_duration_s

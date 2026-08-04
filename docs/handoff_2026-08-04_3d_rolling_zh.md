@@ -369,20 +369,25 @@ q_right = q_nominal + noise_common - alpha * noise_diff
 显式相位 observation。
 
 补充：`startup_action_ramp_s` 当前只作用于 residual action，不会放大 CEM reference。
-如果要测试“起步 reference 动作更大”，应使用 reference transfer adapter：
+`reference_startup_boost=0.20` 已在云端验证会让 CPU/MJX CG20 exact 同时掉到约
+0.44 圈，因此不要继续用放大起步幅值作为主线。更合理的是测试 reference amplitude
+从安全端逐步回到原始 CEM：
 
 ```text
 reference_action_scale                 全程 reference normalized action 缩放
+reference_ramp_start_scale             起步 reference scale；None 表示从最终 scale 开始
+reference_ramp_duration_s              从起步 scale ramp 到最终 scale 的时间
 reference_startup_boost                起步额外 boost，默认 0
 reference_startup_boost_duration_s     boost 衰减回全程 scale 的时间
 ```
 
-默认 `1.0 / 0.0 / 0.25`，不改变既有结果。建议先扫：
+默认 `reference_ramp_start_scale=None`，不改变既有结果。建议先扫短 ramp：
 
 ```text
 reference_action_scale=1.0
-reference_startup_boost=0.10, 0.20, 0.30
-reference_startup_boost_duration_s=0.25
+reference_ramp_start_scale=0.25 or 0.50
+reference_ramp_duration_s=0.10, 0.25, 0.50
+reference_startup_boost=0.0
 ```
 
 验收仍看 exact/noisy 的 conservative、net_rotation、abs_rotation、translation 和 mismatch。
@@ -412,9 +417,9 @@ python -m scripts.compare_mjx_3d_reference \
   --seed 0 \
   --mujoco-gl disable \
   --memory-fraction 0.50 \
-  --reference-startup-boost 0.20 \
-  --reference-startup-boost-duration-s 0.25 \
-  --output results/mjx_3d_reference_parity/cg20_boost020_seed0.json
+  --reference-ramp-start-scale 0.50 \
+  --reference-ramp-duration-s 0.10 \
+  --output results/mjx_3d_reference_parity/cg20_ramp050_010_seed0.json
 ```
 
 必须保存并汇报：

@@ -53,6 +53,8 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.terminate_axis_tilt_rad, 0.50)
         self.assertEqual(config.terminate_forbidden_depth_m, 0.004)
         self.assertEqual(config.reference_action_scale, 1.0)
+        self.assertIsNone(config.reference_ramp_start_scale)
+        self.assertEqual(config.reference_ramp_duration_s, 0.25)
         self.assertEqual(config.reference_startup_boost, 0.0)
         self.assertEqual(config.reference_startup_boost_duration_s, 0.25)
         self.assertIsNone(config.residual_pair_differential_scale)
@@ -68,6 +70,8 @@ class MJX3DContractTest(unittest.TestCase):
             {"action_scales": (1.0,)},
             {"reference_phase_rate_scale": float("nan")},
             {"reference_action_scale": 0.0},
+            {"reference_ramp_start_scale": -0.1},
+            {"reference_ramp_duration_s": 0.0},
             {"reference_startup_boost": -0.1},
             {"reference_startup_boost_duration_s": 0.0},
             {"residual_pair_differential_scale": 1.1},
@@ -108,6 +112,16 @@ class MJX3DContractTest(unittest.TestCase):
         )
 
         self.assertAlmostEqual(reference_startup_scale_3d(np, 0.0, config), 1.25)
+        self.assertAlmostEqual(reference_startup_scale_3d(np, 0.5, config), 1.0)
+
+    def test_reference_startup_scale_can_ramp_from_safe_scale(self) -> None:
+        config = Rolling3DConfig(
+            reference_action_scale=1.0,
+            reference_ramp_start_scale=0.25,
+            reference_ramp_duration_s=0.5,
+        )
+
+        self.assertAlmostEqual(reference_startup_scale_3d(np, 0.0, config), 0.25)
         self.assertAlmostEqual(reference_startup_scale_3d(np, 0.5, config), 1.0)
 
     def test_duplicate_planar_action_maps_front_rear_to_left_right(self) -> None:

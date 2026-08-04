@@ -147,12 +147,25 @@ def phase_feedback_observation_3d(
 
 
 def reference_startup_scale_3d(xp, elapsed_s, task: Rolling3DConfig):
+    ramp = smoothstep_ramp(
+        xp,
+        elapsed_s,
+        task.reference_ramp_duration_s,
+    )
+    start_scale = (
+        task.reference_action_scale
+        if task.reference_ramp_start_scale is None
+        else task.reference_ramp_start_scale
+    )
+    ramped_scale = start_scale + (
+        task.reference_action_scale - start_scale
+    ) * ramp
     boost_decay = 1.0 - smoothstep_ramp(
         xp,
         elapsed_s,
         task.reference_startup_boost_duration_s,
     )
-    return task.reference_action_scale * (
+    return ramped_scale * (
         1.0 + task.reference_startup_boost * boost_decay
     )
 

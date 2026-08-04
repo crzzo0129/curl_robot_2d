@@ -11,6 +11,8 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         self.assertEqual(args.episode_length, 500)
         self.assertEqual(args.noise_seeds, 64)
         self.assertEqual(args.reference_action_scale, 1.0)
+        self.assertIsNone(args.reference_ramp_start_scale)
+        self.assertEqual(args.reference_ramp_duration_s, 0.25)
         self.assertEqual(args.reference_startup_boost, 0.0)
         self.assertEqual(args.reference_startup_boost_duration_s, 0.25)
 
@@ -38,6 +40,8 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         self.assertEqual(result["solver"], "cg")
         self.assertEqual(result["physics_profile"], "cg12")
         self.assertEqual(result["reference_action_scale"], 1.0)
+        self.assertIsNone(result["reference_ramp_start_scale"])
+        self.assertEqual(result["reference_ramp_duration_s"], 0.25)
         self.assertEqual(result["reference_startup_boost"], 0.0)
         self.assertEqual(result["conservative_turns"]["mean"], 8.0)
         self.assertAlmostEqual(
@@ -74,12 +78,16 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         specs = comparison._mjx_case_specs(
             500,
             reference_action_scale=1.05,
+            reference_ramp_start_scale=0.25,
+            reference_ramp_duration_s=0.1,
             reference_startup_boost=0.20,
             reference_startup_boost_duration_s=0.4,
         )
 
         task, _, _ = specs["mjx_cg20_exact"]
         self.assertEqual(task.reference_action_scale, 1.05)
+        self.assertEqual(task.reference_ramp_start_scale, 0.25)
+        self.assertEqual(task.reference_ramp_duration_s, 0.1)
         self.assertEqual(task.reference_startup_boost, 0.20)
         self.assertEqual(task.reference_startup_boost_duration_s, 0.4)
 

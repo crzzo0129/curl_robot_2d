@@ -102,16 +102,22 @@ def startup_target_scale(
     elapsed_s: float,
     *,
     target_scale: float,
+    startup_scale: float | None,
+    ramp_duration_s: float,
     startup_boost: float,
     startup_boost_duration_s: float,
 ) -> float:
+    start_scale = target_scale if startup_scale is None else startup_scale
+    normalized = np.clip(elapsed_s / ramp_duration_s, 0.0, 1.0)
+    ramp = normalized * normalized * (3.0 - 2.0 * normalized)
+    ramped_scale = start_scale + (target_scale - start_scale) * ramp
     if startup_boost_duration_s <= 0.0:
         boost_decay = 0.0
     else:
         normalized = np.clip(elapsed_s / startup_boost_duration_s, 0.0, 1.0)
         ramp = normalized * normalized * (3.0 - 2.0 * normalized)
         boost_decay = 1.0 - ramp
-    return float(target_scale * (1.0 + startup_boost * boost_decay))
+    return float(ramped_scale * (1.0 + startup_boost * boost_decay))
 
 
 def map_planar_to_curl_3d_targets(planar_target: np.ndarray) -> np.ndarray:
@@ -196,6 +202,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
+    parser.add_argument("--startup-target-scale", type=float, default=None)
+    parser.add_argument(
+        "--target-ramp-duration-s",
+        type=float,
+        default=0.25,
+    )
     parser.add_argument("--startup-target-boost", type=float, default=0.0)
     parser.add_argument(
         "--startup-target-boost-duration-s",
@@ -228,6 +240,17 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         raise SystemExit("--phase-rate-scale must be finite")
     if not math.isfinite(args.target_scale) or args.target_scale < 0.0:
         raise SystemExit("--target-scale must be nonnegative")
+    if args.startup_target_scale is not None:
+        if (
+            not math.isfinite(args.startup_target_scale)
+            or args.startup_target_scale < 0.0
+        ):
+            raise SystemExit("--startup-target-scale must be nonnegative")
+    if (
+        not math.isfinite(args.target_ramp_duration_s)
+        or args.target_ramp_duration_s <= 0.0
+    ):
+        raise SystemExit("--target-ramp-duration-s must be positive")
     if (
         not math.isfinite(args.startup_target_boost)
         or args.startup_target_boost < 0.0
@@ -278,6 +301,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         startup_target_scale(
             0.0,
             target_scale=args.target_scale,
+            startup_scale=args.startup_target_scale,
+            ramp_duration_s=args.target_ramp_duration_s,
             startup_boost=args.startup_target_boost,
             startup_boost_duration_s=args.startup_target_boost_duration_s,
         ),
@@ -328,6 +353,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
                 startup_target_scale(
                     float(data.time),
                     target_scale=args.target_scale,
+                    startup_scale=args.startup_target_scale,
+                    ramp_duration_s=args.target_ramp_duration_s,
                     startup_boost=args.startup_target_boost,
                     startup_boost_duration_s=args.startup_target_boost_duration_s,
                 ),
@@ -454,6 +481,12 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         "self_contact_fraction": float(np.mean(values[:, 11])),
         "nonfinite": bool(nonfinite),
         "target_scale": float(args.target_scale),
+        "startup_target_scale": (
+            None
+            if args.startup_target_scale is None
+            else float(args.startup_target_scale)
+        ),
+        "target_ramp_duration_s": float(args.target_ramp_duration_s),
         "startup_target_boost": float(args.startup_target_boost),
         "startup_target_boost_duration_s": (
             float(args.startup_target_boost_duration_s)

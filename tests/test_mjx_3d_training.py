@@ -28,6 +28,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.reference_weight, 1.0)
         self.assertEqual(args.minimum_residual_gain, 0.05)
         self.assertEqual(args.reference_action_scale, 1.0)
+        self.assertIsNone(args.reference_ramp_start_scale)
+        self.assertEqual(args.reference_ramp_duration_s, 0.25)
         self.assertEqual(args.reference_startup_boost, 0.0)
         self.assertEqual(args.reference_startup_boost_duration_s, 0.25)
         self.assertEqual(args.learning_rate, 3e-4)
@@ -138,6 +140,10 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
             [
                 "--reference-action-scale",
                 "1.05",
+                "--reference-ramp-start-scale",
+                "0.25",
+                "--reference-ramp-duration-s",
+                "0.1",
                 "--reference-startup-boost",
                 "0.2",
                 "--reference-startup-boost-duration-s",
@@ -146,6 +152,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
 
         self.assertEqual(args.reference_action_scale, 1.05)
+        self.assertEqual(args.reference_ramp_start_scale, 0.25)
+        self.assertEqual(args.reference_ramp_duration_s, 0.1)
         self.assertEqual(args.reference_startup_boost, 0.2)
         self.assertEqual(args.reference_startup_boost_duration_s, 0.4)
 

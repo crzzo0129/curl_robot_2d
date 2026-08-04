@@ -47,6 +47,12 @@ def parse_args(argv=None):
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
+    parser.add_argument("--startup-target-scale", type=float, default=None)
+    parser.add_argument(
+        "--target-ramp-duration-s",
+        type=float,
+        default=0.25,
+    )
     parser.add_argument("--startup-target-boost", type=float, default=0.0)
     parser.add_argument(
         "--startup-target-boost-duration-s",
@@ -87,6 +93,8 @@ def _target_for_phase(
     phase,
     config,
     target_scale,
+    startup_scale,
+    ramp_duration_s,
     startup_boost,
     startup_boost_duration_s,
     elapsed_s,
@@ -99,6 +107,8 @@ def _target_for_phase(
         startup_target_scale(
             elapsed_s,
             target_scale=target_scale,
+            startup_scale=startup_scale,
+            ramp_duration_s=ramp_duration_s,
             startup_boost=startup_boost,
             startup_boost_duration_s=startup_boost_duration_s,
         ),
@@ -114,6 +124,17 @@ def run(argv=None):
         raise SystemExit("--kp/--kd must be nonnegative and --torque-limit positive")
     if not math.isfinite(args.target_scale) or args.target_scale < 0.0:
         raise SystemExit("--target-scale must be nonnegative")
+    if args.startup_target_scale is not None:
+        if (
+            not math.isfinite(args.startup_target_scale)
+            or args.startup_target_scale < 0.0
+        ):
+            raise SystemExit("--startup-target-scale must be nonnegative")
+    if (
+        not math.isfinite(args.target_ramp_duration_s)
+        or args.target_ramp_duration_s <= 0.0
+    ):
+        raise SystemExit("--target-ramp-duration-s must be positive")
     if (
         not math.isfinite(args.startup_target_boost)
         or args.startup_target_boost < 0.0
@@ -151,6 +172,8 @@ def run(argv=None):
         phase,
         config,
         args.target_scale,
+        args.startup_target_scale,
+        args.target_ramp_duration_s,
         args.startup_target_boost,
         args.startup_target_boost_duration_s,
         0.0,
@@ -215,6 +238,8 @@ def run(argv=None):
                     phase,
                     config,
                     args.target_scale,
+                    args.startup_target_scale,
+                    args.target_ramp_duration_s,
                     args.startup_target_boost,
                     args.startup_target_boost_duration_s,
                     float(data.time),
@@ -285,6 +310,12 @@ def run(argv=None):
         ),
         "phase_lock_enabled": not args.linear_phase,
         "target_scale": float(args.target_scale),
+        "startup_target_scale": (
+            None
+            if args.startup_target_scale is None
+            else float(args.startup_target_scale)
+        ),
+        "target_ramp_duration_s": float(args.target_ramp_duration_s),
         "startup_target_boost": float(args.startup_target_boost),
         "startup_target_boost_duration_s": (
             float(args.startup_target_boost_duration_s)

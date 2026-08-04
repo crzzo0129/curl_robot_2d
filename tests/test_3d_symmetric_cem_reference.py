@@ -62,6 +62,8 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
             bridge.startup_target_scale(
                 0.0,
                 target_scale=1.0,
+                startup_scale=None,
+                ramp_duration_s=0.5,
                 startup_boost=0.20,
                 startup_boost_duration_s=0.5,
             ),
@@ -71,7 +73,33 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
             bridge.startup_target_scale(
                 0.5,
                 target_scale=1.0,
+                startup_scale=None,
+                ramp_duration_s=0.5,
                 startup_boost=0.20,
+                startup_boost_duration_s=0.5,
+            ),
+            1.0,
+        )
+
+    def test_startup_target_scale_can_ramp_from_safe_scale(self) -> None:
+        self.assertAlmostEqual(
+            bridge.startup_target_scale(
+                0.0,
+                target_scale=1.0,
+                startup_scale=0.25,
+                ramp_duration_s=0.5,
+                startup_boost=0.0,
+                startup_boost_duration_s=0.5,
+            ),
+            0.25,
+        )
+        self.assertAlmostEqual(
+            bridge.startup_target_scale(
+                0.5,
+                target_scale=1.0,
+                startup_scale=0.25,
+                ramp_duration_s=0.5,
+                startup_boost=0.0,
                 startup_boost_duration_s=0.5,
             ),
             1.0,
@@ -86,6 +114,10 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
             [
                 "--target-scale",
                 "1.1",
+                "--startup-target-scale",
+                "0.4",
+                "--target-ramp-duration-s",
+                "0.1",
                 "--startup-target-boost",
                 "0.2",
                 "--startup-target-boost-duration-s",
@@ -94,6 +126,8 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(args.target_scale, 1.1)
+        self.assertEqual(args.startup_target_scale, 0.4)
+        self.assertEqual(args.target_ramp_duration_s, 0.1)
         self.assertEqual(args.startup_target_boost, 0.2)
         self.assertEqual(args.startup_target_boost_duration_s, 0.4)
 
@@ -123,6 +157,10 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
             [
                 "--target-scale",
                 "1.1",
+                "--startup-target-scale",
+                "0.4",
+                "--target-ramp-duration-s",
+                "0.1",
                 "--startup-target-boost",
                 "0.2",
                 "--startup-target-boost-duration-s",
@@ -131,6 +169,8 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
         )
 
         self.assertEqual(args.target_scale, 1.1)
+        self.assertEqual(args.startup_target_scale, 0.4)
+        self.assertEqual(args.target_ramp_duration_s, 0.1)
         self.assertEqual(args.startup_target_boost, 0.2)
         self.assertEqual(args.startup_target_boost_duration_s, 0.4)
 

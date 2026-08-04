@@ -42,6 +42,8 @@ class Rolling3DConfig:
     reset_velocity_noise: float = 0.005
     reference_phase_rate_scale: float = 1.0
     reference_action_scale: float = 1.0
+    reference_ramp_start_scale: float | None = None
+    reference_ramp_duration_s: float = 0.25
     reference_startup_boost: float = 0.0
     reference_startup_boost_duration_s: float = 0.25
     residual_pair_differential_scale: float | None = None
@@ -79,6 +81,18 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         or config.reference_action_scale <= 0.0
     ):
         raise ValueError("reference_action_scale must be finite and positive")
+    if config.reference_ramp_start_scale is not None:
+        if (
+            not math.isfinite(config.reference_ramp_start_scale)
+            or config.reference_ramp_start_scale < 0.0
+        ):
+            raise ValueError(
+                "reference_ramp_start_scale must be finite and nonnegative"
+            )
+    _validate_positive_duration(
+        config.reference_ramp_duration_s,
+        "reference_ramp_duration_s",
+    )
     if (
         not math.isfinite(config.reference_startup_boost)
         or config.reference_startup_boost < 0.0
