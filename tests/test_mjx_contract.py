@@ -5,6 +5,7 @@ import numpy as np
 
 from curl_robot_2d_mjx.config import (
     NominalRLConfig,
+    advance_policy_clock,
     physics_profile,
     smoothstep_ramp,
     validate_nominal_rl_config,
@@ -52,6 +53,7 @@ class MJXContractTest(unittest.TestCase):
         self.assertEqual(config.disturbance_level_scales, (1.0,))
         self.assertEqual(config.disturbance_level_probabilities, (1.0,))
         self.assertEqual(config.disturbance_backward_probability, 0.5)
+        self.assertIsNone(config.policy_clock_rate_rad_s)
         self.assertIsNone(config.terminate_root_z_min)
         self.assertEqual(config.terminate_root_z_low_duration_s, 0.30)
         self.assertIsNone(config.terminate_stuck_root_z_max)
@@ -110,6 +112,26 @@ class MJXContractTest(unittest.TestCase):
         for values in invalid:
             with self.subTest(values=values), self.assertRaises(ValueError):
                 validate_nominal_rl_config(NominalRLConfig(**values))
+
+    def test_policy_clock_rate_is_optional_and_validated(self) -> None:
+        validate_nominal_rl_config(
+            NominalRLConfig(policy_clock_rate_rad_s=3.293686514106665)
+        )
+        for value in (0.0, -1.0, float("nan")):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                validate_nominal_rl_config(
+                    NominalRLConfig(policy_clock_rate_rad_s=value)
+                )
+
+    def test_policy_clock_advances_and_wraps(self) -> None:
+        phase = advance_policy_clock(
+            np,
+            np.asarray(2.0 * np.pi - 0.1, dtype=np.float32),
+            rate_rad_s=3.0,
+            timestep_s=0.05,
+        )
+
+        self.assertAlmostEqual(float(phase), 0.05, places=5)
 
     def test_hard_termination_configuration_can_be_relaxed(self) -> None:
         validate_nominal_rl_config(
@@ -372,6 +394,8 @@ class MJXContractTest(unittest.TestCase):
         self.assertIn("roll_progress", REWARD_TERM_NAMES)
         self.assertIn("collision", REWARD_TERM_NAMES)
         self.assertIn("termination", REWARD_TERM_NAMES)
+        self.assertIn("policy_clock_rate_rad_s", source)
+        self.assertIn("clock_features", source)
 
     def test_environment_quarantines_nonfinite_transitions(self) -> None:
         source = (

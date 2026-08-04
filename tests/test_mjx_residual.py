@@ -499,8 +499,11 @@ class MJXResidualTest(unittest.TestCase):
         self.assertNotIn(
             "reference_settings.residual_gain", observation_source
         )
+        self.assertIn("if reference_settings is not None:", source)
+        self.assertIn("return 30", source)
         self.assertIn(
-            "return 30 if reference_settings is not None else 23", source
+            "return 25 if task.policy_clock_rate_rad_s is not None else 23",
+            source,
         )
 
 

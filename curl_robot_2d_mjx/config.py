@@ -40,6 +40,10 @@ class NominalRLConfig:
     startup_action_ramp_s: float = 0.25
     reset_joint_noise_rad: float = 0.01
     reset_velocity_noise: float = 0.01
+    # Optional periodic command phase for a reference-free feed-forward policy.
+    # This adds only sin/cos(clock_phase) to the observation; it does not add
+    # CEM actions, coefficients, or a reference trajectory.
+    policy_clock_rate_rad_s: float | None = None
     disturbance_root_x_velocity_m_s: float = 0.0
     disturbance_root_pitch_velocity_rad_s: float = 0.0
     disturbance_probability: float = 1.0
@@ -122,6 +126,13 @@ def validate_nominal_rl_config(config: NominalRLConfig) -> None:
     if config.disturbance_max_step < config.disturbance_min_step:
         raise ValueError(
             "disturbance_max_step must be at least disturbance_min_step"
+        )
+    if config.policy_clock_rate_rad_s is not None and (
+        not math.isfinite(config.policy_clock_rate_rad_s)
+        or config.policy_clock_rate_rad_s <= 0.0
+    ):
+        raise ValueError(
+            "policy_clock_rate_rad_s must be finite and positive"
         )
     if config.terminate_root_z_min is not None:
         if (
@@ -210,6 +221,15 @@ def smoothstep_ramp(xp, elapsed_s, duration_s: float):
         return xp.ones_like(elapsed_s)
     normalized = xp.clip(elapsed_s / duration_s, 0.0, 1.0)
     return normalized * normalized * (3.0 - 2.0 * normalized)
+
+
+def advance_policy_clock(xp, phase, rate_rad_s: float, timestep_s: float):
+    """Advance an independent periodic policy phase by one control step."""
+
+    return xp.mod(
+        phase + rate_rad_s * timestep_s,
+        2.0 * xp.pi,
+    )
 
 
 def physics_profile(

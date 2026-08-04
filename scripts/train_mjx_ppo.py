@@ -52,6 +52,8 @@ PRESETS = {
     },
 }
 
+DEFAULT_POLICY_CLOCK_RATE_RAD_S = 3.293686514106665
+
 
 def _add_reward_arguments(parser: argparse.ArgumentParser) -> None:
     """Expose reward dataclass fields without duplicating their defaults."""
@@ -595,6 +597,16 @@ def main() -> None:
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-minibatches", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
+    parser.add_argument(
+        "--policy-clock-rate-rad-s",
+        type=float,
+        default=DEFAULT_POLICY_CLOCK_RATE_RAD_S,
+    )
+    parser.add_argument(
+        "--no-policy-clock",
+        action="store_true",
+        help="Do not append an independent periodic clock to pure RL observations.",
+    )
     parser.add_argument("--terminate-root-z-min", type=float, default=0.05)
     parser.add_argument(
         "--terminate-root-z-low-duration", type=float, default=0.30
@@ -791,6 +803,11 @@ def main() -> None:
                 else None
             ),
             episode_length=args.episode_length,
+            policy_clock_rate_rad_s=(
+                None
+                if args.no_policy_clock
+                else args.policy_clock_rate_rad_s
+            ),
             terminate_root_z_min=(
                 None
                 if args.no_root_low_termination
@@ -972,6 +989,11 @@ def main() -> None:
             f"{task.terminate_root_z_low_duration_s:g}s"
         )
     )
+    policy_clock_text = (
+        "disabled"
+        if task.policy_clock_rate_rad_s is None
+        else f"{task.policy_clock_rate_rad_s:g}rad/s"
+    )
     root_high_text = (
         "disabled"
         if task.terminate_root_z_max is None
@@ -1010,7 +1032,8 @@ def main() -> None:
         f"  episode={args.episode_length} steps "
         f"({args.episode_length * task.control_timestep:.2f}s) "
         f"batch={values['batch_size']} "
-        f"minibatches={values['num_minibatches']}\n"
+        f"minibatches={values['num_minibatches']} "
+        f"policy_clock={policy_clock_text}\n"
         f"  root_damping="
         f"{'disabled' if task.disable_root_damping else 'xml'} "
         f"root_low={root_low_text} "

@@ -16,6 +16,7 @@ from curl_robot_2d_mjx.cem_reference import (
 )
 from curl_robot_2d_mjx.config import (
     NominalRLConfig,
+    advance_policy_clock,
     smoothstep_ramp,
     validate_nominal_rl_config,
 )
@@ -347,7 +348,9 @@ def make_brax_env(
 
         @property
         def observation_size(self):
-            return 30 if reference_settings is not None else 23
+            if reference_settings is not None:
+                return 30
+            return 25 if task.policy_clock_rate_rad_s is not None else 23
 
         @property
         def action_size(self):
@@ -616,6 +619,13 @@ def make_brax_env(
                 action = action_ramp * policy_action
                 cem_action = jp.zeros(4, dtype=jp.float32)
                 oscillator_phase = state.info["oscillator_phase"]
+                if task.policy_clock_rate_rad_s is not None:
+                    oscillator_phase = advance_policy_clock(
+                        jp,
+                        oscillator_phase,
+                        task.policy_clock_rate_rad_s,
+                        control_dt,
+                    )
                 target = jp.clip(
                     self.compact_ctrl + action * self.action_scales,
                     self.joint_low,
@@ -1223,7 +1233,15 @@ def make_brax_env(
                 ]
             )
             if reference_settings is None:
-                return observation
+                if task.policy_clock_rate_rad_s is None:
+                    return observation
+                clock_features = jp.asarray(
+                    [
+                        jp.sin(oscillator_phase),
+                        jp.cos(oscillator_phase),
+                    ]
+                )
+                return jp.concatenate([observation, clock_features])
             weighted_reference = (
                 reference_settings.reference_weight
                 * reference_action_value
