@@ -233,6 +233,39 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(rejected["rejected"])
 
+    def test_final_eval_selection_uses_exact_final_params(self) -> None:
+        stale_callback_params = object()
+        final_params = object()
+
+        resolved, source = train_mjx_3d_residual_ppo._resolve_best_params(
+            {
+                "step": 76_800,
+                "params": stale_callback_params,
+                "params_step": 51_200,
+            },
+            final_params,
+            [{"step": 51_200}, {"step": 76_800}],
+        )
+
+        self.assertIs(resolved, final_params)
+        self.assertEqual(source, "final_eval")
+
+    def test_earlier_best_uses_matching_callback_snapshot(self) -> None:
+        callback_params = object()
+
+        resolved, source = train_mjx_3d_residual_ppo._resolve_best_params(
+            {
+                "step": 51_200,
+                "params": callback_params,
+                "params_step": 51_200,
+            },
+            object(),
+            [{"step": 51_200}, {"step": 76_800}],
+        )
+
+        self.assertIs(resolved, callback_params)
+        self.assertEqual(source, "callback_step_51200")
+
     def test_periodic_checkpoint_directory_requires_checkpoint_flag(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             train_mjx_3d_residual_ppo.parse_args(

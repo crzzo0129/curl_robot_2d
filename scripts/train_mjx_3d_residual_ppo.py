@@ -485,6 +485,22 @@ def _checkpoint_selection_3d(metrics, episode_length, *, target_turns=1.0):
     }
 
 
+def _resolve_best_params(best, final_params, metric_history):
+    """Resolve an exact evaluated parameter set despite callback ordering."""
+
+    last_eval_step = (
+        int(metric_history[-1]["step"]) if metric_history else None
+    )
+    if best["step"] is not None and best["step"] == last_eval_step:
+        return final_params, "final_eval"
+    if (
+        best["params"] is not None
+        and best.get("params_step") == best["step"]
+    ):
+        return best["params"], f"callback_step_{best['params_step']}"
+    return final_params, "final_fallback"
+
+
 def _format_eval_report_3d(
     eval_index,
     total_evals,
@@ -1095,6 +1111,7 @@ def main(argv=None) -> None:
         "reward": float("-inf"),
         "step": None,
         "params": None,
+        "params_step": None,
         "candidate_step": None,
         "candidate_params": None,
     }
@@ -1110,6 +1127,7 @@ def main(argv=None) -> None:
         best["candidate_params"] = params_snapshot
         if best["step"] == int(step):
             best["params"] = params_snapshot
+            best["params_step"] = int(step)
 
     def progress_fn(step, metrics):
         clean = {name: _float(value) for name, value in metrics.items()}
@@ -1139,6 +1157,7 @@ def main(argv=None) -> None:
             best["step"] = int(step)
             if best["candidate_step"] == int(step):
                 best["params"] = best["candidate_params"]
+                best["params_step"] = int(step)
         eval_counter["value"] += 1
         print(
             _format_eval_report_3d(
@@ -1334,7 +1353,9 @@ def main(argv=None) -> None:
         **checkpoint_kwargs,
     )
     elapsed = time.perf_counter() - start
-    best_params = best["params"] if best["params"] is not None else final_params
+    best_params, best_params_source = _resolve_best_params(
+        best, final_params, metric_history
+    )
     model_io.save_params(args.out / "params_final", final_params)
     model_io.save_params(args.out / "params_best", best_params)
     (args.out / "metrics_history.json").write_text(
@@ -1367,6 +1388,7 @@ def main(argv=None) -> None:
         "best_eval_reward": best_reward_value,
         "best_step": best["step"],
         "best_selection_score": best_score_value,
+        "best_params_source": best_params_source,
         "reward_peak": reward_peak_value,
         "reward_peak_step": reward_peak["step"],
         "final_metrics": final_ordinary_metrics,
@@ -1392,6 +1414,7 @@ def main(argv=None) -> None:
         f"  elapsed={elapsed / 60.0:.1f}min "
         f"throughput={throughput:,.0f} steps/s\n"
         f"  physical_best {best_source}\n"
+        f"  best_params_source={best_params_source}\n"
         f"  reward_peak {reward_peak_source}\n"
         f"  checkpoints best={args.out / 'params_best'} "
         f"final={args.out / 'params_final'}",
