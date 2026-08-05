@@ -6,7 +6,11 @@ import unittest
 
 from curl_robot_2d_mjx.environment_3d import DEFAULT_3D_CEM_CONTROLLER
 from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
-from scripts import train_mjx_3d_residual_ppo
+from scripts import (
+    evaluate_mjx_3d_policy,
+    render_mjx_3d_policy,
+    train_mjx_3d_residual_ppo,
+)
 
 
 class MJX3DTrainingEntrypointTest(unittest.TestCase):
@@ -316,6 +320,33 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(args.save_ppo_checkpoints)
         self.assertEqual(args.ppo_checkpoint_dir, Path("mjx_3d_ckpt"))
+
+    def test_large_batch_eval_defaults_match_validated_cg20_ramp(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            ["params_best", "--out", "eval_best_batch"]
+        )
+
+        self.assertEqual(args.physics_profile, "cg20")
+        self.assertEqual(args.batch_size, 1024)
+        self.assertEqual(args.episode_length, 500)
+        self.assertEqual(args.minimum_residual_gain, 0.15)
+        self.assertEqual(args.reset_joint_noise_rad, 0.005)
+        self.assertEqual(args.reset_velocity_noise, 0.005)
+        self.assertEqual(args.reference_ramp_start_scale, 0.50)
+        self.assertEqual(args.reference_ramp_duration_s, 0.10)
+        self.assertEqual(args.reference_startup_boost, 0.0)
+        self.assertTrue(args.zero_residual_policy_init)
+        self.assertEqual(args.initial_policy_std, 0.20)
+        self.assertTrue(args.explicit_phase_observation)
+
+    def test_3d_policy_renderer_defaults_to_cg20_freejoint_model(self) -> None:
+        args = render_mjx_3d_policy.parse_args(["evaluation_rollout.npz"])
+
+        self.assertEqual(args.physics_profile, "cg20")
+        self.assertEqual(args.control_dt, 0.02)
+        self.assertEqual(args.fps, 20.0)
+        self.assertEqual(args.width, 720)
+        self.assertEqual(args.height, 540)
 
 
 if __name__ == "__main__":
