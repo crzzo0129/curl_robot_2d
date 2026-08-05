@@ -6,6 +6,7 @@ import argparse
 import inspect
 import json
 import math
+import shutil
 from dataclasses import asdict, fields, replace
 from pathlib import Path
 import time
@@ -597,6 +598,10 @@ def _resolve_best_params(best, final_params, metric_history):
     return final_params, "final_fallback"
 
 
+def _best_and_final_share_checkpoint(best_params_source):
+    return best_params_source in {"final_eval", "final_fallback"}
+
+
 def _format_eval_report_3d(
     eval_index,
     total_evals,
@@ -635,12 +640,12 @@ def _format_eval_report_3d(
             f"turns/episode={selection['turns']:+.3f}"
         ),
         (
-            "  pose    "
-            f"x={_metric(metrics, 'eval/avg_root_x_m'):+.3f}m "
-            f"y={_metric(metrics, 'eval/avg_root_y_m'):+.3f}m "
-            f"z={_metric(metrics, 'eval/avg_root_z_m'):.3f}m "
-            f"lateral={selection['lateral_drift_m']:.3f}m "
-            f"axis_tilt={selection['axis_tilt_rad']:.3f}rad"
+            "  mean pose "
+            f"mean_x={_metric(metrics, 'eval/avg_root_x_m'):+.3f}m "
+            f"mean_y={_metric(metrics, 'eval/avg_root_y_m'):+.3f}m "
+            f"mean_z={_metric(metrics, 'eval/avg_root_z_m'):.3f}m "
+            f"mean_lateral={selection['lateral_drift_m']:.3f}m "
+            f"mean_axis_tilt={selection['axis_tilt_rad']:.3f}rad"
         ),
         (
             "  contact "
@@ -762,9 +767,9 @@ def _format_rollout_report_3d(label, summary):
             ),
             (
                 f"  motion  turns={summary['net_turns']:+.3f} "
-                f"x={summary['root_x_displacement_m']:+.3f}m "
-                f"y={summary['final_lateral_drift_m']:+.3f}m "
-                f"axis_tilt={summary['mean_axis_tilt_rad']:.3f}rad"
+                f"final_dx={summary['root_x_displacement_m']:+.3f}m "
+                f"final_dy={summary['final_lateral_drift_m']:+.3f}m "
+                f"mean_axis_tilt={summary['mean_axis_tilt_rad']:.3f}rad"
             ),
             (
                 "  reward  "
@@ -1841,19 +1846,37 @@ def main(argv=None) -> None:
             episode_length=args.episode_length,
             output_dir=evaluation_best_dir,
         )
-        evaluation_final = _evaluate_policy_3d(
-            eval_env,
-            make_inference_fn,
-            final_params,
-            seed=args.seed + 20_000,
-            episode_length=args.episode_length,
-            output_dir=evaluation_final_dir,
+        shared_checkpoint = _best_and_final_share_checkpoint(
+            best_params_source
         )
+        if shared_checkpoint:
+            evaluation_final_dir.mkdir(parents=True, exist_ok=True)
+            for artifact_name in (
+                "evaluation_rollout.npz",
+                "evaluation_summary.json",
+            ):
+                shutil.copy2(
+                    evaluation_best_dir / artifact_name,
+                    evaluation_final_dir / artifact_name,
+                )
+            evaluation_final = evaluation_best
+        else:
+            evaluation_final = _evaluate_policy_3d(
+                eval_env,
+                make_inference_fn,
+                final_params,
+                seed=args.seed + 20_000,
+                episode_length=args.episode_length,
+                output_dir=evaluation_final_dir,
+            )
         comparison = {
             "selection": {
                 "best_step": best["step"],
                 "best_selection_score": best_score_value,
                 "reward_peak_step": reward_peak["step"],
+                "best_params_source": best_params_source,
+                "best_and_final_share_checkpoint": shared_checkpoint,
+                "final_evaluation_reused": shared_checkpoint,
             },
             "best": evaluation_best,
             "final": evaluation_final,
@@ -1862,7 +1885,15 @@ def main(argv=None) -> None:
             json.dumps(comparison, indent=2) + "\n", encoding="utf-8"
         )
         print(_format_rollout_report_3d("best", evaluation_best), flush=True)
-        print(_format_rollout_report_3d("final", evaluation_final), flush=True)
+        final_label = (
+            "final (same checkpoint; reused rollout)"
+            if shared_checkpoint
+            else "final"
+        )
+        print(
+            _format_rollout_report_3d(final_label, evaluation_final),
+            flush=True,
+        )
         print(
             "[artifacts]\n"
             f"  summary={args.out / 'training_summary.json'}\n"

@@ -391,6 +391,23 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertIs(resolved, callback_params)
         self.assertEqual(source, "callback_step_51200")
 
+    def test_final_param_sources_reuse_the_post_training_rollout(self) -> None:
+        self.assertTrue(
+            train_mjx_3d_residual_ppo._best_and_final_share_checkpoint(
+                "final_eval"
+            )
+        )
+        self.assertTrue(
+            train_mjx_3d_residual_ppo._best_and_final_share_checkpoint(
+                "final_fallback"
+            )
+        )
+        self.assertFalse(
+            train_mjx_3d_residual_ppo._best_and_final_share_checkpoint(
+                "callback_step_51200"
+            )
+        )
+
     def test_periodic_checkpoint_directory_requires_checkpoint_flag(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             train_mjx_3d_residual_ppo.parse_args(
