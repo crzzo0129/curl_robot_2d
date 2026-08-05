@@ -328,6 +328,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertEqual(args.physics_profile, "cg20")
         self.assertEqual(args.batch_size, 1024)
+        self.assertEqual(args.chunk_size, 512)
+        self.assertEqual(args.progress_every, 100)
         self.assertEqual(args.episode_length, 500)
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertEqual(args.reset_joint_noise_rad, 0.005)

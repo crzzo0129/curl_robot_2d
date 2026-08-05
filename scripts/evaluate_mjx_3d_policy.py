@@ -59,6 +59,8 @@ def parse_args(argv=None):
     parser.add_argument("--physics-profile", default="cg20")
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=1024)
+    parser.add_argument("--chunk-size", type=int, default=512)
+    parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--reset-joint-noise-rad", type=float, default=0.005)
     parser.add_argument("--reset-velocity-noise", type=float, default=0.005)
@@ -108,8 +110,10 @@ def parse_args(argv=None):
     parser.add_argument("--save-rollout", action="store_true")
     parser.add_argument("--rollout-index", type=int, default=0)
     args = parser.parse_args(argv)
-    if args.episode_length < 1 or args.batch_size < 1:
-        parser.error("--episode-length and --batch-size must be positive")
+    if args.episode_length < 1 or args.batch_size < 1 or args.chunk_size < 1:
+        parser.error("--episode-length, --batch-size and --chunk-size must be positive")
+    if args.progress_every < 0:
+        parser.error("--progress-every must be nonnegative")
     if not 0 <= args.rollout_index < args.batch_size:
         parser.error("--rollout-index must be in [0, batch-size)")
     if args.reset_joint_noise_rad < 0.0 or args.reset_velocity_noise < 0.0:
@@ -202,7 +206,8 @@ def main(argv=None) -> None:
     print(
         "[3-D policy deterministic evaluation]\n"
         f"  checkpoint={args.checkpoint}\n"
-        f"  batch={args.batch_size} episode={args.episode_length} "
+        f"  batch={args.batch_size} chunk={args.chunk_size} "
+        f"episode={args.episode_length} "
         f"physics={task.physics_profile} seed={args.seed}\n"
         f"  reset_noise q={task.reset_joint_noise_rad:g} "
         f"v={task.reset_velocity_noise:g}\n"
@@ -213,93 +218,168 @@ def main(argv=None) -> None:
     )
 
     start = time.perf_counter()
-    state = reset_batch(keys)
-    jax.block_until_ready(state.obs)
-    active = jp.ones((args.batch_size,), dtype=bool)
-    steps = jp.zeros((args.batch_size,), dtype=jp.int32)
-    reward_total = jp.zeros((args.batch_size,), dtype=jp.float32)
-    metric_totals = {
-        name: jp.zeros((args.batch_size,), dtype=jp.float32)
-        for name in env._zero_metrics()
-        if name not in ("reward", "reward_total")
+    array_chunks = {
+        "steps": [],
+        "reward": [],
+        "conservative_turns": [],
+        "rotation_turns": [],
+        "translation_turns": [],
+        "lateral_drift_m": [],
+        "axis_tilt_rad": [],
+        "failed": [],
+        "timeout": [],
     }
+    failure_chunks = {metric: [] for metric in FAILURE_METRICS}
     rollout_qpos = []
     rollout_action = []
     rollout_reward = []
-
-    for step_index in range(task.episode_length):
-        rng = jax.random.PRNGKey(args.seed + step_index + 1)
-        action_keys = jax.random.split(rng, args.batch_size)
-        actions = policy_batch(state.obs, action_keys)
-        was_active = active
-        state = step_batch(state, actions, active)
-        weight = was_active.astype(jp.float32)
-        steps = steps + was_active.astype(jp.int32)
-        reward_total = reward_total + weight * state.reward
-        for name in metric_totals:
-            metric_totals[name] = (
-                metric_totals[name] + weight * state.metrics[name]
-            )
-        if args.save_rollout:
-            first_active = bool(
-                np.asarray(
-                    jax.device_get(was_active[args.rollout_index])
-                )
-            )
-            if first_active:
-                rollout_qpos.append(
-                    np.asarray(
-                        jax.device_get(
-                            state.pipeline_state.qpos[args.rollout_index]
-                        )
-                    )
-                )
-                rollout_action.append(
-                    np.asarray(jax.device_get(actions[args.rollout_index]))
-                )
-                rollout_reward.append(
-                    float(
-                        np.asarray(
-                            jax.device_get(state.reward[args.rollout_index])
-                        )
-                    )
-                )
-        active = active & (state.done < 0.5)
-
-    jax.block_until_ready(state.obs)
-    wall_time = time.perf_counter() - start
     scale = 1.0 / (2.0 * math.pi)
+    chunk_count = math.ceil(args.batch_size / args.chunk_size)
+
+    for chunk_id, chunk_start in enumerate(
+        range(0, args.batch_size, args.chunk_size),
+        start=1,
+    ):
+        chunk_end = min(chunk_start + args.chunk_size, args.batch_size)
+        current_batch = chunk_end - chunk_start
+        save_this_rollout = (
+            args.save_rollout
+            and chunk_start <= args.rollout_index < chunk_end
+        )
+        rollout_local_index = args.rollout_index - chunk_start
+        print(
+            f"  chunk {chunk_id}/{chunk_count} "
+            f"envs={current_batch} seed_index=[{chunk_start}, {chunk_end}) "
+            "compiling/running",
+            flush=True,
+        )
+        chunk_t0 = time.perf_counter()
+        state = reset_batch(keys[chunk_start:chunk_end])
+        jax.block_until_ready(state.obs)
+        active = jp.ones((current_batch,), dtype=bool)
+        steps = jp.zeros((current_batch,), dtype=jp.int32)
+        reward_total = jp.zeros((current_batch,), dtype=jp.float32)
+        metric_totals = {
+            name: jp.zeros((current_batch,), dtype=jp.float32)
+            for name in env._zero_metrics()
+            if name not in ("reward", "reward_total")
+        }
+
+        for step_index in range(task.episode_length):
+            rng = jax.random.PRNGKey(
+                args.seed + 1 + chunk_start * 1_000_003 + step_index
+            )
+            action_keys = jax.random.split(rng, current_batch)
+            actions = policy_batch(state.obs, action_keys)
+            was_active = active
+            state = step_batch(state, actions, active)
+            weight = was_active.astype(jp.float32)
+            steps = steps + was_active.astype(jp.int32)
+            reward_total = reward_total + weight * state.reward
+            for name in metric_totals:
+                metric_totals[name] = (
+                    metric_totals[name] + weight * state.metrics[name]
+                )
+            active = active & (state.done < 0.5)
+            if save_this_rollout:
+                selected_active = bool(
+                    np.asarray(
+                        jax.device_get(was_active[rollout_local_index])
+                    )
+                )
+                if selected_active:
+                    rollout_qpos.append(
+                        np.asarray(
+                            jax.device_get(
+                                state.pipeline_state.qpos[
+                                    rollout_local_index
+                                ]
+                            )
+                        )
+                    )
+                    rollout_action.append(
+                        np.asarray(
+                            jax.device_get(actions[rollout_local_index])
+                        )
+                    )
+                    rollout_reward.append(
+                        float(
+                            np.asarray(
+                                jax.device_get(
+                                    state.reward[rollout_local_index]
+                                )
+                            )
+                        )
+                    )
+            if args.progress_every and (
+                (step_index + 1) % args.progress_every == 0
+                or step_index + 1 == task.episode_length
+            ):
+                jax.block_until_ready(state.obs)
+                active_count = int(
+                    np.sum(np.asarray(jax.device_get(active)))
+                )
+                print(
+                    f"    step {step_index + 1}/{task.episode_length} "
+                    f"active={active_count}/{current_batch}",
+                    flush=True,
+                )
+
+        jax.block_until_ready(state.obs)
+        chunk_wall = time.perf_counter() - chunk_t0
+        chunk_arrays = {
+            "steps": np.asarray(jax.device_get(steps)),
+            "reward": np.asarray(jax.device_get(reward_total)),
+            "conservative_turns": np.asarray(
+                jax.device_get(metric_totals["roll_progress_rad"] * scale)
+            ),
+            "rotation_turns": np.asarray(
+                jax.device_get(
+                    metric_totals["rotation_progress_rad"] * scale
+                )
+            ),
+            "translation_turns": np.asarray(
+                jax.device_get(
+                    metric_totals["translation_progress_rad"] * scale
+                )
+            ),
+            "lateral_drift_m": np.asarray(
+                jax.device_get(
+                    metric_totals["lateral_drift_m"]
+                    / jp.maximum(steps, 1)
+                )
+            ),
+            "axis_tilt_rad": np.asarray(
+                jax.device_get(
+                    metric_totals["axis_tilt_rad"] / jp.maximum(steps, 1)
+                )
+            ),
+            "failed": np.asarray(jax.device_get(state.metrics["failed"])),
+            "timeout": np.asarray(jax.device_get(state.metrics["timeout"])),
+        }
+        for name, values in chunk_arrays.items():
+            array_chunks[name].append(values)
+        for metric in FAILURE_METRICS:
+            if metric in state.metrics:
+                failure_chunks[metric].append(
+                    np.asarray(jax.device_get(state.metrics[metric]))
+                )
+        print(
+            f"    chunk_done wall={chunk_wall:.1f}s "
+            f"turns_median={np.median(chunk_arrays['conservative_turns']):.3f} "
+            f"failed={np.mean(chunk_arrays['failed']):.2%}",
+            flush=True,
+        )
+
+    wall_time = time.perf_counter() - start
     arrays = {
-        "steps": np.asarray(jax.device_get(steps)),
-        "reward": np.asarray(jax.device_get(reward_total)),
-        "conservative_turns": np.asarray(
-            jax.device_get(metric_totals["roll_progress_rad"] * scale)
-        ),
-        "rotation_turns": np.asarray(
-            jax.device_get(metric_totals["rotation_progress_rad"] * scale)
-        ),
-        "translation_turns": np.asarray(
-            jax.device_get(metric_totals["translation_progress_rad"] * scale)
-        ),
-        "lateral_drift_m": np.asarray(
-            jax.device_get(
-                metric_totals["lateral_drift_m"] / jp.maximum(steps, 1)
-            )
-        ),
-        "axis_tilt_rad": np.asarray(
-            jax.device_get(
-                metric_totals["axis_tilt_rad"] / jp.maximum(steps, 1)
-            )
-        ),
-        "failed": np.asarray(jax.device_get(state.metrics["failed"])),
-        "timeout": np.asarray(jax.device_get(state.metrics["timeout"])),
+        name: np.concatenate(chunks)
+        for name, chunks in array_chunks.items()
     }
     failure_rates = {
-        metric.removeprefix("failure_"): float(
-            np.mean(np.asarray(jax.device_get(state.metrics[metric])))
-        )
-        for metric in FAILURE_METRICS
-        if metric in state.metrics
+        metric.removeprefix("failure_"): float(np.mean(np.concatenate(chunks)))
+        for metric, chunks in failure_chunks.items()
+        if chunks
     }
     summary = {
         "runtime": describe_runtime(),
@@ -308,6 +388,8 @@ def main(argv=None) -> None:
         "task": asdict(task),
         "controller": str(reference.source),
         "batch_size": args.batch_size,
+        "chunk_size": args.chunk_size,
+        "progress_every": args.progress_every,
         "episode_length": args.episode_length,
         "zero_residual_policy_init": args.zero_residual_policy_init,
         "hidden_layers": args.hidden_layers,
