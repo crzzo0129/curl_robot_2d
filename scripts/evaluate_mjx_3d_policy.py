@@ -1,4 +1,4 @@
-"""Evaluate and diagnose a saved 3-D residual PPO policy."""
+"""Evaluate a 3-D rolling policy or its reference controller."""
 
 from __future__ import annotations
 
@@ -223,8 +223,17 @@ def _load_npz(path: Path) -> dict[str, np.ndarray]:
 
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("checkpoint", type=Path)
+    parser.add_argument("checkpoint", type=Path, nargs="?")
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--evaluation-mode",
+        choices=("policy", "reference"),
+        default="policy",
+        help=(
+            "Evaluate a checkpoint policy or run the reference controller "
+            "with zero residual action."
+        ),
+    )
     parser.add_argument("--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER)
     parser.add_argument("--physics-profile", default="cg20")
     parser.add_argument("--episode-length", type=int, default=500)
@@ -304,6 +313,17 @@ def parse_args(argv=None):
     parser.add_argument("--save-rollout", action="store_true")
     parser.add_argument("--rollout-index", type=int, default=0)
     args = parser.parse_args(argv)
+    if args.evaluation_mode == "policy" and args.checkpoint is None:
+        parser.error("checkpoint is required in policy evaluation mode")
+    if args.evaluation_mode == "reference" and args.checkpoint is not None:
+        parser.error("checkpoint must be omitted in reference evaluation mode")
+    if args.evaluation_mode == "reference" and (
+        args.diagnostic_rollouts > 0 or args.save_rollout
+    ):
+        parser.error(
+            "--diagnostic-rollouts and --save-rollout require policy "
+            "evaluation mode"
+        )
     if args.episode_length < 1 or args.batch_size < 1 or args.chunk_size < 1:
         parser.error("--episode-length, --batch-size and --chunk-size must be positive")
     if args.progress_every < 0:
@@ -377,26 +397,30 @@ def main(argv=None) -> None:
         minimum_residual_gain=args.minimum_residual_gain,
     )
     env = make_brax_env_3d(task, cem_reference=reference, seed=args.seed)
-    network_factory = (
-        _zero_centered_residual_network_factory(
-            args.hidden_layers,
-            args.activation,
-            args.initial_policy_std,
+    policy_batch = None
+    if args.evaluation_mode == "policy":
+        network_factory = (
+            _zero_centered_residual_network_factory(
+                args.hidden_layers,
+                args.activation,
+                args.initial_policy_std,
+            )
+            if args.zero_residual_policy_init
+            else _network_factory(args.hidden_layers, args.activation)
         )
-        if args.zero_residual_policy_init
-        else _network_factory(args.hidden_layers, args.activation)
-    )
-    ppo_network = network_factory(env.observation_size, env.action_size)
-    make_policy = ppo_networks.make_inference_fn(ppo_network)
-    params = model_io.load_params(args.checkpoint)
-    try:
-        policy = make_policy(params, deterministic=True)
-    except TypeError:
-        policy = make_policy(params)
+        ppo_network = network_factory(env.observation_size, env.action_size)
+        make_policy = ppo_networks.make_inference_fn(ppo_network)
+        params = model_io.load_params(args.checkpoint)
+        try:
+            policy = make_policy(params, deterministic=True)
+        except TypeError:
+            policy = make_policy(params)
+        policy_batch = jax.jit(
+            jax.vmap(lambda obs, key: policy(obs, key)[0])
+        )
 
     keys = jax.random.split(jax.random.PRNGKey(args.seed), args.batch_size)
     reset_batch = jax.jit(jax.vmap(env.reset))
-    policy_batch = jax.jit(jax.vmap(lambda obs, key: policy(obs, key)[0]))
 
     def step_one(state, action, active):
         return jax.lax.cond(
@@ -454,6 +478,10 @@ def main(argv=None) -> None:
             if mode == "reference":
                 actions = jp.zeros((batch, env.action_size), dtype=jp.float32)
             else:
+                if policy_batch is None:
+                    raise RuntimeError(
+                        "policy rollout requested without a policy"
+                    )
                 action_keys = jax.random.split(
                     jax.random.PRNGKey(args.seed + 1 + step_index), batch
                 )
@@ -579,9 +607,10 @@ def main(argv=None) -> None:
             }
         return arrays, captured, wall_time
 
+    checkpoint_text = str(args.checkpoint) if args.checkpoint else "none"
     print(
-        "[3-D policy deterministic evaluation]\n"
-        f"  checkpoint={args.checkpoint}\n"
+        f"[3-D {args.evaluation_mode} deterministic evaluation]\n"
+        f"  checkpoint={checkpoint_text}\n"
         f"  batch={args.batch_size} chunk={args.chunk_size} "
         f"episode={args.episode_length} "
         f"physics={task.physics_profile} seed={args.seed}\n"
@@ -601,7 +630,9 @@ def main(argv=None) -> None:
     chunks_dir.mkdir(parents=True, exist_ok=True)
     config_payload = {
         "format_version": CHUNK_FORMAT_VERSION,
-        "checkpoint": str(args.checkpoint.resolve()),
+        "checkpoint": (
+            str(args.checkpoint.resolve()) if args.checkpoint else None
+        ),
         "controller": str(Path(reference.source).resolve()),
         "task": asdict(task),
         "batch_size": args.batch_size,
@@ -613,6 +644,8 @@ def main(argv=None) -> None:
         "activation": args.activation,
         "initial_policy_std": args.initial_policy_std,
     }
+    if args.evaluation_mode == "reference":
+        config_payload["evaluation_mode"] = "reference"
     config_path = args.out / "eval_config.json"
     config_text = json.dumps(config_payload, indent=2, sort_keys=True) + "\n"
     if args.resume and config_path.exists():
@@ -625,7 +658,9 @@ def main(argv=None) -> None:
             raise SystemExit(
                 f"Cannot resume because evaluation config changed: {config_path}"
             )
-    elif args.resume and any(chunks_dir.glob("policy_*.npz")):
+    elif args.resume and any(
+        chunks_dir.glob(f"{args.evaluation_mode}_*.npz")
+    ):
         raise SystemExit(
             f"Cannot resume without the matching config file: {config_path}"
         )
@@ -641,7 +676,7 @@ def main(argv=None) -> None:
     ):
         chunk_end = min(chunk_start + args.chunk_size, args.batch_size)
         chunk_path = chunks_dir / (
-            f"policy_{chunk_start:06d}_{chunk_end:06d}.npz"
+            f"{args.evaluation_mode}_{chunk_start:06d}_{chunk_end:06d}.npz"
         )
         print(
             f"  chunk {chunk_id}/{chunk_count} "
@@ -657,9 +692,9 @@ def main(argv=None) -> None:
             chunk_arrays, _, chunk_wall = run_rollouts(
                 keys[chunk_start:chunk_end],
                 np.arange(chunk_start, chunk_end, dtype=np.int32),
-                mode="policy",
+                mode=args.evaluation_mode,
                 capture=False,
-                label="policy",
+                label=args.evaluation_mode,
             )
             _atomic_savez(
                 chunk_path,
@@ -680,10 +715,11 @@ def main(argv=None) -> None:
         for name in chunk_results[0]
     }
     _atomic_savez(args.out / "eval_arrays.npz", **arrays)
-    policy_summary = _summarize_arrays(arrays)
+    rollout_summary = _summarize_arrays(arrays)
     summary = {
         "runtime": describe_runtime(),
-        "checkpoint": str(args.checkpoint),
+        "evaluation_mode": args.evaluation_mode,
+        "checkpoint": str(args.checkpoint) if args.checkpoint else None,
         "wall_time_s": time.perf_counter() - start,
         "chunk_wall_time_s": chunk_wall_total,
         "task": asdict(task),
@@ -696,7 +732,7 @@ def main(argv=None) -> None:
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
         "initial_policy_std": args.initial_policy_std,
-        **policy_summary,
+        **rollout_summary,
     }
     (args.out / "deterministic_eval.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"

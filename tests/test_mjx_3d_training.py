@@ -430,6 +430,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
             ["params_best", "--out", "eval_best_batch"]
         )
 
+        self.assertEqual(args.evaluation_mode, "policy")
         self.assertEqual(args.physics_profile, "cg20")
         self.assertEqual(args.batch_size, 1024)
         self.assertEqual(args.chunk_size, 512)
@@ -447,6 +448,37 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertFalse(args.resume)
         self.assertEqual(args.diagnostic_rollouts, 0)
         self.assertTrue(args.diagnostic_reference)
+
+    def test_reference_only_batch_eval_does_not_require_checkpoint(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "--evaluation-mode",
+                "reference",
+                "--out",
+                "eval_reference_batch",
+            ]
+        )
+
+        self.assertEqual(args.evaluation_mode, "reference")
+        self.assertIsNone(args.checkpoint)
+
+    def test_policy_batch_eval_still_requires_checkpoint(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            evaluate_mjx_3d_policy.parse_args(
+                ["--out", "eval_policy_batch"]
+            )
+
+    def test_reference_batch_eval_rejects_ignored_checkpoint(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            evaluate_mjx_3d_policy.parse_args(
+                [
+                    "params_best",
+                    "--evaluation-mode",
+                    "reference",
+                    "--out",
+                    "eval_reference_batch",
+                ]
+            )
 
     def test_diagnostic_selection_keeps_failures_and_boundary_successes(self) -> None:
         count = 8
