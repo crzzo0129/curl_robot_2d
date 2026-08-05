@@ -10,6 +10,7 @@ from curl_robot_2d_mjx.config_3d import (
     physics_profile_3d,
     validate_3d_config,
 )
+from curl_robot_2d_mjx.curriculum_3d import curriculum_stages_3d
 from curl_robot_2d_mjx.environment_3d import (
     ACTION_SIZE_3D,
     DEFAULT_3D_CEM_CONTROLLER,
@@ -18,10 +19,16 @@ from curl_robot_2d_mjx.environment_3d import (
     PHASE_FEEDBACK_SIZE_3D,
     advance_rolling_phase_3d,
     apply_physics_options_3d,
+    axis_tilted_quaternion_3d,
     duplicate_planar_action_3d,
     pair_coupled_residual_action_3d,
+    pair_coupled_reset_noise_3d,
     phase_feedback_observation_3d,
     reference_startup_scale_3d,
+)
+from curl_robot_2d_mjx.randomization_3d import (
+    Rolling3DDomainRandomization,
+    validate_domain_randomization_3d,
 )
 from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
 from scripts import mjx_3d_smoke
@@ -58,6 +65,8 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.reference_startup_boost, 0.0)
         self.assertEqual(config.reference_startup_boost_duration_s, 0.25)
         self.assertIsNone(config.residual_pair_differential_scale)
+        self.assertIsNone(config.reset_pair_differential_scale)
+        self.assertEqual(config.reset_axis_tilt_noise_rad, 0.0)
         self.assertFalse(config.explicit_phase_observation)
         reward = Rolling3DRewardConfig()
         self.assertEqual(reward.roll_progress, 6.0)
@@ -75,6 +84,10 @@ class MJX3DContractTest(unittest.TestCase):
             {"reference_startup_boost": -0.1},
             {"reference_startup_boost_duration_s": 0.0},
             {"residual_pair_differential_scale": 1.1},
+            {"reset_joint_noise_rad": -0.1},
+            {"reset_velocity_noise": float("nan")},
+            {"reset_pair_differential_scale": 1.1},
+            {"reset_axis_tilt_noise_rad": -0.1},
             {"explicit_phase_observation": 1},
             {"terminate_root_z_min": -0.01},
             {"terminate_axis_tilt_duration_s": 0.0},
@@ -161,6 +174,56 @@ class MJX3DContractTest(unittest.TestCase):
             ),
             raw_action,
         )
+
+    def test_pair_coupled_reset_noise_uses_symmetric_joint_order(self) -> None:
+        noise = pair_coupled_reset_noise_3d(
+            np,
+            np.asarray((1.0, 2.0, 3.0, 4.0)),
+            np.asarray((0.1, 0.2, 0.3, 0.4)),
+            differential_scale=0.5,
+        )
+
+        np.testing.assert_allclose(
+            noise,
+            np.asarray((1.05, 2.10, 0.95, 1.90, 3.15, 4.20, 2.85, 3.80)),
+        )
+
+    def test_axis_tilt_quaternion_is_normalized_and_keeps_zero_exact(self) -> None:
+        identity = np.asarray((1.0, 0.0, 0.0, 0.0))
+
+        zero = axis_tilted_quaternion_3d(np, identity, 0.0, 0.0)
+        tilted = axis_tilted_quaternion_3d(np, identity, 0.1, -0.2)
+
+        np.testing.assert_allclose(zero, identity)
+        self.assertAlmostEqual(float(np.linalg.norm(tilted)), 1.0)
+
+    def test_reset_curriculum_precedes_physics_randomization(self) -> None:
+        reset_stages = curriculum_stages_3d("reset_v1")
+        robust_stages = curriculum_stages_3d("robustness_v1")
+
+        self.assertEqual(reset_stages[0].name, "symmetric_reset")
+        self.assertEqual(reset_stages[-1].name, "differential_025")
+        self.assertFalse(
+            any(stage.domain_randomization.enabled for stage in reset_stages)
+        )
+        self.assertEqual(robust_stages[-2].name, "friction")
+        self.assertEqual(robust_stages[-1].name, "dynamics")
+        self.assertTrue(robust_stages[-1].domain_randomization.enabled)
+
+    def test_domain_randomization_ranges_are_positive_and_ordered(self) -> None:
+        validate_domain_randomization_3d(
+            Rolling3DDomainRandomization(
+                geom_friction_scale=(0.9, 1.1),
+                body_mass_scale=(0.95, 1.05),
+                actuator_gain_scale=(0.95, 1.05),
+            )
+        )
+        with self.assertRaises(ValueError):
+            validate_domain_randomization_3d(
+                Rolling3DDomainRandomization(
+                    geom_friction_scale=(1.1, 0.9)
+                )
+            )
 
     def test_phase_feedback_observation_exposes_actual_and_target_error(
         self,

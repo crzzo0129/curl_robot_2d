@@ -126,6 +126,64 @@ def pair_coupled_residual_action_3d(
     )
 
 
+def pair_coupled_reset_noise_3d(
+    xp,
+    common_noise,
+    differential_noise,
+    differential_scale,
+):
+    """Map four common and differential reset samples to eight joints."""
+
+    differential = differential_scale * differential_noise
+    front_hip, front_knee, rear_hip, rear_knee = common_noise
+    front_hip_diff, front_knee_diff, rear_hip_diff, rear_knee_diff = (
+        differential
+    )
+    return xp.stack(
+        (
+            front_hip + front_hip_diff,
+            front_knee + front_knee_diff,
+            front_hip - front_hip_diff,
+            front_knee - front_knee_diff,
+            rear_hip + rear_hip_diff,
+            rear_knee + rear_knee_diff,
+            rear_hip - rear_hip_diff,
+            rear_knee - rear_knee_diff,
+        )
+    )
+
+
+def axis_tilted_quaternion_3d(xp, base_quaternion, tilt_x, tilt_z):
+    """Apply a small x/z rotation-vector perturbation to a quaternion."""
+
+    angle = xp.sqrt(tilt_x * tilt_x + tilt_z * tilt_z)
+    half_angle = 0.5 * angle
+    vector_scale = xp.where(
+        angle > 1e-8,
+        xp.sin(half_angle) / xp.maximum(angle, 1e-8),
+        0.5,
+    )
+    delta = xp.asarray(
+        (
+            xp.cos(half_angle),
+            tilt_x * vector_scale,
+            xp.zeros_like(angle),
+            tilt_z * vector_scale,
+        )
+    )
+    aw, ax, ay, az = delta
+    bw, bx, by, bz = base_quaternion
+    quaternion = xp.asarray(
+        (
+            aw * bw - ax * bx - ay * by - az * bz,
+            aw * bx + ax * bw + ay * bz - az * by,
+            aw * by - ax * bz + ay * bw + az * bx,
+            aw * bz + ax * by - ay * bx + az * bw,
+        )
+    )
+    return quaternion / xp.linalg.norm(quaternion)
+
+
 def phase_feedback_observation_3d(
     xp,
     rolling_phase,
@@ -382,6 +440,14 @@ def make_brax_env_3d(
         def backend(self):
             return "mjx"
 
+        @property
+        def sys(self):
+            return self.mjx_model
+
+        @sys.setter
+        def sys(self, value):
+            self.mjx_model = value
+
         def _zero_metrics(self):
             zero = jp.zeros((), dtype=jp.float32)
             return {
@@ -441,18 +507,86 @@ def make_brax_env_3d(
 
         def reset(self, rng):
             rng = jax.random.fold_in(rng, self.seed)
-            joint_key, velocity_key = jax.random.split(rng, 2)
-            joint_noise = jax.random.uniform(
-                joint_key,
-                shape=(ACTION_SIZE_3D,),
-                minval=-task.reset_joint_noise_rad,
-                maxval=task.reset_joint_noise_rad,
-            )
-            velocity_noise = jax.random.uniform(
-                velocity_key,
-                shape=(self.mj_model.nv,),
-                minval=-task.reset_velocity_noise,
-                maxval=task.reset_velocity_noise,
+            if task.reset_pair_differential_scale is None:
+                joint_key, velocity_key = jax.random.split(rng, 2)
+                tilt_key = jax.random.fold_in(rng, 1)
+                joint_noise = jax.random.uniform(
+                    joint_key,
+                    shape=(ACTION_SIZE_3D,),
+                    minval=-task.reset_joint_noise_rad,
+                    maxval=task.reset_joint_noise_rad,
+                )
+                velocity_noise = jax.random.uniform(
+                    velocity_key,
+                    shape=(self.mj_model.nv,),
+                    minval=-task.reset_velocity_noise,
+                    maxval=task.reset_velocity_noise,
+                )
+            else:
+                (
+                    joint_common_key,
+                    joint_differential_key,
+                    root_velocity_key,
+                    joint_velocity_common_key,
+                    joint_velocity_differential_key,
+                    tilt_key,
+                ) = jax.random.split(rng, 6)
+                joint_common_noise = jax.random.uniform(
+                    joint_common_key,
+                    shape=(ACTION_SIZE_3D // 2,),
+                    minval=-task.reset_joint_noise_rad,
+                    maxval=task.reset_joint_noise_rad,
+                )
+                joint_differential_noise = jax.random.uniform(
+                    joint_differential_key,
+                    shape=(ACTION_SIZE_3D // 2,),
+                    minval=-task.reset_joint_noise_rad,
+                    maxval=task.reset_joint_noise_rad,
+                )
+                joint_noise = pair_coupled_reset_noise_3d(
+                    jp,
+                    joint_common_noise,
+                    joint_differential_noise,
+                    task.reset_pair_differential_scale,
+                )
+                root_velocity_noise = jax.random.uniform(
+                    root_velocity_key,
+                    shape=(6,),
+                    minval=-task.reset_velocity_noise,
+                    maxval=task.reset_velocity_noise,
+                )
+                joint_velocity_common_noise = jax.random.uniform(
+                    joint_velocity_common_key,
+                    shape=(ACTION_SIZE_3D // 2,),
+                    minval=-task.reset_velocity_noise,
+                    maxval=task.reset_velocity_noise,
+                )
+                joint_velocity_differential_noise = jax.random.uniform(
+                    joint_velocity_differential_key,
+                    shape=(ACTION_SIZE_3D // 2,),
+                    minval=-task.reset_velocity_noise,
+                    maxval=task.reset_velocity_noise,
+                )
+                joint_velocity_noise = pair_coupled_reset_noise_3d(
+                    jp,
+                    joint_velocity_common_noise,
+                    joint_velocity_differential_noise,
+                    task.reset_pair_differential_scale,
+                )
+                velocity_noise = jp.zeros(
+                    (self.mj_model.nv,), dtype=jp.float32
+                )
+                velocity_noise = velocity_noise.at[:6].set(
+                    root_velocity_noise
+                )
+                velocity_noise = velocity_noise.at[
+                    self.joint_dof_indices
+                ].set(joint_velocity_noise)
+            axis_tilt_noise = jax.random.uniform(
+                tilt_key,
+                shape=(2,),
+                minval=-task.reset_axis_tilt_noise_rad,
+                maxval=task.reset_axis_tilt_noise_rad,
             )
             oscillator_phase = jp.zeros((), dtype=jp.float32)
             cem_action = self._scaled_reference_action_8d(
@@ -474,6 +608,14 @@ def make_brax_env_3d(
             )
             qpos = qpos.at[0].set(0.0)
             qpos = qpos.at[1].set(0.0)
+            qpos = qpos.at[3:7].set(
+                axis_tilted_quaternion_3d(
+                    jp,
+                    self.compact_qpos[3:7],
+                    axis_tilt_noise[0],
+                    axis_tilt_noise[1],
+                )
+            )
             qvel = velocity_noise
             data = self.base_data.replace(
                 qpos=qpos,

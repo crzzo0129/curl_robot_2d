@@ -18,7 +18,19 @@ from curl_robot_2d_mjx.config_3d import (
     Rolling3DConfig,
     physics_profile_3d,
 )
-from curl_robot_2d_mjx.environment_3d import DEFAULT_3D_CEM_CONTROLLER
+from curl_robot_2d_mjx.curriculum_3d import (
+    CURRICULUM_NAMES_3D,
+    CURRICULUM_STAGE_NAMES_3D,
+    curriculum_stages_3d,
+)
+from curl_robot_2d_mjx.environment_3d import (
+    DEFAULT_3D_CEM_CONTROLLER,
+    OBSERVATION_SIZE_3D,
+    PHASE_FEEDBACK_SIZE_3D,
+)
+from curl_robot_2d_mjx.randomization_3d import (
+    make_domain_randomization_fn_3d,
+)
 from curl_robot_2d_mjx.reward_3d import (
     REWARD_3D_TERM_NAMES,
     Rolling3DRewardConfig,
@@ -65,6 +77,80 @@ PRESETS = {
 
 TANH_NORMAL_MIN_STD = 1e-3
 MAX_CHECKPOINT_FAILURE_RATE = 0.05
+
+
+def _allocate_weighted_counts(total, weights, *, minimum=1):
+    """Allocate integer work units while preserving the requested weights."""
+
+    count = len(weights)
+    if count == 0:
+        return []
+    total = max(int(total), count * minimum)
+    remaining = total - count * minimum
+    weight_sum = sum(weights)
+    raw = [remaining * weight / weight_sum for weight in weights]
+    allocated = [minimum + int(math.floor(value)) for value in raw]
+    leftover = total - sum(allocated)
+    order = sorted(
+        range(count),
+        key=lambda index: raw[index] - math.floor(raw[index]),
+        reverse=True,
+    )
+    for index in order[:leftover]:
+        allocated[index] += 1
+    return allocated
+
+
+def _curriculum_training_plan(args, values):
+    stages = curriculum_stages_3d(
+        args.curriculum,
+        only_stage=args.curriculum_stage,
+    )
+    if len(stages) == 1 and stages[0].name == "nominal":
+        stage_schedule = _training_step_schedule(
+            requested_steps=values["steps"],
+            num_evals=values["num_evals"],
+            batch_size=values["batch_size"],
+            unroll_length=args.unroll_length,
+            num_minibatches=values["num_minibatches"],
+        )
+        return (
+            {
+                "stage": stages[0],
+                "num_evals": values["num_evals"],
+                "schedule": stage_schedule,
+            },
+        )
+
+    rollout_quantum = (
+        values["batch_size"]
+        * args.unroll_length
+        * values["num_minibatches"]
+    )
+    weights = [stage.weight for stage in stages]
+    requested_quanta = math.ceil(values["steps"] / rollout_quantum)
+    stage_quanta = _allocate_weighted_counts(requested_quanta, weights)
+    stage_evals = _allocate_weighted_counts(values["num_evals"], weights)
+    plan = []
+    for stage, quanta, num_evals in zip(
+        stages, stage_quanta, stage_evals, strict=True
+    ):
+        requested_steps = quanta * rollout_quantum
+        stage_schedule = _training_step_schedule(
+            requested_steps=requested_steps,
+            num_evals=num_evals,
+            batch_size=values["batch_size"],
+            unroll_length=args.unroll_length,
+            num_minibatches=values["num_minibatches"],
+        )
+        plan.append(
+            {
+                "stage": stage,
+                "num_evals": num_evals,
+                "schedule": stage_schedule,
+            }
+        )
+    return tuple(plan)
 
 RECIPES_3D = {
     "anchored_v1": {
@@ -434,7 +520,13 @@ def _metric(metrics, name, default=0.0):
     return float(metrics.get(name, default))
 
 
-def _checkpoint_selection_3d(metrics, episode_length, *, target_turns=1.0):
+def _checkpoint_selection_3d(
+    metrics,
+    episode_length,
+    *,
+    target_turns=1.0,
+    maximum_failure_rate=MAX_CHECKPOINT_FAILURE_RATE,
+):
     """Score eval points by 3-D physical behavior, not raw reward scale."""
 
     average_length = metrics.get("eval/avg_episode_length", 0.0)
@@ -466,7 +558,7 @@ def _checkpoint_selection_3d(metrics, episode_length, *, target_turns=1.0):
     )
     rejected = (
         nonfinite_rate > 0.0
-        or failed_rate > MAX_CHECKPOINT_FAILURE_RATE
+        or failed_rate > maximum_failure_rate
         or not math.isfinite(turns)
         or not math.isfinite(lateral_drift)
         or not math.isfinite(axis_tilt)
@@ -477,6 +569,10 @@ def _checkpoint_selection_3d(metrics, episode_length, *, target_turns=1.0):
     return {
         "score": -1_000_000.0 if rejected else score,
         "rejected": rejected,
+        "failure_rate": failed_rate,
+        "passes_acceptance_failure_rate": (
+            failed_rate <= MAX_CHECKPOINT_FAILURE_RATE
+        ),
         "survival": survival,
         "turns": turns,
         "lateral_drift_m": lateral_drift,
@@ -824,6 +920,20 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=PHYSICS_PROFILE_NAMES_3D,
         default="cg12",
     )
+    parser.add_argument(
+        "--curriculum",
+        choices=CURRICULUM_NAMES_3D,
+        default="none",
+        help=(
+            "Robustness curriculum. reset_v1 stops after staged reset noise; "
+            "robustness_v1 then adds friction and dynamics randomization."
+        ),
+    )
+    parser.add_argument(
+        "--curriculum-stage",
+        choices=CURRICULUM_STAGE_NAMES_3D,
+        help="Run one stage for an ablation instead of the full curriculum.",
+    )
     parser.add_argument("--steps", type=int)
     parser.add_argument("--envs", type=int)
     parser.add_argument("--eval-envs", type=int)
@@ -936,6 +1046,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--restore-checkpoint", type=Path)
     parser.add_argument(
+        "--restore-params",
+        type=Path,
+        help=(
+            "Warm-start from a Brax params_best/params_final file. Unlike "
+            "--restore-checkpoint, this does not require an Orbax directory."
+        ),
+    )
+    parser.add_argument(
         "--out",
         type=Path,
         default=Path("results") / "mjx_3d_residual_nominal",
@@ -1014,6 +1132,17 @@ def parse_args(argv=None):
         parser.error("--residual-pair-differential-scale must be in [0, 1]")
     if args.ppo_checkpoint_dir is not None and not args.save_ppo_checkpoints:
         parser.error("--ppo-checkpoint-dir requires --save-ppo-checkpoints")
+    if args.restore_checkpoint is not None and args.restore_params is not None:
+        parser.error(
+            "--restore-checkpoint and --restore-params are mutually exclusive"
+        )
+    try:
+        curriculum_stages_3d(
+            args.curriculum,
+            only_stage=args.curriculum_stage,
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.selection_target_turns <= 0.0:
         parser.error("--selection-target-turns must be positive")
     if args.initial_policy_std <= TANH_NORMAL_MIN_STD:
@@ -1045,13 +1174,30 @@ def main(argv=None) -> None:
         override = getattr(args, name)
         if override is not None:
             values[name] = override
-    schedule = _training_step_schedule(
-        requested_steps=values["steps"],
-        num_evals=values["num_evals"],
-        batch_size=values["batch_size"],
-        unroll_length=args.unroll_length,
-        num_minibatches=values["num_minibatches"],
+    curriculum_plan = _curriculum_training_plan(args, values)
+    total_curriculum_evals = sum(
+        item["num_evals"] for item in curriculum_plan
     )
+    schedule = {
+        "requested_steps": values["steps"],
+        "effective_steps": sum(
+            item["schedule"]["effective_steps"]
+            for item in curriculum_plan
+        ),
+        "rollout_quantum": curriculum_plan[0]["schedule"][
+            "rollout_quantum"
+        ],
+        "stage_count": len(curriculum_plan),
+        "stages": [
+            {
+                "name": item["stage"].name,
+                "weight": item["stage"].weight,
+                "num_evals": item["num_evals"],
+                **item["schedule"],
+            }
+            for item in curriculum_plan
+        ],
+    }
     if (
         args.out.exists()
         and any(args.out.iterdir())
@@ -1133,87 +1279,8 @@ def main(argv=None) -> None:
         reference_weight=args.reference_weight,
         minimum_residual_gain=args.minimum_residual_gain,
     )
-    train_env = make_brax_env_3d(
-        task,
-        reward_config=reward_config,
-        cem_reference=reference,
-        seed=args.seed,
-    )
-    eval_env = make_brax_env_3d(
-        task,
-        reward_config=reward_config,
-        cem_reference=reference,
-        seed=args.seed + 10_000,
-    )
-
     metric_history = []
     reward_history = []
-    best = {
-        "score": float("-inf"),
-        "reward": float("-inf"),
-        "step": None,
-        "params": None,
-        "params_step": None,
-        "candidate_step": None,
-        "candidate_params": None,
-    }
-    reward_peak = {"reward": float("-inf"), "step": None}
-    eval_counter = {"value": 0}
-
-    def policy_params_fn(step, make_policy, params):
-        del make_policy
-        params_snapshot = jax.tree_util.tree_map(
-            lambda value: np.asarray(value).copy(), params
-        )
-        best["candidate_step"] = int(step)
-        best["candidate_params"] = params_snapshot
-        if best["step"] == int(step):
-            best["params"] = params_snapshot
-            best["params_step"] = int(step)
-
-    def progress_fn(step, metrics):
-        clean = {name: _float(value) for name, value in metrics.items()}
-        _add_per_step_eval_metrics_3d(clean)
-        reward_metrics, ordinary_metrics = _split_metrics(clean)
-        reward_history.append({"step": int(step), **reward_metrics})
-        metric_history.append({"step": int(step), **ordinary_metrics})
-        reward = clean.get(
-            "eval/episode_reward",
-            clean.get("eval/episode_reward_mean"),
-        )
-        if reward is not None and reward > reward_peak["reward"]:
-            reward_peak["reward"] = reward
-            reward_peak["step"] = int(step)
-        selection = _checkpoint_selection_3d(
-            clean,
-            args.episode_length,
-            target_turns=args.selection_target_turns,
-        )
-        selected = (
-            not selection["rejected"]
-            and selection["score"] > best["score"]
-        )
-        if selected:
-            best["score"] = selection["score"]
-            best["reward"] = reward
-            best["step"] = int(step)
-            if best["candidate_step"] == int(step):
-                best["params"] = best["candidate_params"]
-                best["params_step"] = int(step)
-        eval_counter["value"] += 1
-        print(
-            _format_eval_report_3d(
-                eval_counter["value"],
-                values["num_evals"],
-                step,
-                clean,
-                episode_length=args.episode_length,
-                control_dt=task.control_timestep,
-                selection=selection,
-                selected=selected,
-            ),
-            flush=True,
-        )
 
     config_payload = {
         "preset": args.preset,
@@ -1237,6 +1304,11 @@ def main(argv=None) -> None:
             if args.restore_checkpoint is not None
             else None
         ),
+        "restore_params": (
+            str(args.restore_params)
+            if args.restore_params is not None
+            else None
+        ),
         "save_ppo_checkpoints": args.save_ppo_checkpoints,
         "ppo_checkpoint_dir": (
             str(args.ppo_checkpoint_dir)
@@ -1247,7 +1319,34 @@ def main(argv=None) -> None:
         "reward": asdict(reward_config),
         "reference": asdict(reference),
         "runtime": runtime,
-        "evaluation": {"skip": args.skip_evaluation},
+        "evaluation": {
+            "skip": args.skip_evaluation,
+            "post_training_domain_randomization": False,
+        },
+        "curriculum": {
+            "name": args.curriculum,
+            "only_stage": args.curriculum_stage,
+            "selection_scope": "final_stage",
+            "reset_resampling": (
+                "stage_start"
+                if args.curriculum == "none"
+                else "stage_start_and_each_eval_interval"
+            ),
+            "stages": [
+                {
+                    "index": index,
+                    "name": item["stage"].name,
+                    "weight": item["stage"].weight,
+                    "task": asdict(item["stage"].task_config(task)),
+                    "domain_randomization": asdict(
+                        item["stage"].domain_randomization
+                    ),
+                    "num_evals": item["num_evals"],
+                    "schedule": item["schedule"],
+                }
+                for index, item in enumerate(curriculum_plan)
+            ],
+        },
         "checkpoint_selection": {
             "description": (
                 "0.25 survival + 0.45 forward turns + 0.10 non-failure + "
@@ -1259,6 +1358,7 @@ def main(argv=None) -> None:
             "axis_tilt_full_score_rad": 0.25,
             "forbidden_depth_limit_m": 0.001,
             "maximum_failure_rate": MAX_CHECKPOINT_FAILURE_RATE,
+            "curriculum_selection_maximum_failure_rate": 1.0,
             "reject_nonfinite": True,
         },
         "training_step_schedule": schedule,
@@ -1291,6 +1391,17 @@ def main(argv=None) -> None:
             f"{task.residual_pair_differential_scale:g}"
         )
     )
+    observation_size = OBSERVATION_SIZE_3D + (
+        PHASE_FEEDBACK_SIZE_3D if task.explicit_phase_observation else 0
+    )
+    curriculum_text = ", ".join(
+        (
+            f"{item['stage'].name}:"
+            f"{item['schedule']['effective_steps']:,}/"
+            f"{item['num_evals']}eval"
+        )
+        for item in curriculum_plan
+    )
     print(
         "[training]\n"
         f"  preset={args.preset} recipe={args.recipe} "
@@ -1298,8 +1409,9 @@ def main(argv=None) -> None:
         f"requested_steps={schedule['requested_steps']:,} "
         f"effective_steps={schedule['effective_steps']:,}\n"
         f"  rollout_quantum={schedule['rollout_quantum']:,} "
-        f"eval_interval={schedule['eval_interval_steps']:,} "
-        f"evals={values['num_evals']}\n"
+        f"stages={len(curriculum_plan)} "
+        f"evals={total_curriculum_evals}\n"
+        f"  curriculum={args.curriculum} [{curriculum_text}]\n"
         f"  envs={values['envs']} eval_envs={values['eval_envs']} "
         f"batch={values['batch_size']} "
         f"minibatches={values['num_minibatches']}\n"
@@ -1319,7 +1431,7 @@ def main(argv=None) -> None:
         f"startup_boost_duration={task.reference_startup_boost_duration_s:g}s\n"
         f"  residual_channels={residual_pair_text}\n"
         f"  explicit_phase_obs={task.explicit_phase_observation} "
-        f"obs_size={train_env.observation_size}\n"
+        f"obs_size={observation_size}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  policy_init={policy_init_text}\n"
@@ -1337,31 +1449,41 @@ def main(argv=None) -> None:
     )
 
     start = time.perf_counter()
-    checkpoint_kwargs = {}
     train_parameters = inspect.signature(ppo.train).parameters
-    if args.save_ppo_checkpoints and "save_checkpoint_path" in train_parameters:
-        checkpoint_dir = args.ppo_checkpoint_dir or (
-            args.out / "ppo_checkpoint"
+    if (
+        len(curriculum_plan) > 1 or args.restore_params is not None
+    ) and "restore_params" not in train_parameters:
+        raise SystemExit(
+            "Installed Brax does not support restore_params, which is "
+            "required for staged curriculum training."
         )
-        checkpoint_kwargs["save_checkpoint_path"] = str(
-            checkpoint_dir.resolve()
+    if any(
+        item["stage"].domain_randomization.enabled
+        for item in curriculum_plan
+    ) and "randomization_fn" not in train_parameters:
+        raise SystemExit(
+            "Installed Brax does not support randomization_fn."
         )
-        print(
-            "[checkpoint]\n"
-            f"  periodic_save={checkpoint_kwargs['save_checkpoint_path']}",
-            flush=True,
+    if (
+        args.curriculum != "none"
+        and "num_resets_per_eval" not in train_parameters
+    ):
+        raise SystemExit(
+            "Installed Brax does not support num_resets_per_eval, which is "
+            "required to refresh curriculum resets between eval intervals."
         )
+    restore_checkpoint_path = None
     if args.restore_checkpoint is not None:
         if "restore_checkpoint_path" not in train_parameters:
             raise SystemExit(
                 "Installed Brax does not support restore_checkpoint_path."
             )
-        checkpoint_kwargs["restore_checkpoint_path"] = str(
+        restore_checkpoint_path = str(
             _resolve_restore_checkpoint(args.restore_checkpoint)
         )
         print(
             "[checkpoint]\n"
-            f"  restoring={checkpoint_kwargs['restore_checkpoint_path']}",
+            f"  restoring={restore_checkpoint_path}",
             flush=True,
         )
 
@@ -1374,37 +1496,269 @@ def main(argv=None) -> None:
         if args.zero_residual_policy_init
         else _network_factory(args.hidden_layers, args.activation)
     )
-    make_inference_fn, final_params, final_metrics = ppo.train(
-        environment=train_env,
-        eval_env=eval_env,
-        num_timesteps=values["steps"],
-        episode_length=args.episode_length,
-        action_repeat=1,
-        num_envs=values["envs"],
-        num_evals=values["num_evals"],
-        num_eval_envs=values["eval_envs"],
-        learning_rate=args.learning_rate,
-        entropy_cost=args.entropy_cost,
-        discounting=args.discounting,
-        reward_scaling=args.reward_scaling,
-        unroll_length=args.unroll_length,
-        batch_size=values["batch_size"],
-        num_minibatches=values["num_minibatches"],
-        num_updates_per_batch=args.updates_per_batch,
-        normalize_observations=True,
-        deterministic_eval=args.deterministic_eval,
-        network_factory=network_factory,
-        seed=args.seed,
-        progress_fn=progress_fn,
-        policy_params_fn=policy_params_fn,
-        **checkpoint_kwargs,
+    restored_params = (
+        model_io.load_params(args.restore_params)
+        if args.restore_params is not None
+        else None
     )
+    if args.restore_params is not None:
+        print(
+            "[checkpoint]\n"
+            f"  restoring_params={args.restore_params.resolve()}",
+            flush=True,
+        )
+    make_inference_fn = None
+    final_params = None
+    final_metrics = {}
+    best_params = None
+    best_params_source = None
+    best = None
+    reward_peak = None
+    eval_env = None
+    stage_history = []
+    eval_counter = {"value": 0}
+    global_step_offset = 0
+
+    for stage_index, stage_item in enumerate(curriculum_plan):
+        stage = stage_item["stage"]
+        stage_schedule = stage_item["schedule"]
+        stage_task = stage.task_config(task)
+        train_env = make_brax_env_3d(
+            stage_task,
+            reward_config=reward_config,
+            cem_reference=reference,
+            seed=args.seed + 100 * stage_index,
+        )
+        eval_env = make_brax_env_3d(
+            stage_task,
+            reward_config=reward_config,
+            cem_reference=reference,
+            seed=args.seed + 10_000 + 100 * stage_index,
+        )
+        randomization_fn = make_domain_randomization_fn_3d(
+            stage.domain_randomization
+        )
+        best = {
+            "score": float("-inf"),
+            "reward": float("-inf"),
+            "step": None,
+            "params": None,
+            "params_step": None,
+            "candidate_step": None,
+            "candidate_params": None,
+            "selection": None,
+        }
+        reward_peak = {"reward": float("-inf"), "step": None}
+        stage_metric_history = []
+        domain = stage.domain_randomization
+        print(
+            f"[curriculum stage {stage_index + 1}/{len(curriculum_plan)}] "
+            f"{stage.name}\n"
+            f"  steps={stage_schedule['effective_steps']:,} "
+            f"evals={stage_item['num_evals']} "
+            f"global_start={global_step_offset:,}\n"
+            f"  reset joint={stage_task.reset_joint_noise_rad:g}rad "
+            f"velocity={stage_task.reset_velocity_noise:g} "
+            f"differential={stage_task.reset_pair_differential_scale} "
+            f"tilt={stage_task.reset_axis_tilt_noise_rad:g}rad\n"
+            f"  randomization friction={domain.geom_friction_scale} "
+            f"mass={domain.body_mass_scale} "
+            f"actuator_gain={domain.actuator_gain_scale}",
+            flush=True,
+        )
+
+        def policy_params_fn(step, make_policy, params):
+            del make_policy
+            global_step = global_step_offset + int(step)
+            params_snapshot = jax.tree_util.tree_map(
+                lambda value: np.asarray(value).copy(), params
+            )
+            best["candidate_step"] = global_step
+            best["candidate_params"] = params_snapshot
+            if best["step"] == global_step:
+                best["params"] = params_snapshot
+                best["params_step"] = global_step
+
+        def progress_fn(step, metrics):
+            global_step = global_step_offset + int(step)
+            clean = {name: _float(value) for name, value in metrics.items()}
+            _add_per_step_eval_metrics_3d(clean)
+            reward_metrics, ordinary_metrics = _split_metrics(clean)
+            record_prefix = {
+                "step": global_step,
+                "stage_index": stage_index,
+                "stage_name": stage.name,
+                "stage_step": int(step),
+            }
+            reward_history.append({**record_prefix, **reward_metrics})
+            metric_record = {**record_prefix, **ordinary_metrics}
+            metric_history.append(metric_record)
+            stage_metric_history.append(metric_record)
+            reward = clean.get(
+                "eval/episode_reward",
+                clean.get("eval/episode_reward_mean"),
+            )
+            if reward is not None and reward > reward_peak["reward"]:
+                reward_peak["reward"] = reward
+                reward_peak["step"] = global_step
+            selection = _checkpoint_selection_3d(
+                clean,
+                args.episode_length,
+                target_turns=args.selection_target_turns,
+                maximum_failure_rate=(
+                    MAX_CHECKPOINT_FAILURE_RATE
+                    if args.curriculum == "none"
+                    else 1.0
+                ),
+            )
+            selected = (
+                not selection["rejected"]
+                and selection["score"] > best["score"]
+            )
+            if selected:
+                best["score"] = selection["score"]
+                best["reward"] = reward
+                best["step"] = global_step
+                best["selection"] = selection
+                if best["candidate_step"] == global_step:
+                    best["params"] = best["candidate_params"]
+                    best["params_step"] = global_step
+            eval_counter["value"] += 1
+            print(
+                _format_eval_report_3d(
+                    eval_counter["value"],
+                    total_curriculum_evals,
+                    global_step,
+                    clean,
+                    episode_length=args.episode_length,
+                    control_dt=stage_task.control_timestep,
+                    selection=selection,
+                    selected=selected,
+                ),
+                flush=True,
+            )
+
+        train_kwargs = {}
+        if restored_params is not None:
+            train_kwargs["restore_params"] = restored_params
+        elif restore_checkpoint_path is not None:
+            train_kwargs["restore_checkpoint_path"] = (
+                restore_checkpoint_path
+            )
+        if randomization_fn is not None:
+            train_kwargs["randomization_fn"] = randomization_fn
+        if args.curriculum != "none":
+            train_kwargs["num_resets_per_eval"] = 1
+        if args.save_ppo_checkpoints:
+            if "save_checkpoint_path" not in train_parameters:
+                raise SystemExit(
+                    "Installed Brax does not support save_checkpoint_path."
+                )
+            checkpoint_dir = args.ppo_checkpoint_dir or (
+                args.out / "ppo_checkpoint"
+            )
+            if len(curriculum_plan) > 1:
+                checkpoint_dir = (
+                    checkpoint_dir / f"stage_{stage_index}_{stage.name}"
+                )
+            train_kwargs["save_checkpoint_path"] = str(
+                checkpoint_dir.resolve()
+            )
+            print(
+                "[checkpoint]\n"
+                f"  periodic_save={train_kwargs['save_checkpoint_path']}",
+                flush=True,
+            )
+
+        (
+            make_inference_fn,
+            stage_final_params,
+            stage_final_metrics,
+        ) = ppo.train(
+            environment=train_env,
+            eval_env=eval_env,
+            num_timesteps=stage_schedule["requested_steps"],
+            episode_length=args.episode_length,
+            action_repeat=1,
+            num_envs=values["envs"],
+            num_evals=stage_item["num_evals"],
+            num_eval_envs=values["eval_envs"],
+            learning_rate=args.learning_rate,
+            entropy_cost=args.entropy_cost,
+            discounting=args.discounting,
+            reward_scaling=args.reward_scaling,
+            unroll_length=args.unroll_length,
+            batch_size=values["batch_size"],
+            num_minibatches=values["num_minibatches"],
+            num_updates_per_batch=args.updates_per_batch,
+            normalize_observations=True,
+            deterministic_eval=args.deterministic_eval,
+            network_factory=network_factory,
+            seed=args.seed + stage_index,
+            progress_fn=progress_fn,
+            policy_params_fn=policy_params_fn,
+            **train_kwargs,
+        )
+        stage_best_params, stage_best_source = _resolve_best_params(
+            best,
+            stage_final_params,
+            stage_metric_history,
+        )
+        clean_stage_final_metrics = {
+            name: _float(value)
+            for name, value in (stage_final_metrics or {}).items()
+        }
+        _add_per_step_eval_metrics_3d(clean_stage_final_metrics)
+        stage_history.append(
+            {
+                "index": stage_index,
+                "name": stage.name,
+                "global_start_step": global_step_offset,
+                "effective_steps": stage_schedule["effective_steps"],
+                "best_step": best["step"],
+                "best_score": (
+                    best["score"] if math.isfinite(best["score"]) else None
+                ),
+                "best_reward": (
+                    best["reward"] if math.isfinite(best["reward"]) else None
+                ),
+                "best_params_source": stage_best_source,
+                "best_failure_rate": (
+                    best["selection"]["failure_rate"]
+                    if best["selection"] is not None
+                    else None
+                ),
+                "best_passes_acceptance": (
+                    best["selection"][
+                        "passes_acceptance_failure_rate"
+                    ]
+                    if best["selection"] is not None
+                    else False
+                ),
+                "final_metrics": clean_stage_final_metrics,
+            }
+        )
+        if len(curriculum_plan) > 1:
+            stage_prefix = args.out / f"params_stage_{stage_index}_{stage.name}"
+            model_io.save_params(
+                Path(f"{stage_prefix}_final"), stage_final_params
+            )
+            model_io.save_params(
+                Path(f"{stage_prefix}_best"), stage_best_params
+            )
+        restored_params = stage_best_params
+        final_params = stage_final_params
+        final_metrics = stage_final_metrics or {}
+        best_params = stage_best_params
+        best_params_source = stage_best_source
+        global_step_offset += stage_schedule["effective_steps"]
+
     elapsed = time.perf_counter() - start
-    best_params, best_params_source = _resolve_best_params(
-        best, final_params, metric_history
-    )
     model_io.save_params(args.out / "params_final", final_params)
     model_io.save_params(args.out / "params_best", best_params)
+    (args.out / "curriculum_history.json").write_text(
+        json.dumps(stage_history, indent=2) + "\n", encoding="utf-8"
+    )
     (args.out / "metrics_history.json").write_text(
         json.dumps(metric_history, indent=2) + "\n", encoding="utf-8"
     )
@@ -1432,10 +1786,16 @@ def main(argv=None) -> None:
     )
     train_summary = {
         "elapsed_s": elapsed,
+        "curriculum": args.curriculum,
+        "final_stage": stage_history[-1]["name"],
+        "stages": stage_history,
         "best_eval_reward": best_reward_value,
         "best_step": best["step"],
         "best_selection_score": best_score_value,
         "best_params_source": best_params_source,
+        "best_passes_acceptance": stage_history[-1][
+            "best_passes_acceptance"
+        ],
         "reward_peak": reward_peak_value,
         "reward_peak_step": reward_peak["step"],
         "final_metrics": final_ordinary_metrics,
@@ -1460,7 +1820,9 @@ def main(argv=None) -> None:
         "[training complete]\n"
         f"  elapsed={elapsed / 60.0:.1f}min "
         f"throughput={throughput:,.0f} steps/s\n"
-        f"  physical_best {best_source}\n"
+        f"  physical_best {best_source} "
+        f"acceptance="
+        f"{'PASS' if stage_history[-1]['best_passes_acceptance'] else 'NOT_YET'}\n"
         f"  best_params_source={best_params_source}\n"
         f"  reward_peak {reward_peak_source}\n"
         f"  checkpoints best={args.out / 'params_best'} "

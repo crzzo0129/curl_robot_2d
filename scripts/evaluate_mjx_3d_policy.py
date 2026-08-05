@@ -234,6 +234,10 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--reset-joint-noise-rad", type=float, default=0.005)
     parser.add_argument("--reset-velocity-noise", type=float, default=0.005)
+    parser.add_argument("--reset-pair-differential-scale", type=float)
+    parser.add_argument(
+        "--reset-axis-tilt-noise-rad", type=float, default=0.0
+    )
     parser.add_argument("--reference-weight", type=float, default=1.0)
     parser.add_argument("--minimum-residual-gain", type=float, default=0.15)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
@@ -308,8 +312,17 @@ def parse_args(argv=None):
         parser.error("--diagnostic-rollouts must be nonnegative")
     if not 0 <= args.rollout_index < args.batch_size:
         parser.error("--rollout-index must be in [0, batch-size)")
-    if args.reset_joint_noise_rad < 0.0 or args.reset_velocity_noise < 0.0:
+    if (
+        args.reset_joint_noise_rad < 0.0
+        or args.reset_velocity_noise < 0.0
+        or args.reset_axis_tilt_noise_rad < 0.0
+    ):
         parser.error("--reset-* noise values must be nonnegative")
+    if (
+        args.reset_pair_differential_scale is not None
+        and not 0.0 <= args.reset_pair_differential_scale <= 1.0
+    ):
+        parser.error("--reset-pair-differential-scale must be in [0, 1]")
     if args.initial_policy_std <= TANH_NORMAL_MIN_STD:
         parser.error(
             "--initial-policy-std must be greater than "
@@ -340,6 +353,10 @@ def main(argv=None) -> None:
             episode_length=args.episode_length,
             reset_joint_noise_rad=args.reset_joint_noise_rad,
             reset_velocity_noise=args.reset_velocity_noise,
+            reset_pair_differential_scale=(
+                args.reset_pair_differential_scale
+            ),
+            reset_axis_tilt_noise_rad=args.reset_axis_tilt_noise_rad,
             reference_phase_rate_scale=args.phase_rate_scale,
             reference_action_scale=args.reference_action_scale,
             reference_ramp_start_scale=args.reference_ramp_start_scale,
@@ -569,7 +586,9 @@ def main(argv=None) -> None:
         f"episode={args.episode_length} "
         f"physics={task.physics_profile} seed={args.seed}\n"
         f"  reset_noise q={task.reset_joint_noise_rad:g} "
-        f"v={task.reset_velocity_noise:g}\n"
+        f"v={task.reset_velocity_noise:g} "
+        f"differential={task.reset_pair_differential_scale} "
+        f"tilt={task.reset_axis_tilt_noise_rad:g}rad\n"
         f"  reference_ramp_start={task.reference_ramp_start_scale} "
         f"ramp_s={task.reference_ramp_duration_s:g}\n"
         f"  zero_residual_policy_init={args.zero_residual_policy_init} "

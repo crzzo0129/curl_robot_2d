@@ -30,6 +30,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.preset, "smoke")
         self.assertEqual(args.recipe, "anchored_v1")
         self.assertEqual(args.physics_profile, "cg12")
+        self.assertEqual(args.curriculum, "none")
+        self.assertIsNone(args.curriculum_stage)
         self.assertEqual(args.controller, DEFAULT_3D_CEM_CONTROLLER)
         self.assertEqual(args.reference_weight, 1.0)
         self.assertEqual(args.minimum_residual_gain, 0.05)
@@ -48,6 +50,55 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(args.deterministic_eval)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
+        self.assertIsNone(args.restore_params)
+
+    def test_reset_curriculum_allocates_every_stage_training_work(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--curriculum", "reset_v1"]
+        )
+        values = train_mjx_3d_residual_ppo.PRESETS["smoke"].copy()
+
+        plan = train_mjx_3d_residual_ppo._curriculum_training_plan(
+            args, values
+        )
+
+        self.assertEqual(
+            [item["stage"].name for item in plan],
+            [
+                "symmetric_reset",
+                "differential_005",
+                "differential_010",
+                "differential_025",
+            ],
+        )
+        self.assertTrue(
+            all(item["schedule"]["effective_steps"] > 0 for item in plan)
+        )
+        self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 4)
+
+    def test_curriculum_stage_must_belong_to_selected_curriculum(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            train_mjx_3d_residual_ppo.parse_args(
+                [
+                    "--curriculum",
+                    "reset_v1",
+                    "--curriculum-stage",
+                    "friction",
+                ]
+            )
+
+    def test_restore_params_and_orbax_checkpoint_are_mutually_exclusive(
+        self,
+    ) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            train_mjx_3d_residual_ppo.parse_args(
+                [
+                    "--restore-params",
+                    "params_best",
+                    "--restore-checkpoint",
+                    "ppo_checkpoint",
+                ]
+            )
 
     def test_push_v2_recipe_applies_training_and_reward_defaults(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(["--recipe", "push_v2"])
@@ -178,6 +229,28 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertFalse(args.deterministic_eval)
 
+    def test_evaluator_exposes_curriculum_reset_distribution(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "params_best",
+                "--out",
+                "eval_curriculum_reset",
+                "--reset-joint-noise-rad",
+                "0.015",
+                "--reset-velocity-noise",
+                "0.03",
+                "--reset-pair-differential-scale",
+                "0.25",
+                "--reset-axis-tilt-noise-rad",
+                "0.03",
+            ]
+        )
+
+        self.assertEqual(args.reset_joint_noise_rad, 0.015)
+        self.assertEqual(args.reset_velocity_noise, 0.03)
+        self.assertEqual(args.reset_pair_differential_scale, 0.25)
+        self.assertEqual(args.reset_axis_tilt_noise_rad, 0.03)
+
     def test_initial_policy_std_must_exceed_distribution_floor(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             train_mjx_3d_residual_ppo.parse_args(
@@ -257,21 +330,33 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertLess(rejected["score"], -999_999.0)
 
     def test_checkpoint_selection_rejects_excess_failure_rate(self) -> None:
+        metrics = {
+            "eval/avg_episode_length": 490.0,
+            "eval/episode_failed": 0.125,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_roll_progress_rad": 12.0 * math.pi,
+            "eval/avg_lateral_drift_m": 0.01,
+            "eval/avg_axis_tilt_rad": 0.05,
+            "eval/avg_forbidden_penetration_m": 0.0,
+            "eval/avg_forbidden_contact_count": 0.0,
+        }
         rejected = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
-            {
-                "eval/avg_episode_length": 490.0,
-                "eval/episode_failed": 0.125,
-                "eval/episode_failure_nonfinite": 0.0,
-                "eval/episode_roll_progress_rad": 12.0 * math.pi,
-                "eval/avg_lateral_drift_m": 0.01,
-                "eval/avg_axis_tilt_rad": 0.05,
-                "eval/avg_forbidden_penetration_m": 0.0,
-                "eval/avg_forbidden_contact_count": 0.0,
-            },
+            metrics,
             episode_length=500,
+        )
+        curriculum_candidate = (
+            train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+                metrics,
+                episode_length=500,
+                maximum_failure_rate=1.0,
+            )
         )
 
         self.assertTrue(rejected["rejected"])
+        self.assertFalse(curriculum_candidate["rejected"])
+        self.assertFalse(
+            curriculum_candidate["passes_acceptance_failure_rate"]
+        )
 
     def test_final_eval_selection_uses_exact_final_params(self) -> None:
         stale_callback_params = object()

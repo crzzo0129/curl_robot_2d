@@ -40,6 +40,8 @@ class Rolling3DConfig:
     startup_action_ramp_s: float = 0.25
     reset_joint_noise_rad: float = 0.005
     reset_velocity_noise: float = 0.005
+    reset_pair_differential_scale: float | None = None
+    reset_axis_tilt_noise_rad: float = 0.0
     reference_phase_rate_scale: float = 1.0
     reference_action_scale: float = 1.0
     reference_ramp_start_scale: float | None = None
@@ -74,6 +76,21 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("3-D action scales must be finite and positive")
     if config.action_repeat < 1 or config.episode_length < 1:
         raise ValueError("action_repeat and episode_length must be positive")
+    for value, name in (
+        (config.reset_joint_noise_rad, "reset_joint_noise_rad"),
+        (config.reset_velocity_noise, "reset_velocity_noise"),
+        (config.reset_axis_tilt_noise_rad, "reset_axis_tilt_noise_rad"),
+    ):
+        if not math.isfinite(value) or value < 0.0:
+            raise ValueError(f"{name} must be finite and nonnegative")
+    if config.reset_pair_differential_scale is not None:
+        if (
+            not math.isfinite(config.reset_pair_differential_scale)
+            or not 0.0 <= config.reset_pair_differential_scale <= 1.0
+        ):
+            raise ValueError(
+                "reset_pair_differential_scale must be in [0, 1]"
+            )
     if not math.isfinite(config.reference_phase_rate_scale):
         raise ValueError("reference_phase_rate_scale must be finite")
     if (
