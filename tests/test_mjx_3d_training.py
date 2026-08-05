@@ -4,6 +4,8 @@ from contextlib import redirect_stderr
 from pathlib import Path
 import unittest
 
+import numpy as np
+
 from curl_robot_2d_mjx.environment_3d import DEFAULT_3D_CEM_CONTROLLER
 from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
 from scripts import (
@@ -340,6 +342,36 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(args.zero_residual_policy_init)
         self.assertEqual(args.initial_policy_std, 0.20)
         self.assertTrue(args.explicit_phase_observation)
+        self.assertFalse(args.resume)
+        self.assertEqual(args.diagnostic_rollouts, 0)
+        self.assertTrue(args.diagnostic_reference)
+
+    def test_diagnostic_selection_keeps_failures_and_boundary_successes(self) -> None:
+        count = 8
+        arrays = {
+            "steps": np.asarray([500, 320, 490, 500, 440, 500, 500, 470]),
+            "failed": np.asarray([0, 1, 1, 0, 1, 0, 0, 1]),
+            "seed_index": np.arange(count),
+            "final_lateral_drift_m": np.asarray(
+                [0.01, 0.21, -0.22, 0.03, 0.20, -0.18, 0.02, -0.21]
+            ),
+            "max_abs_lateral_drift_m": np.asarray(
+                [0.02, 0.21, 0.22, 0.04, 0.20, 0.18, 0.03, 0.21]
+            ),
+            "conservative_turns": np.asarray(
+                [8.7, 5.0, 8.4, 8.71, 7.2, 8.68, 8.72, 8.0]
+            ),
+        }
+
+        selected = evaluate_mjx_3d_policy._select_diagnostic_rollouts(
+            arrays, 6
+        )
+
+        self.assertEqual(len(selected), 6)
+        selected_indices = {item["array_index"] for item in selected}
+        self.assertIn(1, selected_indices)
+        self.assertIn(2, selected_indices)
+        self.assertTrue(selected_indices.intersection({0, 3, 5, 6}))
 
     def test_3d_policy_renderer_defaults_to_cg20_freejoint_model(self) -> None:
         args = render_mjx_3d_policy.parse_args(["evaluation_rollout.npz"])
