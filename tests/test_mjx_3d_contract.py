@@ -210,6 +210,35 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(robust_stages[-1].name, "dynamics")
         self.assertTrue(robust_stages[-1].domain_randomization.enabled)
 
+    def test_reset_v2_resolves_measured_axis_tilt_cliff(self) -> None:
+        stages = curriculum_stages_3d("reset_v2")
+
+        self.assertEqual(
+            [stage.reset_axis_tilt_noise_rad for stage in stages],
+            [0.0, 0.010, 0.015, 0.0175, 0.020, 0.030],
+        )
+        self.assertTrue(
+            all(stage.reset_joint_noise_rad == 0.015 for stage in stages)
+        )
+        self.assertTrue(
+            all(stage.reset_velocity_noise == 0.030 for stage in stages)
+        )
+        self.assertTrue(
+            all(
+                stage.reset_pair_differential_scale == 0.25
+                for stage in stages
+            )
+        )
+        self.assertAlmostEqual(sum(stage.weight for stage in stages), 1.0)
+        self.assertGreaterEqual(
+            sum(
+                stage.weight
+                for stage in stages
+                if stage.reset_axis_tilt_noise_rad >= 0.015
+            ),
+            0.80,
+        )
+
     def test_domain_randomization_ranges_are_positive_and_ordered(self) -> None:
         validate_domain_randomization_3d(
             Rolling3DDomainRandomization(

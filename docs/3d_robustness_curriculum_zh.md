@@ -4,14 +4,15 @@
 
 不要一次性加入全部 randomization。当前 nominal reference 已经能稳定滚动，但 residual policy 在小扰动下反而增加横向失败；如果同时加入 reset、摩擦、质量和执行器误差，失败率变化将无法归因。
 
-训练入口现在提供两个显式课程：
+训练入口现在提供三个显式课程：
 
-- `reset_v1`：只逐步增加左右非对称 reset 扰动；
+- `reset_v1`：保留最初的左右非对称 reset 课程，用于复现；
+- `reset_v2`：固定已验证安全的 joint/qvel/differential 扰动，细分轴倾斜临界区；
 - `robustness_v1`：先完整执行 `reset_v1`，再依次加入摩擦和动力学随机化。
 
 默认仍为 `--curriculum none`，旧命令行为不变。
 
-## 阶段
+## `reset_v1` 阶段
 
 | stage | joint noise | qvel noise | 左右 differential | 轴倾斜 | 物理随机化 |
 |---|---:|---:|---:|---:|---|
@@ -21,6 +22,21 @@
 | `differential_025` | 0.015 rad | 0.030 | 0.25 | 0.030 rad | 无 |
 | `friction` | 同上 | 同上 | 同上 | 同上 | 所有 geom 摩擦乘以 U(0.90, 1.10) |
 | `dynamics` | 同上 | 同上 | 同上 | 同上 | 摩擦 + body mass/inertia U(0.95, 1.05) + actuator gain U(0.95, 1.05) |
+
+## `reset_v2` 阶段
+
+128 个 reference-only rollout 的消融结果表明，`q=0.015`、`v=0.030` 本身只有 0.78% 失败，加入 `differential=0.25` 后也只有 2.34%；真正的失败来源是 axis tilt，且失败类型全部为 `lateral_drift`：
+
+| axis tilt | reference-only failure rate | median turns |
+|---:|---:|---:|
+| 0 | 0.78% | 8.705 |
+| 0.010 | 9.38% | 8.700 |
+| 0.015 | 14.84% | 8.687 |
+| 0.0175 | 15.62% | 8.685 |
+| 0.020 | 30.47% | 8.666 |
+| 0.030 | 39.06% | 8.628 |
+
+因此 `reset_v2` 的全部阶段固定 `joint=0.015`、`qvel=0.030`、`differential=0.25`，只按 `tilt=0 -> 0.010 -> 0.015 -> 0.0175 -> 0.020 -> 0.030` 增加轴倾斜。权重依次为 `0.10、0.10、0.15、0.20、0.20、0.25`，训练重点位于实测临界区及最终目标。
 
 左右 joint 和 joint velocity 使用 common/differential 分解。`differential=0` 时左右对应关节的 reset 完全对称；之后只逐步放大差分分量。root 的六维初速度仍独立采样，所以 qvel noise 同时包含有效的侧向初速度与轴角速度扰动。初始 y 位置保持 0，因为无限平面在 y 方向平移不变，随机位置不会形成新的物理困难。
 
@@ -35,13 +51,13 @@ python -m scripts.train_mjx_3d_residual_ppo \
   --preset smoke \
   --recipe phase_locked_coupled_v6 \
   --physics-profile cg20 \
-  --curriculum reset_v1 \
+  --curriculum reset_v2 \
   --restore-params results/mjx_3d_residual_cg20_ramp050_010_h200_seed0/params_best \
   --reference-ramp-start-scale 0.50 \
   --reference-ramp-duration-s 0.10 \
   --mujoco-gl disable \
   --memory-fraction 0.50 \
-  --out results/mjx_3d_reset_curriculum_smoke_seed0
+  --out results/mjx_3d_reset_v2_smoke_seed0
 ```
 
 smoke 能编译完成、各 stage 指标没有断崖式下降后，再运行 reset-only 长训练：
@@ -51,21 +67,21 @@ python -m scripts.train_mjx_3d_residual_ppo \
   --preset h200 \
   --recipe phase_locked_coupled_v6 \
   --physics-profile cg20 \
-  --curriculum reset_v1 \
+  --curriculum reset_v2 \
   --restore-params results/mjx_3d_residual_cg20_ramp050_010_h200_seed0/params_best \
   --reference-ramp-start-scale 0.50 \
   --reference-ramp-duration-s 0.10 \
   --mujoco-gl disable \
   --memory-fraction 0.80 \
-  --out results/mjx_3d_reset_curriculum_h200_seed0
+  --out results/mjx_3d_reset_v2_h200_seed0
 ```
 
 训练过程中的不同 stage 使用不同扰动分布，所以 stage 间的 failure rate 不能直接作因果比较。训练完成后，应让旧 checkpoint 和新 checkpoint 使用相同 seed、相同 1024 个最终 reset 分布分别评估：
 
 ```bash
 python -m scripts.evaluate_mjx_3d_policy \
-  results/mjx_3d_reset_curriculum_h200_seed0/params_best \
-  --out results/mjx_3d_reset_curriculum_h200_seed0/eval_final_reset1024 \
+  results/mjx_3d_reset_v2_h200_seed0/params_best \
+  --out results/mjx_3d_reset_v2_h200_seed0/eval_final_reset1024 \
   --batch-size 1024 \
   --chunk-size 128 \
   --episode-length 500 \
@@ -81,21 +97,7 @@ python -m scripts.evaluate_mjx_3d_policy \
   --memory-fraction 0.20
 ```
 
-把 checkpoint 和 `--out` 换成旧策略后再跑一次。只有新策略在同一批 reset 上降低 failure rate，且 turns 没有明显下降，才进入完整物理随机化：
-
-```bash
-python -m scripts.train_mjx_3d_residual_ppo \
-  --preset h200 \
-  --recipe phase_locked_coupled_v6 \
-  --physics-profile cg20 \
-  --curriculum robustness_v1 \
-  --restore-params results/mjx_3d_reset_curriculum_h200_seed0/params_best \
-  --reference-ramp-start-scale 0.50 \
-  --reference-ramp-duration-s 0.10 \
-  --mujoco-gl disable \
-  --memory-fraction 0.80 \
-  --out results/mjx_3d_robustness_curriculum_h200_seed0
-```
+把 checkpoint 和 `--out` 换成旧策略后再跑一次。只有新策略在同一批 reset 上降低 failure rate，且 turns 没有明显下降，才进入物理随机化。`robustness_v1` 仍基于旧的 `reset_v1`，在 `reset_v2` 验收通过前不要把它直接接到新 checkpoint；届时应新增以 `reset_v2` 为前半段的物理随机化课程。
 
 ## 消融
 

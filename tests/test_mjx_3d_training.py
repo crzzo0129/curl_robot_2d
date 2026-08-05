@@ -76,6 +76,32 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
         self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 4)
 
+    def test_reset_v2_allocates_every_tilt_stage_training_work(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--curriculum", "reset_v2"]
+        )
+        values = train_mjx_3d_residual_ppo.PRESETS["smoke"].copy()
+
+        plan = train_mjx_3d_residual_ppo._curriculum_training_plan(
+            args, values
+        )
+
+        self.assertEqual(
+            [item["stage"].name for item in plan],
+            [
+                "tilt_v2_0000",
+                "tilt_v2_0100",
+                "tilt_v2_0150",
+                "tilt_v2_0175",
+                "tilt_v2_0200",
+                "tilt_v2_0300",
+            ],
+        )
+        self.assertTrue(
+            all(item["schedule"]["effective_steps"] > 0 for item in plan)
+        )
+        self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 6)
+
     def test_curriculum_stage_must_belong_to_selected_curriculum(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             train_mjx_3d_residual_ppo.parse_args(

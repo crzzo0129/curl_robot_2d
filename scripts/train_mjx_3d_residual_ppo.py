@@ -930,8 +930,9 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=CURRICULUM_NAMES_3D,
         default="none",
         help=(
-            "Robustness curriculum. reset_v1 stops after staged reset noise; "
-            "robustness_v1 then adds friction and dynamics randomization."
+            "Robustness curriculum. reset_v1 preserves the original reset "
+            "schedule; reset_v2 resolves the measured axis-tilt failure "
+            "cliff; robustness_v1 adds physics randomization after reset_v1."
         ),
     )
     parser.add_argument(

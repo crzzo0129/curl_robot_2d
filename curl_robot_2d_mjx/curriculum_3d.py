@@ -10,7 +10,12 @@ from curl_robot_2d_mjx.randomization_3d import (
 )
 
 
-CURRICULUM_NAMES_3D = ("none", "reset_v1", "robustness_v1")
+CURRICULUM_NAMES_3D = (
+    "none",
+    "reset_v1",
+    "reset_v2",
+    "robustness_v1",
+)
 
 
 @dataclass(frozen=True)
@@ -80,6 +85,57 @@ RESET_STAGES_3D = (
     ),
 )
 
+RESET_V2_STAGES_3D = (
+    Rolling3DCurriculumStage(
+        name="tilt_v2_0000",
+        weight=0.10,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="tilt_v2_0100",
+        weight=0.10,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.010,
+    ),
+    Rolling3DCurriculumStage(
+        name="tilt_v2_0150",
+        weight=0.15,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.015,
+    ),
+    Rolling3DCurriculumStage(
+        name="tilt_v2_0175",
+        weight=0.20,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.0175,
+    ),
+    Rolling3DCurriculumStage(
+        name="tilt_v2_0200",
+        weight=0.20,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.020,
+    ),
+    Rolling3DCurriculumStage(
+        name="tilt_v2_0300",
+        weight=0.25,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.030,
+    ),
+)
+
 PHYSICS_STAGES_3D = (
     Rolling3DCurriculumStage(
         name="friction",
@@ -108,7 +164,12 @@ PHYSICS_STAGES_3D = (
 )
 
 CURRICULUM_STAGE_NAMES_3D = tuple(
-    stage.name for stage in (*RESET_STAGES_3D, *PHYSICS_STAGES_3D)
+    stage.name
+    for stage in (
+        *RESET_STAGES_3D,
+        *RESET_V2_STAGES_3D,
+        *PHYSICS_STAGES_3D,
+    )
 )
 
 
@@ -123,6 +184,8 @@ def curriculum_stages_3d(
         return (Rolling3DCurriculumStage(name="nominal", weight=1.0),)
     if name == "reset_v1":
         stages = RESET_STAGES_3D
+    elif name == "reset_v2":
+        stages = RESET_V2_STAGES_3D
     elif name == "robustness_v1":
         reset_weight_scale = 0.60 / sum(
             stage.weight for stage in RESET_STAGES_3D
