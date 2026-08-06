@@ -408,7 +408,7 @@ def main(argv=None) -> None:
             if args.zero_residual_policy_init
             else _network_factory(args.hidden_layers, args.activation)
         )
-        ppo_network = network_factory(env.observation_size, env.action_size)
+        ppo_network = network_factory(env.observation_size, env.action_size, preprocess_observations_fn=running_statistics.normalize,)
         make_policy = ppo_networks.make_inference_fn(ppo_network)
         params = model_io.load_params(args.checkpoint)
         try:
