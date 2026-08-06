@@ -21,6 +21,7 @@ from scripts.train_mjx_3d_residual_ppo import (
     _zero_centered_residual_network_factory,
 )
 
+from brax.training.acme import running_statistics
 
 FAILURE_METRICS = (
     "failure_nonfinite",
