@@ -1,113 +1,123 @@
 # 3D rolling 鲁棒性 curriculum
 
-## 结论
+## 当前结论
 
-不要一次性加入全部 randomization。当前 nominal reference 已经能稳定滚动，但 residual policy 在小扰动下反而增加横向失败；如果同时加入 reset、摩擦、质量和执行器误差，失败率变化将无法归因。
+不要一次加入 reset、摩擦、质量和执行器误差。当前已通过的 `reset_v2` 负责初始状态鲁棒性；下一步使用独立的 `friction_v1`，从 `reset_v2/params_best` 热启动，只扩大摩擦系数范围。这样失败率变化可以归因于摩擦，而不是混杂的模型变化。
 
-训练入口现在提供三个显式课程：
+训练入口提供四个显式课程：
 
-- `reset_v1`：保留最初的左右非对称 reset 课程，用于复现；
-- `reset_v2`：固定已验证安全的 joint/qvel/differential 扰动，细分轴倾斜临界区；
-- `robustness_v1`：先完整执行 `reset_v1`，再依次加入摩擦和动力学随机化。
+- `reset_v1`：旧版 reset 课程，用于复现；
+- `reset_v2`：固定 joint/qvel/differential 扰动，逐步增加 axis tilt；
+- `friction_v1`：保持 `reset_v2` 最终 reset 难度，只逐步扩大摩擦随机化；
+- `robustness_v1`：旧版 `reset_v1 + friction + dynamics`，保留兼容，不用于当前 checkpoint 的续训。
 
-默认仍为 `--curriculum none`，旧命令行为不变。
+默认仍为 `--curriculum none`。
 
-## `reset_v1` 阶段
+## `reset_v2 -> friction_v1` 的边界
 
-| stage | joint noise | qvel noise | 左右 differential | 轴倾斜 | 物理随机化 |
-|---|---:|---:|---:|---:|---|
-| `symmetric_reset` | 0.005 rad | 0.005 | 0 | 0 | 无 |
-| `differential_005` | 0.005 rad | 0.005 | 0.05 | 0 | 无 |
-| `differential_010` | 0.0075 rad | 0.010 | 0.10 | 0.005 rad | 无 |
-| `differential_025` | 0.015 rad | 0.030 | 0.25 | 0.030 rad | 无 |
-| `friction` | 同上 | 同上 | 同上 | 同上 | 所有 geom 摩擦乘以 U(0.90, 1.10) |
-| `dynamics` | 同上 | 同上 | 同上 | 同上 | 摩擦 + body mass/inertia U(0.95, 1.05) + actuator gain U(0.95, 1.05) |
+本阶段冻结以下项目：
 
-## `reset_v2` 阶段
+- torso 和其他几何碰撞体；
+- 质量、惯量和 actuator gain；
+- reference/controller、reward、termination 和 observation；
+- reset 分布：joint noise `0.015 rad`、qvel noise `0.030`、左右 differential `0.25`、axis tilt `0.030 rad`。
 
-128 个 reference-only rollout 的消融结果表明，`q=0.015`、`v=0.030` 本身只有 0.78% 失败，加入 `differential=0.25` 后也只有 2.34%；真正的失败来源是 axis tilt，且失败类型全部为 `lateral_drift`：
+唯一训练变量是所有 geom 的摩擦三元组统一乘以一个标量。每个并行环境独立采样该标量；同一训练 interval 内保持固定，随后重采样。因此这是“全局摩擦不确定性”，同时影响地面接触和机器人自接触，不是只改变 floor。若以后只想随机地面摩擦，应新建课程版本，不能沿用 `friction_v1` 的结果含义。
 
-| axis tilt | reference-only failure rate | median turns |
-|---:|---:|---:|
-| 0 | 0.78% | 8.705 |
-| 0.010 | 9.38% | 8.700 |
-| 0.015 | 14.84% | 8.687 |
-| 0.0175 | 15.62% | 8.685 |
-| 0.020 | 30.47% | 8.666 |
-| 0.030 | 39.06% | 8.628 |
+## `friction_v1` 阶段
 
-因此 `reset_v2` 的全部阶段固定 `joint=0.015`、`qvel=0.030`、`differential=0.25`，只按 `tilt=0 -> 0.010 -> 0.015 -> 0.0175 -> 0.020 -> 0.030` 增加轴倾斜。权重依次为 `0.10、0.10、0.15、0.20、0.20、0.25`，训练重点位于实测临界区及最终目标。
+| stage | 训练权重 | 摩擦缩放 | joint | qvel | differential | axis tilt |
+|---|---:|---:|---:|---:|---:|---:|
+| `friction_02` | 0.20 | U(0.98, 1.02) | 0.015 rad | 0.030 | 0.25 | 0.030 rad |
+| `friction_05` | 0.30 | U(0.95, 1.05) | 0.015 rad | 0.030 | 0.25 | 0.030 rad |
+| `friction_10` | 0.50 | U(0.90, 1.10) | 0.015 rad | 0.030 | 0.25 | 0.030 rad |
 
-左右 joint 和 joint velocity 使用 common/differential 分解。`differential=0` 时左右对应关节的 reset 完全对称；之后只逐步放大差分分量。root 的六维初速度仍独立采样，所以 qvel noise 同时包含有效的侧向初速度与轴角速度扰动。初始 y 位置保持 0，因为无限平面在 y 方向平移不变，随机位置不会形成新的物理困难。
+H200 preset 的名义预算为 20M steps，按 `0.20/0.30/0.50` 分配。受 PPO batch 粒度向上取整影响，当前配置打印的实际 effective steps 分别为 4,587,520、6,553,600、10,485,760。`params_best` 只从最后的 `friction_10` stage 中选取；每个阶段另外保存 `params_stage_<index>_<name>_{best,final}`。
 
-物理参数在每个并行环境中独立采样，并在一个 stage 内保持固定。reset 会在 stage 开始时采样，并在每个 eval interval 后重新采样；Brax 的 episode auto-reset 在 interval 内仍复用该环境的初始状态。
+## 训练命令
 
-## 推荐顺序
-
-先从现有 `params_best` 运行 reset-only smoke：
+以下命令从 `curl_robot_2d` 目录运行。先跑 smoke，确认三个 stage 都能编译和保存：
 
 ```bash
 python -m scripts.train_mjx_3d_residual_ppo \
   --preset smoke \
   --recipe phase_locked_coupled_v6 \
   --physics-profile cg20 \
-  --curriculum reset_v2 \
-  --restore-params results/mjx_3d_residual_cg20_ramp050_010_h200_seed0/params_best \
+  --curriculum friction_v1 \
+  --restore-params results/mjx_3d_reset_v2_h200_seed0/params_best \
   --reference-ramp-start-scale 0.50 \
   --reference-ramp-duration-s 0.10 \
+  --seed 0 \
   --mujoco-gl disable \
   --memory-fraction 0.50 \
-  --out results/mjx_3d_reset_v2_smoke_seed0
+  --out results/mjx_3d_friction_v1_smoke_seed0
 ```
 
-smoke 能编译完成、各 stage 指标没有断崖式下降后，再运行 reset-only 长训练：
+smoke 正常后运行正式训练：
 
 ```bash
 python -m scripts.train_mjx_3d_residual_ppo \
   --preset h200 \
   --recipe phase_locked_coupled_v6 \
   --physics-profile cg20 \
-  --curriculum reset_v2 \
-  --restore-params results/mjx_3d_residual_cg20_ramp050_010_h200_seed0/params_best \
+  --curriculum friction_v1 \
+  --restore-params results/mjx_3d_reset_v2_h200_seed0/params_best \
   --reference-ramp-start-scale 0.50 \
   --reference-ramp-duration-s 0.10 \
+  --seed 0 \
   --mujoco-gl disable \
   --memory-fraction 0.80 \
-  --out results/mjx_3d_reset_v2_h200_seed0
+  --out results/mjx_3d_friction_v1_h200_seed0
 ```
 
-训练过程中的不同 stage 使用不同扰动分布，所以 stage 间的 failure rate 不能直接作因果比较。训练完成后，应让旧 checkpoint 和新 checkpoint 使用相同 seed、相同 1024 个最终 reset 分布分别评估：
+`--restore-params` 是必要的课程衔接条件：`friction_v1` 自己不会重复训练 `reset_v2`。输出目录中的 `seed0` 只是命名；真正控制随机数的是 `--seed 0`。
+
+## 固定摩擦端点评估
+
+独立 evaluator 现在支持 `--geom-friction-scale`。它使用固定物理端点，不在一个 batch 内连续随机摩擦；这适合做可复现的 0.90、1.00、1.10 三点验收。三次都使用相同 seed 和相同 1024 个 reset，属于 paired evaluation。
 
 ```bash
 python -m scripts.evaluate_mjx_3d_policy \
-  results/mjx_3d_reset_v2_h200_seed0/params_best \
-  --out results/mjx_3d_reset_v2_h200_seed0/eval_final_reset1024 \
-  --batch-size 1024 \
-  --chunk-size 128 \
-  --episode-length 500 \
-  --seed 0 \
-  --physics-profile cg20 \
-  --reset-joint-noise-rad 0.015 \
-  --reset-velocity-noise 0.030 \
-  --reset-pair-differential-scale 0.25 \
-  --reset-axis-tilt-noise-rad 0.030 \
-  --reference-ramp-start-scale 0.50 \
-  --reference-ramp-duration-s 0.10 \
-  --mujoco-gl disable \
-  --memory-fraction 0.20
+  results/mjx_3d_friction_v1_h200_seed0/params_best \
+  --out results/mjx_3d_friction_v1_h200_seed0/eval_friction_090_reset1024 \
+  --batch-size 1024 --chunk-size 128 --episode-length 500 --seed 0 \
+  --physics-profile cg20 --geom-friction-scale 0.90 \
+  --reset-joint-noise-rad 0.015 --reset-velocity-noise 0.030 \
+  --reset-pair-differential-scale 0.25 --reset-axis-tilt-noise-rad 0.030 \
+  --reference-ramp-start-scale 0.50 --reference-ramp-duration-s 0.10 \
+  --mujoco-gl disable --memory-fraction 0.20
+
+python -m scripts.evaluate_mjx_3d_policy \
+  results/mjx_3d_friction_v1_h200_seed0/params_best \
+  --out results/mjx_3d_friction_v1_h200_seed0/eval_friction_100_reset1024 \
+  --batch-size 1024 --chunk-size 128 --episode-length 500 --seed 0 \
+  --physics-profile cg20 --geom-friction-scale 1.00 \
+  --reset-joint-noise-rad 0.015 --reset-velocity-noise 0.030 \
+  --reset-pair-differential-scale 0.25 --reset-axis-tilt-noise-rad 0.030 \
+  --reference-ramp-start-scale 0.50 --reference-ramp-duration-s 0.10 \
+  --mujoco-gl disable --memory-fraction 0.20
+
+python -m scripts.evaluate_mjx_3d_policy \
+  results/mjx_3d_friction_v1_h200_seed0/params_best \
+  --out results/mjx_3d_friction_v1_h200_seed0/eval_friction_110_reset1024 \
+  --batch-size 1024 --chunk-size 128 --episode-length 500 --seed 0 \
+  --physics-profile cg20 --geom-friction-scale 1.10 \
+  --reset-joint-noise-rad 0.015 --reset-velocity-noise 0.030 \
+  --reset-pair-differential-scale 0.25 --reset-axis-tilt-noise-rad 0.030 \
+  --reference-ramp-start-scale 0.50 --reference-ramp-duration-s 0.10 \
+  --mujoco-gl disable --memory-fraction 0.20
 ```
 
-把 checkpoint 和 `--out` 换成旧策略后再跑一次。只有新策略在同一批 reset 上降低 failure rate，且 turns 没有明显下降，才进入物理随机化。`robustness_v1` 仍基于旧的 `reset_v1`，在 `reset_v2` 验收通过前不要把它直接接到新 checkpoint；届时应新增以 `reset_v2` 为前半段的物理随机化课程。
+为了判断训练是否真的带来提升，把上面三个命令中的 checkpoint 换成 `results/mjx_3d_reset_v2_h200_seed0/params_best`，输出到另一个目录，再以完全相同的 `--seed 0` 重跑。不要用不同 seed 的两个比例直接比较；相同 reset key 才能定位哪些样本由失败变成功。
 
-## 消融
+## 验收标准
 
-`--curriculum-stage` 可只运行一个 stage。例如从同一 checkpoint 分别运行 `differential_025` 和 `friction`，可以隔离摩擦随机化的影响：
+建议把以下条件同时作为通过标准：
 
-```bash
---curriculum robustness_v1 --curriculum-stage differential_025
---curriculum robustness_v1 --curriculum-stage friction
-```
+- 0.90、1.00、1.10 三个端点各自 failure rate 不高于 5%；
+- nonfinite、forbidden contact/depth、root-height 和 axis-tilt 类失败均为 0；
+- nominal（1.00）median turns 相比 `reset_v2` 基线下降不超过 5%；
+- 0.90 和 1.10 的 median turns 均至少达到 nominal 的 90%；
+- lateral drift 的中位数及高分位没有明显恶化。
 
-每个 stage 保存 `params_stage_<index>_<name>_{best,final}`。总输出的 `params_best` 只从最后一个、也就是最难的 stage 中选择，避免较容易 stage 的分数覆盖鲁棒策略。完整记录位于 `training_config.json` 和 `curriculum_history.json`。
-
-课程内部不会把 failure rate 超过 5% 的 checkpoint 全部丢弃，因为困难 stage 可能先经历 `20% -> 8%` 但尚未过线；这时仍按 survival、turns、横向漂移和接触安全选更好的 warm-start。5% 仍保留为最终 acceptance gate，训练末尾会明确打印 `PASS` 或 `NOT_YET`。训练脚本自带的 post-training rollout 不含新的物理参数随机化；完整物理 randomization 的独立 1024 eval 需要后续在 evaluator 中接入。
+若只在某一个端点失败，不要立即加入 mass 或 gain 随机化；先检查失败样本是否集中在同一种接触模式，再决定调整训练权重、摩擦范围或 reward。通过本阶段后，下一阶段才是独立的 mass/inertia curriculum，随后是 actuator gain，最后才合并 torso 碰撞体分支并做一次统一回归。

@@ -67,6 +67,7 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertIsNone(config.residual_pair_differential_scale)
         self.assertIsNone(config.reset_pair_differential_scale)
         self.assertEqual(config.reset_axis_tilt_noise_rad, 0.0)
+        self.assertEqual(config.geom_friction_scale, 1.0)
         self.assertFalse(config.explicit_phase_observation)
         reward = Rolling3DRewardConfig()
         self.assertEqual(reward.roll_progress, 6.0)
@@ -88,6 +89,7 @@ class MJX3DContractTest(unittest.TestCase):
             {"reset_velocity_noise": float("nan")},
             {"reset_pair_differential_scale": 1.1},
             {"reset_axis_tilt_noise_rad": -0.1},
+            {"geom_friction_scale": 0.0},
             {"explicit_phase_observation": 1},
             {"terminate_root_z_min": -0.01},
             {"terminate_axis_tilt_duration_s": 0.0},
@@ -239,6 +241,35 @@ class MJX3DContractTest(unittest.TestCase):
             0.80,
         )
 
+    def test_friction_v1_holds_reset_v2_target_and_only_expands_friction(
+        self,
+    ) -> None:
+        stages = curriculum_stages_3d("friction_v1")
+
+        self.assertEqual(
+            [stage.name for stage in stages],
+            ["friction_02", "friction_05", "friction_10"],
+        )
+        self.assertEqual(
+            [
+                stage.domain_randomization.geom_friction_scale
+                for stage in stages
+            ],
+            [(0.98, 1.02), (0.95, 1.05), (0.90, 1.10)],
+        )
+        self.assertAlmostEqual(sum(stage.weight for stage in stages), 1.0)
+        for stage in stages:
+            self.assertEqual(stage.reset_joint_noise_rad, 0.015)
+            self.assertEqual(stage.reset_velocity_noise, 0.030)
+            self.assertEqual(stage.reset_pair_differential_scale, 0.25)
+            self.assertEqual(stage.reset_axis_tilt_noise_rad, 0.030)
+            self.assertEqual(
+                stage.domain_randomization.body_mass_scale, (1.0, 1.0)
+            )
+            self.assertEqual(
+                stage.domain_randomization.actuator_gain_scale, (1.0, 1.0)
+            )
+
     def test_domain_randomization_ranges_are_positive_and_ordered(self) -> None:
         validate_domain_randomization_3d(
             Rolling3DDomainRandomization(
@@ -287,6 +318,16 @@ class MJX3DContractTest(unittest.TestCase):
         )
         dof_id = int(model.jnt_dofadr[root_id])
         np.testing.assert_allclose(model.dof_damping[dof_id : dof_id + 6], 0.0)
+
+    def test_3d_physics_options_can_scale_all_geom_friction(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(MODEL_PATH_3D))
+        original = model.geom_friction.copy()
+
+        apply_physics_options_3d(
+            model, Rolling3DConfig(geom_friction_scale=0.90)
+        )
+
+        np.testing.assert_allclose(model.geom_friction, original * 0.90)
 
     def test_3d_smoke_entry_imports_without_jax(self) -> None:
         args = mjx_3d_smoke.parse_args([])

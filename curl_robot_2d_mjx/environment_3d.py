@@ -269,6 +269,7 @@ def apply_physics_options_3d(model, task: Rolling3DConfig) -> None:
     model.opt.timestep = task.physics_timestep
     model.opt.iterations = task.solver_iterations
     model.opt.ls_iterations = task.solver_ls_iterations
+    model.geom_friction[:] *= task.geom_friction_scale
     if task.disable_root_damping:
         root_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_JOINT, "root"

@@ -932,7 +932,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Robustness curriculum. reset_v1 preserves the original reset "
             "schedule; reset_v2 resolves the measured axis-tilt failure "
-            "cliff; robustness_v1 adds physics randomization after reset_v1."
+            "cliff; friction_v1 warm-starts from an accepted reset_v2 "
+            "checkpoint and expands only global geom friction; "
+            "robustness_v1 is the legacy reset_v1 plus physics schedule."
         ),
     )
     parser.add_argument(

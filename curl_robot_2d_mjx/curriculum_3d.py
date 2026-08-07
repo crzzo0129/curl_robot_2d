@@ -14,6 +14,7 @@ CURRICULUM_NAMES_3D = (
     "none",
     "reset_v1",
     "reset_v2",
+    "friction_v1",
     "robustness_v1",
 )
 
@@ -136,6 +137,43 @@ RESET_V2_STAGES_3D = (
     ),
 )
 
+FRICTION_V1_STAGES_3D = (
+    Rolling3DCurriculumStage(
+        name="friction_02",
+        weight=0.20,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.030,
+        domain_randomization=Rolling3DDomainRandomization(
+            geom_friction_scale=(0.98, 1.02),
+        ),
+    ),
+    Rolling3DCurriculumStage(
+        name="friction_05",
+        weight=0.30,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.030,
+        domain_randomization=Rolling3DDomainRandomization(
+            geom_friction_scale=(0.95, 1.05),
+        ),
+    ),
+    Rolling3DCurriculumStage(
+        name="friction_10",
+        weight=0.50,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.030,
+        domain_randomization=Rolling3DDomainRandomization(
+            geom_friction_scale=(0.90, 1.10),
+        ),
+    ),
+)
+
+
 PHYSICS_STAGES_3D = (
     Rolling3DCurriculumStage(
         name="friction",
@@ -168,6 +206,7 @@ CURRICULUM_STAGE_NAMES_3D = tuple(
     for stage in (
         *RESET_STAGES_3D,
         *RESET_V2_STAGES_3D,
+        *FRICTION_V1_STAGES_3D,
         *PHYSICS_STAGES_3D,
     )
 )
@@ -186,6 +225,8 @@ def curriculum_stages_3d(
         stages = RESET_STAGES_3D
     elif name == "reset_v2":
         stages = RESET_V2_STAGES_3D
+    elif name == "friction_v1":
+        stages = FRICTION_V1_STAGES_3D
     elif name == "robustness_v1":
         reset_weight_scale = 0.60 / sum(
             stage.weight for stage in RESET_STAGES_3D

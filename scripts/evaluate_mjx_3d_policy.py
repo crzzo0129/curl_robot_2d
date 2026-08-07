@@ -21,8 +21,6 @@ from scripts.train_mjx_3d_residual_ppo import (
     _zero_centered_residual_network_factory,
 )
 
-from brax.training.acme import running_statistics
-
 FAILURE_METRICS = (
     "failure_nonfinite",
     "failure_nonfinite_action",
@@ -237,6 +235,15 @@ def parse_args(argv=None):
     )
     parser.add_argument("--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER)
     parser.add_argument("--physics-profile", default="cg20")
+    parser.add_argument(
+        "--geom-friction-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Fixed multiplier applied to every geom friction coefficient. "
+            "Use endpoint sweeps to validate friction-randomized policies."
+        ),
+    )
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--chunk-size", type=int, default=512)
@@ -340,6 +347,11 @@ def parse_args(argv=None):
     ):
         parser.error("--reset-* noise values must be nonnegative")
     if (
+        not math.isfinite(args.geom_friction_scale)
+        or args.geom_friction_scale <= 0.0
+    ):
+        parser.error("--geom-friction-scale must be finite and positive")
+    if (
         args.reset_pair_differential_scale is not None
         and not 0.0 <= args.reset_pair_differential_scale <= 1.0
     ):
@@ -365,6 +377,7 @@ def main(argv=None) -> None:
     import jax
     import jax.numpy as jp
     from brax.io import model as model_io
+    from brax.training.acme import running_statistics
     from brax.training.agents.ppo import networks as ppo_networks
     from curl_robot_2d_mjx.environment_3d import make_brax_env_3d
 
@@ -372,6 +385,7 @@ def main(argv=None) -> None:
         args.physics_profile,
         Rolling3DConfig(
             episode_length=args.episode_length,
+            geom_friction_scale=args.geom_friction_scale,
             reset_joint_noise_rad=args.reset_joint_noise_rad,
             reset_velocity_noise=args.reset_velocity_noise,
             reset_pair_differential_scale=(
@@ -409,7 +423,11 @@ def main(argv=None) -> None:
             if args.zero_residual_policy_init
             else _network_factory(args.hidden_layers, args.activation)
         )
-        ppo_network = network_factory(env.observation_size, env.action_size, preprocess_observations_fn=running_statistics.normalize,)
+        ppo_network = network_factory(
+            env.observation_size,
+            env.action_size,
+            preprocess_observations_fn=running_statistics.normalize,
+        )
         make_policy = ppo_networks.make_inference_fn(ppo_network)
         params = model_io.load_params(args.checkpoint)
         try:
@@ -615,6 +633,7 @@ def main(argv=None) -> None:
         f"  batch={args.batch_size} chunk={args.chunk_size} "
         f"episode={args.episode_length} "
         f"physics={task.physics_profile} seed={args.seed}\n"
+        f"  geom_friction_scale={task.geom_friction_scale:g}\n"
         f"  reset_noise q={task.reset_joint_noise_rad:g} "
         f"v={task.reset_velocity_noise:g} "
         f"differential={task.reset_pair_differential_scale} "
