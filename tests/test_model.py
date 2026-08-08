@@ -5,7 +5,7 @@ import mujoco
 import numpy as np
 
 from curl_robot_2d.model import build_mjcf
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
 from curl_robot_2d.planar_geometry import (
     proper_segments_intersect,
     segment_distance,
@@ -26,9 +26,52 @@ MODEL_PATH = PROJECT_ROOT / "assets" / "curl_robot_2d.xml"
 NO_SELF_COLLISION_MODEL_PATH = (
     PROJECT_ROOT / "assets" / "curl_robot_2d_no_self_collision.xml"
 )
+REAL_GEOMETRY_MODEL_PATH = (
+    PROJECT_ROOT / "assets" / "curl_robot_2d_real_geometry.xml"
+)
 
 
 class ModelContractTest(unittest.TestCase):
+    def test_real_geometry_candidate_contract(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(REAL_GEOMETRY_MODEL_PATH))
+        p = REAL_GEOMETRY_PARAMETERS
+
+        self.assertAlmostEqual(p.edge_length, 0.180)
+        torso_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, "torso_proxy"
+        )
+        np.testing.assert_allclose(
+            model.geom_size[torso_id], [0.060, 0.012, 0.060]
+        )
+        for side in ("front", "rear"):
+            for joint in ("hip", "knee"):
+                motor_id = mujoco.mj_name2id(
+                    model,
+                    mujoco.mjtObj.mjOBJ_GEOM,
+                    f"{side}_{joint}_motor",
+                )
+                self.assertAlmostEqual(
+                    float(model.geom_size[motor_id, 0]), p.motor_radius
+                )
+        self.assertEqual(
+            sum(
+                "_shell_" in (
+                    mujoco.mj_id2name(
+                        model, mujoco.mjtObj.mjOBJ_GEOM, geom_id
+                    )
+                    or ""
+                )
+                for geom_id in range(model.ngeom)
+            ),
+            5 * p.shell_segments_per_edge,
+        )
+        self.assertAlmostEqual(p.upper_proxy_radius, 0.025)
+        self.assertAlmostEqual(p.lower_proxy_radius, 0.025)
+        self.assertAlmostEqual(
+            p.shell_centerline_radius - p.shell_capsule_radius,
+            p.regular_pentagon_radius + p.motor_radius + 0.003,
+        )
+
     def test_planar_crossing_geometry_excludes_shared_endpoint(self) -> None:
         self.assertTrue(
             proper_segments_intersect(

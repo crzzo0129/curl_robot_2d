@@ -68,6 +68,9 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertIsNone(config.reset_pair_differential_scale)
         self.assertEqual(config.reset_axis_tilt_noise_rad, 0.0)
         self.assertEqual(config.geom_friction_scale, 1.0)
+        self.assertEqual(config.body_mass_scale, 1.0)
+        self.assertEqual(config.body_mass_left_scale, 1.0)
+        self.assertEqual(config.body_mass_right_scale, 1.0)
         self.assertFalse(config.explicit_phase_observation)
         reward = Rolling3DRewardConfig()
         self.assertEqual(reward.roll_progress, 6.0)
@@ -90,6 +93,9 @@ class MJX3DContractTest(unittest.TestCase):
             {"reset_pair_differential_scale": 1.1},
             {"reset_axis_tilt_noise_rad": -0.1},
             {"geom_friction_scale": 0.0},
+            {"body_mass_scale": 0.0},
+            {"body_mass_left_scale": float("nan")},
+            {"body_mass_right_scale": -1.0},
             {"explicit_phase_observation": 1},
             {"terminate_root_z_min": -0.01},
             {"terminate_axis_tilt_duration_s": 0.0},
@@ -270,6 +276,37 @@ class MJX3DContractTest(unittest.TestCase):
                 stage.domain_randomization.actuator_gain_scale, (1.0, 1.0)
             )
 
+    def test_mass_v1_retains_friction_and_only_expands_mass_inertia(
+        self,
+    ) -> None:
+        stages = curriculum_stages_3d("mass_v1")
+
+        self.assertEqual(
+            [stage.name for stage in stages], ["mass_02", "mass_05"]
+        )
+        self.assertEqual(
+            [stage.weight for stage in stages], [0.30, 0.70]
+        )
+        self.assertEqual(
+            [
+                stage.domain_randomization.body_mass_scale
+                for stage in stages
+            ],
+            [(0.98, 1.02), (0.95, 1.05)],
+        )
+        for stage in stages:
+            self.assertEqual(stage.reset_joint_noise_rad, 0.015)
+            self.assertEqual(stage.reset_velocity_noise, 0.030)
+            self.assertEqual(stage.reset_pair_differential_scale, 0.25)
+            self.assertEqual(stage.reset_axis_tilt_noise_rad, 0.030)
+            self.assertEqual(
+                stage.domain_randomization.geom_friction_scale,
+                (0.90, 1.10),
+            )
+            self.assertEqual(
+                stage.domain_randomization.actuator_gain_scale, (1.0, 1.0)
+            )
+
     def test_domain_randomization_ranges_are_positive_and_ordered(self) -> None:
         validate_domain_randomization_3d(
             Rolling3DDomainRandomization(
@@ -328,6 +365,51 @@ class MJX3DContractTest(unittest.TestCase):
         )
 
         np.testing.assert_allclose(model.geom_friction, original * 0.90)
+
+    def test_3d_physics_options_scale_mass_and_inertia_by_body_side(
+        self,
+    ) -> None:
+        model = mujoco.MjModel.from_xml_path(str(MODEL_PATH_3D))
+        original_mass = model.body_mass.copy()
+        original_inertia = model.body_inertia.copy()
+        torso_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "torso"
+        )
+        left_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "front_left_thigh"
+        )
+        right_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_BODY, "front_right_thigh"
+        )
+
+        apply_physics_options_3d(
+            model,
+            Rolling3DConfig(
+                body_mass_scale=0.95,
+                body_mass_left_scale=1.05,
+                body_mass_right_scale=0.95,
+            ),
+        )
+
+        self.assertAlmostEqual(
+            model.body_mass[torso_id], original_mass[torso_id] * 0.95
+        )
+        self.assertAlmostEqual(
+            model.body_mass[left_id],
+            original_mass[left_id] * 0.95 * 1.05,
+        )
+        self.assertAlmostEqual(
+            model.body_mass[right_id],
+            original_mass[right_id] * 0.95 * 0.95,
+        )
+        np.testing.assert_allclose(
+            model.body_inertia[left_id],
+            original_inertia[left_id] * 0.95 * 1.05,
+        )
+        np.testing.assert_allclose(
+            model.body_inertia[right_id],
+            original_inertia[right_id] * 0.95 * 0.95,
+        )
 
     def test_3d_smoke_entry_imports_without_jax(self) -> None:
         args = mjx_3d_smoke.parse_args([])

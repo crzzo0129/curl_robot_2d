@@ -270,6 +270,19 @@ def apply_physics_options_3d(model, task: Rolling3DConfig) -> None:
     model.opt.iterations = task.solver_iterations
     model.opt.ls_iterations = task.solver_ls_iterations
     model.geom_friction[:] *= task.geom_friction_scale
+    for body_id in range(1, model.nbody):
+        body_name = mujoco.mj_id2name(
+            model, mujoco.mjtObj.mjOBJ_BODY, body_id
+        )
+        side_scale = 1.0
+        name_parts = body_name.split("_") if body_name else ()
+        if "left" in name_parts:
+            side_scale = task.body_mass_left_scale
+        elif "right" in name_parts:
+            side_scale = task.body_mass_right_scale
+        scale = task.body_mass_scale * side_scale
+        model.body_mass[body_id] *= scale
+        model.body_inertia[body_id] *= scale
     if task.disable_root_damping:
         root_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_JOINT, "root"

@@ -244,6 +244,27 @@ def parse_args(argv=None):
             "Use endpoint sweeps to validate friction-randomized policies."
         ),
     )
+    parser.add_argument(
+        "--body-mass-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Fixed multiplier applied to every non-world body mass and "
+            "inertia."
+        ),
+    )
+    parser.add_argument(
+        "--body-mass-left-scale",
+        type=float,
+        default=1.0,
+        help="Additional multiplier for bodies whose name contains left.",
+    )
+    parser.add_argument(
+        "--body-mass-right-scale",
+        type=float,
+        default=1.0,
+        help="Additional multiplier for bodies whose name contains right.",
+    )
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--chunk-size", type=int, default=512)
@@ -351,6 +372,13 @@ def parse_args(argv=None):
         or args.geom_friction_scale <= 0.0
     ):
         parser.error("--geom-friction-scale must be finite and positive")
+    for value, name in (
+        (args.body_mass_scale, "--body-mass-scale"),
+        (args.body_mass_left_scale, "--body-mass-left-scale"),
+        (args.body_mass_right_scale, "--body-mass-right-scale"),
+    ):
+        if not math.isfinite(value) or value <= 0.0:
+            parser.error(f"{name} must be finite and positive")
     if (
         args.reset_pair_differential_scale is not None
         and not 0.0 <= args.reset_pair_differential_scale <= 1.0
@@ -386,6 +414,9 @@ def main(argv=None) -> None:
         Rolling3DConfig(
             episode_length=args.episode_length,
             geom_friction_scale=args.geom_friction_scale,
+            body_mass_scale=args.body_mass_scale,
+            body_mass_left_scale=args.body_mass_left_scale,
+            body_mass_right_scale=args.body_mass_right_scale,
             reset_joint_noise_rad=args.reset_joint_noise_rad,
             reset_velocity_noise=args.reset_velocity_noise,
             reset_pair_differential_scale=(
@@ -634,6 +665,9 @@ def main(argv=None) -> None:
         f"episode={args.episode_length} "
         f"physics={task.physics_profile} seed={args.seed}\n"
         f"  geom_friction_scale={task.geom_friction_scale:g}\n"
+        f"  body_mass_scale={task.body_mass_scale:g} "
+        f"left={task.body_mass_left_scale:g} "
+        f"right={task.body_mass_right_scale:g}\n"
         f"  reset_noise q={task.reset_joint_noise_rad:g} "
         f"v={task.reset_velocity_noise:g} "
         f"differential={task.reset_pair_differential_scale} "

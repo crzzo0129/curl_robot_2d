@@ -9,14 +9,46 @@ from curl_robot_2d.model_3d import (
     JOINT_NAMES_3D,
     build_mjcf_3d,
 )
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH = PROJECT_ROOT / "assets" / "curl_robot_3d.xml"
+REAL_GEOMETRY_MODEL_PATH = (
+    PROJECT_ROOT / "assets" / "curl_robot_3d_real_geometry.xml"
+)
 
 
 class CurlRobot3DModelTest(unittest.TestCase):
+    def test_real_geometry_3d_candidate_contract(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(REAL_GEOMETRY_MODEL_PATH))
+        p = REAL_GEOMETRY_PARAMETERS
+
+        self.assertEqual(model.nq, 15)
+        self.assertEqual(model.nu, 8)
+        self.assertEqual(model.npair, 0)
+        torso_id = model.geom("torso_box_proxy").id
+        np.testing.assert_allclose(model.geom_size[torso_id], [0.06, 0.06, 0.06])
+        self.assertAlmostEqual(model.geom_pos[torso_id, 2], -0.04)
+        geom_names = [
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
+            for geom_id in range(model.ngeom)
+        ]
+        self.assertEqual(sum(name.endswith("_motor") for name in geom_names), 8)
+        self.assertEqual(sum("_shell_" in name for name in geom_names), 60)
+        self.assertEqual(sum(name.endswith("_foot_proxy") for name in geom_names), 4)
+        for side in ("left", "right"):
+            expected_y = 0.06 if side == "left" else -0.06
+            for end in ("front", "rear"):
+                body_id = model.body(f"{end}_{side}_thigh").id
+                self.assertAlmostEqual(model.body_pos[body_id, 1], expected_y)
+                foot_id = model.geom(f"{end}_{side}_foot_proxy").id
+                self.assertAlmostEqual(model.geom_size[foot_id, 0], 0.03)
+                for joint in ("hip", "knee"):
+                    motor_id = model.geom(f"{end}_{side}_{joint}_motor").id
+                    self.assertAlmostEqual(model.geom_size[motor_id, 0], 0.027)
+                    self.assertAlmostEqual(model.geom_size[motor_id, 1], 0.012)
+
     def test_checked_in_3d_model_matches_generator(self) -> None:
         self.assertEqual(MODEL_PATH.read_text(encoding="utf-8"), build_mjcf_3d())
 

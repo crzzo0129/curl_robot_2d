@@ -121,6 +121,24 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
         self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 3)
 
+    def test_mass_v1_allocates_two_progressive_stages(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--curriculum", "mass_v1"]
+        )
+        values = train_mjx_3d_residual_ppo.PRESETS["smoke"].copy()
+
+        plan = train_mjx_3d_residual_ppo._curriculum_training_plan(
+            args, values
+        )
+
+        self.assertEqual(
+            [item["stage"].name for item in plan], ["mass_02", "mass_05"]
+        )
+        self.assertTrue(
+            all(item["schedule"]["effective_steps"] > 0 for item in plan)
+        )
+        self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 2)
+
     def test_curriculum_stage_must_belong_to_selected_curriculum(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             train_mjx_3d_residual_ppo.parse_args(
@@ -290,6 +308,12 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
                 "0.03",
                 "--geom-friction-scale",
                 "0.90",
+                "--body-mass-scale",
+                "0.95",
+                "--body-mass-left-scale",
+                "1.05",
+                "--body-mass-right-scale",
+                "0.95",
             ]
         )
 
@@ -298,6 +322,9 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.reset_pair_differential_scale, 0.25)
         self.assertEqual(args.reset_axis_tilt_noise_rad, 0.03)
         self.assertEqual(args.geom_friction_scale, 0.90)
+        self.assertEqual(args.body_mass_scale, 0.95)
+        self.assertEqual(args.body_mass_left_scale, 1.05)
+        self.assertEqual(args.body_mass_right_scale, 0.95)
 
     def test_evaluator_rejects_nonpositive_friction_scale(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -307,6 +334,18 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
                     "--out",
                     "eval_bad_friction",
                     "--geom-friction-scale",
+                    "0",
+                ]
+            )
+
+    def test_evaluator_rejects_nonpositive_body_mass_scale(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            evaluate_mjx_3d_policy.parse_args(
+                [
+                    "params_best",
+                    "--out",
+                    "eval_bad_mass",
+                    "--body-mass-left-scale",
                     "0",
                 ]
             )

@@ -21,6 +21,7 @@ def _arc_shell_geoms(
     parameters: FixedParameters,
     *,
     indent: int = 14,
+    end_retreat: float = 0.0,
 ) -> str:
     """Return capsule geoms for one shell arc in a body's local x-z plane.
 
@@ -51,10 +52,16 @@ def _arc_shell_geoms(
     )
     half_angle = math.pi / 5.0
     trimmed_half_angle = half_angle - p.shell_arc_trim_angle
+    end_angle = trimmed_half_angle - end_retreat / p.shell_centerline_radius
+    if end_angle <= -trimmed_half_angle:
+        raise ValueError(f"{prefix} shell end retreat removes the full arc")
     points: list[tuple[float, float]] = []
     for index in range(p.shell_segments_per_edge + 1):
         fraction = index / p.shell_segments_per_edge
-        angle = -trimmed_half_angle + 2.0 * trimmed_half_angle * fraction
+        angle = (
+            -trimmed_half_angle
+            + (end_angle + trimmed_half_angle) * fraction
+        )
         point = (
             circle_center[0]
             + p.shell_centerline_radius
@@ -81,6 +88,8 @@ def build_mjcf(
     parameters: FixedParameters = FIXED_PARAMETERS,
     *,
     enable_self_collision: bool = True,
+    include_rolling_shell: bool = True,
+    detailed_structure: bool = False,
 ) -> str:
     p = parameters
     torso_half_length = p.torso_length / 2
@@ -107,6 +116,59 @@ def build_mjcf(
         ).rstrip()
         if enable_self_collision
         else ""
+    )
+    shell_geoms = (
+        {
+            "torso": _arc_shell_geoms("torso", (-torso_half_length, 0.0), (torso_half_length, 0.0), (0.0, 1.0), p),
+            "front_thigh": _arc_shell_geoms("front_thigh", (0.0, 0.0), (0.0, -p.upper_length), (1.0, 0.0), p, indent=16),
+            "front_shank": _arc_shell_geoms("front_shank", (0.0, 0.0), (0.0, -p.lower_length), (1.0, 0.0), p, indent=18, end_retreat=p.shank_shell_foot_retreat),
+            "rear_thigh": _arc_shell_geoms("rear_thigh", (0.0, 0.0), (0.0, -p.upper_length), (-1.0, 0.0), p, indent=16),
+            "rear_shank": _arc_shell_geoms("rear_shank", (0.0, 0.0), (0.0, -p.lower_length), (-1.0, 0.0), p, indent=18, end_retreat=p.shank_shell_foot_retreat),
+        }
+        if include_rolling_shell
+        else {name: "" for name in ("torso", "front_thigh", "front_shank", "rear_thigh", "rear_shank")}
+    )
+    thigh_start = p.motor_radius + p.upper_proxy_radius + p.motor_link_clearance
+    thigh_end = p.edge_length - thigh_start
+    shank_start = p.motor_radius + p.lower_proxy_radius + p.motor_link_clearance
+    shank_end = (
+        p.edge_length
+        - p.foot_radius
+        - p.lower_proxy_radius
+        - p.motor_link_clearance
+    )
+    if thigh_end <= thigh_start or shank_end <= shank_start:
+        raise ValueError("joint clearance leaves no usable link collision length")
+    torso_geom = (
+        f'''<geom name="torso_proxy" type="box" class="structure_collision"
+                    pos="0 0 {_f(p.torso_box_outward_offset - p.torso_box_height / 2.0)}"
+                    size="{_f(p.torso_box_width / 2.0)} {_f(p.structure_half_thickness_y)} {_f(p.torso_box_height / 2.0)}"
+                    rgba="0.12 0.48 0.88 1"/>'''
+        if detailed_structure
+        else f'''<geom name="torso_proxy" type="capsule" class="structure_collision"
+                    fromto="-{_f(torso_half_length)} 0 0 {_f(torso_half_length)} 0 0"
+                    size="{_f(p.upper_proxy_radius)}"
+                    rgba="0.12 0.48 0.88 1"/>'''
+    )
+    thigh_fromto = (
+        f"0 0 -{_f(thigh_start)} 0 0 -{_f(thigh_end)}"
+        if detailed_structure else f"0 0 0 0 0 -{_f(p.upper_length)}"
+    )
+    shank_fromto = (
+        f"0 0 -{_f(shank_start)} 0 0 -{_f(shank_end)}"
+        if detailed_structure else f"0 0 0 0 0 -{_f(p.lower_length)}"
+    )
+    hip_motor_geom = (
+        f'''\n                <geom name="{{side}}_hip_motor" type="cylinder" class="structure_collision"
+                      size="{_f(p.motor_radius)} {_f(p.motor_half_thickness_y)}"
+                      euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>'''
+        if detailed_structure else ""
+    )
+    knee_motor_geom = (
+        f'''\n                  <geom name="{{side}}_knee_motor" type="cylinder" class="structure_collision"
+                        size="{_f(p.motor_radius)} {_f(p.motor_half_thickness_y)}"
+                        euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>'''
+        if detailed_structure else ""
     )
 
     # Only the out-of-plane inertia is dynamically active.  The remaining
@@ -250,11 +312,8 @@ def build_mjcf(
               <inertial pos="{_f(p.torso_com_x)} 0 {_f(p.torso_com_z)}"
                         mass="{_f(p.torso_mass)}"
                         diaginertia="{' '.join(_f(x) for x in torso_inertia)}"/>
-              <geom name="torso_proxy" type="capsule" class="structure_collision"
-                    fromto="-{_f(torso_half_length)} 0 0 {_f(torso_half_length)} 0 0"
-                    size="{_f(p.upper_proxy_radius)}"
-                    rgba="0.12 0.48 0.88 1"/>
-{_arc_shell_geoms("torso", (-torso_half_length, 0.0), (torso_half_length, 0.0), (0.0, 1.0), p)}
+              {torso_geom}
+{shell_geoms["torso"]}
               <site name="torso_com" type="sphere"
                     pos="{_f(p.torso_com_x)} 0 {_f(p.torso_com_z)}"
                     size="0.006" rgba="0.1 1 0.1 1"/>
@@ -269,10 +328,10 @@ def build_mjcf(
                           mass="{_f(p.thigh.mass)}"
                           diaginertia="{' '.join(_f(x) for x in thigh_inertia)}"/>
                 <geom name="front_thigh_proxy" type="capsule" class="structure_collision"
-                      fromto="0 0 0 0 0 -{_f(p.upper_length)}"
+                      fromto="{thigh_fromto}"
                       size="{_f(p.upper_proxy_radius)}"
-                      rgba="0.95 0.45 0.12 1"/>
-{_arc_shell_geoms("front_thigh", (0.0, 0.0), (0.0, -p.upper_length), (1.0, 0.0), p, indent=16)}
+                      rgba="0.95 0.45 0.12 1"/>{hip_motor_geom.format(side="front")}
+{shell_geoms["front_thigh"]}
                 <site name="front_hip_site" type="sphere" size="0.006"
                       rgba="1 0.85 0.1 1"/>
                 <site name="front_thigh_com" type="sphere"
@@ -286,10 +345,10 @@ def build_mjcf(
                             mass="{_f(p.shank.mass)}"
                             diaginertia="{' '.join(_f(x) for x in shank_inertia)}"/>
                   <geom name="front_shank_proxy" type="capsule" class="structure_collision"
-                        fromto="0 0 0 0 0 -{_f(p.lower_length)}"
+                        fromto="{shank_fromto}"
                         size="{_f(p.lower_proxy_radius)}"
-                        rgba="0.98 0.70 0.18 1"/>
-{_arc_shell_geoms("front_shank", (0.0, 0.0), (0.0, -p.lower_length), (1.0, 0.0), p, indent=18)}
+                        rgba="0.98 0.70 0.18 1"/>{knee_motor_geom.format(side="front")}
+{shell_geoms["front_shank"]}
                   <geom name="front_foot_proxy" type="sphere" class="structure_collision"
                         pos="0 0 -{_f(p.lower_length)}"
                         size="{_f(p.foot_radius)}"
@@ -315,10 +374,10 @@ def build_mjcf(
                           mass="{_f(p.thigh.mass)}"
                           diaginertia="{' '.join(_f(x) for x in thigh_inertia)}"/>
                 <geom name="rear_thigh_proxy" type="capsule" class="structure_collision"
-                      fromto="0 0 0 0 0 -{_f(p.upper_length)}"
+                      fromto="{thigh_fromto}"
                       size="{_f(p.upper_proxy_radius)}"
-                      rgba="0.84 0.24 0.18 1"/>
-{_arc_shell_geoms("rear_thigh", (0.0, 0.0), (0.0, -p.upper_length), (-1.0, 0.0), p, indent=16)}
+                      rgba="0.84 0.24 0.18 1"/>{hip_motor_geom.format(side="rear")}
+{shell_geoms["rear_thigh"]}
                 <site name="rear_hip_site" type="sphere" size="0.006"
                       rgba="1 0.85 0.1 1"/>
                 <site name="rear_thigh_com" type="sphere"
@@ -332,10 +391,10 @@ def build_mjcf(
                             mass="{_f(p.shank.mass)}"
                             diaginertia="{' '.join(_f(x) for x in shank_inertia)}"/>
                   <geom name="rear_shank_proxy" type="capsule" class="structure_collision"
-                        fromto="0 0 0 0 0 -{_f(p.lower_length)}"
+                        fromto="{shank_fromto}"
                         size="{_f(p.lower_proxy_radius)}"
-                        rgba="0.94 0.55 0.16 1"/>
-{_arc_shell_geoms("rear_shank", (0.0, 0.0), (0.0, -p.lower_length), (-1.0, 0.0), p, indent=18)}
+                        rgba="0.94 0.55 0.16 1"/>{knee_motor_geom.format(side="rear")}
+{shell_geoms["rear_shank"]}
                   <geom name="rear_foot_proxy" type="sphere" class="structure_collision"
                         pos="0 0 -{_f(p.lower_length)}"
                         size="{_f(p.foot_radius)}"
@@ -438,12 +497,16 @@ def write_mjcf(
     parameters: FixedParameters = FIXED_PARAMETERS,
     *,
     enable_self_collision: bool = True,
+    include_rolling_shell: bool = True,
+    detailed_structure: bool = False,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         build_mjcf(
             parameters,
             enable_self_collision=enable_self_collision,
+            include_rolling_shell=include_rolling_shell,
+            detailed_structure=detailed_structure,
         ),
         encoding="utf-8",
     )

@@ -9,7 +9,7 @@ import mujoco.viewer
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-MODEL_PATH = PROJECT_ROOT / "assets" / "curl_robot_2d.xml"
+MODEL_PATH = PROJECT_ROOT / "assets" / "curl_robot_2d_real_geometry.xml"
 
 
 def main() -> None:

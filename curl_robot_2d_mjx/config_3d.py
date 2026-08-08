@@ -26,6 +26,9 @@ class Rolling3DConfig:
     cone_name: str = "elliptic"
     jacobian_name: str = "dense"
     geom_friction_scale: float = 1.0
+    body_mass_scale: float = 1.0
+    body_mass_left_scale: float = 1.0
+    body_mass_right_scale: float = 1.0
     action_repeat: int = 20
     episode_length: int = 500
     action_scales: tuple[float, ...] = (
@@ -77,11 +80,14 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("3-D action scales must be finite and positive")
     if config.action_repeat < 1 or config.episode_length < 1:
         raise ValueError("action_repeat and episode_length must be positive")
-    if (
-        not math.isfinite(config.geom_friction_scale)
-        or config.geom_friction_scale <= 0.0
+    for value, name in (
+        (config.geom_friction_scale, "geom_friction_scale"),
+        (config.body_mass_scale, "body_mass_scale"),
+        (config.body_mass_left_scale, "body_mass_left_scale"),
+        (config.body_mass_right_scale, "body_mass_right_scale"),
     ):
-        raise ValueError("geom_friction_scale must be finite and positive")
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive")
     for value, name in (
         (config.reset_joint_noise_rad, "reset_joint_noise_rad"),
         (config.reset_velocity_noise, "reset_velocity_noise"),

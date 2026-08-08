@@ -11,7 +11,7 @@ import mujoco
 import numpy as np
 
 from curl_robot_2d.model import write_mjcf
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
 from scripts.optimize_phase_controller import (
     FOOT_GAP_TRACKING_MARGIN_M,
     _load_controller_parameters,
@@ -89,6 +89,12 @@ def parse_args(argv=None):
     parser.add_argument("--torso-com-z-mm", type=float, default=15.0)
     parser.add_argument("--final-duration", type=float, default=10.0)
     parser.add_argument("--workers", type=int, default=8)
+    parser.add_argument(
+        "--geometry",
+        choices=("baseline", "real"),
+        default="baseline",
+    )
+    parser.add_argument("--min-stage-turns", type=float, default=5.0)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--restart",
@@ -106,6 +112,7 @@ def _run_stage(
     initial_parameters: np.ndarray | None,
     final_duration_s: float,
     workers: int,
+    geometry_parameters,
 ) -> tuple[np.ndarray, dict]:
     parameters, history, _ = optimize_controller(
         model_path=model_path,
@@ -122,6 +129,7 @@ def _run_stage(
         enforce_leg_crossing_constraint=(
             config.enforce_leg_crossing_constraint
         ),
+        geometry_parameters=geometry_parameters,
     )
     baseline_model = mujoco.MjModel.from_xml_path(str(model_path))
     baseline = rollout_controller(
@@ -294,7 +302,11 @@ def main(argv=None) -> None:
     output_dir = args.output_dir.expanduser().resolve()
     model_dir = output_dir / "models"
     parameters = replace(
-        FIXED_PARAMETERS,
+        (
+            REAL_GEOMETRY_PARAMETERS
+            if args.geometry == "real"
+            else FIXED_PARAMETERS
+        ),
         torso_com_x=args.torso_com_x_mm / 1000.0,
         torso_com_z=args.torso_com_z_mm / 1000.0,
     )
@@ -302,11 +314,13 @@ def main(argv=None) -> None:
         model_dir / "no_self_collision.xml",
         parameters,
         enable_self_collision=False,
+        detailed_structure=(args.geometry == "real"),
     )
     collision_model = write_mjcf(
         model_dir / "collision.xml",
         parameters,
         enable_self_collision=True,
+        detailed_structure=(args.geometry == "real"),
     )
     models = {
         "no_self_collision": no_collision_model,
@@ -336,6 +350,7 @@ def main(argv=None) -> None:
                 initial_parameters=previous_parameters,
                 final_duration_s=args.final_duration,
                 workers=args.workers,
+                geometry_parameters=parameters,
             )
             status = "complete"
         results.append(result)
@@ -346,6 +361,14 @@ def main(argv=None) -> None:
             f"score={float(result['score']):.3f}",
             flush=True,
         )
+        if float(result["conservative_rolling_turns"]) < args.min_stage_turns:
+            print(
+                f"early_stop stage={config.name} "
+                f"turns={float(result['conservative_rolling_turns']):.3f} "
+                f"threshold={args.min_stage_turns:.3f}",
+                flush=True,
+            )
+            break
 
     print(f"output={output_dir / 'report_zh.md'}")
     print(f"output={output_dir / 'summary.json'}")

@@ -9,6 +9,7 @@
 - `reset_v1`：旧版 reset 课程，用于复现；
 - `reset_v2`：固定 joint/qvel/differential 扰动，逐步增加 axis tilt；
 - `friction_v1`：保持 `reset_v2` 最终 reset 难度，只逐步扩大摩擦随机化；
+- `mass_v1`：从通过验收的 `friction_v1` 继续，在保留摩擦随机化的同时逐步加入每个 body 的质量/惯量随机化；
 - `robustness_v1`：旧版 `reset_v1 + friction + dynamics`，保留兼容，不用于当前 checkpoint 的续训。
 
 默认仍为 `--curriculum none`。

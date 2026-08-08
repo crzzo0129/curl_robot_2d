@@ -7,7 +7,7 @@ geometry is parameterized here, but it does not yet add mass or inertia.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 
 
@@ -100,6 +100,21 @@ class FixedParameters:
     upper_proxy_radius: float = 0.012
     lower_proxy_radius: float = 0.010
 
+    # Optional detailed 2-D structure proxies used by the 180 mm geometry
+    # study.  They do not alter the explicitly specified body inertias.
+    torso_box_width: float = 0.120
+    torso_box_height: float = 0.120
+    torso_box_outward_offset: float = 0.0
+    structure_half_thickness_y: float = 0.012
+    motor_radius: float = 0.027
+    motor_half_thickness_y: float = 0.012
+    motor_link_clearance: float = 0.001
+    # When set, size the shell so its inner surface clears the motor envelope
+    # by this radial distance in the compact regular-pentagon pose.
+    shell_motor_clearance: float | None = None
+    # Arc length removed only from the foot-side end of each shank shell.
+    shank_shell_foot_retreat: float = 0.0
+
     # First rolling-shell baseline.  Each nominal 72-degree arc is trimmed at
     # both ends, then approximated by short capsules.  In the compact pose,
     # the outside of the shell and the outside of the foot spheres share one
@@ -166,7 +181,13 @@ class FixedParameters:
     @property
     def shell_contact_radius(self) -> float:
         """Radius of the compact pose's intended external contact circle."""
-
+        if self.shell_motor_clearance is not None:
+            return (
+                self.regular_pentagon_radius
+                + self.motor_radius
+                + self.shell_motor_clearance
+                + 2.0 * self.shell_capsule_radius
+            )
         return self.regular_pentagon_radius + self.foot_radius
 
     @property
@@ -282,3 +303,18 @@ class FixedParameters:
 
 
 FIXED_PARAMETERS = FixedParameters()
+
+# Geometry-development branch.  Keep FIXED_PARAMETERS unchanged so existing
+# 2-D references, policies, and friction experiments continue to use the
+# validated 150 mm model.
+REAL_GEOMETRY_PARAMETERS = replace(
+    FIXED_PARAMETERS,
+    edge_length=0.180,
+    torso_box_outward_offset=0.020,
+    upper_proxy_radius=0.025,
+    lower_proxy_radius=0.025,
+    foot_radius=0.030,
+    shell_design_gap=0.0,
+    shell_motor_clearance=0.003,
+    shank_shell_foot_retreat=0.010,
+)

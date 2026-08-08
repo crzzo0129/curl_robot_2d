@@ -14,7 +14,7 @@ import mujoco
 import numpy as np
 from PIL import Image, ImageDraw
 
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import FIXED_PARAMETERS, FixedParameters
 from curl_robot_2d.planar_geometry import proper_segments_intersect
 from scripts.run_release_baseline import (
     JOINT_TARGETS,
@@ -59,6 +59,7 @@ MAXIMUM_FORBIDDEN_PENETRATION_WEIGHT = 2500.0
 ALLOWED_PENETRATION_EXCESS_INTEGRAL_WEIGHT = 12000.0
 MAXIMUM_ALLOWED_PENETRATION_EXCESS_WEIGHT = 2500.0
 LEG_CROSSING_FAILURE_PENALTY = 1000.0
+CONTACT_FREE_FAILURE_PENALTY = 1000.0
 FOOT_CONTACT_TIME_WEIGHT = 40.0
 LONGEST_FOOT_CONTACT_WEIGHT = 100.0
 FOOT_GAP_DEFICIT_INTEGRAL_WEIGHT = 3000.0
@@ -87,13 +88,30 @@ class ControllerRollout:
 _WORKER_MODEL: mujoco.MjModel | None = None
 
 
-def _initialize_rollout_worker(model_path: str) -> None:
+def _activate_geometry(parameters: FixedParameters) -> None:
+    """Make controller geometry helpers match the model being optimized."""
+
+    global FIXED_PARAMETERS, JOINT_TARGETS
+    FIXED_PARAMETERS = parameters
+    JOINT_TARGETS = (
+        ("front_hip", parameters.compact_hip_angle),
+        ("front_knee", parameters.compact_knee_angle),
+        ("rear_hip", parameters.compact_hip_angle),
+        ("rear_knee", parameters.compact_knee_angle),
+    )
+
+
+def _initialize_rollout_worker(
+    model_path: str,
+    parameters: FixedParameters,
+) -> None:
     global _WORKER_MODEL
+    _activate_geometry(parameters)
     _WORKER_MODEL = mujoco.MjModel.from_xml_path(model_path)
 
 
 def _rollout_worker(
-    task: tuple[np.ndarray, float, str, float, float, bool],
+    task: tuple[np.ndarray, float, str, float, float, bool, bool, float | None],
 ) -> ControllerRollout:
     if _WORKER_MODEL is None:
         raise RuntimeError("rollout worker model was not initialized")
@@ -104,6 +122,8 @@ def _rollout_worker(
         minimum_foot_surface_gap_m,
         foot_gap_tracking_margin_m,
         enforce_leg_crossing_constraint,
+        allow_foot_contact,
+        maximum_self_contact_time_s,
     ) = task
     return rollout_controller(
         _WORKER_MODEL,
@@ -115,6 +135,8 @@ def _rollout_worker(
         minimum_foot_surface_gap_m=minimum_foot_surface_gap_m,
         foot_gap_tracking_margin_m=foot_gap_tracking_margin_m,
         enforce_leg_crossing_constraint=enforce_leg_crossing_constraint,
+        allow_foot_contact=allow_foot_contact,
+        maximum_self_contact_time_s=maximum_self_contact_time_s,
         detailed=False,
     )
 
@@ -219,7 +241,7 @@ def _contact_metrics(
     data: mujoco.MjData,
     *,
     floor_geom_id: int,
-    allowed_foot_pair: frozenset[int],
+    allowed_foot_pair: frozenset[int] | None,
 ) -> tuple[int, int, int, float, float]:
     """Return ground/self contact counts and penetration depths for one step."""
 
@@ -236,19 +258,22 @@ def _contact_metrics(
             float(contact.dist),
         )
 
-    allowed_penetration = max(
-        -self_pair_distances.get(allowed_foot_pair, 0.0), 0.0
+    allowed_penetration = (
+        max(-self_pair_distances.get(allowed_foot_pair, 0.0), 0.0)
+        if allowed_foot_pair is not None
+        else 0.0
     )
     forbidden_distances = [
         distance
         for pair, distance in self_pair_distances.items()
-        if pair != allowed_foot_pair
+        if allowed_foot_pair is None or pair != allowed_foot_pair
     ]
     forbidden_penetration = max(
         (-min(forbidden_distances, default=0.0)), 0.0
     )
     forbidden_pair_count = sum(
-        pair != allowed_foot_pair for pair in self_pair_distances
+        allowed_foot_pair is None or pair != allowed_foot_pair
+        for pair in self_pair_distances
     )
     return (
         ground_contact_count,
@@ -341,6 +366,8 @@ def rollout_controller(
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
     enforce_leg_crossing_constraint: bool = True,
+    allow_foot_contact: bool = True,
+    maximum_self_contact_time_s: float | None = None,
     detailed: bool = False,
 ) -> ControllerRollout:
     if objective not in {"barrier", "sustained"}:
@@ -370,7 +397,11 @@ def rollout_controller(
     rear_foot_geom_id = _id(
         model, mujoco.mjtObj.mjOBJ_GEOM, "rear_foot_proxy"
     )
-    allowed_foot_pair = frozenset((front_foot_geom_id, rear_foot_geom_id))
+    allowed_foot_pair = (
+        frozenset((front_foot_geom_id, rear_foot_geom_id))
+        if allow_foot_contact
+        else None
+    )
     leg_body_ids = {
         name: _id(model, mujoco.mjtObj.mjOBJ_BODY, name)
         for name in (
@@ -773,6 +804,16 @@ def rollout_controller(
         + MAXIMUM_ALLOWED_PENETRATION_EXCESS_WEIGHT
         * maximum_allowed_penetration_excess
         + LEG_CROSSING_FAILURE_PENALTY * float(leg_crossing_detected)
+        + CONTACT_FREE_FAILURE_PENALTY
+        * float(
+            not allow_foot_contact
+            and forbidden_contact_time
+            > (
+                maximum_self_contact_time_s
+                if maximum_self_contact_time_s is not None
+                else 0.0
+            )
+        )
     )
     constraint_penalty = (
         0.10 * actuator_positive_work
@@ -865,8 +906,10 @@ def rollout_controller(
             maximum_allowed_foot_penetration
         ),
         "allowed_foot_penetration_tolerance_m": (
-            ALLOWED_FOOT_PENETRATION_M
+            ALLOWED_FOOT_PENETRATION_M if allow_foot_contact else 0.0
         ),
+        "foot_to_foot_contact_allowed": allow_foot_contact,
+        "maximum_self_contact_time_s": maximum_self_contact_time_s,
         "allowed_penetration_excess_integral_m_s": (
             allowed_penetration_excess_integral
         ),
@@ -919,12 +962,16 @@ def optimize_controller(
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
     enforce_leg_crossing_constraint: bool = True,
+    allow_foot_contact: bool = True,
+    maximum_self_contact_time_s: float | None = None,
+    geometry_parameters: FixedParameters = FIXED_PARAMETERS,
 ) -> tuple[np.ndarray, list[dict[str, float | int | str]], ControllerRollout]:
     if not 1 <= elite_count <= population:
         raise ValueError("elite_count must be between 1 and population")
     if workers < 1:
         raise ValueError("workers must be at least 1")
 
+    _activate_geometry(geometry_parameters)
     rng = np.random.default_rng(seed)
     lower = np.concatenate(
         [
@@ -955,7 +1002,7 @@ def optimize_controller(
         ProcessPoolExecutor(
             max_workers=workers,
             initializer=_initialize_rollout_worker,
-            initargs=(str(model_path),),
+            initargs=(str(model_path), geometry_parameters),
         )
         if workers > 1
         else None
@@ -998,6 +1045,10 @@ def optimize_controller(
                         enforce_leg_crossing_constraint=(
                             enforce_leg_crossing_constraint
                         ),
+                        allow_foot_contact=allow_foot_contact,
+                        maximum_self_contact_time_s=(
+                            maximum_self_contact_time_s
+                        ),
                         detailed=False,
                     )
                     for sample in samples
@@ -1011,6 +1062,8 @@ def optimize_controller(
                         minimum_foot_surface_gap_m,
                         foot_gap_tracking_margin_m,
                         enforce_leg_crossing_constraint,
+                        allow_foot_contact,
+                        maximum_self_contact_time_s,
                     )
                     for sample in samples
                 ]
@@ -1112,6 +1165,7 @@ def _coefficient_summary(
     parameters: np.ndarray,
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
+    allow_foot_contact: bool = True,
 ) -> dict[str, object]:
     coefficients = parameters[:8]
     raw = {
@@ -1142,9 +1196,14 @@ def _coefficient_summary(
         "raw_coefficients": raw,
         "joint_sinusoid": joints,
         "collision_objective": {
-            "allowed_contact": "front_foot_proxy__rear_foot_proxy",
+            "allowed_contact": (
+                "front_foot_proxy__rear_foot_proxy"
+                if allow_foot_contact
+                else None
+            ),
+            "all_robot_self_contact_forbidden": not allow_foot_contact,
             "allowed_foot_penetration_tolerance_m": (
-                ALLOWED_FOOT_PENETRATION_M
+                ALLOWED_FOOT_PENETRATION_M if allow_foot_contact else 0.0
             ),
             "forbidden_contact_time_weight": (
                 FORBIDDEN_CONTACT_TIME_WEIGHT
@@ -1401,6 +1460,7 @@ def write_outputs(
     controlled: ControllerRollout,
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
+    allow_foot_contact: bool = True,
 ) -> tuple[Path, ...]:
     output_dir.mkdir(parents=True, exist_ok=True)
     controller_path = output_dir / "best_phase_controller.json"
@@ -1411,6 +1471,7 @@ def write_outputs(
         parameters,
         minimum_foot_surface_gap_m,
         foot_gap_tracking_margin_m,
+        allow_foot_contact,
     )
     payload["rollout_summary"] = controlled.summary
     controller_path.write_text(
