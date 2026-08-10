@@ -17,6 +17,9 @@ results/**
 !results/collision_constrained_cem/best_phase_controller.json
 !results/collision_constrained_cem_foot_gap_2mm_short_contact/
 !results/collision_constrained_cem_foot_gap_2mm_short_contact/best_phase_controller.json
+!results/staged_cem_real_geometry_180_d50_foot60/
+!results/staged_cem_real_geometry_180_d50_foot60/03_foot_gap_2mm/
+!results/staged_cem_real_geometry_180_d50_foot60/03_foot_gap_2mm/best_phase_controller.json
 
 # Local training services and logs.
 wandb/
