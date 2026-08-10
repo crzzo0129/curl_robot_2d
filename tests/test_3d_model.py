@@ -45,6 +45,7 @@ class CurlRobot3DModelTest(unittest.TestCase):
             for geom_id in range(model.ngeom)
         ]
         self.assertEqual(sum(name.endswith("_motor") for name in geom_names), 8)
+        self.assertEqual(sum("_motor_collision_" in name for name in geom_names), 32)
         self.assertEqual(sum("_shell_" in name for name in geom_names), 60)
         self.assertEqual(sum(name.endswith("_foot_proxy") for name in geom_names), 4)
         for side in ("left", "right"):
@@ -58,6 +59,24 @@ class CurlRobot3DModelTest(unittest.TestCase):
                     motor_id = model.geom(f"{end}_{side}_{joint}_motor").id
                     self.assertAlmostEqual(model.geom_size[motor_id, 0], 0.027)
                     self.assertAlmostEqual(model.geom_size[motor_id, 1], 0.012)
+                    self.assertEqual(
+                        model.geom_type[motor_id],
+                        mujoco.mjtGeom.mjGEOM_CYLINDER,
+                    )
+                    self.assertEqual(model.geom_contype[motor_id], 0)
+                    self.assertEqual(model.geom_conaffinity[motor_id], 0)
+                    for proxy_index in range(4):
+                        proxy_id = model.geom(
+                            f"{end}_{side}_{joint}_motor_collision_{proxy_index:02d}"
+                        ).id
+                        self.assertEqual(
+                            model.geom_type[proxy_id],
+                            mujoco.mjtGeom.mjGEOM_CAPSULE,
+                        )
+                        self.assertAlmostEqual(model.geom_size[proxy_id, 0], 0.012)
+                        self.assertAlmostEqual(model.geom_size[proxy_id, 1], 0.015)
+                        self.assertEqual(model.geom_contype[proxy_id], 2)
+                        self.assertEqual(model.geom_conaffinity[proxy_id], 7)
 
     def test_checked_in_3d_model_matches_generator(self) -> None:
         self.assertEqual(MODEL_PATH.read_text(encoding="utf-8"), build_mjcf_3d())

@@ -98,6 +98,48 @@ def _arc_shell_geoms_3d(
     return "\n".join(lines)
 
 
+def _motor_geoms_3d(
+    prefix: str,
+    parameters: FixedParameters,
+    *,
+    indent: int,
+) -> str:
+    """Return an exact motor visual plus MJX-compatible collision proxies.
+
+    JAX MJX does not implement cylinder-box contacts.  Four capsules arranged
+    as diameters in the motor's x-z disk approximate the cylindrical collision
+    volume while preserving its 24 mm y thickness.  The largest radial deficit
+    is about 1.1 mm for the current 54 x 24 mm motor.
+    """
+
+    p = parameters
+    capsule_radius = p.motor_half_thickness_y
+    segment_half_length = p.motor_radius - capsule_radius
+    if segment_half_length <= 0.0:
+        raise ValueError("motor radius must exceed its axial half-thickness")
+
+    pad = " " * indent
+    lines = [
+        f'{pad}<geom name="{prefix}_motor" type="cylinder"',
+        f'{pad}      size="{_f(p.motor_radius)} {_f(p.motor_half_thickness_y)}"',
+        f'{pad}      euler="1.570796327 0 0" contype="0" conaffinity="0"',
+        f'{pad}      rgba="0.30 0.32 0.36 1"/>',
+    ]
+    for index in range(4):
+        angle = index * math.pi / 4.0
+        dx = segment_half_length * math.cos(angle)
+        dz = segment_half_length * math.sin(angle)
+        lines.extend(
+            [
+                f'{pad}<geom name="{prefix}_motor_collision_{index:02d}" type="capsule"',
+                f'{pad}      class="structure_collision"',
+                f'{pad}      fromto="{_f(-dx)} 0 {_f(-dz)} {_f(dx)} 0 {_f(dz)}"',
+                f'{pad}      size="{_f(capsule_radius)}" rgba="0 0 0 0"/>',
+            ]
+        )
+    return "\n".join(lines)
+
+
 def _leg_chain(
     *,
     side: str,
@@ -145,17 +187,11 @@ def _leg_chain(
         else f"0 0 0 0 0 -{_f(p.lower_length)}"
     )
     hip_motor = (
-        f'''\n                <geom name="{prefix}_hip_motor" type="cylinder"
-                      class="structure_collision"
-                      size="{_f(p.motor_radius)} {_f(p.motor_half_thickness_y)}"
-                      euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>'''
+        "\n" + _motor_geoms_3d(f"{prefix}_hip", p, indent=16)
         if detailed_structure else ""
     )
     knee_motor = (
-        f'''\n                  <geom name="{prefix}_knee_motor" type="cylinder"
-                        class="structure_collision"
-                        size="{_f(p.motor_radius)} {_f(p.motor_half_thickness_y)}"
-                        euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>'''
+        "\n" + _motor_geoms_3d(f"{prefix}_knee", p, indent=18)
         if detailed_structure else ""
     )
     return f"""\

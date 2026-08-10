@@ -122,9 +122,25 @@
               size="0.025"
               rgba="0.95 0.45 0.12 1"/>
         <geom name="front_left_hip_motor" type="cylinder"
-              class="structure_collision"
               size="0.027 0.012"
-              euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>
+              euler="1.570796327 0 0" contype="0" conaffinity="0"
+              rgba="0.30 0.32 0.36 1"/>
+        <geom name="front_left_hip_motor_collision_00" type="capsule"
+              class="structure_collision"
+              fromto="-0.015 0 -0 0.015 0 0"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="front_left_hip_motor_collision_01" type="capsule"
+              class="structure_collision"
+              fromto="-0.01060660172 0 -0.01060660172 0.01060660172 0 0.01060660172"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="front_left_hip_motor_collision_02" type="capsule"
+              class="structure_collision"
+              fromto="-9.184850994e-19 0 -0.015 9.184850994e-19 0 0.015"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="front_left_hip_motor_collision_03" type="capsule"
+              class="structure_collision"
+              fromto="0.01060660172 0 -0.01060660172 -0.01060660172 0 0.01060660172"
+              size="0.012" rgba="0 0 0 0"/>
         <geom name="front_left_thigh_shell_00" class="rolling_shell"
               fromto="0.04556380091 0 -0.006 0.05641014695 0 -0.03287919252"/>
         <geom name="front_left_thigh_shell_01" class="rolling_shell"
@@ -149,9 +165,25 @@
                 size="0.025"
                 rgba="0.98 0.70 0.18 1"/>
           <geom name="front_left_knee_motor" type="cylinder"
-                class="structure_collision"
                 size="0.027 0.012"
-                euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>
+                euler="1.570796327 0 0" contype="0" conaffinity="0"
+                rgba="0.30 0.32 0.36 1"/>
+          <geom name="front_left_knee_motor_collision_00" type="capsule"
+                class="structure_collision"
+                fromto="-0.015 0 -0 0.015 0 0"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="front_left_knee_motor_collision_01" type="capsule"
+                class="structure_collision"
+                fromto="-0.01060660172 0 -0.01060660172 0.01060660172 0 0.01060660172"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="front_left_knee_motor_collision_02" type="capsule"
+                class="structure_collision"
+                fromto="-9.184850994e-19 0 -0.015 9.184850994e-19 0 0.015"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="front_left_knee_motor_collision_03" type="capsule"
+                class="structure_collision"
+                fromto="0.01060660172 0 -0.01060660172 -0.01060660172 0 0.01060660172"
+                size="0.012" rgba="0 0 0 0"/>
           <geom name="front_left_shank_shell_00" class="rolling_shell"
                 fromto="0.04556380091 0 -0.006 0.05589975364 0 -0.03129260547"/>
           <geom name="front_left_shank_shell_01" class="rolling_shell"
@@ -185,9 +217,25 @@
               size="0.025"
               rgba="0.95 0.45 0.12 1"/>
         <geom name="front_right_hip_motor" type="cylinder"
-              class="structure_collision"
               size="0.027 0.012"
-              euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>
+              euler="1.570796327 0 0" contype="0" conaffinity="0"
+              rgba="0.30 0.32 0.36 1"/>
+        <geom name="front_right_hip_motor_collision_00" type="capsule"
+              class="structure_collision"
+              fromto="-0.015 0 -0 0.015 0 0"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="front_right_hip_motor_collision_01" type="capsule"
+              class="structure_collision"
+              fromto="-0.01060660172 0 -0.01060660172 0.01060660172 0 0.01060660172"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="front_right_hip_motor_collision_02" type="capsule"
+              class="structure_collision"
+              fromto="-9.184850994e-19 0 -0.015 9.184850994e-19 0 0.015"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="front_right_hip_motor_collision_03" type="capsule"
+              class="structure_collision"
+              fromto="0.01060660172 0 -0.01060660172 -0.01060660172 0 0.01060660172"
+              size="0.012" rgba="0 0 0 0"/>
         <geom name="front_right_thigh_shell_00" class="rolling_shell"
               fromto="0.04556380091 0 -0.006 0.05641014695 0 -0.03287919252"/>
         <geom name="front_right_thigh_shell_01" class="rolling_shell"
@@ -212,9 +260,25 @@
                 size="0.025"
                 rgba="0.98 0.70 0.18 1"/>
           <geom name="front_right_knee_motor" type="cylinder"
-                class="structure_collision"
                 size="0.027 0.012"
-                euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>
+                euler="1.570796327 0 0" contype="0" conaffinity="0"
+                rgba="0.30 0.32 0.36 1"/>
+          <geom name="front_right_knee_motor_collision_00" type="capsule"
+                class="structure_collision"
+                fromto="-0.015 0 -0 0.015 0 0"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="front_right_knee_motor_collision_01" type="capsule"
+                class="structure_collision"
+                fromto="-0.01060660172 0 -0.01060660172 0.01060660172 0 0.01060660172"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="front_right_knee_motor_collision_02" type="capsule"
+                class="structure_collision"
+                fromto="-9.184850994e-19 0 -0.015 9.184850994e-19 0 0.015"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="front_right_knee_motor_collision_03" type="capsule"
+                class="structure_collision"
+                fromto="0.01060660172 0 -0.01060660172 -0.01060660172 0 0.01060660172"
+                size="0.012" rgba="0 0 0 0"/>
           <geom name="front_right_shank_shell_00" class="rolling_shell"
                 fromto="0.04556380091 0 -0.006 0.05589975364 0 -0.03129260547"/>
           <geom name="front_right_shank_shell_01" class="rolling_shell"
@@ -248,9 +312,25 @@
               size="0.025"
               rgba="0.95 0.45 0.12 1"/>
         <geom name="rear_left_hip_motor" type="cylinder"
-              class="structure_collision"
               size="0.027 0.012"
-              euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>
+              euler="1.570796327 0 0" contype="0" conaffinity="0"
+              rgba="0.30 0.32 0.36 1"/>
+        <geom name="rear_left_hip_motor_collision_00" type="capsule"
+              class="structure_collision"
+              fromto="-0.015 0 -0 0.015 0 0"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="rear_left_hip_motor_collision_01" type="capsule"
+              class="structure_collision"
+              fromto="-0.01060660172 0 -0.01060660172 0.01060660172 0 0.01060660172"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="rear_left_hip_motor_collision_02" type="capsule"
+              class="structure_collision"
+              fromto="-9.184850994e-19 0 -0.015 9.184850994e-19 0 0.015"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="rear_left_hip_motor_collision_03" type="capsule"
+              class="structure_collision"
+              fromto="0.01060660172 0 -0.01060660172 -0.01060660172 0 0.01060660172"
+              size="0.012" rgba="0 0 0 0"/>
         <geom name="rear_left_thigh_shell_00" class="rolling_shell"
               fromto="-0.04556380091 0 -0.006 -0.05641014695 0 -0.03287919252"/>
         <geom name="rear_left_thigh_shell_01" class="rolling_shell"
@@ -275,9 +355,25 @@
                 size="0.025"
                 rgba="0.98 0.70 0.18 1"/>
           <geom name="rear_left_knee_motor" type="cylinder"
-                class="structure_collision"
                 size="0.027 0.012"
-                euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>
+                euler="1.570796327 0 0" contype="0" conaffinity="0"
+                rgba="0.30 0.32 0.36 1"/>
+          <geom name="rear_left_knee_motor_collision_00" type="capsule"
+                class="structure_collision"
+                fromto="-0.015 0 -0 0.015 0 0"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="rear_left_knee_motor_collision_01" type="capsule"
+                class="structure_collision"
+                fromto="-0.01060660172 0 -0.01060660172 0.01060660172 0 0.01060660172"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="rear_left_knee_motor_collision_02" type="capsule"
+                class="structure_collision"
+                fromto="-9.184850994e-19 0 -0.015 9.184850994e-19 0 0.015"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="rear_left_knee_motor_collision_03" type="capsule"
+                class="structure_collision"
+                fromto="0.01060660172 0 -0.01060660172 -0.01060660172 0 0.01060660172"
+                size="0.012" rgba="0 0 0 0"/>
           <geom name="rear_left_shank_shell_00" class="rolling_shell"
                 fromto="-0.04556380091 0 -0.006 -0.05589975364 0 -0.03129260547"/>
           <geom name="rear_left_shank_shell_01" class="rolling_shell"
@@ -311,9 +407,25 @@
               size="0.025"
               rgba="0.95 0.45 0.12 1"/>
         <geom name="rear_right_hip_motor" type="cylinder"
-              class="structure_collision"
               size="0.027 0.012"
-              euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>
+              euler="1.570796327 0 0" contype="0" conaffinity="0"
+              rgba="0.30 0.32 0.36 1"/>
+        <geom name="rear_right_hip_motor_collision_00" type="capsule"
+              class="structure_collision"
+              fromto="-0.015 0 -0 0.015 0 0"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="rear_right_hip_motor_collision_01" type="capsule"
+              class="structure_collision"
+              fromto="-0.01060660172 0 -0.01060660172 0.01060660172 0 0.01060660172"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="rear_right_hip_motor_collision_02" type="capsule"
+              class="structure_collision"
+              fromto="-9.184850994e-19 0 -0.015 9.184850994e-19 0 0.015"
+              size="0.012" rgba="0 0 0 0"/>
+        <geom name="rear_right_hip_motor_collision_03" type="capsule"
+              class="structure_collision"
+              fromto="0.01060660172 0 -0.01060660172 -0.01060660172 0 0.01060660172"
+              size="0.012" rgba="0 0 0 0"/>
         <geom name="rear_right_thigh_shell_00" class="rolling_shell"
               fromto="-0.04556380091 0 -0.006 -0.05641014695 0 -0.03287919252"/>
         <geom name="rear_right_thigh_shell_01" class="rolling_shell"
@@ -338,9 +450,25 @@
                 size="0.025"
                 rgba="0.98 0.70 0.18 1"/>
           <geom name="rear_right_knee_motor" type="cylinder"
-                class="structure_collision"
                 size="0.027 0.012"
-                euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>
+                euler="1.570796327 0 0" contype="0" conaffinity="0"
+                rgba="0.30 0.32 0.36 1"/>
+          <geom name="rear_right_knee_motor_collision_00" type="capsule"
+                class="structure_collision"
+                fromto="-0.015 0 -0 0.015 0 0"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="rear_right_knee_motor_collision_01" type="capsule"
+                class="structure_collision"
+                fromto="-0.01060660172 0 -0.01060660172 0.01060660172 0 0.01060660172"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="rear_right_knee_motor_collision_02" type="capsule"
+                class="structure_collision"
+                fromto="-9.184850994e-19 0 -0.015 9.184850994e-19 0 0.015"
+                size="0.012" rgba="0 0 0 0"/>
+          <geom name="rear_right_knee_motor_collision_03" type="capsule"
+                class="structure_collision"
+                fromto="0.01060660172 0 -0.01060660172 -0.01060660172 0 0.01060660172"
+                size="0.012" rgba="0 0 0 0"/>
           <geom name="rear_right_shank_shell_00" class="rolling_shell"
                 fromto="-0.04556380091 0 -0.006 -0.05589975364 0 -0.03129260547"/>
           <geom name="rear_right_shank_shell_01" class="rolling_shell"
