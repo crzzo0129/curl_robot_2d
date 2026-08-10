@@ -225,6 +225,17 @@ def build_mjcf_3d(
         p.stand_3d_rear_hip_angle,
         p.stand_3d_rear_knee_angle,
     )
+    park_key = ""
+    if detailed_structure:
+        # Validated by scripts/validate_3d_park_pose.py on the real-geometry
+        # candidate.  Keep the original 150 mm baseline keyframes unchanged.
+        park_root = 0.3671041158
+        park_front = (0.4983797927, 0.3491569025)
+        park_rear = (0.4340952810, 0.0107701707)
+        park_key = f'''
+            <key name="park"
+                 qpos="0 0 {_f(park_root)} 1 0 0 0 {_f(park_front[0])} {_f(park_front[1])} {_f(park_front[0])} {_f(park_front[1])} {_f(park_rear[0])} {_f(park_rear[1])} {_f(park_rear[0])} {_f(park_rear[1])}"
+                 ctrl="{_f(park_front[0])} {_f(park_front[1])} {_f(park_front[0])} {_f(park_front[1])} {_f(park_rear[0])} {_f(park_rear[1])} {_f(park_rear[0])} {_f(park_rear[1])}"/>'''
     torso_geoms = (
         f'''<geom name="torso_box_proxy" type="box"
                     class="structure_collision"
@@ -404,7 +415,7 @@ def build_mjcf_3d(
                  ctrl="0 0 0 0 0 0 0 0"/>
             <key name="stand"
                  qpos="0 0 {_f(p.stand_3d_root_height)} 1 0 0 0 {_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_rear[0])} {_f(stand_rear[1])} {_f(stand_rear[0])} {_f(stand_rear[1])}"
-                 ctrl="{_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_rear[0])} {_f(stand_rear[1])} {_f(stand_rear[0])} {_f(stand_rear[1])}"/>
+                 ctrl="{_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_front[0])} {_f(stand_front[1])} {_f(stand_rear[0])} {_f(stand_rear[1])} {_f(stand_rear[0])} {_f(stand_rear[1])}"/>{park_key}
             <key name="compact"
                  qpos="0 0 {_f(p.compact_root_height)} 1 0 0 0 {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])}"
                  ctrl="{_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])} {_f(compact[0])} {_f(compact[1])}"/>

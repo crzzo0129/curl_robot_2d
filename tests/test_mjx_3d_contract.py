@@ -6,6 +6,7 @@ import numpy as np
 
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
 from curl_robot_2d_mjx.config_3d import (
+    GEOMETRY_NAMES_3D,
     Rolling3DConfig,
     physics_profile_3d,
     validate_3d_config,
@@ -15,6 +16,7 @@ from curl_robot_2d_mjx.environment_3d import (
     ACTION_SIZE_3D,
     DEFAULT_3D_CEM_CONTROLLER,
     MODEL_PATH_3D,
+    REAL_MODEL_PATH_3D,
     OBSERVATION_SIZE_3D,
     PHASE_FEEDBACK_SIZE_3D,
     advance_rolling_phase_3d,
@@ -25,6 +27,8 @@ from curl_robot_2d_mjx.environment_3d import (
     pair_coupled_reset_noise_3d,
     phase_feedback_observation_3d,
     reference_startup_scale_3d,
+    geometry_parameters_3d,
+    model_path_3d,
 )
 from curl_robot_2d_mjx.randomization_3d import (
     Rolling3DDomainRandomization,
@@ -43,6 +47,11 @@ class MJX3DContractTest(unittest.TestCase):
             MODEL_PATH_3D, PROJECT_ROOT / "assets" / "curl_robot_3d.xml"
         )
         self.assertTrue(MODEL_PATH_3D.exists())
+        self.assertTrue(REAL_MODEL_PATH_3D.exists())
+        self.assertEqual(GEOMETRY_NAMES_3D, ("baseline", "real"))
+        self.assertEqual(model_path_3d("real"), REAL_MODEL_PATH_3D)
+        self.assertAlmostEqual(geometry_parameters_3d("real").edge_length, 0.18)
+        self.assertAlmostEqual(geometry_parameters_3d("real").foot_radius, 0.03)
         self.assertEqual(DEFAULT_3D_CEM_CONTROLLER.name, "best_phase_controller.json")
         self.assertTrue(DEFAULT_3D_CEM_CONTROLLER.exists())
         self.assertEqual(len(JOINT_NAMES_3D), ACTION_SIZE_3D)
@@ -80,6 +89,7 @@ class MJX3DContractTest(unittest.TestCase):
     def test_3d_config_validation(self) -> None:
         validate_3d_config(Rolling3DConfig())
         invalid = (
+            {"geometry": "unknown"},
             {"action_scales": (1.0,)},
             {"reference_phase_rate_scale": float("nan")},
             {"reference_action_scale": 0.0},

@@ -16,9 +16,10 @@ from PIL import Image, ImageDraw
 from scripts.optimize_phase_controller import (
     FOOT_GAP_TRACKING_MARGIN_M,
     PARAMETER_NAMES,
+    _activate_geometry,
     controller_targets,
 )
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
 from scripts.run_release_baseline import JOINT_TARGETS, MODEL_PATH, _id
 
 
@@ -31,6 +32,9 @@ DEFAULT_CONTROLLER_PATH = (
 )
 DEFAULT_GIF_PATH = (
     PROJECT_ROOT / "results" / "phase_controller" / "active_roll.gif"
+)
+REAL_GEOMETRY_MODEL_PATH = (
+    PROJECT_ROOT / "assets" / "curl_robot_2d_real_geometry.xml"
 )
 
 
@@ -61,6 +65,7 @@ def load_controller_options(
 def initialize_simulation(
     model: mujoco.MjModel,
     minimum_foot_surface_gap_m: float = 0.0,
+    geometry_parameters=FIXED_PARAMETERS,
 ) -> tuple[mujoco.MjData, int, list[int]]:
     data = mujoco.MjData(model)
     compact_key_id = _id(model, mujoco.mjtObj.mjOBJ_KEY, "compact")
@@ -76,7 +81,7 @@ def initialize_simulation(
     mujoco.mj_resetDataKeyframe(model, data, compact_key_id)
     if minimum_foot_surface_gap_m > 0.0:
         separated = replace(
-            FIXED_PARAMETERS,
+            geometry_parameters,
             compact_foot_surface_gap=minimum_foot_surface_gap_m,
         )
         root_z_joint = _id(
@@ -110,13 +115,16 @@ def advance_controller(
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
     knee_bias_rad: float = 0.0,
+    phase_rate_scale: float = 1.0,
 ) -> float:
     phase = float(data.qpos[root_pitch_qpos_address])
     oscillator_phase_rate = oscillator_rate + oscillator_coupling * math.sin(
         phase - oscillator_phase
     )
-    oscillator_phase += float(model.opt.timestep) * max(
-        0.1, oscillator_phase_rate
+    oscillator_phase += (
+        float(model.opt.timestep)
+        * phase_rate_scale
+        * max(0.1, oscillator_phase_rate)
     )
     data.ctrl[:] = controller_targets(
         phase,
@@ -155,7 +163,10 @@ def render_gif(
     height: int,
     camera_distance: float,
     diagnostics: bool,
-) -> None:
+    geometry: str,
+    model_path: Path | None,
+    phase_rate_scale: float,
+) -> dict[str, float]:
     (
         coefficients,
         oscillator_rate,
@@ -164,10 +175,21 @@ def render_gif(
         foot_gap_tracking_margin_m,
         knee_bias_rad,
     ) = load_controller_options(controller_path)
-    model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
-    data, root_pitch_qpos_address, _ = initialize_simulation(
-        model, minimum_foot_surface_gap_m
+    geometry_parameters = (
+        REAL_GEOMETRY_PARAMETERS if geometry == "real" else FIXED_PARAMETERS
     )
+    _activate_geometry(geometry_parameters)
+    resolved_model_path = model_path or (
+        REAL_GEOMETRY_MODEL_PATH if geometry == "real" else MODEL_PATH
+    )
+    model = mujoco.MjModel.from_xml_path(str(resolved_model_path))
+    data, root_pitch_qpos_address, _ = initialize_simulation(
+        model,
+        minimum_foot_surface_gap_m,
+        geometry_parameters,
+    )
+    start_x = float(data.qpos[0])
+    start_pitch = float(data.qpos[root_pitch_qpos_address])
     renderer = mujoco.Renderer(model, height=height, width=width)
     camera = mujoco.MjvCamera()
     configure_tracking_camera(model, camera, distance=camera_distance)
@@ -194,6 +216,7 @@ def render_gif(
                 minimum_foot_surface_gap_m,
                 foot_gap_tracking_margin_m,
                 knee_bias_rad,
+                phase_rate_scale,
             )
             if data.time + 1e-12 < next_frame_time:
                 continue
@@ -214,6 +237,11 @@ def render_gif(
                 f"x = {float(data.qpos[0]):5.2f} m",
                 fill=(190, 201, 214),
             )
+            draw.text(
+                (255, 18),
+                f"command {phase_rate_scale * oscillator_rate / (2.0 * math.pi):.3f} Hz",
+                fill=(244, 247, 251),
+            )
             frames.append(
                 frame.quantize(colors=128, method=Image.Quantize.FASTOCTREE)
             )
@@ -233,6 +261,19 @@ def render_gif(
         optimize=False,
         disposal=2,
     )
+    elapsed = max(float(data.time), 1.0e-9)
+    roll_turns = (
+        float(data.qpos[root_pitch_qpos_address]) - start_pitch
+    ) / (2.0 * math.pi)
+    return {
+        "elapsed_s": elapsed,
+        "commanded_frequency_hz": (
+            phase_rate_scale * oscillator_rate / (2.0 * math.pi)
+        ),
+        "actual_roll_turns": roll_turns,
+        "actual_average_roll_frequency_hz": roll_turns / elapsed,
+        "distance_x_m": float(data.qpos[0]) - start_x,
+    }
 
 
 def launch_viewer(
@@ -240,7 +281,10 @@ def launch_viewer(
     *,
     duration: float,
     camera_distance: float,
-) -> None:
+    geometry: str,
+    model_path: Path | None,
+    phase_rate_scale: float,
+) -> dict[str, float]:
     import mujoco.viewer
 
     (
@@ -251,10 +295,21 @@ def launch_viewer(
         foot_gap_tracking_margin_m,
         knee_bias_rad,
     ) = load_controller_options(controller_path)
-    model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
-    data, root_pitch_qpos_address, _ = initialize_simulation(
-        model, minimum_foot_surface_gap_m
+    geometry_parameters = (
+        REAL_GEOMETRY_PARAMETERS if geometry == "real" else FIXED_PARAMETERS
     )
+    _activate_geometry(geometry_parameters)
+    resolved_model_path = model_path or (
+        REAL_GEOMETRY_MODEL_PATH if geometry == "real" else MODEL_PATH
+    )
+    model = mujoco.MjModel.from_xml_path(str(resolved_model_path))
+    data, root_pitch_qpos_address, _ = initialize_simulation(
+        model,
+        minimum_foot_surface_gap_m,
+        geometry_parameters,
+    )
+    start_x = float(data.qpos[0])
+    start_pitch = float(data.qpos[root_pitch_qpos_address])
     oscillator_phase = 0.0
 
     with mujoco.viewer.launch_passive(model, data) as viewer:
@@ -277,6 +332,7 @@ def launch_viewer(
                 minimum_foot_surface_gap_m,
                 foot_gap_tracking_margin_m,
                 knee_bias_rad,
+                phase_rate_scale,
             )
             viewer.sync()
             remaining = float(model.opt.timestep) - (
@@ -284,11 +340,46 @@ def launch_viewer(
             )
             if remaining > 0.0:
                 time.sleep(remaining)
+    elapsed = max(float(data.time), 1.0e-9)
+    roll_turns = (
+        float(data.qpos[root_pitch_qpos_address]) - start_pitch
+    ) / (2.0 * math.pi)
+    return {
+        "elapsed_s": elapsed,
+        "commanded_frequency_hz": (
+            phase_rate_scale * oscillator_rate / (2.0 * math.pi)
+        ),
+        "actual_roll_turns": roll_turns,
+        "actual_average_roll_frequency_hz": roll_turns / elapsed,
+        "distance_x_m": float(data.qpos[0]) - start_x,
+    }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--controller", type=Path, default=DEFAULT_CONTROLLER_PATH)
+    parser.add_argument(
+        "--geometry", choices=("baseline", "real"), default="baseline"
+    )
+    parser.add_argument(
+        "--model",
+        type=Path,
+        default=None,
+        help="Optional XML override; otherwise selected from --geometry.",
+    )
+    frequency = parser.add_mutually_exclusive_group()
+    frequency.add_argument(
+        "--phase-rate-scale",
+        type=float,
+        default=1.0,
+        help="Scale the saved oscillator rate and phase-lock correction.",
+    )
+    frequency.add_argument(
+        "--frequency-hz",
+        type=float,
+        default=None,
+        help="Set the nominal oscillator frequency in Hz.",
+    )
     parser.add_argument("--duration", type=float, default=6.0)
     parser.add_argument("--camera-distance", type=float, default=0.75)
     parser.add_argument("--viewer", action="store_true")
@@ -299,14 +390,31 @@ def main() -> None:
     parser.add_argument("--diagnostics", action="store_true")
     args = parser.parse_args()
 
+    _, native_rate, _ = load_controller(args.controller)
+    phase_rate_scale = (
+        args.phase_rate_scale
+        if args.frequency_hz is None
+        else 2.0 * math.pi * args.frequency_hz / native_rate
+    )
+    if not math.isfinite(phase_rate_scale) or phase_rate_scale <= 0.0:
+        parser.error("--phase-rate-scale/--frequency-hz must be positive")
+    commanded_frequency_hz = phase_rate_scale * native_rate / (2.0 * math.pi)
+    print(
+        f"geometry={args.geometry}  native_frequency={native_rate / (2.0 * math.pi):.3f} Hz  "
+        f"commanded_frequency={commanded_frequency_hz:.3f} Hz"
+    )
+
     if args.viewer:
-        launch_viewer(
+        summary = launch_viewer(
             args.controller,
             duration=args.duration,
             camera_distance=args.camera_distance,
+            geometry=args.geometry,
+            model_path=args.model,
+            phase_rate_scale=phase_rate_scale,
         )
     else:
-        render_gif(
+        summary = render_gif(
             args.controller,
             args.output,
             duration=args.duration,
@@ -315,8 +423,12 @@ def main() -> None:
             height=args.height,
             camera_distance=args.camera_distance,
             diagnostics=args.diagnostics,
+            geometry=args.geometry,
+            model_path=args.model,
+            phase_rate_scale=phase_rate_scale,
         )
         print(args.output)
+    print(json.dumps(summary, indent=2, sort_keys=True))
 
 
 if __name__ == "__main__":

@@ -30,6 +30,18 @@ COEFFICIENT_NAMES = (
 
 
 @dataclass(frozen=True)
+class CEMReferenceGeometry:
+    """Planar dimensions used by the foot-clearance projection."""
+
+    torso_length_m: float = 0.15
+    link_length_m: float = 0.15
+    foot_diameter_m: float = 0.0399
+
+
+BASELINE_CEM_REFERENCE_GEOMETRY = CEMReferenceGeometry()
+
+
+@dataclass(frozen=True)
 class CEMReferenceConfig:
     """Frozen phase-locked CEM controller and residual blending settings."""
 
@@ -70,6 +82,8 @@ def load_cem_reference(
     *,
     reference_weight: float = 1.0,
     minimum_residual_gain: float = 0.05,
+    minimum_foot_surface_gap_m: float | None = None,
+    foot_gap_tracking_margin_m: float | None = None,
 ) -> CEMReferenceConfig:
     """Load the frozen CEM phase-locked oscillator from its JSON artifact."""
 
@@ -90,9 +104,13 @@ def load_cem_reference(
         knee_bias_rad=float(payload.get("nominal_knee_bias_rad", 0.0)),
         minimum_foot_surface_gap_m=float(
             payload.get("minimum_foot_surface_gap_m", 0.0)
+            if minimum_foot_surface_gap_m is None
+            else minimum_foot_surface_gap_m
         ),
         foot_gap_tracking_margin_m=float(
             payload.get("foot_gap_tracking_margin_m", 0.0)
+            if foot_gap_tracking_margin_m is None
+            else foot_gap_tracking_margin_m
         ),
         reference_weight=float(reference_weight),
         minimum_residual_gain=float(minimum_residual_gain),
@@ -101,8 +119,16 @@ def load_cem_reference(
     config.with_weight(config.reference_weight)
     if not math.isfinite(config.knee_bias_rad):
         raise ValueError(f"invalid CEM knee bias in {path}")
-    if config.minimum_foot_surface_gap_m < 0.0:
+    if (
+        not math.isfinite(config.minimum_foot_surface_gap_m)
+        or config.minimum_foot_surface_gap_m < 0.0
+    ):
         raise ValueError(f"invalid CEM foot gap in {path}")
+    if (
+        not math.isfinite(config.foot_gap_tracking_margin_m)
+        or config.foot_gap_tracking_margin_m < 0.0
+    ):
+        raise ValueError(f"invalid CEM foot-gap tracking margin in {path}")
     residual_gain(config.reference_weight, config.minimum_residual_gain)
     return config
 
@@ -146,6 +172,7 @@ def reference_action(
     action_scales,
     joint_low,
     joint_high,
+    geometry: CEMReferenceGeometry = BASELINE_CEM_REFERENCE_GEOMETRY,
 ):
     """Return the CEM target as a normalized action around compact."""
 
@@ -161,15 +188,16 @@ def reference_action(
         + cosine * xp.cos(oscillator_phase)
     )
     if config.minimum_foot_surface_gap_m > 0.0:
-        length = 0.15
+        torso_length = geometry.torso_length_m
+        length = geometry.link_length_m
         target_distance = (
-            0.0399
+            geometry.foot_diameter_m
             + config.minimum_foot_surface_gap_m
             + config.foot_gap_tracking_margin_m
         )
         for _ in range(6):
             front_hip, front_knee, rear_hip, rear_knee = target
-            delta_x = 0.15 + length * (
+            delta_x = torso_length + length * (
                 xp.sin(front_hip)
                 + xp.sin(front_hip - front_knee)
                 + xp.sin(rear_hip)

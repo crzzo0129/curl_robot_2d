@@ -5,6 +5,7 @@ import unittest
 import numpy as np
 
 from curl_robot_2d_mjx.cem_reference import (
+    CEMReferenceGeometry,
     CEMReferenceConfig,
     DEFAULT_CEM_CONTROLLER,
     advance_oscillator,
@@ -391,6 +392,46 @@ class MJXResidualTest(unittest.TestCase):
             compact + normalized * scales,
             [0.3, 0.99, 0.3, 0.99],
         )
+
+    def test_reference_projection_accepts_real_geometry_dimensions(self) -> None:
+        reference = CEMReferenceConfig(
+            coefficients=(0.0,) * 8,
+            oscillator_rate_rad_s=1.0,
+            oscillator_coupling_per_s=0.0,
+            minimum_foot_surface_gap_m=0.002,
+            foot_gap_tracking_margin_m=0.012,
+        )
+        compact = np.asarray([0.3, 1.0, 0.3, 1.0])
+        scales = np.asarray([0.8, 1.2, 0.8, 1.2])
+        limits_low = np.asarray([-1.12, -0.61, -1.12, -0.61])
+        limits_high = np.asarray([2.41, 2.69, 2.41, 2.69])
+
+        baseline = reference_action(
+            np,
+            0.0,
+            reference,
+            compact_ctrl=compact,
+            action_scales=scales,
+            joint_low=limits_low,
+            joint_high=limits_high,
+        )
+        real = reference_action(
+            np,
+            0.0,
+            reference,
+            compact_ctrl=compact,
+            action_scales=scales,
+            joint_low=limits_low,
+            joint_high=limits_high,
+            geometry=CEMReferenceGeometry(
+                torso_length_m=0.18,
+                link_length_m=0.18,
+                foot_diameter_m=0.06,
+            ),
+        )
+
+        self.assertTrue(np.isfinite(real).all())
+        self.assertFalse(np.allclose(real, baseline))
 
     def test_projected_reference_matches_cpu_cem_target(self) -> None:
         coefficients = np.asarray(

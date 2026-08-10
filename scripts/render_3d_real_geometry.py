@@ -19,7 +19,9 @@ def main() -> None:
     parser.add_argument("--model", type=Path, default=MODEL_PATH)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
-        "--keyframe", choices=("open", "stand", "compact", "all"), default="all"
+        "--keyframe",
+        choices=("open", "stand", "park", "compact", "all"),
+        default="all",
     )
     args = parser.parse_args()
 
@@ -35,7 +37,11 @@ def main() -> None:
     camera.distance = 0.9
     scene_option = mujoco.MjvOption()
 
-    names = ("open", "stand", "compact") if args.keyframe == "all" else (args.keyframe,)
+    names = (
+        ("open", "stand", "park", "compact")
+        if args.keyframe == "all"
+        else (args.keyframe,)
+    )
     for name in names:
         mujoco.mj_resetDataKeyframe(model, data, model.key(name).id)
         mujoco.mj_forward(model, data)

@@ -11,6 +11,7 @@ from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
 from scripts import (
     evaluate_mjx_3d_policy,
     render_mjx_3d_policy,
+    train_mjx_3d_real_geometry_nominal,
     train_mjx_3d_residual_ppo,
 )
 
@@ -51,6 +52,37 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
         self.assertIsNone(args.restore_params)
+
+    def test_real_geometry_contact_recipe_is_nominal_and_contact_gated(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            [
+                "--geometry",
+                "real",
+                "--recipe",
+                "real_geometry_contact_v1",
+            ]
+        )
+
+        self.assertEqual(args.geometry, "real")
+        self.assertEqual(args.curriculum, "none")
+        self.assertEqual(args.selection_objective, "contact")
+        self.assertEqual(args.selection_target_turns, 5.0)
+        self.assertEqual(args.minimum_residual_gain, 0.20)
+        self.assertTrue(args.zero_residual_policy_init)
+
+    def test_real_geometry_nominal_wrapper_pins_geometry_and_reference(self) -> None:
+        args = train_mjx_3d_real_geometry_nominal.parse_args(
+            ["--preset", "h200", "--seed", "3"]
+        )
+        values = train_mjx_3d_real_geometry_nominal.training_argv(args)
+
+        self.assertIn("real", values)
+        self.assertIn("real_geometry_contact_v1", values)
+        self.assertIn("12", values)
+        self.assertIn(
+            "results\\mjx_3d_real_geometry_contact_v1_h200_seed3",
+            values,
+        )
 
     def test_reset_curriculum_allocates_every_stage_training_work(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
@@ -428,6 +460,46 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(rejected["rejected"])
         self.assertLess(rejected["score"], -999_999.0)
 
+    def test_contact_selection_requires_five_turns_and_prefers_less_contact(
+        self,
+    ) -> None:
+        base = {
+            "eval/avg_episode_length": 500.0,
+            "eval/episode_failed": 0.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_roll_progress_rad": 5.1 * 2.0 * math.pi,
+            "eval/avg_lateral_drift_m": 0.01,
+            "eval/avg_axis_tilt_rad": 0.05,
+            "eval/avg_forbidden_penetration_m": 0.0001,
+            "eval/avg_forbidden_contact_count": 0.01,
+            "eval/avg_first_turn_forbidden_contact_count": 0.005,
+        }
+        cleaner = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+            base,
+            episode_length=500,
+            target_turns=5.0,
+            objective="contact",
+        )
+        colliding = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+            {
+                **base,
+                "eval/avg_forbidden_contact_count": 0.03,
+                "eval/avg_first_turn_forbidden_contact_count": 0.015,
+            },
+            episode_length=500,
+            target_turns=5.0,
+            objective="contact",
+        )
+        too_slow = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+            {**base, "eval/episode_roll_progress_rad": 4.9 * 2.0 * math.pi},
+            episode_length=500,
+            target_turns=5.0,
+            objective="contact",
+        )
+
+        self.assertGreater(cleaner["score"], colliding["score"])
+        self.assertTrue(too_slow["rejected"])
+
     def test_checkpoint_selection_rejects_excess_failure_rate(self) -> None:
         metrics = {
             "eval/avg_episode_length": 490.0,
@@ -614,6 +686,24 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.fps, 20.0)
         self.assertEqual(args.width, 720)
         self.assertEqual(args.height, 540)
+
+    def test_real_geometry_evaluator_and_renderer_are_selectable(self) -> None:
+        eval_args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "--out",
+                "eval",
+                "--evaluation-mode",
+                "reference",
+                "--geometry",
+                "real",
+            ]
+        )
+        render_args = render_mjx_3d_policy.parse_args(
+            ["evaluation_rollout.npz", "--geometry", "real"]
+        )
+
+        self.assertEqual(eval_args.geometry, "real")
+        self.assertEqual(render_args.geometry, "real")
 
 
 if __name__ == "__main__":

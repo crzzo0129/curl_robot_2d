@@ -24,8 +24,18 @@ class CurlRobot3DModelTest(unittest.TestCase):
         model = mujoco.MjModel.from_xml_path(str(REAL_GEOMETRY_MODEL_PATH))
         p = REAL_GEOMETRY_PARAMETERS
 
+        self.assertEqual(
+            REAL_GEOMETRY_MODEL_PATH.read_text(encoding="utf-8"),
+            build_mjcf_3d(p, detailed_structure=True),
+        )
+
         self.assertEqual(model.nq, 15)
         self.assertEqual(model.nu, 8)
+        self.assertEqual(model.nkey, 4)
+        self.assertEqual(
+            {model.key(index).name for index in range(model.nkey)},
+            {"open", "stand", "park", "compact"},
+        )
         self.assertEqual(model.npair, 0)
         torso_id = model.geom("torso_box_proxy").id
         np.testing.assert_allclose(model.geom_size[torso_id], [0.06, 0.06, 0.06])

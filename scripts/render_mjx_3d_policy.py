@@ -11,15 +11,16 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageDraw
 
-from curl_robot_2d.parameters import FIXED_PARAMETERS
 from curl_robot_2d_mjx.config_3d import (
+    GEOMETRY_NAMES_3D,
     PHYSICS_PROFILE_NAMES_3D,
     Rolling3DConfig,
     physics_profile_3d,
 )
 from curl_robot_2d_mjx.environment_3d import (
-    MODEL_PATH_3D,
     apply_physics_options_3d,
+    geometry_parameters_3d,
+    model_path_3d,
 )
 from curl_robot_2d_mjx.runtime import select_mujoco_gl_backend
 
@@ -137,7 +138,8 @@ def render_rollout(
     rollout_path: Path,
     output_path: Path,
     *,
-    model_path: Path = MODEL_PATH_3D,
+    model_path: Path | None = None,
+    geometry: str = "baseline",
     physics_profile: str,
     control_dt: float,
     fps: float,
@@ -153,8 +155,11 @@ def render_rollout(
     rollout = _load_rollout(rollout_path)
     qpos = rollout["qpos"]
     reward = rollout["reward"]
-    model = mujoco.MjModel.from_xml_path(str(model_path))
-    task = physics_profile_3d(physics_profile, Rolling3DConfig())
+    selected_model_path = model_path or model_path_3d(geometry)
+    model = mujoco.MjModel.from_xml_path(str(selected_model_path))
+    task = physics_profile_3d(
+        physics_profile, Rolling3DConfig(geometry=geometry)
+    )
     apply_physics_options_3d(model, task)
     if qpos.shape[1] != model.nq:
         raise ValueError(
@@ -174,7 +179,11 @@ def render_rollout(
     indices = _frame_indices(qpos.shape[0], control_dt=control_dt, fps=fps)
     initial_x = float(qpos[0, 0])
     initial_y = float(qpos[0, 1])
-    turn_radius = 2.0 * math.pi * FIXED_PARAMETERS.shell_contact_radius
+    turn_radius = (
+        2.0
+        * math.pi
+        * geometry_parameters_3d(geometry).shell_contact_radius
+    )
     cumulative_reward = np.cumsum(reward)
     lateral_series = _optional_series(
         rollout, "lateral_drift_m", qpos.shape[0]
@@ -322,7 +331,10 @@ def render_rollout(
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("rollout", type=Path)
-    parser.add_argument("--model-xml", type=Path, default=MODEL_PATH_3D)
+    parser.add_argument("--model-xml", type=Path)
+    parser.add_argument(
+        "--geometry", choices=GEOMETRY_NAMES_3D, default="baseline"
+    )
     parser.add_argument(
         "--physics-profile",
         choices=PHYSICS_PROFILE_NAMES_3D,
@@ -372,6 +384,7 @@ def main(argv=None) -> None:
                     rollout_path,
                     output_dir / f"{rollout_path.stem}.gif",
                     model_path=args.model_xml,
+                    geometry=args.geometry,
                     physics_profile=args.physics_profile,
                     control_dt=args.control_dt,
                     fps=args.fps,
@@ -391,6 +404,7 @@ def main(argv=None) -> None:
         args.rollout,
         output,
         model_path=args.model_xml,
+        geometry=args.geometry,
         physics_profile=args.physics_profile,
         control_dt=args.control_dt,
         fps=args.fps,

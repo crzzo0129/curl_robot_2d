@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
@@ -10,7 +11,11 @@ from pathlib import Path
 import numpy as np
 
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import (
+    FIXED_PARAMETERS,
+    REAL_GEOMETRY_PARAMETERS,
+    FixedParameters,
+)
 from curl_robot_2d_mjx.cem_reference import (
     CEMReferenceConfig,
     advance_oscillator,
@@ -61,6 +66,70 @@ PLANAR_JOINT_HIGH = np.asarray(
     ),
     dtype=np.float64,
 )
+
+
+def activate_planar_geometry(parameters: FixedParameters) -> None:
+    """Match lifted-reference kinematics to the selected 3-D geometry."""
+
+    global FIXED_PARAMETERS, PLANAR_COMPACT, PLANAR_JOINT_LOW, PLANAR_JOINT_HIGH
+    FIXED_PARAMETERS = parameters
+    PLANAR_COMPACT = np.asarray(
+        (
+            parameters.compact_hip_angle,
+            parameters.compact_knee_angle,
+            parameters.compact_hip_angle,
+            parameters.compact_knee_angle,
+        ),
+        dtype=np.float64,
+    )
+    PLANAR_JOINT_LOW = np.asarray(
+        (
+            parameters.hip.shell_compatible_range[0],
+            parameters.knee.shell_compatible_range[0],
+            parameters.hip.shell_compatible_range[0],
+            parameters.knee.shell_compatible_range[0],
+        ),
+        dtype=np.float64,
+    )
+    PLANAR_JOINT_HIGH = np.asarray(
+        (
+            parameters.hip.shell_compatible_range[1],
+            parameters.knee.shell_compatible_range[1],
+            parameters.hip.shell_compatible_range[1],
+            parameters.knee.shell_compatible_range[1],
+        ),
+        dtype=np.float64,
+    )
+
+
+def override_reference_foot_gap(config, minimum_gap_mm, tracking_margin_mm):
+    """Apply optional playback-only foot clearance using active geometry."""
+
+    if minimum_gap_mm is None and tracking_margin_mm is None:
+        return config
+    minimum_gap_m = (
+        config.minimum_foot_surface_gap_m
+        if minimum_gap_mm is None
+        else minimum_gap_mm / 1000.0
+    )
+    tracking_margin_m = (
+        config.foot_gap_tracking_margin_m
+        if tracking_margin_mm is None
+        else tracking_margin_mm / 1000.0
+    )
+    separated = replace(
+        FIXED_PARAMETERS,
+        compact_foot_surface_gap=minimum_gap_m,
+    )
+    return replace(
+        config,
+        minimum_foot_surface_gap_m=minimum_gap_m,
+        foot_gap_tracking_margin_m=tracking_margin_m,
+        knee_bias_rad=(
+            separated.compact_knee_angle
+            - FIXED_PARAMETERS.compact_knee_angle
+        ),
+    )
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -193,6 +262,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--xml", type=Path, default=DEFAULT_XML_PATH)
     parser.add_argument("--controller", type=Path, default=DEFAULT_CONTROLLER_PATH)
     parser.add_argument(
+        "--geometry", choices=("baseline", "real"), default="baseline"
+    )
+    parser.add_argument("--minimum-foot-gap-mm", type=float, default=None)
+    parser.add_argument("--foot-gap-tracking-margin-mm", type=float, default=None)
+    parser.add_argument(
         "--physics-profile",
         choices=PHYSICS_PROFILE_NAMES_3D,
         default="reference",
@@ -232,6 +306,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
+    activate_planar_geometry(
+        REAL_GEOMETRY_PARAMETERS
+        if args.geometry == "real"
+        else FixedParameters()
+    )
     if args.duration <= 0.0 or args.control_dt <= 0.0:
         raise SystemExit("--duration and --control-dt must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
@@ -268,7 +347,11 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
 
     import mujoco
 
-    config = load_cem_reference(args.controller)
+    config = override_reference_foot_gap(
+        load_cem_reference(args.controller),
+        args.minimum_foot_gap_mm,
+        args.foot_gap_tracking_margin_mm,
+    )
     model = mujoco.MjModel.from_xml_path(str(args.xml.resolve()))
     task = physics_profile_3d(args.physics_profile, Rolling3DConfig())
     apply_physics_options_3d(model, task)
@@ -323,6 +406,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
     control_dt = control_repeat * float(model.opt.timestep)
     steps = max(1, round(args.duration / control_dt))
     records = []
+    self_contact_pair_steps: dict[str, int] = {}
+    self_contact_pair_max_penetration: dict[str, float] = {}
     nonfinite = False
     for _ in range(steps):
         saturated = []
@@ -394,6 +479,37 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
             shell_contacts.append(shell_contact)
             foot_contacts.append(foot_contact)
             self_contacts.append(self_contact)
+            active_pairs: dict[str, float] = {}
+            for contact in data.contact:
+                geom1 = int(contact.geom1)
+                geom2 = int(contact.geom2)
+                if floor_geom_id in (geom1, geom2):
+                    continue
+                names = sorted(
+                    (
+                        mujoco.mj_id2name(
+                            model, mujoco.mjtObj.mjOBJ_GEOM, geom1
+                        )
+                        or f"geom_{geom1}",
+                        mujoco.mj_id2name(
+                            model, mujoco.mjtObj.mjOBJ_GEOM, geom2
+                        )
+                        or f"geom_{geom2}",
+                    )
+                )
+                pair_name = "__".join(names)
+                active_pairs[pair_name] = max(
+                    active_pairs.get(pair_name, 0.0),
+                    max(-float(contact.dist), 0.0),
+                )
+            for pair_name, penetration in active_pairs.items():
+                self_contact_pair_steps[pair_name] = (
+                    self_contact_pair_steps.get(pair_name, 0) + 1
+                )
+                self_contact_pair_max_penetration[pair_name] = max(
+                    self_contact_pair_max_penetration.get(pair_name, 0.0),
+                    penetration,
+                )
         if args.linear_phase:
             phase += (
                 args.phase_rate_scale
@@ -479,6 +595,15 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         "shell_floor_contact_fraction": float(np.mean(values[:, 9])),
         "foot_floor_contact_fraction": float(np.mean(values[:, 10])),
         "self_contact_fraction": float(np.mean(values[:, 11])),
+        "self_contact_pairs": {
+            pair_name: {
+                "duration_s": steps * float(model.opt.timestep),
+                "maximum_penetration_m": self_contact_pair_max_penetration[
+                    pair_name
+                ],
+            }
+            for pair_name, steps in sorted(self_contact_pair_steps.items())
+        },
         "nonfinite": bool(nonfinite),
         "target_scale": float(args.target_scale),
         "startup_target_scale": (

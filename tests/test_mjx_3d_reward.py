@@ -24,6 +24,7 @@ def zero_inputs():
         "torque_cost": zero,
         "control_dt": np.asarray(0.02, dtype=np.float32),
         "forbidden_active": zero,
+        "first_turn_active": zero,
         "forbidden_depth": zero,
         "forbidden_max_increment": zero,
         "same_side_foot_contact_start": zero,
@@ -101,6 +102,19 @@ class MJX3DRewardTest(unittest.TestCase):
         terms = reward_terms_3d(np, Rolling3DRewardConfig(), inputs)
 
         self.assertAlmostEqual(float(terms["collision"]), -30.0)
+
+    def test_first_turn_forbidden_contact_can_receive_extra_weight(self) -> None:
+        config = Rolling3DRewardConfig(
+            forbidden_contact_time=4.0,
+            first_turn_forbidden_contact_multiplier=3.0,
+        )
+        inputs = zero_inputs()
+        inputs["forbidden_active"] = np.asarray(1.0, dtype=np.float32)
+        inputs["first_turn_active"] = np.asarray(1.0, dtype=np.float32)
+
+        terms = reward_terms_3d(np, config, inputs)
+
+        self.assertAlmostEqual(float(terms["collision"]), -0.32)
 
     def test_severe_and_nonfinite_terminal_penalties(self) -> None:
         severe_inputs = zero_inputs()

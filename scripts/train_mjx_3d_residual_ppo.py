@@ -15,6 +15,7 @@ import numpy as np
 
 from curl_robot_2d_mjx.cem_reference import load_cem_reference
 from curl_robot_2d_mjx.config_3d import (
+    GEOMETRY_NAMES_3D,
     PHYSICS_PROFILE_NAMES_3D,
     Rolling3DConfig,
     physics_profile_3d,
@@ -307,6 +308,44 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "real_geometry_contact_v1": {
+        "description": (
+            "Keep the real-geometry 2-D CEM reference, learn symmetric "
+            "phase-local residual tucking, and select only policies that "
+            "retain five conservative turns while reducing forbidden contact."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.20,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "explicit_phase_observation": True,
+            "learning_rate": 5e-5,
+            "entropy_cost": 7.5e-4,
+            "selection_target_turns": 5.0,
+            "selection_objective": "contact",
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.15,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.6,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.03,
+            "residual_action": 0.005,
+            "torque": 0.02,
+            "forbidden_contact_time": 8.0,
+            "first_turn_forbidden_contact_multiplier": 3.0,
+            "forbidden_penetration_integral": 30000.0,
+            "maximum_forbidden_penetration": 4000.0,
+            "failure_progress_clawback": 4.0,
+            "termination": 50.0,
+            "severe_extra_termination": 50.0,
+        },
+    },
 }
 
 
@@ -446,6 +485,7 @@ PER_STEP_EVAL_METRICS_3D = (
     "same_side_foot_contact_active",
     "same_side_foot_contact_start",
     "forbidden_contact_count",
+    "first_turn_forbidden_contact_count",
     "forbidden_penetration_m",
     "forbidden_contact_step_count",
     "cross_side_foot_contact_count",
@@ -527,6 +567,7 @@ def _checkpoint_selection_3d(
     *,
     target_turns=1.0,
     maximum_failure_rate=MAX_CHECKPOINT_FAILURE_RATE,
+    objective="balanced",
 ):
     """Score eval points by 3-D physical behavior, not raw reward scale."""
 
@@ -538,6 +579,10 @@ def _checkpoint_selection_3d(
     axis_tilt = metrics.get("eval/avg_axis_tilt_rad", math.inf)
     forbidden_depth = metrics.get("eval/avg_forbidden_penetration_m", math.inf)
     forbidden_contact = metrics.get("eval/avg_forbidden_contact_count", math.inf)
+    first_turn_forbidden_contact = metrics.get(
+        "eval/avg_first_turn_forbidden_contact_count",
+        forbidden_contact,
+    )
     survival = min(max(average_length / episode_length, 0.0), 1.0)
     turns = roll_total / (2.0 * math.pi)
     progress_quality = min(max(turns / target_turns, -1.0), 1.0)
@@ -549,14 +594,32 @@ def _checkpoint_selection_3d(
         + max(forbidden_contact / 0.05, 0.0),
         1.0,
     )
-    score = (
-        0.25 * survival
-        + 0.45 * progress_quality
-        + 0.10 * nonfailure_quality
-        + 0.10 * lateral_quality
-        + 0.05 * tilt_quality
-        + 0.05 * contact_quality
-    )
+    if objective == "contact":
+        contact_quality = 1.0 - min(
+            max(forbidden_depth / 0.001, 0.0)
+            + max(forbidden_contact / 0.05, 0.0)
+            + max(first_turn_forbidden_contact / 0.02, 0.0),
+            1.0,
+        )
+        score = (
+            0.15 * survival
+            + 0.20 * progress_quality
+            + 0.05 * nonfailure_quality
+            + 0.05 * lateral_quality
+            + 0.05 * tilt_quality
+            + 0.50 * contact_quality
+        )
+    elif objective == "balanced":
+        score = (
+            0.25 * survival
+            + 0.45 * progress_quality
+            + 0.10 * nonfailure_quality
+            + 0.10 * lateral_quality
+            + 0.05 * tilt_quality
+            + 0.05 * contact_quality
+        )
+    else:
+        raise ValueError(f"unknown checkpoint selection objective: {objective}")
     rejected = (
         nonfinite_rate > 0.0
         or failed_rate > maximum_failure_rate
@@ -565,7 +628,9 @@ def _checkpoint_selection_3d(
         or not math.isfinite(axis_tilt)
         or not math.isfinite(forbidden_depth)
         or not math.isfinite(forbidden_contact)
+        or not math.isfinite(first_turn_forbidden_contact)
         or not math.isfinite(score)
+        or (objective == "contact" and turns < target_turns)
     )
     return {
         "score": -1_000_000.0 if rejected else score,
@@ -579,6 +644,9 @@ def _checkpoint_selection_3d(
         "lateral_drift_m": lateral_drift,
         "axis_tilt_rad": axis_tilt,
         "contact_quality": contact_quality,
+        "forbidden_contact_count": forbidden_contact,
+        "first_turn_forbidden_contact_count": first_turn_forbidden_contact,
+        "objective": objective,
     }
 
 
@@ -910,6 +978,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser()
     parser.add_argument("--preset", choices=tuple(PRESETS), default="smoke")
     parser.add_argument(
+        "--geometry",
+        choices=GEOMETRY_NAMES_3D,
+        default="baseline",
+        help="Select the validated baseline or the 180 mm real geometry.",
+    )
+    parser.add_argument(
         "--recipe",
         choices=tuple(RECIPES_3D),
         default="anchored_v1",
@@ -951,6 +1025,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-minibatches", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
+    parser.add_argument("--reset-joint-noise-rad", type=float, default=0.005)
+    parser.add_argument("--reset-velocity-noise", type=float, default=0.005)
+    parser.add_argument("--reset-pair-differential-scale", type=float)
+    parser.add_argument(
+        "--reset-axis-tilt-noise-rad", type=float, default=0.0
+    )
     parser.add_argument("--terminate-root-z-min", type=float, default=0.025)
     parser.add_argument(
         "--terminate-root-z-low-duration", type=float, default=0.20
@@ -975,6 +1055,8 @@ def _build_parser() -> argparse.ArgumentParser:
         default=0.20,
     )
     parser.add_argument("--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER)
+    parser.add_argument("--minimum-foot-gap-mm", type=float)
+    parser.add_argument("--foot-gap-tracking-margin-mm", type=float)
     parser.add_argument("--reference-weight", type=float)
     parser.add_argument("--minimum-residual-gain", type=float)
     parser.add_argument("--phase-rate-scale", type=float)
@@ -1091,6 +1173,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--skip-evaluation", action="store_true")
     parser.add_argument("--selection-target-turns", type=float)
+    parser.add_argument(
+        "--selection-objective",
+        choices=("balanced", "contact"),
+        default=None,
+        help=(
+            "Checkpoint ranking. The real_geometry_contact_v1 recipe uses "
+            "a five-turn safety gate followed by contact-priority ranking."
+        ),
+    )
     _add_reward_arguments(parser)
     return parser
 
@@ -1105,6 +1196,8 @@ def parse_args(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
     _apply_recipe_defaults(args)
+    if args.selection_objective is None:
+        args.selection_objective = "balanced"
     if not 0.0 <= args.reference_weight <= 1.0:
         parser.error("--reference-weight must be in [0, 1]")
     if not 0.0 <= args.minimum_residual_gain <= 1.0:
@@ -1155,6 +1248,27 @@ def parse_args(argv=None):
         parser.error(str(exc))
     if args.selection_target_turns <= 0.0:
         parser.error("--selection-target-turns must be positive")
+    for value, name in (
+        (args.minimum_foot_gap_mm, "--minimum-foot-gap-mm"),
+        (
+            args.foot_gap_tracking_margin_mm,
+            "--foot-gap-tracking-margin-mm",
+        ),
+    ):
+        if value is not None and (not math.isfinite(value) or value < 0.0):
+            parser.error(f"{name} must be finite and nonnegative")
+    for value, name in (
+        (args.reset_joint_noise_rad, "--reset-joint-noise-rad"),
+        (args.reset_velocity_noise, "--reset-velocity-noise"),
+        (args.reset_axis_tilt_noise_rad, "--reset-axis-tilt-noise-rad"),
+    ):
+        if not math.isfinite(value) or value < 0.0:
+            parser.error(f"{name} must be finite and nonnegative")
+    if (
+        args.reset_pair_differential_scale is not None
+        and not 0.0 <= args.reset_pair_differential_scale <= 1.0
+    ):
+        parser.error("--reset-pair-differential-scale must be in [0, 1]")
     if args.initial_policy_std <= TANH_NORMAL_MIN_STD:
         parser.error(
             "--initial-policy-std must be greater than "
@@ -1248,7 +1362,14 @@ def main(argv=None) -> None:
     task = physics_profile_3d(
         args.physics_profile,
         Rolling3DConfig(
+            geometry=args.geometry,
             episode_length=args.episode_length,
+            reset_joint_noise_rad=args.reset_joint_noise_rad,
+            reset_velocity_noise=args.reset_velocity_noise,
+            reset_pair_differential_scale=(
+                args.reset_pair_differential_scale
+            ),
+            reset_axis_tilt_noise_rad=args.reset_axis_tilt_noise_rad,
             reference_phase_rate_scale=args.phase_rate_scale,
             reference_action_scale=args.reference_action_scale,
             reference_ramp_start_scale=args.reference_ramp_start_scale,
@@ -1288,6 +1409,16 @@ def main(argv=None) -> None:
         args.controller,
         reference_weight=args.reference_weight,
         minimum_residual_gain=args.minimum_residual_gain,
+        minimum_foot_surface_gap_m=(
+            None
+            if args.minimum_foot_gap_mm is None
+            else args.minimum_foot_gap_mm / 1000.0
+        ),
+        foot_gap_tracking_margin_m=(
+            None
+            if args.foot_gap_tracking_margin_mm is None
+            else args.foot_gap_tracking_margin_mm / 1000.0
+        ),
     )
     metric_history = []
     reward_history = []
@@ -1295,6 +1426,7 @@ def main(argv=None) -> None:
     config_payload = {
         "preset": args.preset,
         "recipe": args.recipe,
+        "geometry": args.geometry,
         **values,
         "episode_length": args.episode_length,
         "unroll_length": args.unroll_length,
@@ -1359,11 +1491,17 @@ def main(argv=None) -> None:
         },
         "checkpoint_selection": {
             "description": (
-                "0.25 survival + 0.45 forward turns + 0.10 non-failure + "
-                "0.10 lateral stability + 0.05 axis stability + "
-                "0.05 forbidden-contact safety"
+                "hard target-turn gate, then contact-priority physical "
+                "ranking"
+                if args.selection_objective == "contact"
+                else (
+                    "0.25 survival + 0.45 forward turns + 0.10 "
+                    "non-failure + 0.10 lateral stability + 0.05 axis "
+                    "stability + 0.05 forbidden-contact safety"
+                )
             ),
             "target_turns": args.selection_target_turns,
+            "objective": args.selection_objective,
             "lateral_full_score_m": 0.05,
             "axis_tilt_full_score_rad": 0.25,
             "forbidden_depth_limit_m": 0.001,
@@ -1415,6 +1553,7 @@ def main(argv=None) -> None:
     print(
         "[training]\n"
         f"  preset={args.preset} recipe={args.recipe} "
+        f"geometry={args.geometry} "
         f"physics={args.physics_profile} "
         f"requested_steps={schedule['requested_steps']:,} "
         f"effective_steps={schedule['effective_steps']:,}\n"
@@ -1451,7 +1590,8 @@ def main(argv=None) -> None:
         f"tilt={reward_config.axis_tilt:g} "
         f"collision_event={reward_config.foot_contact_event:g} "
         f"termination={reward_config.termination:g}\n"
-        "  selection=physical: survival, turns, lateral, axis, contact safety "
+        f"  selection={args.selection_objective}: survival, turns, lateral, "
+        "axis, contact safety "
         f"(target_turns={args.selection_target_turns:g})\n"
         f"  controller={reference.source}\n"
         f"  output={args.out.resolve()}",
@@ -1620,6 +1760,7 @@ def main(argv=None) -> None:
                     if args.curriculum == "none"
                     else 1.0
                 ),
+                objective=args.selection_objective,
             )
             selected = (
                 not selection["rejected"]

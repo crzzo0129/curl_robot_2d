@@ -41,6 +41,7 @@ class Rolling3DRewardConfig:
     allowed_excess_integral: float = 8000.0
     maximum_allowed_excess: float = 2000.0
     forbidden_contact_time: float = 4.0
+    first_turn_forbidden_contact_multiplier: float = 0.0
     forbidden_penetration_integral: float = 20000.0
     maximum_forbidden_penetration: float = 2500.0
     cross_side_foot_contact: float = 30.0
@@ -66,6 +67,11 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         config.forbidden_contact_time
         * inputs["control_dt"]
         * inputs["forbidden_active"]
+        * (
+            1.0
+            + config.first_turn_forbidden_contact_multiplier
+            * inputs["first_turn_active"]
+        )
         + config.forbidden_penetration_integral
         * inputs["forbidden_depth"]
         * inputs["control_dt"]

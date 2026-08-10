@@ -11,8 +11,13 @@ import time
 
 import numpy as np
 
+from curl_robot_2d.model_3d import JOINT_NAMES_3D
 from curl_robot_2d_mjx.cem_reference import load_cem_reference
-from curl_robot_2d_mjx.config_3d import Rolling3DConfig, physics_profile_3d
+from curl_robot_2d_mjx.config_3d import (
+    GEOMETRY_NAMES_3D,
+    Rolling3DConfig,
+    physics_profile_3d,
+)
 from curl_robot_2d_mjx.environment_3d import DEFAULT_3D_CEM_CONTROLLER
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 from scripts.train_mjx_ppo import _network_factory
@@ -33,7 +38,7 @@ FAILURE_METRICS = (
     "failure_forbidden_contact",
 )
 FAILURE_NAMES = tuple(name.removeprefix("failure_") for name in FAILURE_METRICS)
-CHUNK_FORMAT_VERSION = 1
+CHUNK_FORMAT_VERSION = 2
 
 
 def _distribution(values) -> dict[str, float | int]:
@@ -102,6 +107,30 @@ def _summarize_arrays(arrays: dict[str, np.ndarray]) -> dict[str, object]:
         ),
         "differential_residual_rms": _distribution(
             arrays["differential_residual_rms"]
+        ),
+        "forbidden_contact_fraction": _distribution(
+            arrays["forbidden_contact_fraction"]
+        ),
+        "first_turn_forbidden_contact_fraction": _distribution(
+            arrays["first_turn_forbidden_contact_fraction"]
+        ),
+        "maximum_forbidden_penetration_m": _distribution(
+            arrays["maximum_forbidden_penetration_m"]
+        ),
+        "actuator_torque_rms_Nm": _distribution(
+            arrays["actuator_torque_rms_Nm"]
+        ),
+        "maximum_actuator_torque_Nm": _distribution(
+            arrays["maximum_actuator_torque_Nm"]
+        ),
+        "maximum_actuator_torque_per_joint_Nm": {
+            joint_name: _distribution(
+                arrays["maximum_actuator_torque_per_joint_Nm"][:, index]
+            )
+            for index, joint_name in enumerate(JOINT_NAMES_3D)
+        },
+        "torque_saturation_fraction": _distribution(
+            arrays["torque_saturation_fraction"]
         ),
     }
 
@@ -234,6 +263,11 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER)
+    parser.add_argument(
+        "--geometry", choices=GEOMETRY_NAMES_3D, default="baseline"
+    )
+    parser.add_argument("--minimum-foot-gap-mm", type=float)
+    parser.add_argument("--foot-gap-tracking-margin-mm", type=float)
     parser.add_argument("--physics-profile", default="cg20")
     parser.add_argument(
         "--geom-friction-scale",
@@ -389,6 +423,15 @@ def parse_args(argv=None):
             "--initial-policy-std must be greater than "
             f"{TANH_NORMAL_MIN_STD:g}"
         )
+    for value, name in (
+        (args.minimum_foot_gap_mm, "--minimum-foot-gap-mm"),
+        (
+            args.foot_gap_tracking_margin_mm,
+            "--foot-gap-tracking-margin-mm",
+        ),
+    ):
+        if value is not None and (not math.isfinite(value) or value < 0.0):
+            parser.error(f"{name} must be finite and nonnegative")
     return args
 
 
@@ -412,6 +455,7 @@ def main(argv=None) -> None:
     task = physics_profile_3d(
         args.physics_profile,
         Rolling3DConfig(
+            geometry=args.geometry,
             episode_length=args.episode_length,
             geom_friction_scale=args.geom_friction_scale,
             body_mass_scale=args.body_mass_scale,
@@ -441,6 +485,16 @@ def main(argv=None) -> None:
         args.controller,
         reference_weight=args.reference_weight,
         minimum_residual_gain=args.minimum_residual_gain,
+        minimum_foot_surface_gap_m=(
+            None
+            if args.minimum_foot_gap_mm is None
+            else args.minimum_foot_gap_mm / 1000.0
+        ),
+        foot_gap_tracking_margin_m=(
+            None
+            if args.foot_gap_tracking_margin_mm is None
+            else args.foot_gap_tracking_margin_mm / 1000.0
+        ),
     )
     env = make_brax_env_3d(task, cem_reference=reference, seed=args.seed)
     policy_batch = None
@@ -507,6 +561,18 @@ def main(argv=None) -> None:
         max_axis_tilt = jp.zeros((batch,), dtype=jp.float32)
         residual_square_sum = jp.zeros((batch,), dtype=jp.float32)
         differential_square_sum = jp.zeros((batch,), dtype=jp.float32)
+        forbidden_contact_steps = jp.zeros((batch,), dtype=jp.float32)
+        first_turn_forbidden_contact_steps = jp.zeros(
+            (batch,), dtype=jp.float32
+        )
+        maximum_forbidden_penetration = jp.zeros(
+            (batch,), dtype=jp.float32
+        )
+        torque_square_sum = jp.zeros((batch,), dtype=jp.float32)
+        torque_saturation_sum = jp.zeros((batch,), dtype=jp.float32)
+        torque_peak_per_actuator = jp.zeros(
+            (batch, env.action_size), dtype=jp.float32
+        )
         traces = {
             name: []
             for name in (
@@ -568,6 +634,38 @@ def main(argv=None) -> None:
             differential_square = jp.mean(jp.square(pair_differential), axis=1)
             residual_square_sum += weight * residual_square
             differential_square_sum += weight * differential_square
+            forbidden_active = state.metrics["forbidden_contact_count"] > 0.0
+            first_turn_forbidden_active = (
+                state.metrics["first_turn_forbidden_contact_count"] > 0.0
+            )
+            forbidden_contact_steps += (
+                weight * forbidden_active.astype(jp.float32)
+            )
+            first_turn_forbidden_contact_steps += (
+                weight * first_turn_forbidden_active.astype(jp.float32)
+            )
+            maximum_forbidden_penetration = jp.maximum(
+                maximum_forbidden_penetration,
+                weight * state.metrics["forbidden_penetration_m"],
+            )
+            actuator_torque = state.pipeline_state.actuator_force[
+                :, env.actuator_ids
+            ]
+            absolute_torque = jp.abs(actuator_torque)
+            torque_square_sum += weight * jp.mean(
+                jp.square(actuator_torque), axis=1
+            )
+            torque_peak_per_actuator = jp.maximum(
+                torque_peak_per_actuator,
+                weight[:, None] * absolute_torque,
+            )
+            torque_saturation_sum += weight * jp.mean(
+                (
+                    absolute_torque
+                    >= 0.99 * env.force_limits[None, :]
+                ).astype(jp.float32),
+                axis=1,
+            )
             active = active & (state.done < 0.5)
 
             if capture:
@@ -641,6 +739,29 @@ def main(argv=None) -> None:
                     jp.sqrt(differential_square_sum / denominator)
                 )
             ),
+            "forbidden_contact_fraction": np.asarray(
+                jax.device_get(forbidden_contact_steps / denominator)
+            ),
+            "first_turn_forbidden_contact_fraction": np.asarray(
+                jax.device_get(
+                    first_turn_forbidden_contact_steps / denominator
+                )
+            ),
+            "maximum_forbidden_penetration_m": np.asarray(
+                jax.device_get(maximum_forbidden_penetration)
+            ),
+            "actuator_torque_rms_Nm": np.asarray(
+                jax.device_get(jp.sqrt(torque_square_sum / denominator))
+            ),
+            "maximum_actuator_torque_Nm": np.asarray(
+                jax.device_get(jp.max(torque_peak_per_actuator, axis=1))
+            ),
+            "maximum_actuator_torque_per_joint_Nm": np.asarray(
+                jax.device_get(torque_peak_per_actuator)
+            ),
+            "torque_saturation_fraction": np.asarray(
+                jax.device_get(torque_saturation_sum / denominator)
+            ),
             "failed": np.asarray(jax.device_get(state.metrics["failed"])),
             "timeout": np.asarray(jax.device_get(state.metrics["timeout"])),
             **{
@@ -663,7 +784,7 @@ def main(argv=None) -> None:
         f"  checkpoint={checkpoint_text}\n"
         f"  batch={args.batch_size} chunk={args.chunk_size} "
         f"episode={args.episode_length} "
-        f"physics={task.physics_profile} seed={args.seed}\n"
+        f"geometry={task.geometry} physics={task.physics_profile} seed={args.seed}\n"
         f"  geom_friction_scale={task.geom_friction_scale:g}\n"
         f"  body_mass_scale={task.body_mass_scale:g} "
         f"left={task.body_mass_left_scale:g} "

@@ -14,11 +14,17 @@ PHYSICS_PROFILE_NAMES_3D = (
     "cg20",
 )
 
+GEOMETRY_NAMES_3D = (
+    "baseline",
+    "real",
+)
+
 
 @dataclass(frozen=True)
 class Rolling3DConfig:
     """Task constants for the first 3-D CEM-reference rolling env."""
 
+    geometry: str = "baseline"
     physics_profile: str = "reference"
     physics_timestep: float = 0.001
     solver_name: str = "newton"
@@ -74,6 +80,11 @@ class Rolling3DConfig:
 
 
 def validate_3d_config(config: Rolling3DConfig) -> None:
+    if config.geometry not in GEOMETRY_NAMES_3D:
+        raise ValueError(
+            f"unknown 3-D geometry: {config.geometry!r}; "
+            f"expected one of {GEOMETRY_NAMES_3D}"
+        )
     if len(config.action_scales) != 8:
         raise ValueError("3-D action_scales must contain 8 values")
     if any(not math.isfinite(value) or value <= 0.0 for value in config.action_scales):

@@ -7,8 +7,12 @@ from pathlib import Path
 import numpy as np
 
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import (
+    FIXED_PARAMETERS,
+    REAL_GEOMETRY_PARAMETERS,
+)
 from curl_robot_2d_mjx.cem_reference import (
+    CEMReferenceGeometry,
     CEMReferenceConfig,
     advance_oscillator,
     load_cem_reference,
@@ -30,6 +34,13 @@ from curl_robot_2d_mjx.reward_3d import (
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 MODEL_PATH_3D = PROJECT_ROOT / "assets" / "curl_robot_3d.xml"
+REAL_MODEL_PATH_3D = (
+    PROJECT_ROOT / "assets" / "curl_robot_3d_real_geometry.xml"
+)
+MODEL_PATHS_3D = {
+    "baseline": MODEL_PATH_3D,
+    "real": REAL_MODEL_PATH_3D,
+}
 DEFAULT_3D_CEM_CONTROLLER = (
     PROJECT_ROOT
     / "results"
@@ -67,6 +78,21 @@ PLANAR_JOINT_HIGH = np.asarray(
     ),
     dtype=np.float64,
 )
+
+
+def geometry_parameters_3d(name: str):
+    if name == "baseline":
+        return FIXED_PARAMETERS
+    if name == "real":
+        return REAL_GEOMETRY_PARAMETERS
+    raise ValueError(f"unknown 3-D geometry: {name!r}")
+
+
+def model_path_3d(name: str) -> Path:
+    try:
+        return MODEL_PATHS_3D[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown 3-D geometry: {name!r}") from exc
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -335,7 +361,14 @@ def make_brax_env_3d(
             self.reward_config = reward_settings
             self.cem_reference = reference_settings
             self.seed = seed
-            self.mj_model = mujoco.MjModel.from_xml_path(str(MODEL_PATH_3D))
+            self.geometry_parameters = geometry_parameters_3d(task.geometry)
+            self.model_path = model_path_3d(task.geometry)
+            self.reference_geometry = CEMReferenceGeometry(
+                torso_length_m=self.geometry_parameters.torso_length,
+                link_length_m=self.geometry_parameters.edge_length,
+                foot_diameter_m=2.0 * self.geometry_parameters.foot_radius,
+            )
+            self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
             apply_physics_options_3d(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)
             self.mjx_model = mjx.put_model(self.mj_model)
@@ -359,10 +392,31 @@ def make_brax_env_3d(
                 self.mj_model.key_ctrl[compact_key_id]
             )
             self.action_scales = jp.asarray(task.action_scales)
-            self.planar_compact = jp.asarray(PLANAR_COMPACT)
+            self.planar_compact = jp.asarray(
+                (
+                    self.geometry_parameters.compact_hip_angle,
+                    self.geometry_parameters.compact_knee_angle,
+                    self.geometry_parameters.compact_hip_angle,
+                    self.geometry_parameters.compact_knee_angle,
+                )
+            )
             self.planar_action_scales = jp.asarray(PLANAR_ACTION_SCALES)
-            self.planar_joint_low = jp.asarray(PLANAR_JOINT_LOW)
-            self.planar_joint_high = jp.asarray(PLANAR_JOINT_HIGH)
+            self.planar_joint_low = jp.asarray(
+                (
+                    self.geometry_parameters.hip.shell_compatible_range[0],
+                    self.geometry_parameters.knee.shell_compatible_range[0],
+                    self.geometry_parameters.hip.shell_compatible_range[0],
+                    self.geometry_parameters.knee.shell_compatible_range[0],
+                )
+            )
+            self.planar_joint_high = jp.asarray(
+                (
+                    self.geometry_parameters.hip.shell_compatible_range[1],
+                    self.geometry_parameters.knee.shell_compatible_range[1],
+                    self.geometry_parameters.hip.shell_compatible_range[1],
+                    self.geometry_parameters.knee.shell_compatible_range[1],
+                )
+            )
 
             self.torso_body_id = object_id(
                 mujoco.mjtObj.mjOBJ_BODY, "torso"
@@ -424,7 +478,7 @@ def make_brax_env_3d(
             self.force_limits = jp.asarray(
                 np.abs(self.mj_model.actuator_forcerange[actuator_ids, 1])
             )
-            self.rolling_radius = FIXED_PARAMETERS.shell_contact_radius
+            self.rolling_radius = self.geometry_parameters.shell_contact_radius
             self.root_low_termination_steps = _duration_to_steps(
                 task.terminate_root_z_low_duration_s,
                 task.control_timestep,
@@ -491,6 +545,7 @@ def make_brax_env_3d(
                 "same_side_foot_contact_active": zero,
                 "same_side_foot_contact_start": zero,
                 "forbidden_contact_count": zero,
+                "first_turn_forbidden_contact_count": zero,
                 "forbidden_penetration_m": zero,
                 "forbidden_contact_step_count": zero,
                 "cross_side_foot_contact_count": zero,
@@ -861,6 +916,7 @@ def make_brax_env_3d(
             roll_potential = conservative_rolling_potential(
                 jp, cumulative_rotation, cumulative_translation
             )
+            first_turn_active = roll_potential < (2.0 * np.pi)
             conservative_progress = (
                 roll_potential - state.info["previous_roll_potential"]
             )
@@ -992,6 +1048,7 @@ def make_brax_env_3d(
                     "torque_cost": torque_cost,
                     "control_dt": control_dt,
                     "forbidden_active": forbidden_active.astype(jp.float32),
+                    "first_turn_active": first_turn_active.astype(jp.float32),
                     "forbidden_depth": contacts["forbidden_depth"],
                     "forbidden_max_increment": forbidden_max_increment,
                     "same_side_foot_contact_start": (
@@ -1099,6 +1156,10 @@ def make_brax_env_3d(
                     same_side_foot_start.astype(jp.float32)
                 ),
                 "forbidden_contact_count": contacts["forbidden_count"],
+                "first_turn_forbidden_contact_count": (
+                    contacts["forbidden_count"]
+                    * first_turn_active.astype(jp.float32)
+                ),
                 "forbidden_penetration_m": contacts["forbidden_depth"],
                 "forbidden_contact_step_count": (
                     forbidden_contact_step_count.astype(jp.float32)
@@ -1178,6 +1239,7 @@ def make_brax_env_3d(
                 action_scales=self.planar_action_scales,
                 joint_low=self.planar_joint_low,
                 joint_high=self.planar_joint_high,
+                geometry=self.reference_geometry,
             )
             return duplicate_planar_action_3d(jp, planar_action)
 

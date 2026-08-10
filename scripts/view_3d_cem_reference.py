@@ -13,13 +13,15 @@ from PIL import Image
 from scripts.evaluate_3d_symmetric_cem_reference import (
     DEFAULT_CONTROLLER_PATH,
     DEFAULT_XML_PATH,
+    activate_planar_geometry,
     map_planar_to_curl_3d_targets,
+    override_reference_foot_gap,
     planar_cem_target,
     scaled_planar_target,
     startup_target_scale,
 )
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
 from curl_robot_2d_mjx.cem_reference import (
     advance_oscillator,
     load_cem_reference,
@@ -37,6 +39,11 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument("--xml", default=DEFAULT_XML_PATH)
     parser.add_argument("--controller", default=DEFAULT_CONTROLLER_PATH)
+    parser.add_argument(
+        "--geometry", choices=("baseline", "real"), default="baseline"
+    )
+    parser.add_argument("--minimum-foot-gap-mm", type=float, default=None)
+    parser.add_argument("--foot-gap-tracking-margin-mm", type=float, default=None)
     parser.add_argument(
         "--physics-profile",
         choices=PHYSICS_PROFILE_NAMES_3D,
@@ -118,6 +125,9 @@ def _target_for_phase(
 
 def run(argv=None):
     args = parse_args(argv)
+    activate_planar_geometry(
+        REAL_GEOMETRY_PARAMETERS if args.geometry == "real" else FIXED_PARAMETERS
+    )
     if args.duration <= 0.0 or args.control_dt <= 0.0 or args.realtime <= 0.0:
         raise SystemExit("--duration, --control-dt and --realtime must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
@@ -148,7 +158,11 @@ def run(argv=None):
     if args.gif_fps <= 0.0 or args.gif_width <= 0 or args.gif_height <= 0:
         raise SystemExit("--gif-fps/--gif-width/--gif-height must be positive")
 
-    config = load_cem_reference(args.controller)
+    config = override_reference_foot_gap(
+        load_cem_reference(args.controller),
+        args.minimum_foot_gap_mm,
+        args.foot_gap_tracking_margin_mm,
+    )
     model = mujoco.MjModel.from_xml_path(str(args.xml))
     task = physics_profile_3d(args.physics_profile, Rolling3DConfig())
     apply_physics_options_3d(model, task)
