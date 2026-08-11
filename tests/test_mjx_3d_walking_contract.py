@@ -20,6 +20,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     validate_walking_morphology_3d,
 )
 from curl_robot_2d_mjx.environment_3d import model_path_3d
+from curl_robot_2d_mjx.environment_3d import apply_physics_options_3d
 from scripts import mjx_3d_walking_smoke
 
 
@@ -68,6 +69,9 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             config.nominal_root_height_m,
             REAL_GEOMETRY_PARAMETERS.stand_3d_root_height,
         )
+
+        apply_physics_options_3d(model, config)
+        self.assertEqual(model.opt.solver, mujoco.mjtSolver.mjSOL_NEWTON)
 
     def test_real_geometry_stand_is_finite_for_one_second(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(model_path_3d("real")))

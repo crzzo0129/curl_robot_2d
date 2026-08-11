@@ -29,6 +29,10 @@ class Walking3DConfig:
     integrator_name: str = "implicitfast"
     cone_name: str = "elliptic"
     jacobian_name: str = "dense"
+    geom_friction_scale: float = 1.0
+    body_mass_scale: float = 1.0
+    body_mass_left_scale: float = 1.0
+    body_mass_right_scale: float = 1.0
     action_repeat: int = 20
     episode_length: int = 500
     reset_keyframe_name: str = "stand"
@@ -89,6 +93,10 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         raise ValueError("reset_keyframe_name must not be empty")
     for value, name in (
         (config.physics_timestep, "physics_timestep"),
+        (config.geom_friction_scale, "geom_friction_scale"),
+        (config.body_mass_scale, "body_mass_scale"),
+        (config.body_mass_left_scale, "body_mass_left_scale"),
+        (config.body_mass_right_scale, "body_mass_right_scale"),
         (config.desired_speed_m_s, "desired_speed_m_s"),
         (config.nominal_root_height_m, "nominal_root_height_m"),
         (config.foot_radius_m, "foot_radius_m"),
