@@ -21,6 +21,12 @@ results/**
 !results/staged_cem_real_geometry_180_d50_foot60/03_foot_gap_2mm/
 !results/staged_cem_real_geometry_180_d50_foot60/03_foot_gap_2mm/best_phase_controller.json
 
+# Version the validated rolling-reset dataset required by stopping PPO.
+# Other rolling-stop searches, reports, and generated terminal states remain local.
+!results/rolling_stop/
+!results/rolling_stop/low_speed_snapshots_0p40hz.npz
+!results/rolling_stop/low_speed_snapshots_0p40hz.json
+
 # Local training services and logs.
 wandb/
 ppo_logs/
