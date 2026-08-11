@@ -5,7 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
+
+
+WALKING_GEOMETRY_NAMES_3D = ("fixed", "real")
 
 
 WALKING_PHYSICS_PROFILE_NAMES_3D = (
@@ -20,6 +23,7 @@ class Walking3DConfig:
     """Task constants for reference-free 3-D locomotion PPO."""
 
     physics_profile: str = "accurate"
+    geometry: str = "fixed"
     physics_timestep: float = 0.001
     solver_name: str = "newton"
     integrator_name: str = "implicitfast"
@@ -68,6 +72,10 @@ class Walking3DConfig:
 
 
 def validate_walking_3d_config(config: Walking3DConfig) -> None:
+    if config.geometry not in WALKING_GEOMETRY_NAMES_3D:
+        raise ValueError(
+            f"unknown walking 3-D geometry: {config.geometry}"
+        )
     if len(config.action_scales) != 8:
         raise ValueError("walking 3-D action_scales must contain 8 values")
     if any(
@@ -125,7 +133,7 @@ def walking_physics_profile_3d(
     name: str,
     config: Walking3DConfig | None = None,
 ) -> Walking3DConfig:
-    base = config or Walking3DConfig()
+    base = walking_geometry_config_3d(config or Walking3DConfig())
     if name == "accurate":
         return replace(
             base,
@@ -157,6 +165,22 @@ def walking_physics_profile_3d(
             solver_ls_iterations=6,
         )
     raise ValueError(f"unknown walking 3-D physics profile: {name}")
+
+
+def walking_geometry_config_3d(config: Walking3DConfig) -> Walking3DConfig:
+    """Bind geometry-dependent task measurements to the selected MJCF."""
+
+    geometry = {
+        "fixed": FIXED_PARAMETERS,
+        "real": REAL_GEOMETRY_PARAMETERS,
+    }.get(config.geometry)
+    if geometry is None:
+        raise ValueError(f"unknown walking 3-D geometry: {config.geometry}")
+    return replace(
+        config,
+        nominal_root_height_m=geometry.stand_3d_root_height,
+        foot_radius_m=geometry.foot_radius,
+    )
 
 
 def _validate_positive(value: float, name: str) -> None:

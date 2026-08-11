@@ -13,6 +13,7 @@ import time
 import numpy as np
 
 from curl_robot_2d_mjx.config_walking_3d import (
+    WALKING_GEOMETRY_NAMES_3D,
     WALKING_PHYSICS_PROFILE_NAMES_3D,
     Walking3DConfig,
     walking_physics_profile_3d,
@@ -47,6 +48,14 @@ PRESETS_WALKING_3D = {
         "num_evals": 10,
         "batch_size": 512,
         "num_minibatches": 16,
+    },
+    "laptop": {
+        "steps": 5_000_000,
+        "envs": 64,
+        "eval_envs": 16,
+        "num_evals": 10,
+        "batch_size": 128,
+        "num_minibatches": 8,
     },
     "h200": {
         "steps": 20_000_000,
@@ -455,6 +464,11 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=WALKING_PHYSICS_PROFILE_NAMES_3D,
         default="cg12",
     )
+    parser.add_argument(
+        "--geometry",
+        choices=WALKING_GEOMETRY_NAMES_3D,
+        default="fixed",
+    )
     parser.add_argument("--steps", type=int)
     parser.add_argument("--envs", type=int)
     parser.add_argument("--eval-envs", type=int)
@@ -644,6 +658,7 @@ def main(argv=None) -> None:
     task = walking_physics_profile_3d(
         args.physics_profile,
         Walking3DConfig(
+            geometry=args.geometry,
             episode_length=args.episode_length,
             reset_keyframe_name=args.reset_keyframe,
             desired_speed_m_s=args.desired_speed_m_s,

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from pathlib import Path
 import unittest
 
@@ -32,6 +33,73 @@ REAL_GEOMETRY_MODEL_PATH = (
 
 
 class ModelContractTest(unittest.TestCase):
+    def test_larger_shell_can_preserve_original_arc_coverage(self) -> None:
+        parameters = replace(
+            FIXED_PARAMETERS,
+            shell_contact_radius_override=0.160,
+            shell_arc_coverage_angle_override=(
+                FIXED_PARAMETERS.shell_arc_coverage_angle
+            ),
+        )
+
+        self.assertAlmostEqual(parameters.shell_contact_radius, 0.160)
+        self.assertAlmostEqual(
+            parameters.shell_arc_coverage_angle,
+            FIXED_PARAMETERS.shell_arc_coverage_angle,
+        )
+        self.assertAlmostEqual(parameters.edge_length, 0.150)
+        self.assertAlmostEqual(
+            parameters.foot_radius,
+            FIXED_PARAMETERS.foot_radius,
+        )
+
+    def test_shell_shell_collision_can_be_disabled_selectively(self) -> None:
+        model = mujoco.MjModel.from_xml_string(
+            build_mjcf(disable_shell_shell_collision=True)
+        )
+        shell_id = model.geom("torso_shell_00").id
+        structure_id = model.geom("torso_proxy").id
+
+        self.assertEqual(model.geom_contype[shell_id], 4)
+        self.assertEqual(model.geom_conaffinity[shell_id], 3)
+        self.assertEqual(model.geom_contype[structure_id], 2)
+        self.assertEqual(model.geom_conaffinity[structure_id], 7)
+
+    def test_baseline_geometry_can_add_54_by_33_mm_motor_collisions(self) -> None:
+        parameters = replace(
+            FIXED_PARAMETERS,
+            shell_contact_radius_override=0.160,
+            shell_arc_coverage_angle_override=(
+                FIXED_PARAMETERS.shell_arc_coverage_angle
+            ),
+            motor_radius=0.027,
+            motor_half_thickness_y=0.0165,
+        )
+        model = mujoco.MjModel.from_xml_string(
+            build_mjcf(
+                parameters,
+                include_motor_collisions=True,
+                disable_shell_shell_collision=True,
+            )
+        )
+
+        for side in ("front", "rear"):
+            for joint in ("hip", "knee"):
+                motor_id = model.geom(f"{side}_{joint}_motor").id
+                np.testing.assert_allclose(
+                    model.geom_size[motor_id, :2], [0.027, 0.0165]
+                )
+                self.assertEqual(model.geom_type[motor_id], 5)
+                self.assertEqual(model.geom_contype[motor_id], 2)
+                self.assertEqual(model.geom_conaffinity[motor_id], 7)
+
+        # Adding motors alone must not opt into the real-geometry torso/link
+        # proxy changes.
+        torso_id = model.geom("torso_proxy").id
+        self.assertEqual(model.geom_type[torso_id], 3)
+        thigh_id = model.geom("front_thigh_proxy").id
+        self.assertAlmostEqual(model.geom_size[thigh_id, 1], 0.075)
+
     def test_torso_leg_collision_can_be_selectively_ignored(self) -> None:
         model = mujoco.MjModel.from_xml_string(
             build_mjcf(ignore_torso_leg_collision=True)

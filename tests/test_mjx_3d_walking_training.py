@@ -5,6 +5,7 @@ import unittest
 
 from curl_robot_2d_mjx.reward_walking_3d import Walking3DRewardConfig
 from scripts import train_mjx_3d_walking_ppo
+from scripts import train_mjx_3d_real_geometry_walking
 
 
 class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
@@ -15,6 +16,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.preset, "smoke")
         self.assertEqual(args.recipe, "direct_v1")
         self.assertEqual(args.physics_profile, "cg12")
+        self.assertEqual(args.geometry, "fixed")
         self.assertEqual(args.reset_keyframe, "stand")
         self.assertEqual(args.desired_speed_m_s, 0.080)
         self.assertEqual(args.action_scale_hip, 0.40)
@@ -27,6 +29,15 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.entropy_cost, 1e-2)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
+
+    def test_real_geometry_overnight_entry_uses_h200_preset(self) -> None:
+        args = train_mjx_3d_real_geometry_walking.parse_args([])
+        values = train_mjx_3d_real_geometry_walking.training_argv(args)
+
+        self.assertEqual(args.preset, "h200")
+        self.assertIn("--geometry", values)
+        self.assertEqual(values[values.index("--geometry") + 1], "real")
+        self.assertIn("--save-ppo-checkpoints", values)
 
     def test_reward_overrides_use_walking_reward_config(self) -> None:
         args = train_mjx_3d_walking_ppo.parse_args(

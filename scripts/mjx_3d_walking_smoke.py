@@ -7,6 +7,7 @@ import json
 import time
 
 from curl_robot_2d_mjx.config_walking_3d import (
+    WALKING_GEOMETRY_NAMES_3D,
     WALKING_PHYSICS_PROFILE_NAMES_3D,
     Walking3DConfig,
     walking_physics_profile_3d,
@@ -20,6 +21,11 @@ def parse_args(argv=None):
         "--physics-profile",
         choices=WALKING_PHYSICS_PROFILE_NAMES_3D,
         default="cg12",
+    )
+    parser.add_argument(
+        "--geometry",
+        choices=WALKING_GEOMETRY_NAMES_3D,
+        default="fixed",
     )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--steps", type=int, default=8)
@@ -69,6 +75,7 @@ def main(argv=None) -> None:
 
     print(json.dumps(describe_runtime(), indent=2), flush=True)
     base = Walking3DConfig(
+        geometry=args.geometry,
         episode_length=args.episode_length,
         desired_speed_m_s=args.desired_speed,
         action_scales=(
@@ -152,6 +159,8 @@ def main(argv=None) -> None:
         "observation_size": env.observation_size,
         "action_size": env.action_size,
         "physics_profile": env.config.physics_profile,
+        "geometry": env.config.geometry,
+        "model_path": str(env.model_path),
         "reset_keyframe": env.config.reset_keyframe_name,
         "desired_speed_m_s": env.config.desired_speed_m_s,
         "reset_compile_s": reset_compile_s,

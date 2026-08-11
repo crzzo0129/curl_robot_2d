@@ -51,7 +51,7 @@ def _arc_shell_geoms(
         midpoint[1] - p.regular_pentagon_apothem * normal[1],
     )
     half_angle = math.pi / 5.0
-    trimmed_half_angle = half_angle - p.shell_arc_trim_angle
+    trimmed_half_angle = p.shell_arc_coverage_angle / 2.0
     end_angle = trimmed_half_angle - end_retreat / p.shell_centerline_radius
     if end_angle <= -trimmed_half_angle:
         raise ValueError(f"{prefix} shell end retreat removes the full arc")
@@ -90,13 +90,20 @@ def build_mjcf(
     enable_self_collision: bool = True,
     include_rolling_shell: bool = True,
     detailed_structure: bool = False,
+    include_motor_collisions: bool = False,
     ignore_torso_leg_collision: bool = False,
+    disable_shell_shell_collision: bool = False,
 ) -> str:
     p = parameters
     torso_half_length = p.torso_length / 2
     shell_contype = 4 if enable_self_collision else 0
     structure_contype = 2 if enable_self_collision else 0
     robot_conaffinity = 7 if enable_self_collision else 1
+    shell_conaffinity = (
+        3
+        if enable_self_collision and disable_shell_shell_collision
+        else robot_conaffinity
+    )
     torso_leg_excludes = (
         "\n" + "\n".join(
             f'                <exclude body1="torso" body2="{body}"/>'
@@ -167,17 +174,18 @@ def build_mjcf(
         f"0 0 -{_f(shank_start)} 0 0 -{_f(shank_end)}"
         if detailed_structure else f"0 0 0 0 0 -{_f(p.lower_length)}"
     )
+    include_motors = detailed_structure or include_motor_collisions
     hip_motor_geom = (
         f'''\n                <geom name="{{side}}_hip_motor" type="cylinder" class="structure_collision"
                       size="{_f(p.motor_radius)} {_f(p.motor_half_thickness_y)}"
                       euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>'''
-        if detailed_structure else ""
+        if include_motors else ""
     )
     knee_motor_geom = (
         f'''\n                  <geom name="{{side}}_knee_motor" type="cylinder" class="structure_collision"
                         size="{_f(p.motor_radius)} {_f(p.motor_half_thickness_y)}"
                         euler="1.570796327 0 0" rgba="0.30 0.32 0.36 1"/>'''
-        if detailed_structure else ""
+        if include_motors else ""
     )
 
     # Only the out-of-plane inertia is dynamically active.  The remaining
@@ -284,7 +292,7 @@ def build_mjcf(
                 因而这些 geom 目前只改变外形和接触，不增加质量或惯量。
               -->
               <geom type="capsule" size="{_f(p.shell_capsule_radius)}"
-                    contype="{shell_contype}" conaffinity="{robot_conaffinity}"
+                    contype="{shell_contype}" conaffinity="{shell_conaffinity}"
                     solref="0.003 1" solimp="0.95 0.99 0.001"
                     group="1" rgba="0.55 0.78 0.95 0.88"/>
             </default>
@@ -508,7 +516,9 @@ def write_mjcf(
     enable_self_collision: bool = True,
     include_rolling_shell: bool = True,
     detailed_structure: bool = False,
+    include_motor_collisions: bool = False,
     ignore_torso_leg_collision: bool = False,
+    disable_shell_shell_collision: bool = False,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -517,7 +527,9 @@ def write_mjcf(
             enable_self_collision=enable_self_collision,
             include_rolling_shell=include_rolling_shell,
             detailed_structure=detailed_structure,
+            include_motor_collisions=include_motor_collisions,
             ignore_torso_leg_collision=ignore_torso_leg_collision,
+            disable_shell_shell_collision=disable_shell_shell_collision,
         ),
         encoding="utf-8",
     )

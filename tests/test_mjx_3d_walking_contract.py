@@ -5,10 +5,11 @@ import mujoco
 import numpy as np
 
 from curl_robot_2d.model_3d import FOOT_SITE_NAMES_3D, JOINT_NAMES_3D
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
 from curl_robot_2d_mjx.config_walking_3d import (
     Walking3DConfig,
     validate_walking_3d_config,
+    walking_geometry_config_3d,
     walking_physics_profile_3d,
 )
 from curl_robot_2d_mjx.environment_walking_3d import (
@@ -18,6 +19,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_OBSERVATION_SIZE_3D,
     validate_walking_morphology_3d,
 )
+from curl_robot_2d_mjx.environment_3d import model_path_3d
 from scripts import mjx_3d_walking_smoke
 
 
@@ -52,6 +54,40 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             )
             np.testing.assert_allclose(model.jnt_axis[joint_id], expected_axis)
             self.assertAlmostEqual(abs(model.jnt_axis[joint_id, 1]), 1.0)
+
+    def test_real_geometry_model_matches_walking_morphology(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(model_path_3d("real")))
+
+        validate_walking_morphology_3d(model, REAL_GEOMETRY_PARAMETERS)
+        config = walking_geometry_config_3d(Walking3DConfig(geometry="real"))
+        self.assertEqual(config.geometry, "real")
+        self.assertAlmostEqual(
+            config.foot_radius_m, REAL_GEOMETRY_PARAMETERS.foot_radius
+        )
+        self.assertAlmostEqual(
+            config.nominal_root_height_m,
+            REAL_GEOMETRY_PARAMETERS.stand_3d_root_height,
+        )
+
+    def test_real_geometry_stand_is_finite_for_one_second(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(model_path_3d("real")))
+        data = mujoco.MjData(model)
+        mujoco.mj_resetDataKeyframe(model, data, model.key("stand").id)
+        mujoco.mj_forward(model, data)
+        torso_id = model.body("torso").id
+        maximum_tilt = 0.0
+
+        for _ in range(round(1.0 / model.opt.timestep)):
+            mujoco.mj_step(model, data)
+            body_z = data.xmat[torso_id].reshape(3, 3)[:, 2]
+            maximum_tilt = max(
+                maximum_tilt,
+                float(np.arccos(np.clip(body_z[2], -1.0, 1.0))),
+            )
+
+        self.assertTrue(np.isfinite(data.qpos).all())
+        self.assertGreater(float(data.qpos[2]), 0.30)
+        self.assertLess(maximum_tilt, 0.08)
 
     def test_stand_keyframe_places_all_four_feet_on_floor(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(WALKING_MODEL_PATH_3D))

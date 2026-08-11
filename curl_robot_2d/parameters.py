@@ -112,6 +112,10 @@ class FixedParameters:
     # When set, size the shell so its inner surface clears the motor envelope
     # by this radial distance in the compact regular-pentagon pose.
     shell_motor_clearance: float | None = None
+    # Controlled shell-only experiment overrides.  They intentionally leave
+    # the 150 mm links and finite-size feet unchanged.
+    shell_contact_radius_override: float | None = None
+    shell_arc_coverage_angle_override: float | None = None
     # Arc length removed only from the foot-side end of each shank shell.
     shank_shell_foot_retreat: float = 0.0
 
@@ -181,6 +185,8 @@ class FixedParameters:
     @property
     def shell_contact_radius(self) -> float:
         """Radius of the compact pose's intended external contact circle."""
+        if self.shell_contact_radius_override is not None:
+            return self.shell_contact_radius_override
         if self.shell_motor_clearance is not None:
             return (
                 self.regular_pentagon_radius
@@ -221,6 +227,8 @@ class FixedParameters:
 
     @property
     def shell_arc_coverage_angle(self) -> float:
+        if self.shell_arc_coverage_angle_override is not None:
+            return self.shell_arc_coverage_angle_override
         return 2.0 * (math.pi / 5.0 - self.shell_arc_trim_angle)
 
     @property
@@ -253,11 +261,15 @@ class FixedParameters:
     @property
     def compact_root_height(self) -> float:
         lower_absolute_angle = self.compact_knee_angle - self.compact_hip_angle
-        return (
+        foot_supported_height = (
             self.upper_length * math.cos(self.compact_hip_angle)
             + self.lower_length * math.cos(lower_absolute_angle)
             + self.foot_radius
         )
+        shell_supported_height = (
+            self.regular_pentagon_apothem + self.shell_contact_radius
+        )
+        return max(foot_supported_height, shell_supported_height)
 
     def leg_extension_height(self, hip_angle: float, knee_angle: float) -> float:
         """Vertical hip-to-foot distance for the planar joint convention."""

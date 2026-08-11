@@ -12,8 +12,13 @@ from curl_robot_2d_mjx.config_walking_3d import (
     Walking3DConfig,
     smoothstep_ramp,
     validate_walking_3d_config,
+    walking_geometry_config_3d,
 )
-from curl_robot_2d_mjx.environment_3d import apply_physics_options_3d
+from curl_robot_2d_mjx.environment_3d import (
+    apply_physics_options_3d,
+    geometry_parameters_3d,
+    model_path_3d,
+)
 from curl_robot_2d_mjx.reward_walking_3d import (
     WALKING_REWARD_TERM_NAMES_3D,
     Walking3DRewardConfig,
@@ -43,12 +48,11 @@ EXPECTED_WALKING_JOINT_AXES_3D = {
 }
 
 
-def validate_walking_morphology_3d(model) -> None:
+def validate_walking_morphology_3d(model, geometry=FIXED_PARAMETERS) -> None:
     """Reject models that do not match the mirrored planar-leg convention."""
 
     import mujoco
 
-    geometry = FIXED_PARAMETERS
     if tuple(JOINT_NAMES_3D) != tuple(EXPECTED_WALKING_JOINT_AXES_3D):
         raise ValueError("unexpected 3-D walking joint order")
     for joint_name, expected_axis in EXPECTED_WALKING_JOINT_AXES_3D.items():
@@ -124,7 +128,7 @@ def make_brax_walking_env_3d(
 ):
     """Create a direct-action walking task with no gait trajectory."""
 
-    task = config or Walking3DConfig()
+    task = walking_geometry_config_3d(config or Walking3DConfig())
     validate_walking_3d_config(task)
     reward_settings = reward_config or Walking3DRewardConfig()
     jax, jp, mujoco, mjx, Env, State = _load_walking_dependencies_3d()
@@ -134,10 +138,12 @@ def make_brax_walking_env_3d(
             self.config = task
             self.reward_config = reward_settings
             self.seed = seed
-            self.mj_model = mujoco.MjModel.from_xml_path(
-                str(WALKING_MODEL_PATH_3D)
+            self.model_path = model_path_3d(task.geometry)
+            self.geometry_parameters = geometry_parameters_3d(task.geometry)
+            self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
+            validate_walking_morphology_3d(
+                self.mj_model, self.geometry_parameters
             )
-            validate_walking_morphology_3d(self.mj_model)
             apply_physics_options_3d(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)
             self.mjx_model = mjx.put_model(self.mj_model)
