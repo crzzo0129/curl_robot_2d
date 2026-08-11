@@ -38,13 +38,16 @@ class StageConfig:
     seed: int
     minimum_foot_gap_m: float
     enforce_leg_crossing_constraint: bool
+    allow_foot_contact: bool = True
+    maximum_self_contact_time_s: float | None = None
+    collision_penalty_scale: float = 1.0
 
 
 STAGES = (
     StageConfig(
-        name="01_no_self_collision_cold_start",
-        description="No robot self-collision; uniform cold start",
-        model_kind="no_self_collision",
+        name="01_torso_leg_ignored_cold_start",
+        description="Torso-leg collision ignored; real leg collisions retained",
+        model_kind="leg_collision",
         generations=12,
         population=64,
         elite_count=10,
@@ -57,7 +60,7 @@ STAGES = (
     StageConfig(
         name="02_collision_constrained",
         description="Current self-collision constraints",
-        model_kind="collision",
+        model_kind="leg_collision",
         generations=14,
         population=48,
         elite_count=8,
@@ -68,17 +71,19 @@ STAGES = (
         enforce_leg_crossing_constraint=True,
     ),
     StageConfig(
-        name="03_foot_gap_2mm",
-        description="Self-collision plus 2 mm minimum foot gap",
-        model_kind="collision",
-        generations=10,
-        population=48,
-        elite_count=8,
+        name="03_strict_forbidden_collision",
+        description="Triple penalty for forbidden collision; intended foot contact retained",
+        model_kind="leg_collision",
+        generations=20,
+        population=64,
+        elite_count=10,
         duration_s=10.0,
         barrier_generations=0,
-        seed=0,
-        minimum_foot_gap_m=0.002,
+        seed=41,
+        minimum_foot_gap_m=0.0,
         enforce_leg_crossing_constraint=True,
+        allow_foot_contact=True,
+        collision_penalty_scale=3.0,
     ),
 )
 
@@ -94,6 +99,16 @@ def parse_args(argv=None):
         choices=("baseline", "real"),
         default="baseline",
     )
+    parser.add_argument(
+        "--foot-diameter-mm",
+        type=float,
+        default=None,
+        help=(
+            "Override the selected geometry's foot diameter without changing "
+            "the shared geometry constants. For example, use 39 for a "
+            "39 mm real-geometry CEM comparison."
+        ),
+    )
     parser.add_argument("--min-stage-turns", type=float, default=5.0)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
@@ -102,6 +117,26 @@ def parse_args(argv=None):
         help="Run all stages again instead of resuming completed stages.",
     )
     return parser.parse_args(argv)
+
+
+def _geometry_parameters(args):
+    parameters = (
+        REAL_GEOMETRY_PARAMETERS
+        if args.geometry == "real"
+        else FIXED_PARAMETERS
+    )
+    if args.foot_diameter_mm is not None:
+        if args.foot_diameter_mm <= 0.0:
+            raise SystemExit("--foot-diameter-mm must be positive")
+        parameters = replace(
+            parameters,
+            foot_radius=args.foot_diameter_mm / 2000.0,
+        )
+    return replace(
+        parameters,
+        torso_com_x=args.torso_com_x_mm / 1000.0,
+        torso_com_z=args.torso_com_z_mm / 1000.0,
+    )
 
 
 def _run_stage(
@@ -129,6 +164,9 @@ def _run_stage(
         enforce_leg_crossing_constraint=(
             config.enforce_leg_crossing_constraint
         ),
+        allow_foot_contact=config.allow_foot_contact,
+        maximum_self_contact_time_s=config.maximum_self_contact_time_s,
+        collision_penalty_scale=config.collision_penalty_scale,
         geometry_parameters=geometry_parameters,
     )
     baseline_model = mujoco.MjModel.from_xml_path(str(model_path))
@@ -139,6 +177,9 @@ def _run_stage(
         enforce_leg_crossing_constraint=(
             config.enforce_leg_crossing_constraint
         ),
+        allow_foot_contact=config.allow_foot_contact,
+        maximum_self_contact_time_s=config.maximum_self_contact_time_s,
+        collision_penalty_scale=config.collision_penalty_scale,
         detailed=True,
     )
     controlled_model = mujoco.MjModel.from_xml_path(str(model_path))
@@ -153,6 +194,9 @@ def _run_stage(
         enforce_leg_crossing_constraint=(
             config.enforce_leg_crossing_constraint
         ),
+        allow_foot_contact=config.allow_foot_contact,
+        maximum_self_contact_time_s=config.maximum_self_contact_time_s,
+        collision_penalty_scale=config.collision_penalty_scale,
         detailed=True,
     )
     outputs = write_outputs(
@@ -163,6 +207,8 @@ def _run_stage(
         controlled,
         config.minimum_foot_gap_m,
         FOOT_GAP_TRACKING_MARGIN_M,
+        allow_foot_contact=config.allow_foot_contact,
+        collision_penalty_scale=config.collision_penalty_scale,
     )
     summary = {
         "stage": config.name,
@@ -183,9 +229,14 @@ def _run_stage(
         "barrier_generations": config.barrier_generations,
         "seed": config.seed,
         "minimum_foot_gap_m": config.minimum_foot_gap_m,
+        "foot_radius_m": geometry_parameters.foot_radius,
+        "foot_diameter_m": 2.0 * geometry_parameters.foot_radius,
         "leg_crossing_constraint_enabled": (
             config.enforce_leg_crossing_constraint
         ),
+        "foot_to_foot_contact_allowed": config.allow_foot_contact,
+        "maximum_self_contact_time_s": config.maximum_self_contact_time_s,
+        "collision_penalty_scale": config.collision_penalty_scale,
         **controlled.summary,
     }
     (output_dir / "result.json").write_text(
@@ -301,30 +352,16 @@ def main(argv=None) -> None:
 
     output_dir = args.output_dir.expanduser().resolve()
     model_dir = output_dir / "models"
-    parameters = replace(
-        (
-            REAL_GEOMETRY_PARAMETERS
-            if args.geometry == "real"
-            else FIXED_PARAMETERS
-        ),
-        torso_com_x=args.torso_com_x_mm / 1000.0,
-        torso_com_z=args.torso_com_z_mm / 1000.0,
-    )
-    no_collision_model = write_mjcf(
-        model_dir / "no_self_collision.xml",
-        parameters,
-        enable_self_collision=False,
-        detailed_structure=(args.geometry == "real"),
-    )
-    collision_model = write_mjcf(
-        model_dir / "collision.xml",
+    parameters = _geometry_parameters(args)
+    leg_collision_model = write_mjcf(
+        model_dir / "torso_leg_ignored.xml",
         parameters,
         enable_self_collision=True,
         detailed_structure=(args.geometry == "real"),
+        ignore_torso_leg_collision=True,
     )
     models = {
-        "no_self_collision": no_collision_model,
-        "collision": collision_model,
+        "leg_collision": leg_collision_model,
     }
 
     previous_parameters: np.ndarray | None = None
@@ -335,6 +372,15 @@ def main(argv=None) -> None:
         controller_path = stage_dir / "best_phase_controller.json"
         if result_path.exists() and controller_path.exists() and not args.restart:
             result = json.loads(result_path.read_text(encoding="utf-8-sig"))
+            if args.foot_diameter_mm is not None and not np.isclose(
+                float(result.get("foot_radius_m", float("nan"))),
+                parameters.foot_radius,
+            ):
+                raise SystemExit(
+                    "Cannot resume CEM output generated with a different or "
+                    f"unrecorded foot size: {stage_dir}. Use a new "
+                    "--output-dir or pass --restart."
+                )
             previous_parameters = _load_controller_parameters(controller_path)
             status = "resume"
         else:

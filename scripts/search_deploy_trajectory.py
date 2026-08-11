@@ -27,6 +27,26 @@ COMPACT_JOINTS = np.asarray(
 )
 
 
+def deployment_midpoint(
+    strategy: str,
+    capture_joints: np.ndarray,
+    park_joints: np.ndarray,
+) -> np.ndarray | None:
+    """Return a waypoint; sequential modes unfold only one leg per segment."""
+
+    capture = np.asarray(capture_joints, dtype=float)
+    park = np.asarray(park_joints, dtype=float)
+    if strategy == "direct":
+        return None
+    if strategy == "compact":
+        return COMPACT_JOINTS.copy()
+    if strategy == "front_first":
+        return np.concatenate((park[:2], capture[2:]))
+    if strategy == "rear_first":
+        return np.concatenate((capture[:2], park[2:]))
+    raise ValueError(f"unknown deployment strategy: {strategy}")
+
+
 @dataclass(frozen=True)
 class DeployRolloutMetrics:
     success: bool
@@ -78,6 +98,7 @@ def rollout_deploy(
     hold_duration_s: float = 3.0,
     midpoint: np.ndarray | None = None,
     physics_stride: int = 1,
+    minimum_root_height_m: float = 0.05,
 ) -> DeployRolloutMetrics:
     data = mujoco.MjData(model)
     data.qpos[:] = capture_qpos
@@ -140,7 +161,7 @@ def rollout_deploy(
     pitch_error = abs(float(math.atan2(math.sin(data.qpos[2]), math.cos(data.qpos[2]))))
     success = bool(
         not numerical_failure
-        and minimum_height >= 0.10
+        and minimum_height >= minimum_root_height_m
         and linear_speed <= 0.03
         and angular_speed <= 0.10
         and pitch_error <= math.radians(5.0)
@@ -198,12 +219,18 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--snapshots", type=Path, default=DEFAULT_SNAPSHOTS)
     parser.add_argument("--model", type=Path, default=DEFAULT_MODEL)
+    parser.add_argument(
+        "--park-joints", type=float, nargs=4, default=DEFAULT_PARK_JOINTS,
+        metavar=("FRONT_HIP", "FRONT_KNEE", "REAR_HIP", "REAR_KNEE"),
+    )
     parser.add_argument("--durations", type=float, nargs="+", default=(0.8, 1.0, 1.2, 1.5))
     parser.add_argument("--samples-per-bin", type=int, default=3)
     parser.add_argument("--hold-duration", type=float, default=3.0)
+    parser.add_argument("--minimum-root-height", type=float, default=0.05)
     parser.add_argument(
-        "--strategies", choices=("direct", "compact"), nargs="+",
-        default=("direct", "compact"),
+        "--strategies",
+        choices=("direct", "compact", "front_first", "rear_first"),
+        nargs="+", default=("direct", "compact", "front_first", "rear_first"),
     )
     parser.add_argument(
         "--physics-stride", type=int, default=1,
@@ -212,20 +239,31 @@ def main() -> None:
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT)
     args = parser.parse_args()
     snapshots = np.load(args.snapshots)
+    park_joints = np.asarray(args.park_joints, dtype=float)
     contact = snapshots["contact_features"]
     valid = (contact[:, 2] == 0) & (contact[:, 3] == 0)
-    indices = balanced_subset(snapshots["phase_bin"], valid, args.samples_per_bin)
+    if "deploy_entry_gate" in snapshots:
+        valid &= snapshots["deploy_entry_gate"].astype(bool)
+    balance_bins = (
+        snapshots["source_phase_bin"]
+        if "source_phase_bin" in snapshots
+        else snapshots["phase_bin"]
+    )
+    indices = balanced_subset(balance_bins, valid, args.samples_per_bin)
     model = mujoco.MjModel.from_xml_path(str(args.model))
     candidates: list[dict[str, object]] = []
     for strategy in args.strategies:
-        midpoint = None if strategy == "direct" else COMPACT_JOINTS
         for duration in args.durations:
             metrics = [
                 rollout_deploy(
                     model, snapshots["qpos"][index], snapshots["qvel"][index],
-                    DEFAULT_PARK_JOINTS, deploy_duration_s=duration,
-                    hold_duration_s=args.hold_duration, midpoint=midpoint,
+                    park_joints, deploy_duration_s=duration,
+                    hold_duration_s=args.hold_duration,
+                    midpoint=deployment_midpoint(
+                        strategy, snapshots["qpos"][index][3:], park_joints
+                    ),
                     physics_stride=args.physics_stride,
+                    minimum_root_height_m=args.minimum_root_height,
                 )
                 for index in indices
             ]
@@ -244,7 +282,7 @@ def main() -> None:
         "schema_version": 1,
         "snapshots": str(args.snapshots.resolve()),
         "model": str(args.model.resolve()),
-        "park_joints_rad": DEFAULT_PARK_JOINTS.tolist(),
+        "park_joints_rad": park_joints.tolist(),
         "valid_snapshot_count": int(valid.sum()),
         "search_snapshot_count": len(indices),
         "candidates": candidates,

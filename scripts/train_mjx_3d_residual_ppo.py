@@ -346,6 +346,44 @@ RECIPES_3D = {
             "severe_extra_termination": 50.0,
         },
     },
+    "real_geometry_contact_v2": {
+        "description": (
+            "Conservative real-geometry contact cleanup: preserve left/right "
+            "symmetry, keep residual authority small, and strengthen the "
+            "phase-local collision learning signal."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.08,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.0,
+            "explicit_phase_observation": True,
+            "learning_rate": 3e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 5.0,
+            "selection_objective": "contact",
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.05,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.6,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.03,
+            "residual_action": 0.01,
+            "torque": 0.02,
+            "forbidden_contact_time": 24.0,
+            "first_turn_forbidden_contact_multiplier": 4.0,
+            "forbidden_penetration_integral": 60000.0,
+            "maximum_forbidden_penetration": 8000.0,
+            "failure_progress_clawback": 4.0,
+            "termination": 50.0,
+            "severe_extra_termination": 50.0,
+        },
+    },
 }
 
 

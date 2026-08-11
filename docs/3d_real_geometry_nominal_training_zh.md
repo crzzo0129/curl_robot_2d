@@ -12,7 +12,8 @@
 - `curl_robot_3d_real_geometry.xml`；
 - 新版 2D CEM controller；
 - 足部目标间距 2 mm、tracking margin 12 mm；
-- `phase_locked_coupled` 对称 residual，左右差分通道缩放为 0.25；
+- `phase_locked_coupled` common residual，首轮关闭左右差分通道；
+- residual gain 从 0.08 开始，初始 policy std 为 0.05；
 - nominal friction、mass/inertia 和 actuator gain；
 - 仅保留 0.005 rad / 0.005 的轻微对称 reset noise；
 - checkpoint 必须达到至少 5 个 conservative turns，随后才按内部接触质量排序。
@@ -27,7 +28,7 @@ python -m scripts.train_mjx_3d_real_geometry_nominal \
   --seed 0 \
   --mujoco-gl disable \
   --memory-fraction 0.50 \
-  --out results/mjx_3d_real_geometry_contact_v1_smoke_seed0
+  --out results/mjx_3d_real_geometry_contact_v2_smoke_seed0
 ```
 
 smoke 必须确认：新版 XML 能被 MJX 编译、训练配置打印 `geometry=real`，并且能够写出 `training_config.json`、`params_best` 和 `params_final`。如果所有 evaluation 都没有达到 5 圈，`params_best` 可能无法通过 contact gate；smoke 的主要目标是验证训练链路。
@@ -40,7 +41,7 @@ python -m scripts.train_mjx_3d_real_geometry_nominal \
   --seed 0 \
   --mujoco-gl disable \
   --memory-fraction 0.80 \
-  --out results/mjx_3d_real_geometry_contact_v1_h200_seed0
+  --out results/mjx_3d_real_geometry_contact_v2_h200_seed0
 ```
 
 `h200` 默认使用现有 20M-step preset。若先进行 10M 探索，可增加 `--steps 10000000`，但不要写入同一个正式输出目录。
@@ -80,16 +81,16 @@ python -m scripts.evaluate_mjx_3d_policy \
 
 ```bash
 python -m scripts.evaluate_mjx_3d_policy \
-  results/mjx_3d_real_geometry_contact_v1_h200_seed0/params_best \
-  --out results/mjx_3d_real_geometry_contact_v1_h200_seed0/eval_nominal_reset1024 \
+  results/mjx_3d_real_geometry_contact_v2_h200_seed0/params_best \
+  --out results/mjx_3d_real_geometry_contact_v2_h200_seed0/eval_nominal_reset1024 \
   --geometry real \
   --controller results/staged_cem_real_geometry_180_d50_foot60/03_foot_gap_2mm/best_phase_controller.json \
   --minimum-foot-gap-mm 2 \
   --foot-gap-tracking-margin-mm 12 \
   --reference-weight 1.0 \
-  --minimum-residual-gain 0.20 \
-  --residual-pair-differential-scale 0.25 \
-  --initial-policy-std 0.15 \
+  --minimum-residual-gain 0.08 \
+  --residual-pair-differential-scale 0.0 \
+  --initial-policy-std 0.05 \
   --batch-size 1024 \
   --chunk-size 128 \
   --episode-length 500 \
@@ -131,7 +132,7 @@ python -m scripts.evaluate_mjx_3d_policy \
 
 ```bash
 python -m scripts.render_mjx_3d_policy \
-  results/mjx_3d_real_geometry_contact_v1_h200_seed0/eval_nominal_reset1024/diagnostic_rollouts \
+  results/mjx_3d_real_geometry_contact_v2_h200_seed0/eval_nominal_reset1024/diagnostic_rollouts \
   --geometry real \
   --physics-profile cg20 \
   --mujoco-gl egl

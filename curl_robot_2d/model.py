@@ -90,17 +90,26 @@ def build_mjcf(
     enable_self_collision: bool = True,
     include_rolling_shell: bool = True,
     detailed_structure: bool = False,
+    ignore_torso_leg_collision: bool = False,
 ) -> str:
     p = parameters
     torso_half_length = p.torso_length / 2
     shell_contype = 4 if enable_self_collision else 0
     structure_contype = 2 if enable_self_collision else 0
     robot_conaffinity = 7 if enable_self_collision else 1
+    torso_leg_excludes = (
+        "\n" + "\n".join(
+            f'                <exclude body1="torso" body2="{body}"/>'
+            for body in ("front_thigh", "front_shank", "rear_thigh", "rear_shank")
+        )
+        if enable_self_collision and ignore_torso_leg_collision
+        else ""
+    )
     explicit_foot_contact = (
         indent(
             dedent(
             f"""\
-              <contact>
+              <contact>{torso_leg_excludes}
                 <!--
                   compact 中允许两个有限尺寸足端表面接触。显式 pair 使用更硬的
                   内部接触参数，减少软接触导致的数值穿透；并不把足端焊接。
@@ -499,6 +508,7 @@ def write_mjcf(
     enable_self_collision: bool = True,
     include_rolling_shell: bool = True,
     detailed_structure: bool = False,
+    ignore_torso_leg_collision: bool = False,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
@@ -507,6 +517,7 @@ def write_mjcf(
             enable_self_collision=enable_self_collision,
             include_rolling_shell=include_rolling_shell,
             detailed_structure=detailed_structure,
+            ignore_torso_leg_collision=ignore_torso_leg_collision,
         ),
         encoding="utf-8",
     )

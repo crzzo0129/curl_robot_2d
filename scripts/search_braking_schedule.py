@@ -35,10 +35,10 @@ DEFAULT_OUTPUT = PROJECT_ROOT / "results" / "rolling_stop" / "braking_cem.json"
 
 # duration scale, brake start progress, end rate/amplitude, and two knots.
 LOWER = np.asarray(
-    [0.60, 0.20, 0.0, 0.0, *([-0.25] * 4), *([-0.20] * 4)], dtype=float
+    [0.90, 0.55, 0.0, 0.0, *([-0.25] * 4), *([-0.20] * 4)], dtype=float
 )
 UPPER = np.asarray(
-    [1.60, 0.80, 0.65, 1.0, *([0.25] * 4), *([0.20] * 4)], dtype=float
+    [1.60, 0.95, 0.65, 1.0, *([0.25] * 4), *([0.20] * 4)], dtype=float
 )
 
 
@@ -83,6 +83,8 @@ class BrakingMetrics:
     final_linear_speed_m_s: float
     final_angular_speed_rad_s: float
     final_phase_error_rad: float
+    final_target_remaining_rad: float
+    final_target_progress: float
     final_joint_speed_rms_rad_s: float
     minimum_root_height_m: float
     maximum_torque_nm: float
@@ -142,6 +144,7 @@ def evaluate_schedule(
     oscillator_phase_rad: float,
     schedule: BrakingSchedule,
     *,
+    capture_time_s: float = 0.0,
     coefficients: np.ndarray,
     native_rate_rad_s: float,
     coupling_per_s: float,
@@ -156,10 +159,15 @@ def evaluate_schedule(
     brake_phase_margin_rad: float = math.radians(20.0),
     nominal_body_roll_rate_rad_s: float = 2.0 * math.pi * 0.40,
     minimum_root_height_m: float = 0.05,
+    deploy_phase_tolerance_rad: float = math.radians(5.0),
+    maximum_planned_duration_s: float = 8.0,
+    extra_target_turns: int = 0,
+    terminal_state_out: dict[str, np.ndarray | float] | None = None,
 ) -> BrakingMetrics:
     data = mujoco.MjData(model)
     data.qpos[:] = capture_qpos
     data.qvel[:] = capture_qvel
+    data.time = float(capture_time_s)
     mujoco.mj_forward(model, data)
     dt = float(model.opt.timestep)
     initial_phase = float(capture_qpos[2])
@@ -170,16 +178,21 @@ def evaluate_schedule(
         maximum_brake_deceleration_rad_s2,
         brake_phase_margin_rad,
     )
-    _, target_distance = select_reachable_target_phase_unwrapped(
+    target_phase, target_distance = select_reachable_target_phase_unwrapped(
         initial_phase, park_phase_rad, required_distance, direction
     )
+    if extra_target_turns < 0:
+        raise ValueError("extra_target_turns must be nonnegative")
+    extra_distance = extra_target_turns * 2.0 * math.pi
+    target_distance += extra_distance
+    target_phase += direction * extra_distance
     # Instantaneous body speed is strongly periodic (roughly 1--9 rad/s) and
     # must not be mistaken for the net rate at which a full turn is covered.
     # It still determines braking distance above; duration uses the nominal
     # net rolling rate so peaks do not produce unrealistically short plans.
     nominal_duration = target_distance / max(nominal_body_roll_rate_rad_s, 0.5)
     planned_duration = float(
-        np.clip(schedule.duration_scale * nominal_duration, 0.4, 4.0)
+        np.clip(schedule.duration_scale * nominal_duration, 0.4, maximum_planned_duration_s)
     )
     oscillator = float(oscillator_phase_rad)
     minimum_height = float(data.qpos[1])
@@ -233,12 +246,17 @@ def evaluate_schedule(
     linear = abs(float(data.qvel[0])) if not numerical_failure else math.inf
     angular = abs(float(data.qvel[2])) if not numerical_failure else math.inf
     phase_error = abs(wrap_to_pi(float(data.qpos[2]) - park_phase_rad))
+    target_remaining = direction * (target_phase - float(data.qpos[2]))
+    target_progress = (
+        direction * (float(data.qpos[2]) - initial_phase) / max(target_distance, 1.0e-6)
+    )
     joint_speed = float(np.sqrt(np.mean(np.asarray(data.qvel[3:]) ** 2)))
     deploy_gate = bool(
         not numerical_failure
         and linear <= 0.08
         and angular <= 0.50
-        and phase_error <= math.radians(15.0)
+        and phase_error <= deploy_phase_tolerance_rad
+        and abs(target_remaining) <= deploy_phase_tolerance_rad
         and joint_speed <= 1.0
         and minimum_height >= minimum_root_height_m
         and not torso_contact
@@ -247,7 +265,13 @@ def evaluate_schedule(
     score = (
         8.0 * angular
         + 12.0 * linear
-        + 20.0 * phase_error
+        # Use the selected unwrapped target, not only its wrapped park phase.
+        # Otherwise stopping one turn early can look phase-correct.  A strong
+        # directed-distance term also prevents the optimiser from preferring
+        # an easy, low-speed stop well before the requested deploy point.
+        + 8.0 * phase_error
+        + 100.0 * abs(target_remaining)
+        + 30.0 * max(target_remaining, 0.0) * float(angular <= 0.50)
         + 0.5 * joint_speed
         + 20.0 * float(torso_contact)
         + 50.0 * torso_contact_duration
@@ -256,11 +280,21 @@ def evaluate_schedule(
         + 50.0 * float(numerical_failure)
         + 0.1 * maximum_torque
     )
+    if terminal_state_out is not None:
+        terminal_state_out.update(
+            qpos=np.asarray(data.qpos, dtype=float).copy(),
+            qvel=np.asarray(data.qvel, dtype=float).copy(),
+            ctrl=np.asarray(data.ctrl, dtype=float).copy(),
+            time_s=float(data.time),
+            oscillator_phase_rad=float(oscillator),
+        )
     return BrakingMetrics(
         score=score,
         final_linear_speed_m_s=linear,
         final_angular_speed_rad_s=angular,
         final_phase_error_rad=phase_error,
+        final_target_remaining_rad=target_remaining,
+        final_target_progress=target_progress,
         final_joint_speed_rms_rad_s=joint_speed,
         minimum_root_height_m=minimum_height,
         maximum_torque_nm=maximum_torque,
@@ -285,6 +319,12 @@ def _aggregate(metrics: list[BrakingMetrics]) -> tuple[float, dict[str, float]]:
         "median_linear_speed_m_s": float(np.median([m.final_linear_speed_m_s for m in metrics])),
         "median_angular_speed_rad_s": float(np.median([m.final_angular_speed_rad_s for m in metrics])),
         "median_phase_error_rad": float(np.median([m.final_phase_error_rad for m in metrics])),
+        "median_target_remaining_rad": float(
+            np.median([m.final_target_remaining_rad for m in metrics])
+        ),
+        "median_target_progress": float(
+            np.median([m.final_target_progress for m in metrics])
+        ),
         "median_planned_duration_s": float(np.median([m.planned_duration_s for m in metrics])),
         "median_target_phase_distance_rad": float(
             np.median([m.target_phase_distance_rad for m in metrics])
@@ -297,7 +337,12 @@ def _aggregate(metrics: list[BrakingMetrics]) -> tuple[float, dict[str, float]]:
             np.mean([m.forbidden_internal_contact_duration_s for m in metrics])
         ),
     }
-    return summary["mean_score"] + 0.25 * summary["worst_score"], summary
+    gate_failure_penalty = 100.0 * (1.0 - summary["deploy_entry_rate"])
+    return (
+        gate_failure_penalty
+        + summary["mean_score"]
+        + 0.25 * summary["worst_score"]
+    ), summary
 
 
 def main() -> None:
@@ -312,6 +357,8 @@ def main() -> None:
     parser.add_argument("--elite-fraction", type=float, default=0.25)
     parser.add_argument("--seed", type=int, default=7)
     parser.add_argument("--frequency-hz", type=float, default=0.40)
+    parser.add_argument("--extra-target-turns", type=int, default=0)
+    parser.add_argument("--maximum-planned-duration", type=float, default=8.0)
     parser.add_argument(
         "--physics-stride", type=int, default=1,
         help="MuJoCo steps per control update; use 1 for authoritative results.",
@@ -326,6 +373,8 @@ def main() -> None:
         parser.error("population must be >= 4 and generations must be positive")
     if args.samples_per_bin < 1:
         parser.error("samples per bin must be positive")
+    if args.maximum_planned_duration <= 0.0:
+        parser.error("maximum planned duration must be positive")
     elite_count = max(2, int(round(args.population * args.elite_fraction)))
     snapshots = np.load(args.snapshots)
     contact = snapshots["contact_features"]
@@ -370,12 +419,15 @@ def main() -> None:
                     model,
                     snapshots["qpos"][index], snapshots["qvel"][index],
                     float(snapshots["oscillator_phase_rad"][index]), schedule,
+                    capture_time_s=float(snapshots["episode_time_s"][index]),
                     coefficients=coefficients, native_rate_rad_s=native_rate,
                     coupling_per_s=coupling, initial_phase_rate_scale=initial_rate_scale,
                     minimum_foot_gap_m=foot_gap, foot_gap_margin_m=foot_margin,
                     knee_bias_rad=knee_bias, compact_ctrl=compact_ctrl,
                     physics_stride=args.physics_stride,
                     nominal_body_roll_rate_rad_s=2.0 * math.pi * args.frequency_hz,
+                    maximum_planned_duration_s=args.maximum_planned_duration,
+                    extra_target_turns=args.extra_target_turns,
                 )
                 for index in selected
             ]
@@ -395,6 +447,32 @@ def main() -> None:
         }
         history.append(record)
         print(json.dumps(record, sort_keys=True))
+        # Persist every completed generation: an authoritative 1 kHz search can
+        # take minutes, so a process timeout must not discard a useful feasible
+        # candidate.
+        checkpoint = {
+            "schema_version": 1,
+            "model": str(args.model.resolve()),
+            "controller": str(args.controller.resolve()),
+            "snapshots": str(args.snapshots.resolve()),
+            "phase_bins": list(args.phase_bins),
+            "samples_per_bin": args.samples_per_bin,
+            "selected_snapshot_indices": selected,
+            "population": args.population,
+            "generations_completed": generation + 1,
+            "generations_requested": args.generations,
+            "seed": args.seed,
+            "extra_target_turns": args.extra_target_turns,
+            "maximum_planned_duration_s": args.maximum_planned_duration,
+            "history": history,
+            "best": history[-1],
+            "feasible": history[-1]["deploy_entry_rate"] > 0.0,
+            "complete": generation + 1 == args.generations,
+        }
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(
+            json.dumps(checkpoint, indent=2, sort_keys=True), encoding="utf-8"
+        )
 
     assert global_best is not None
     report = {
@@ -407,10 +485,15 @@ def main() -> None:
         "selected_snapshot_indices": selected,
         "population": args.population,
         "generations": args.generations,
+        "generations_completed": args.generations,
+        "generations_requested": args.generations,
         "seed": args.seed,
+        "extra_target_turns": args.extra_target_turns,
+        "maximum_planned_duration_s": args.maximum_planned_duration,
         "history": history,
         "best": history[-1],
         "feasible": history[-1]["deploy_entry_rate"] > 0.0,
+        "complete": True,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(report, indent=2, sort_keys=True), encoding="utf-8")

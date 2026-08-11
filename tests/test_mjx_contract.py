@@ -344,6 +344,30 @@ class MJXContractTest(unittest.TestCase):
             dof_id = int(model.jnt_dofadr[joint_id])
             self.assertEqual(float(model.dof_damping[dof_id]), 0.0)
 
+    def test_mjx_collision_proxy_replaces_only_knee_motor_cylinders(self) -> None:
+        import mujoco
+
+        from curl_robot_2d_mjx.environment import apply_physics_options
+
+        model = mujoco.MjModel.from_xml_path(
+            str(PROJECT_ROOT / "assets" / "curl_robot_2d_real_geometry.xml")
+        )
+        task = NominalRLConfig(mjx_compatible_collision_proxies=True)
+        apply_physics_options(model, task)
+        for name in ("front_knee_motor", "rear_knee_motor"):
+            geom_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_GEOM, name
+            )
+            self.assertEqual(
+                model.geom_type[geom_id], mujoco.mjtGeom.mjGEOM_CAPSULE
+            )
+        front_hip = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, "front_hip_motor"
+        )
+        self.assertEqual(
+            model.geom_type[front_hip], mujoco.mjtGeom.mjGEOM_CYLINDER
+        )
+
     def test_training_entries_import_without_jax(self) -> None:
         self.assertTrue(callable(mjx_smoke.main))
         self.assertTrue(callable(train_mjx_ppo.main))

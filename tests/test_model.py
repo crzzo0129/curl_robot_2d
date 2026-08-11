@@ -32,6 +32,15 @@ REAL_GEOMETRY_MODEL_PATH = (
 
 
 class ModelContractTest(unittest.TestCase):
+    def test_torso_leg_collision_can_be_selectively_ignored(self) -> None:
+        model = mujoco.MjModel.from_xml_string(
+            build_mjcf(ignore_torso_leg_collision=True)
+        )
+        xml = build_mjcf(ignore_torso_leg_collision=True)
+        self.assertEqual(model.nexclude, 4)
+        for name in ("front_thigh", "front_shank", "rear_thigh", "rear_shank"):
+            self.assertIn(f'<exclude body1="torso" body2="{name}"/>', xml)
+
     def test_real_geometry_candidate_contract(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(REAL_GEOMETRY_MODEL_PATH))
         p = REAL_GEOMETRY_PARAMETERS

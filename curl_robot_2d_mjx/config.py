@@ -55,6 +55,11 @@ class NominalRLConfig:
     # The CPU CEM and release evaluators model the planar root as free and
     # remove the XML's small numerical damping at runtime.
     disable_root_damping: bool = True
+    # MJX JAX lacks cylinder-box collision.  The real-geometry model has two
+    # knee-motor-cylinder/torso-box candidate pairs, so training may replace
+    # only those collision proxies with same-size capsules in memory.  The XML
+    # and authoritative CPU evaluation model remain unchanged.
+    mjx_compatible_collision_proxies: bool = False
 
     # Torso root height is phase dependent during valid planar rolling.  The
     # collision-constrained CEM baseline reaches 0.0437 m once per turn, so a

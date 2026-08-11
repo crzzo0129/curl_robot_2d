@@ -77,12 +77,25 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         values = train_mjx_3d_real_geometry_nominal.training_argv(args)
 
         self.assertIn("real", values)
-        self.assertIn("real_geometry_contact_v1", values)
+        self.assertIn("real_geometry_contact_v2", values)
         self.assertIn("12", values)
         self.assertIn(
-            "results\\mjx_3d_real_geometry_contact_v1_h200_seed3",
+            "results\\mjx_3d_real_geometry_contact_v2_h200_seed3",
             values,
         )
+
+    def test_real_geometry_v2_starts_with_common_only_small_residual(self) -> None:
+        wrapper_args = train_mjx_3d_real_geometry_nominal.parse_args([])
+        args = train_mjx_3d_residual_ppo.parse_args(
+            train_mjx_3d_real_geometry_nominal.training_argv(wrapper_args)
+        )
+
+        self.assertEqual(args.recipe, "real_geometry_contact_v2")
+        self.assertEqual(args.minimum_residual_gain, 0.08)
+        self.assertEqual(args.residual_pair_differential_scale, 0.0)
+        self.assertEqual(args.initial_policy_std, 0.05)
+        self.assertEqual(args.learning_rate, 3e-5)
+        self.assertEqual(args.selection_objective, "contact")
 
     def test_reset_curriculum_allocates_every_stage_training_work(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(

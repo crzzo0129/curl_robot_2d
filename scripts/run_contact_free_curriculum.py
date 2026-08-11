@@ -58,6 +58,13 @@ def main() -> None:
     parser.add_argument("--population", type=int, default=64)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--minimum-turns", type=float, default=5.0)
+    parser.add_argument("--warm-start-std-scale", type=float, default=0.25)
+    parser.add_argument(
+        "--start-stage",
+        type=int,
+        default=1,
+        help="Resume at this 1-based stage, loading earlier accepted outputs.",
+    )
     args = parser.parse_args()
 
     stages = (
@@ -69,9 +76,25 @@ def main() -> None:
         ("06_contact_20ms", 0.020),
         ("07_contact_free", 0.0),
     )
+    if not 1 <= args.start_stage <= len(stages):
+        parser.error(f"--start-stage must be between 1 and {len(stages)}")
     selected = _load_controller_parameters(args.controller)
     results = []
-    for index, (name, limit) in enumerate(stages):
+    for prior_index, (prior_name, _) in enumerate(stages[: args.start_stage - 1]):
+        prior_result_path = args.output_dir / prior_name / "result.json"
+        prior_controller_path = (
+            args.output_dir / prior_name / "best_phase_controller.json"
+        )
+        if not prior_result_path.exists() or not prior_controller_path.exists():
+            parser.error(f"missing completed stage for resume: {prior_name}")
+        prior_result = json.loads(prior_result_path.read_text(encoding="utf-8"))
+        if not bool(prior_result.get("accepted", False)):
+            parser.error(f"cannot resume past rejected stage: {prior_name}")
+        results.append(prior_result)
+        selected = _load_controller_parameters(prior_controller_path)
+    for index, (name, limit) in enumerate(
+        stages[args.start_stage - 1 :], start=args.start_stage - 1
+    ):
         before = evaluate(args.model, selected, limit)
         candidate, history, _ = optimize_controller(
             model_path=args.model,
@@ -88,6 +111,7 @@ def main() -> None:
             enforce_leg_crossing_constraint=True,
             allow_foot_contact=False,
             maximum_self_contact_time_s=limit,
+            warm_start_std_scale=args.warm_start_std_scale,
             geometry_parameters=REAL_GEOMETRY_PARAMETERS,
         )
         after = evaluate(args.model, candidate, limit)

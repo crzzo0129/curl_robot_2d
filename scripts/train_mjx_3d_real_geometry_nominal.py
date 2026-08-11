@@ -1,4 +1,4 @@
-"""Train nominal residual collision avoidance on the 180 mm 3-D geometry."""
+"""Train conservative nominal collision avoidance on the 180 mm 3-D geometry."""
 
 from __future__ import annotations
 
@@ -27,8 +27,16 @@ def parse_args(argv=None):
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--steps", type=int)
+    parser.add_argument(
+        "--recipe",
+        choices=("real_geometry_contact_v1", "real_geometry_contact_v2"),
+        default="real_geometry_contact_v2",
+    )
     parser.add_argument("--controller", type=Path, default=DEFAULT_REAL_CONTROLLER)
     parser.add_argument("--restore-params", type=Path)
+    parser.add_argument("--residual-gain", type=float)
+    parser.add_argument("--residual-pair-differential-scale", type=float)
+    parser.add_argument("--initial-policy-std", type=float)
     parser.add_argument("--out", type=Path)
     parser.add_argument("--memory-fraction", type=float, default=0.80)
     parser.add_argument(
@@ -43,7 +51,7 @@ def parse_args(argv=None):
 def training_argv(args: argparse.Namespace) -> list[str]:
     output = args.out or (
         Path("results")
-        / f"mjx_3d_real_geometry_contact_v1_{args.preset}_seed{args.seed}"
+        / f"mjx_3d_{args.recipe}_{args.preset}_seed{args.seed}"
     )
     values = [
         "--preset",
@@ -51,7 +59,7 @@ def training_argv(args: argparse.Namespace) -> list[str]:
         "--geometry",
         "real",
         "--recipe",
-        "real_geometry_contact_v1",
+        args.recipe,
         "--physics-profile",
         "cg20",
         "--curriculum",
@@ -87,6 +95,17 @@ def training_argv(args: argparse.Namespace) -> list[str]:
         values.extend(("--steps", str(args.steps)))
     if args.restore_params is not None:
         values.extend(("--restore-params", str(args.restore_params)))
+    if args.residual_gain is not None:
+        values.extend(("--minimum-residual-gain", str(args.residual_gain)))
+    if args.residual_pair_differential_scale is not None:
+        values.extend(
+            (
+                "--residual-pair-differential-scale",
+                str(args.residual_pair_differential_scale),
+            )
+        )
+    if args.initial_policy_std is not None:
+        values.extend(("--initial-policy-std", str(args.initial_policy_std)))
     if args.allow_existing_output:
         values.append("--allow-existing-output")
     return values

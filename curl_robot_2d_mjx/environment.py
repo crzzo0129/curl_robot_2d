@@ -89,6 +89,18 @@ def apply_physics_options(model, task: NominalRLConfig) -> None:
                 raise ValueError(f"missing MuJoCo joint: {joint_name}")
             dof_id = int(model.jnt_dofadr[joint_id])
             model.dof_damping[dof_id] = 0.0
+    if task.mjx_compatible_collision_proxies:
+        for geom_name in ("front_knee_motor", "rear_knee_motor"):
+            geom_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_GEOM, geom_name
+            )
+            if geom_id < 0:
+                raise ValueError(f"missing MuJoCo geom: {geom_name}")
+            if model.geom_type[geom_id] != mujoco.mjtGeom.mjGEOM_CYLINDER:
+                raise ValueError(
+                    f"MJX proxy expects a cylinder geom: {geom_name}"
+                )
+            model.geom_type[geom_id] = mujoco.mjtGeom.mjGEOM_CAPSULE
 
 
 def _load_dependencies():

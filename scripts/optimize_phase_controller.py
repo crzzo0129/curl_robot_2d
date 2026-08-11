@@ -59,7 +59,10 @@ MAXIMUM_FORBIDDEN_PENETRATION_WEIGHT = 2500.0
 ALLOWED_PENETRATION_EXCESS_INTEGRAL_WEIGHT = 12000.0
 MAXIMUM_ALLOWED_PENETRATION_EXCESS_WEIGHT = 2500.0
 LEG_CROSSING_FAILURE_PENALTY = 1000.0
-CONTACT_FREE_FAILURE_PENALTY = 1000.0
+# A continuous barrier preserves the rolling warm start while a curriculum
+# tightens contact time.  A fixed failure cliff makes a stationary zero-contact
+# candidate beat every slightly-over-limit rolling controller.
+CONTACT_LIMIT_EXCESS_WEIGHT = 500.0
 FOOT_CONTACT_TIME_WEIGHT = 40.0
 LONGEST_FOOT_CONTACT_WEIGHT = 100.0
 FOOT_GAP_DEFICIT_INTEGRAL_WEIGHT = 3000.0
@@ -111,7 +114,17 @@ def _initialize_rollout_worker(
 
 
 def _rollout_worker(
-    task: tuple[np.ndarray, float, str, float, float, bool, bool, float | None],
+    task: tuple[
+        np.ndarray,
+        float,
+        str,
+        float,
+        float,
+        bool,
+        bool,
+        float | None,
+        float,
+    ],
 ) -> ControllerRollout:
     if _WORKER_MODEL is None:
         raise RuntimeError("rollout worker model was not initialized")
@@ -124,6 +137,7 @@ def _rollout_worker(
         enforce_leg_crossing_constraint,
         allow_foot_contact,
         maximum_self_contact_time_s,
+        collision_penalty_scale,
     ) = task
     return rollout_controller(
         _WORKER_MODEL,
@@ -137,6 +151,7 @@ def _rollout_worker(
         enforce_leg_crossing_constraint=enforce_leg_crossing_constraint,
         allow_foot_contact=allow_foot_contact,
         maximum_self_contact_time_s=maximum_self_contact_time_s,
+        collision_penalty_scale=collision_penalty_scale,
         detailed=False,
     )
 
@@ -368,10 +383,13 @@ def rollout_controller(
     enforce_leg_crossing_constraint: bool = True,
     allow_foot_contact: bool = True,
     maximum_self_contact_time_s: float | None = None,
+    collision_penalty_scale: float = 1.0,
     detailed: bool = False,
 ) -> ControllerRollout:
     if objective not in {"barrier", "sustained"}:
         raise ValueError(f"unknown objective: {objective}")
+    if collision_penalty_scale <= 0.0:
+        raise ValueError("collision_penalty_scale must be positive")
     knee_bias_rad = knee_bias_for_foot_gap(minimum_foot_surface_gap_m)
     data = mujoco.MjData(model)
     compact_key_id = _id(model, mujoco.mjtObj.mjOBJ_KEY, "compact")
@@ -793,7 +811,7 @@ def rollout_controller(
         if minimum_foot_surface_gap_m > 0.0
         else 0.0
     )
-    collision_penalty = (
+    collision_penalty = collision_penalty_scale * (
         FORBIDDEN_CONTACT_TIME_WEIGHT * forbidden_contact_time
         + FORBIDDEN_PENETRATION_INTEGRAL_WEIGHT
         * forbidden_penetration_integral
@@ -804,15 +822,15 @@ def rollout_controller(
         + MAXIMUM_ALLOWED_PENETRATION_EXCESS_WEIGHT
         * maximum_allowed_penetration_excess
         + LEG_CROSSING_FAILURE_PENALTY * float(leg_crossing_detected)
-        + CONTACT_FREE_FAILURE_PENALTY
-        * float(
-            not allow_foot_contact
-            and forbidden_contact_time
-            > (
-                maximum_self_contact_time_s
-                if maximum_self_contact_time_s is not None
-                else 0.0
+        + CONTACT_LIMIT_EXCESS_WEIGHT
+        * (
+            max(
+                forbidden_contact_time - maximum_self_contact_time_s,
+                0.0,
             )
+            if not allow_foot_contact
+            and maximum_self_contact_time_s is not None
+            else 0.0
         )
     )
     constraint_penalty = (
@@ -910,10 +928,16 @@ def rollout_controller(
         ),
         "foot_to_foot_contact_allowed": allow_foot_contact,
         "maximum_self_contact_time_s": maximum_self_contact_time_s,
+        "contact_limit_excess_s": (
+            max(forbidden_contact_time - maximum_self_contact_time_s, 0.0)
+            if maximum_self_contact_time_s is not None
+            else 0.0
+        ),
         "allowed_penetration_excess_integral_m_s": (
             allowed_penetration_excess_integral
         ),
         "collision_penalty": collision_penalty,
+        "collision_penalty_scale": collision_penalty_scale,
         "leg_crossing_constraint_enabled": enforce_leg_crossing_constraint,
         "leg_crossing_detected": leg_crossing_detected,
         "first_leg_crossing_time_s": first_leg_crossing_time,
@@ -964,12 +988,18 @@ def optimize_controller(
     enforce_leg_crossing_constraint: bool = True,
     allow_foot_contact: bool = True,
     maximum_self_contact_time_s: float | None = None,
+    collision_penalty_scale: float = 1.0,
+    warm_start_std_scale: float = 1.0,
     geometry_parameters: FixedParameters = FIXED_PARAMETERS,
 ) -> tuple[np.ndarray, list[dict[str, float | int | str]], ControllerRollout]:
     if not 1 <= elite_count <= population:
         raise ValueError("elite_count must be between 1 and population")
     if workers < 1:
         raise ValueError("workers must be at least 1")
+    if not 0.0 < warm_start_std_scale <= 1.0:
+        raise ValueError("warm_start_std_scale must be in (0, 1]")
+    if collision_penalty_scale <= 0.0:
+        raise ValueError("collision_penalty_scale must be positive")
 
     _activate_geometry(geometry_parameters)
     rng = np.random.default_rng(seed)
@@ -992,6 +1022,7 @@ def optimize_controller(
         if initial_parameters.shape != (10,):
             raise ValueError("initial_parameters must have shape (10,)")
         mean = np.clip(initial_parameters, lower, upper)
+        std *= warm_start_std_scale
     best_parameters = mean.copy()
     best_rollout: ControllerRollout | None = None
     history: list[dict[str, float | int | str]] = []
@@ -1049,6 +1080,7 @@ def optimize_controller(
                         maximum_self_contact_time_s=(
                             maximum_self_contact_time_s
                         ),
+                        collision_penalty_scale=collision_penalty_scale,
                         detailed=False,
                     )
                     for sample in samples
@@ -1064,6 +1096,7 @@ def optimize_controller(
                         enforce_leg_crossing_constraint,
                         allow_foot_contact,
                         maximum_self_contact_time_s,
+                        collision_penalty_scale,
                     )
                     for sample in samples
                 ]
@@ -1166,6 +1199,7 @@ def _coefficient_summary(
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
     allow_foot_contact: bool = True,
+    collision_penalty_scale: float = 1.0,
 ) -> dict[str, object]:
     coefficients = parameters[:8]
     raw = {
@@ -1206,13 +1240,15 @@ def _coefficient_summary(
                 ALLOWED_FOOT_PENETRATION_M if allow_foot_contact else 0.0
             ),
             "forbidden_contact_time_weight": (
-                FORBIDDEN_CONTACT_TIME_WEIGHT
+                collision_penalty_scale * FORBIDDEN_CONTACT_TIME_WEIGHT
             ),
             "forbidden_penetration_integral_weight": (
-                FORBIDDEN_PENETRATION_INTEGRAL_WEIGHT
+                collision_penalty_scale
+                * FORBIDDEN_PENETRATION_INTEGRAL_WEIGHT
             ),
             "maximum_forbidden_penetration_weight": (
-                MAXIMUM_FORBIDDEN_PENETRATION_WEIGHT
+                collision_penalty_scale
+                * MAXIMUM_FORBIDDEN_PENETRATION_WEIGHT
             ),
             "allowed_penetration_excess_integral_weight": (
                 ALLOWED_PENETRATION_EXCESS_INTEGRAL_WEIGHT
@@ -1239,6 +1275,7 @@ def _coefficient_summary(
                 FOOT_GAP_MAXIMUM_FORBIDDEN_PENETRATION_M
             ),
             "tracking_margin_m": foot_gap_tracking_margin_m,
+            "collision_penalty_scale": collision_penalty_scale,
         },
     }
 
@@ -1461,6 +1498,7 @@ def write_outputs(
     minimum_foot_surface_gap_m: float = 0.0,
     foot_gap_tracking_margin_m: float = FOOT_GAP_TRACKING_MARGIN_M,
     allow_foot_contact: bool = True,
+    collision_penalty_scale: float = 1.0,
 ) -> tuple[Path, ...]:
     output_dir.mkdir(parents=True, exist_ok=True)
     controller_path = output_dir / "best_phase_controller.json"
@@ -1472,6 +1510,7 @@ def write_outputs(
         minimum_foot_surface_gap_m,
         foot_gap_tracking_margin_m,
         allow_foot_contact,
+        collision_penalty_scale,
     )
     payload["rollout_summary"] = controlled.summary
     controller_path.write_text(
