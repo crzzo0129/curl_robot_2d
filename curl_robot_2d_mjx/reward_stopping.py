@@ -25,19 +25,19 @@ STOPPING_REWARD_TERM_NAMES = (
 
 @dataclass(frozen=True)
 class StoppingRewardConfig:
-    target_progress: float = 4.0
-    speed_tracking: float = 0.7
-    linear_speed: float = 0.6
-    phase_error: float = 0.08
-    overshoot: float = 4.0
-    action_rate: float = 0.04
-    residual_action: float = 0.01
-    torque: float = 0.04
-    internal_contact: float = 0.20
-    torso_contact: float = 8.0
-    success: float = 25.0
-    failure: float = 20.0
-    timeout: float = 5.0
+    target_progress: float = 2.0
+    speed_tracking: float = 1.0
+    linear_speed: float = 0.25
+    phase_error: float = 0.20
+    overshoot: float = 2.0
+    action_rate: float = 0.02
+    residual_action: float = 0.02
+    torque: float = 0.02
+    internal_contact: float = 0.50
+    torso_contact: float = 10.0
+    success: float = 100.0
+    failure: float = 100.0
+    timeout: float = 25.0
 
 
 @dataclass(frozen=True)
@@ -51,6 +51,13 @@ class StoppingTaskConfig:
     nominal_roll_rate_rad_s: float = 2.0 * math.pi * 0.40
     desired_speed_gain_per_s: float = 1.5
     maximum_duration_s: float = 5.0
+    reference_brake_start_progress: float = 0.75
+    reference_final_rate_scale: float = 0.40
+    reference_final_amplitude_scale: float = 0.80
+    linear_speed_normalizer_m_s: float = 0.50
+    phase_error_normalizer_rad: float = math.pi
+    maximum_normalized_error: float = 1.0
+    early_failure_scale: float = 4.0
 
     def __post_init__(self) -> None:
         positive = (
@@ -61,11 +68,22 @@ class StoppingTaskConfig:
             self.nominal_roll_rate_rad_s,
             self.desired_speed_gain_per_s,
             self.maximum_duration_s,
+            self.linear_speed_normalizer_m_s,
+            self.phase_error_normalizer_rad,
+            self.maximum_normalized_error,
         )
         if any(not math.isfinite(value) or value <= 0.0 for value in positive):
             raise ValueError("stopping task thresholds must be finite and positive")
         if not math.isfinite(self.braking_margin_rad) or self.braking_margin_rad < 0.0:
             raise ValueError("braking margin must be finite and nonnegative")
+        if not 0.0 <= self.reference_brake_start_progress < 1.0:
+            raise ValueError("reference brake start progress must lie in [0, 1)")
+        if not 0.0 < self.reference_final_rate_scale <= 1.0:
+            raise ValueError("reference final rate scale must lie in (0, 1]")
+        if not 0.0 < self.reference_final_amplitude_scale <= 1.0:
+            raise ValueError("reference final amplitude scale must lie in (0, 1]")
+        if not math.isfinite(self.early_failure_scale) or self.early_failure_scale < 0.0:
+            raise ValueError("early failure scale must be finite and nonnegative")
 
 
 def select_reachable_target_phase_xp(
@@ -98,6 +116,39 @@ def desired_braking_speed(xp, target_remaining_rad, config: StoppingTaskConfig):
     )
 
 
+def braking_reference_scales(
+    xp,
+    target_remaining_rad,
+    initial_distance_rad,
+    config: StoppingTaskConfig,
+):
+    """CEM-informed phase schedule for the nominal rolling reference."""
+
+    progress = 1.0 - target_remaining_rad / xp.maximum(
+        initial_distance_rad, 1.0e-6
+    )
+    blend = xp.clip(
+        (progress - config.reference_brake_start_progress)
+        / (1.0 - config.reference_brake_start_progress),
+        0.0,
+        1.0,
+    )
+    blend = blend * blend * (3.0 - 2.0 * blend)
+    rate_scale = 1.0 + blend * (config.reference_final_rate_scale - 1.0)
+    amplitude_scale = 1.0 + blend * (
+        config.reference_final_amplitude_scale - 1.0
+    )
+    return rate_scale, amplitude_scale
+
+
+def bounded_normalized_square(xp, value, normalizer, maximum):
+    """Normalize before squaring and cap a scalar error contribution."""
+
+    normalized = value / xp.maximum(xp.asarray(normalizer), 1.0e-6)
+    normalized = xp.clip(normalized, -maximum, maximum)
+    return xp.square(normalized)
+
+
 def stopping_observation_features(
     xp,
     *,
@@ -114,6 +165,9 @@ def stopping_observation_features(
     remaining = target_phase - body_phase
     progress = 1.0 - remaining / xp.maximum(initial_distance, 1.0e-6)
     desired_speed = desired_braking_speed(xp, remaining, config)
+    reference_rate, reference_amplitude = braking_reference_scales(
+        xp, remaining, initial_distance, config
+    )
     return xp.stack(
         (
             xp.sin(body_phase),
@@ -122,10 +176,12 @@ def stopping_observation_features(
             xp.cos(remaining),
             xp.clip(remaining / (2.0 * xp.pi), -2.0, 2.0),
             xp.clip(progress, -1.0, 2.0),
-            xp.clip(linear_speed / 0.5, -4.0, 4.0),
+            xp.clip(linear_speed / config.linear_speed_normalizer_m_s, -4.0, 4.0),
             xp.clip(angular_speed / config.nominal_roll_rate_rad_s, -4.0, 4.0),
             desired_speed / config.nominal_roll_rate_rad_s,
             xp.clip(elapsed_s / config.maximum_duration_s, 0.0, 2.0),
+            reference_rate,
+            reference_amplitude,
         )
     )
 

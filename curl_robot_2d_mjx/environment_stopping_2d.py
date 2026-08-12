@@ -19,6 +19,8 @@ from curl_robot_2d_mjx.reward_stopping import (
     STOPPING_REWARD_TERM_NAMES,
     StoppingRewardConfig,
     StoppingTaskConfig,
+    bounded_normalized_square,
+    braking_reference_scales,
     desired_braking_speed,
     select_reachable_target_phase_xp,
     stopping_observation_features,
@@ -84,6 +86,7 @@ def make_stopping_brax_env(
     stopping_config: StoppingTaskConfig | None = None,
     reward_config: StoppingRewardConfig | None = None,
     maximum_initial_angular_speed_rad_s: float | None = None,
+    active_reference_braking: bool = True,
     seed: int = 0,
 ):
     """Create a Brax environment that starts directly from rolling snapshots."""
@@ -102,7 +105,21 @@ def make_stopping_brax_env(
             maximum_initial_angular_speed_rad_s
         ),
     )
-    base = make_brax_env(config, cem_reference=cem_reference, seed=seed)
+    def reference_schedule(xp, data, oscillator_phase, info):
+        del oscillator_phase
+        remaining = (
+            info["stop_target_phase"] - data.qpos[base.root_pitch_qpos]
+        )
+        return braking_reference_scales(
+            xp, remaining, info["stop_initial_distance"], stop
+        )
+
+    base = make_brax_env(
+        config,
+        cem_reference=cem_reference,
+        reference_schedule=(reference_schedule if active_reference_braking else None),
+        seed=seed,
+    )
     if arrays["qpos"].shape[1] != base.mj_model.nq:
         raise ValueError("snapshot qpos width does not match the MuJoCo model")
     if arrays["qvel"].shape[1] != base.mj_model.nv:
@@ -136,7 +153,7 @@ def make_stopping_brax_env(
 
         @property
         def observation_size(self):
-            return base.observation_size + 10
+            return base.observation_size + 12
 
         @property
         def action_size(self):
@@ -158,12 +175,24 @@ def make_stopping_brax_env(
                 "linear_speed_m_s": zero,
                 "angular_speed_rad_s": zero,
                 "desired_angular_speed_rad_s": zero,
+                "reference_rate_scale": zero,
+                "reference_amplitude_scale": zero,
                 "residual_action_rms": zero,
                 "normalized_torque_rms": zero,
                 "forbidden_contact_count": zero,
                 "torso_contact": zero,
                 "failed": zero,
                 "timeout": zero,
+                "failure_nonfinite": zero,
+                "failure_nonfinite_action": zero,
+                "failure_nonfinite_physics": zero,
+                "failure_root_low": zero,
+                "failure_stuck": zero,
+                "failure_root_high": zero,
+                "failure_foot_gap": zero,
+                "failure_leg_crossing": zero,
+                "failure_torso_contact": zero,
+                "contact_internal": zero,
             }
 
         def _torso_ground_contact(self, data):
@@ -175,7 +204,7 @@ def make_stopping_brax_env(
 
         def _task_observation(self, data, info):
             elapsed = info["step_count"].astype(jp.float32) * config.control_timestep
-            return stopping_observation_features(
+            features = stopping_observation_features(
                 jp,
                 body_phase=data.qpos[base.root_pitch_qpos],
                 target_phase=info["stop_target_phase"],
@@ -185,6 +214,11 @@ def make_stopping_brax_env(
                 elapsed_s=elapsed,
                 config=stop,
             )
+            if not active_reference_braking:
+                features = features.at[-2:].set(
+                    jp.ones(2, dtype=jp.float32)
+                )
+            return features
 
         def reset(self, rng):
             base_state = base.reset(rng)
@@ -268,37 +302,75 @@ def make_stopping_brax_env(
                 (jp.abs(linear_speed) <= stop.linear_speed_tolerance_m_s)
                 & (jp.abs(angular_speed) <= stop.angular_speed_tolerance_rad_s)
             )
+            base_failed = base_next.metrics["failed"] > 0
             success = (
                 phase_ready & speed_ready & grounded
-                & (~torso_contact) & (~internal_contact)
+                & (~torso_contact) & (~internal_contact) & (~base_failed)
             )
-            base_failed = base_next.metrics["failed"] > 0
             elapsed = base_next.info["step_count"].astype(jp.float32) * config.control_timestep
+            failure = base_failed | torso_contact
             timeout = (
                 (base_next.metrics["timeout"] > 0)
                 | (elapsed >= stop.maximum_duration_s)
-            ) & (~success)
-            failure = base_failed | torso_contact
+            ) & (~success) & (~failure)
             normalized_torque = data.actuator_force / jp.maximum(base.force_limits, 1.0e-6)
+            policy_action = base_next.info["last_policy_action"]
             action_rate_sq = jp.mean(
-                jp.square(action - state.info["last_policy_action"])
+                jp.square(policy_action - state.info["last_policy_action"])
+            )
+            progress_normalizer = jp.maximum(
+                stop.nominal_roll_rate_rad_s * config.control_timestep,
+                1.0e-6,
+            )
+            remaining_time_fraction = jp.clip(
+                (stop.maximum_duration_s - elapsed) / stop.maximum_duration_s,
+                0.0,
+                1.0,
+            )
+            early_failure_cost = failure.astype(jp.float32) * (
+                1.0 + stop.early_failure_scale * remaining_time_fraction
             )
             raw_terms = stopping_reward_terms(
                 jp,
                 reward_settings,
                 {
-                    "target_progress": jp.abs(previous_remaining) - jp.abs(remaining),
-                    "speed_error_sq": jp.square(angular_speed - desired_speed),
-                    "linear_speed_sq": jp.square(linear_speed),
-                    "phase_error_sq": jp.square(remaining),
-                    "overshoot": jp.maximum(-remaining, 0.0),
+                    "target_progress": jp.clip(
+                        (jp.abs(previous_remaining) - jp.abs(remaining))
+                        / progress_normalizer,
+                        -1.0,
+                        1.0,
+                    ),
+                    "speed_error_sq": bounded_normalized_square(
+                        jp,
+                        angular_speed - desired_speed,
+                        stop.nominal_roll_rate_rad_s,
+                        stop.maximum_normalized_error,
+                    ),
+                    "linear_speed_sq": bounded_normalized_square(
+                        jp,
+                        linear_speed,
+                        stop.linear_speed_normalizer_m_s,
+                        stop.maximum_normalized_error,
+                    ),
+                    "phase_error_sq": bounded_normalized_square(
+                        jp,
+                        remaining,
+                        stop.phase_error_normalizer_rad,
+                        stop.maximum_normalized_error,
+                    ),
+                    "overshoot": bounded_normalized_square(
+                        jp,
+                        jp.maximum(-remaining, 0.0),
+                        stop.phase_tolerance_rad,
+                        stop.maximum_normalized_error,
+                    ),
                     "action_rate_sq": action_rate_sq,
-                    "residual_action_sq": jp.mean(jp.square(action)),
+                    "residual_action_sq": jp.mean(jp.square(policy_action)),
                     "torque_sq": jp.mean(jp.square(normalized_torque)),
                     "internal_contact": internal_contact.astype(jp.float32),
                     "torso_contact": torso_contact.astype(jp.float32),
                     "success": success.astype(jp.float32),
-                    "failure": failure.astype(jp.float32),
+                    "failure": early_failure_cost,
                     "timeout": timeout.astype(jp.float32),
                 },
             )
@@ -312,6 +384,12 @@ def make_stopping_brax_env(
                 "stop_snapshot_index": state.info["stop_snapshot_index"],
             }
             obs = jp.concatenate((base_next.obs, self._task_observation(data, info)))
+            reference_rate, reference_amplitude = braking_reference_scales(
+                jp, remaining, state.info["stop_initial_distance"], stop
+            )
+            if not active_reference_braking:
+                reference_rate = jp.ones((), dtype=jp.float32)
+                reference_amplitude = jp.ones((), dtype=jp.float32)
             metrics = {
                 "reward": reward,
                 "reward_total": reward,
@@ -322,12 +400,30 @@ def make_stopping_brax_env(
                 "linear_speed_m_s": jp.abs(linear_speed),
                 "angular_speed_rad_s": jp.abs(angular_speed),
                 "desired_angular_speed_rad_s": desired_speed,
-                "residual_action_rms": jp.sqrt(jp.mean(jp.square(action))),
+                "reference_rate_scale": reference_rate,
+                "reference_amplitude_scale": reference_amplitude,
+                "residual_action_rms": jp.sqrt(jp.mean(jp.square(policy_action))),
                 "normalized_torque_rms": jp.sqrt(jp.mean(jp.square(normalized_torque))),
                 "forbidden_contact_count": contacts["forbidden_count"],
                 "torso_contact": torso_contact.astype(jp.float32),
                 "failed": failure.astype(jp.float32),
                 "timeout": timeout.astype(jp.float32),
+                "failure_nonfinite": base_next.metrics["failure_nonfinite"],
+                "failure_nonfinite_action": base_next.metrics[
+                    "failure_nonfinite_action"
+                ],
+                "failure_nonfinite_physics": base_next.metrics[
+                    "failure_nonfinite_physics"
+                ],
+                "failure_root_low": base_next.metrics["failure_root_low"],
+                "failure_stuck": base_next.metrics["failure_stuck"],
+                "failure_root_high": base_next.metrics["failure_root_high"],
+                "failure_foot_gap": base_next.metrics["failure_foot_gap"],
+                "failure_leg_crossing": base_next.metrics[
+                    "failure_leg_crossing"
+                ],
+                "failure_torso_contact": torso_contact.astype(jp.float32),
+                "contact_internal": internal_contact.astype(jp.float32),
             }
             return base_next.replace(
                 obs=jp.nan_to_num(obs), reward=reward, done=done,

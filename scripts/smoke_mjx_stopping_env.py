@@ -35,7 +35,7 @@ def main() -> None:
 
     reference = scaled_reference_frequency(
         load_cem_reference(
-            args.controller, reference_weight=1.0, minimum_residual_gain=0.35
+            args.controller, reference_weight=1.0, minimum_residual_gain=0.10
         ),
         0.40,
     )

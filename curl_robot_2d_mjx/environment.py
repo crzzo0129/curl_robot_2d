@@ -123,6 +123,7 @@ def make_brax_env(
     *,
     reward_config: RollingRewardConfig | None = None,
     cem_reference: CEMReferenceConfig | None = None,
+    reference_schedule=None,
     seed: int = 0,
 ):
     """Create the fixed-nominal-COM MJX environment.
@@ -659,12 +660,23 @@ def make_brax_env(
 
                 def residual_physics_step(carry, _):
                     current_data, current_oscillator_phase = carry
+                    if reference_schedule is None:
+                        rate_scale = jp.ones((), dtype=jp.float32)
+                        amplitude_scale = jp.ones((), dtype=jp.float32)
+                    else:
+                        rate_scale, amplitude_scale = reference_schedule(
+                            jp,
+                            current_data,
+                            current_oscillator_phase,
+                            state.info,
+                        )
                     next_oscillator_phase = advance_oscillator(
                         jp,
                         current_data.qpos[self.root_pitch_qpos],
                         current_oscillator_phase,
                         physics_dt,
                         reference_settings,
+                        rate_scale=rate_scale,
                     )
                     current_reference_action = reference_action(
                         jp,
@@ -674,6 +686,13 @@ def make_brax_env(
                         action_scales=self.action_scales,
                         joint_low=self.joint_low,
                         joint_high=self.joint_high,
+                    )
+                    current_reference_action = self.reference_bias_action + (
+                        amplitude_scale
+                        * (
+                            current_reference_action
+                            - self.reference_bias_action
+                        )
                     )
                     current_ramp = smoothstep_ramp(
                         jp,
