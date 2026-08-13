@@ -179,7 +179,11 @@ def make_brax_walking_env_3d(
             )
             apply_physics_options_3d(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)
-            self.mjx_model = mjx.put_model(self.mj_model)
+            # Brax's DomainRandomizationVmapWrapper requires the physics model
+            # under ``env.sys`` and temporarily replaces it for every vmapped
+            # environment.  All dynamics calls below must therefore read
+            # ``self.sys`` rather than retaining a separate model reference.
+            self.sys = mjx.put_model(self.mj_model)
             self.base_data = mjx.put_data(self.mj_model, self.cpu_data)
 
             def object_id(object_type, name):
@@ -400,7 +404,7 @@ def make_brax_walking_env_3d(
                 qvel=velocity_noise,
                 ctrl=start_target,
             )
-            data = mjx.forward(self.mjx_model, data)
+            data = mjx.forward(self.sys, data)
             contacts = self._contact_metrics(data)
             body = self._body_metrics(data)
             foot_position = data.site_xpos[self.foot_site_ids]
@@ -478,7 +482,7 @@ def make_brax_walking_env_3d(
             data = state.pipeline_state.replace(ctrl=target)
 
             def physics_step(carry, _):
-                return mjx.step(self.mjx_model, carry), None
+                return mjx.step(self.sys, carry), None
 
             candidate_data = jax.lax.scan(
                 physics_step, data, (), length=task.action_repeat

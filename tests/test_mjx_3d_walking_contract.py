@@ -186,6 +186,9 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             self.assertNotIn(token, source)
         for token in (
             "self.nominal_ctrl",
+            "self.sys = mjx.put_model",
+            "mjx.forward(self.sys",
+            "mjx.step(self.sys",
             "foot_air_time",
             "foot_slip_velocity_squared",
             "joint_limit_cost",
