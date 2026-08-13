@@ -22,6 +22,10 @@ from curl_robot_2d_mjx.reward_walking_3d import (
     WALKING_REWARD_TERM_NAMES_3D,
     Walking3DRewardConfig,
 )
+from curl_robot_2d_mjx.randomization_3d import (
+    Walking3DDomainRandomization,
+    make_walking_domain_randomization_fn_3d,
+)
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 from scripts.train_mjx_ppo import (
     _float,
@@ -69,6 +73,25 @@ PRESETS_WALKING_3D = {
 
 
 WALKING_RECIPES_3D = {
+    "anymal_v1": {
+        "description": (
+            "Command-conditioned 12-DoF locomotion with shaped task rewards "
+            "and batched MJX domain randomization."
+        ),
+        "args": {
+            "desired_speed_m_s": 0.20,
+            "action_scale_abduction": 0.10,
+            "action_scale_hip": 0.40,
+            "action_scale_knee": 0.55,
+            "startup_action_ramp_s": 0.50,
+            "terminate_airborne_duration": 0.25,
+            "terminate_nonfoot_contact_duration": 0.12,
+            "terminate_self_contact_duration": 0.10,
+            "learning_rate": 3e-4,
+            "entropy_cost": 1e-2,
+        },
+        "reward": {},
+    },
     "direct_v1": {
         "description": (
             "Direct joint-position locomotion with no gait phase, contact "
@@ -76,6 +99,7 @@ WALKING_RECIPES_3D = {
         ),
         "args": {
             "desired_speed_m_s": 0.080,
+            "action_scale_abduction": 0.10,
             "action_scale_hip": 0.40,
             "action_scale_knee": 0.55,
             "startup_action_ramp_s": 0.50,
@@ -125,6 +149,11 @@ PER_STEP_WALKING_METRICS_3D = (
     "normalized_torque_rms",
     "startup_action_ramp",
     "desired_speed_m_s",
+    "command_forward_velocity_m_s",
+    "command_lateral_velocity_m_s",
+    "command_yaw_rate_rad_s",
+    "planar_velocity_error_m_s",
+    "yaw_rate_error_rad_s",
 )
 
 
@@ -457,7 +486,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--preset", choices=tuple(PRESETS_WALKING_3D), default="smoke"
     )
     parser.add_argument(
-        "--recipe", choices=tuple(WALKING_RECIPES_3D), default="direct_v1"
+        "--recipe", choices=tuple(WALKING_RECIPES_3D), default="anymal_v1"
     )
     parser.add_argument(
         "--physics-profile",
@@ -467,7 +496,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--geometry",
         choices=WALKING_GEOMETRY_NAMES_3D,
-        default="fixed",
+        default="pupper_open60",
     )
     parser.add_argument("--steps", type=int)
     parser.add_argument("--envs", type=int)
@@ -477,6 +506,14 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-minibatches", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--desired-speed", dest="desired_speed_m_s", type=float)
+    parser.add_argument("--command-forward-min", type=float, default=-0.10)
+    parser.add_argument("--command-forward-max", type=float, default=0.35)
+    parser.add_argument("--command-lateral-max", type=float, default=0.15)
+    parser.add_argument("--command-yaw-rate-max", type=float, default=0.60)
+    parser.add_argument("--command-resample-time", type=float, default=4.0)
+    parser.add_argument("--command-stop-probability", type=float, default=0.10)
+    parser.add_argument("--no-observation-noise", action="store_true")
+    parser.add_argument("--action-scale-abduction", type=float)
     parser.add_argument("--action-scale-hip", type=float)
     parser.add_argument("--action-scale-knee", type=float)
     parser.add_argument("--reset-keyframe", default="stand")
@@ -558,6 +595,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppo-checkpoint-dir", type=Path)
     parser.add_argument("--skip-evaluation", action="store_true")
     parser.add_argument("--selection-target-distance", type=float)
+    parser.add_argument("--no-domain-randomization", action="store_true")
+    parser.add_argument("--friction-range", type=float, nargs=2, default=(0.60, 1.40))
+    parser.add_argument("--mass-range", type=float, nargs=2, default=(0.90, 1.10))
+    parser.add_argument("--actuator-gain-range", type=float, nargs=2, default=(0.90, 1.10))
+    parser.add_argument("--joint-damping-range", type=float, nargs=2, default=(0.80, 1.20))
+    parser.add_argument("--joint-armature-range", type=float, nargs=2, default=(0.80, 1.20))
     _add_reward_arguments(parser)
     return parser
 
@@ -586,11 +629,16 @@ def parse_args(argv=None):
         "unroll_length",
         "updates_per_batch",
         "desired_speed_m_s",
+        "action_scale_abduction",
         "action_scale_hip",
         "action_scale_knee",
     ):
         if getattr(args, name) <= 0.0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
+    if args.command_forward_max < args.command_forward_min:
+        parser.error("command forward range must be ordered")
+    if not 0.0 <= args.command_stop_probability <= 1.0:
+        parser.error("--command-stop-probability must be in [0, 1]")
     return args
 
 
@@ -652,6 +700,7 @@ def main(argv=None) -> None:
         )
 
     action_scales = (
+        args.action_scale_abduction,
         args.action_scale_hip,
         args.action_scale_knee,
     ) * 4
@@ -662,6 +711,18 @@ def main(argv=None) -> None:
             episode_length=args.episode_length,
             reset_keyframe_name=args.reset_keyframe,
             desired_speed_m_s=args.desired_speed_m_s,
+            command_forward_velocity_range_m_s=(
+                args.command_forward_min, args.command_forward_max
+            ),
+            command_lateral_velocity_range_m_s=(
+                -args.command_lateral_max, args.command_lateral_max
+            ),
+            command_yaw_rate_range_rad_s=(
+                -args.command_yaw_rate_max, args.command_yaw_rate_max
+            ),
+            command_resample_time_s=args.command_resample_time,
+            command_deadband_probability=args.command_stop_probability,
+            observation_noise_enabled=not args.no_observation_noise,
             action_scales=action_scales,
             startup_action_ramp_s=args.startup_action_ramp_s,
             terminate_root_z_min=args.terminate_root_z_min,
@@ -690,11 +751,31 @@ def main(argv=None) -> None:
         ),
     )
     reward_config = _reward_config_from_args(args)
+    domain_randomization = Walking3DDomainRandomization(
+        geom_friction_scale=tuple(args.friction_range),
+        body_mass_scale=tuple(args.mass_range),
+        actuator_gain_scale=tuple(args.actuator_gain_range),
+        joint_damping_scale=tuple(args.joint_damping_range),
+        joint_armature_scale=tuple(args.joint_armature_range),
+    )
+    randomization_fn = None if args.no_domain_randomization else (
+        make_walking_domain_randomization_fn_3d(domain_randomization)
+    )
     train_env = make_brax_walking_env_3d(
         task, reward_config=reward_config, seed=args.seed
     )
+    eval_task = replace(
+        task,
+        command_forward_velocity_range_m_s=(
+            task.desired_speed_m_s, task.desired_speed_m_s
+        ),
+        command_lateral_velocity_range_m_s=(0.0, 0.0),
+        command_yaw_rate_range_rad_s=(0.0, 0.0),
+        command_deadband_probability=0.0,
+        observation_noise_enabled=False,
+    )
     eval_env = make_brax_walking_env_3d(
-        task, reward_config=reward_config, seed=args.seed + 10_000
+        eval_task, reward_config=reward_config, seed=args.seed + 10_000
     )
     target_distance_m = args.selection_target_distance or (
         task.desired_speed_m_s
@@ -781,7 +862,11 @@ def main(argv=None) -> None:
         "activation": args.activation,
         "seed": args.seed,
         "task": asdict(task),
+        "evaluation_task": asdict(eval_task),
         "reward": asdict(reward_config),
+        "domain_randomization": (
+            None if args.no_domain_randomization else asdict(domain_randomization)
+        ),
         "runtime": runtime,
         "selection_target_distance_m": target_distance_m,
         "training_step_schedule": schedule,
@@ -813,6 +898,7 @@ def main(argv=None) -> None:
         f"speed={task.desired_speed_m_s:.3f}m/s "
         f"target_distance={target_distance_m:.3f}m\n"
         f"  control=direct_joint_position reset={task.reset_keyframe_name} "
+        f"abduction_scale={args.action_scale_abduction:.2f}rad "
         f"hip_scale={args.action_scale_hip:.2f}rad "
         f"knee_scale={args.action_scale_knee:.2f}rad\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
@@ -823,6 +909,10 @@ def main(argv=None) -> None:
 
     checkpoint_kwargs = {}
     train_parameters = inspect.signature(ppo.train).parameters
+    if randomization_fn is not None:
+        if "randomization_fn" not in train_parameters:
+            raise SystemExit("Installed Brax does not support randomization_fn.")
+        checkpoint_kwargs["randomization_fn"] = randomization_fn
     if args.save_ppo_checkpoints and "save_checkpoint_path" in train_parameters:
         checkpoint_dir = args.ppo_checkpoint_dir or (
             args.out / "ppo_checkpoint"

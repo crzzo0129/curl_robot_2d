@@ -11,7 +11,12 @@ import mujoco
 import numpy as np
 
 from curl_robot_2d.model import write_mjcf
-from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
+from curl_robot_2d.parameters import (
+    FIXED_PARAMETERS,
+    PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+    PUPPER_ORIGINAL_SHELL_PARAMETERS,
+    REAL_GEOMETRY_PARAMETERS,
+)
 from scripts.optimize_phase_controller import (
     FOOT_GAP_TRACKING_MARGIN_M,
     _load_controller_parameters,
@@ -96,7 +101,7 @@ def parse_args(argv=None):
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument(
         "--geometry",
-        choices=("baseline", "real"),
+        choices=("baseline", "real", "pupper", "pupper60"),
         default="baseline",
     )
     parser.add_argument(
@@ -110,6 +115,12 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--min-stage-turns", type=float, default=5.0)
+    parser.add_argument(
+        "--initial-controller",
+        type=Path,
+        default=None,
+        help="Warm-start stage 1 from an existing phase controller.",
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument(
         "--restart",
@@ -120,11 +131,12 @@ def parse_args(argv=None):
 
 
 def _geometry_parameters(args):
-    parameters = (
-        REAL_GEOMETRY_PARAMETERS
-        if args.geometry == "real"
-        else FIXED_PARAMETERS
-    )
+    parameters = {
+        "baseline": FIXED_PARAMETERS,
+        "real": REAL_GEOMETRY_PARAMETERS,
+        "pupper": PUPPER_ORIGINAL_SHELL_PARAMETERS,
+        "pupper60": PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+    }[args.geometry]
     if args.foot_diameter_mm is not None:
         if args.foot_diameter_mm <= 0.0:
             raise SystemExit("--foot-diameter-mm must be positive")
@@ -231,6 +243,8 @@ def _run_stage(
         "minimum_foot_gap_m": config.minimum_foot_gap_m,
         "foot_radius_m": geometry_parameters.foot_radius,
         "foot_diameter_m": 2.0 * geometry_parameters.foot_radius,
+        "shell_contact_radius_m": geometry_parameters.shell_contact_radius,
+        "geometry_mode": geometry_parameters.geometry_mode,
         "leg_crossing_constraint_enabled": (
             config.enforce_leg_crossing_constraint
         ),
@@ -357,14 +371,20 @@ def main(argv=None) -> None:
         model_dir / "torso_leg_ignored.xml",
         parameters,
         enable_self_collision=True,
-        detailed_structure=(args.geometry == "real"),
+        detailed_structure=(args.geometry in ("real", "pupper", "pupper60")),
+        include_motor_collisions=(args.geometry in ("pupper", "pupper60")),
         ignore_torso_leg_collision=True,
+        disable_shell_shell_collision=(args.geometry in ("pupper", "pupper60")),
     )
     models = {
         "leg_collision": leg_collision_model,
     }
 
-    previous_parameters: np.ndarray | None = None
+    previous_parameters: np.ndarray | None = (
+        _load_controller_parameters(args.initial_controller.expanduser().resolve())
+        if args.initial_controller is not None
+        else None
+    )
     results: list[dict] = []
     for index, config in enumerate(STAGES, start=1):
         stage_dir = output_dir / config.name

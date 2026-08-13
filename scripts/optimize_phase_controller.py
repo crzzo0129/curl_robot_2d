@@ -161,6 +161,8 @@ def knee_bias_for_foot_gap(minimum_foot_surface_gap_m: float) -> float:
 
     if minimum_foot_surface_gap_m < 0.0:
         raise ValueError("minimum foot surface gap cannot be negative")
+    if minimum_foot_surface_gap_m <= FIXED_PARAMETERS.compact_foot_surface_gap:
+        return 0.0
     separated = replace(
         FIXED_PARAMETERS,
         compact_foot_surface_gap=minimum_foot_surface_gap_m,
@@ -172,18 +174,19 @@ def target_foot_center_distance(targets: np.ndarray) -> float:
     """Return planar foot-center distance for four effective joint targets."""
 
     front_hip, front_knee, rear_hip, rear_knee = map(float, targets)
-    length = FIXED_PARAMETERS.edge_length
-    delta_x = FIXED_PARAMETERS.torso_length + length * (
-        math.sin(front_hip)
-        + math.sin(front_hip - front_knee)
-        + math.sin(rear_hip)
-        + math.sin(rear_hip - rear_knee)
+    upper = FIXED_PARAMETERS.upper_length
+    lower = FIXED_PARAMETERS.lower_length
+    delta_x = FIXED_PARAMETERS.torso_length + (
+        upper * math.sin(front_hip)
+        + lower * math.sin(front_hip - front_knee)
+        + upper * math.sin(rear_hip)
+        + lower * math.sin(rear_hip - rear_knee)
     )
-    delta_z = length * (
-        -math.cos(front_hip)
-        - math.cos(front_knee - front_hip)
-        + math.cos(rear_hip)
-        + math.cos(rear_knee - rear_hip)
+    delta_z = (
+        -upper * math.cos(front_hip)
+        - lower * math.cos(front_knee - front_hip)
+        + upper * math.cos(rear_hip)
+        + lower * math.cos(rear_knee - rear_hip)
     )
     return math.hypot(delta_x, delta_z)
 

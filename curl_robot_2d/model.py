@@ -7,6 +7,7 @@ from pathlib import Path
 from textwrap import dedent, indent
 
 from .parameters import FIXED_PARAMETERS, FixedParameters
+from .pupper_shell_geometry import solve_compact_geometry
 
 
 def _f(value: float) -> str:
@@ -84,6 +85,152 @@ def _arc_shell_geoms(
     return "\n".join(lines)
 
 
+def _rotate_to_local(
+    point: tuple[float, float],
+    origin: tuple[float, float],
+    body_angle: float,
+) -> tuple[float, float]:
+    dx, dz = point[0] - origin[0], point[1] - origin[1]
+    cosine, sine = math.cos(body_angle), math.sin(body_angle)
+    return cosine * dx - sine * dz, sine * dx + cosine * dz
+
+
+def _angular_distance(a: float, b: float) -> float:
+    return abs((a - b + math.pi) % (2.0 * math.pi) - math.pi)
+
+
+def _point_segment_distance(
+    point: tuple[float, float],
+    start: tuple[float, float],
+    end: tuple[float, float],
+) -> float:
+    dx, dz = end[0] - start[0], end[1] - start[1]
+    denominator = dx * dx + dz * dz
+    if denominator == 0.0:
+        return math.dist(point, start)
+    fraction = max(
+        0.0,
+        min(
+            1.0,
+            ((point[0] - start[0]) * dx + (point[1] - start[1]) * dz)
+            / denominator,
+        ),
+    )
+    closest = (start[0] + fraction * dx, start[1] + fraction * dz)
+    return math.dist(point, closest)
+
+
+def _pupper_shell_geoms(parameters: FixedParameters) -> dict[str, str]:
+    """Attach one compact circular shell to the existing five-body tree."""
+
+    p = parameters
+    design = p.pupper_shell_design
+    solution = solve_compact_geometry(design)
+    center = (0.0, -solution.shell_center_below_hip)
+    front_hip = (p.hip_half_span, 0.0)
+    front_knee = (solution.knee_x, -solution.knee_below_hip)
+    front_foot = (solution.foot_x, -solution.foot_below_hip)
+    rear_hip = (-front_hip[0], 0.0)
+    rear_knee = (-front_knee[0], front_knee[1])
+    rear_foot = (-front_foot[0], front_foot[1])
+
+    def polar(point: tuple[float, float]) -> float:
+        return math.atan2(point[1] - center[1], point[0] - center[0])
+
+    anchors = {
+        "torso": math.pi / 2.0,
+        "front_thigh": polar(((front_hip[0] + front_knee[0]) / 2.0,
+                               (front_hip[1] + front_knee[1]) / 2.0)),
+        "front_shank": polar(((front_knee[0] + front_foot[0]) / 2.0,
+                               (front_knee[1] + front_foot[1]) / 2.0)),
+        "rear_shank": polar(((rear_knee[0] + rear_foot[0]) / 2.0,
+                              (rear_knee[1] + rear_foot[1]) / 2.0)),
+        "rear_thigh": polar(((rear_hip[0] + rear_knee[0]) / 2.0,
+                              (rear_hip[1] + rear_knee[1]) / 2.0)),
+    }
+    frames = {
+        "torso": ((0.0, 0.0), 0.0),
+        "front_thigh": (front_hip, -solution.hip_angle),
+        "front_shank": (
+            front_knee,
+            solution.knee_angle - solution.hip_angle,
+        ),
+        "rear_thigh": (rear_hip, solution.hip_angle),
+        "rear_shank": (
+            rear_knee,
+            solution.hip_angle - solution.knee_angle,
+        ),
+    }
+    grouped: dict[str, list[str]] = {name: [] for name in anchors}
+    radius = p.shell_centerline_radius
+    for index in range(p.shell_segments_full_circle):
+        angle_a = 2.0 * math.pi * index / p.shell_segments_full_circle
+        angle_b = 2.0 * math.pi * (index + 1) / p.shell_segments_full_circle
+        middle = 0.5 * (angle_a + angle_b)
+        if p.pupper_torso_shell_coverage_angle is None:
+            body = min(
+                anchors,
+                key=lambda name: _angular_distance(middle, anchors[name]),
+            )
+        else:
+            # Explicit symmetric compact allocation.  With the requested
+            # 150/45/30 degree split and 60 degree foot opening this maps:
+            # torso 15..165, rear thigh 165..210, rear shank 210..240,
+            # opening 240..300, front shank 300..330, front thigh 330..375.
+            angle = middle % (2.0 * math.pi)
+            torso_half = p.pupper_torso_shell_coverage_angle / 2.0
+            torso_start = math.pi / 2.0 - torso_half
+            torso_end = math.pi / 2.0 + torso_half
+            if torso_start <= angle < torso_end:
+                body = "torso"
+            elif angle < torso_start or angle >= 11.0 * math.pi / 6.0:
+                body = "front_thigh"
+            elif angle < 7.0 * math.pi / 6.0:
+                body = "rear_thigh"
+            elif angle < 4.0 * math.pi / 3.0:
+                body = "rear_shank"
+            elif angle >= 5.0 * math.pi / 3.0:
+                body = "front_shank"
+            else:
+                # The near-foot clearance test below removes this opening;
+                # assign it to the nearest shank first.
+                body = (
+                    "rear_shank" if angle < 3.0 * math.pi / 2.0
+                    else "front_shank"
+                )
+        point_a = (
+            center[0] + radius * math.cos(angle_a),
+            center[1] + radius * math.sin(angle_a),
+        )
+        point_b = (
+            center[0] + radius * math.cos(angle_b),
+            center[1] + radius * math.sin(angle_b),
+        )
+        same_side_foot = {
+            "front_shank": front_foot,
+            "rear_shank": rear_foot,
+        }.get(body)
+        if same_side_foot is not None and _point_segment_distance(
+            same_side_foot,
+            point_a,
+            point_b,
+        ) < (
+            p.foot_radius
+            + p.shell_capsule_radius
+            + p.pupper_shank_shell_foot_clearance
+        ):
+            continue
+        origin, body_angle = frames[body]
+        local_a = _rotate_to_local(point_a, origin, body_angle)
+        local_b = _rotate_to_local(point_b, origin, body_angle)
+        grouped[body].append(
+            f'<geom name="{body}_shell_{index:02d}" class="rolling_shell" '
+            f'fromto="{_f(local_a[0])} 0 {_f(local_a[1])} '
+            f'{_f(local_b[0])} 0 {_f(local_b[1])}"/>'
+        )
+    return {name: "\n".join(lines) for name, lines in grouped.items()}
+
+
 def build_mjcf(
     parameters: FixedParameters = FIXED_PARAMETERS,
     *,
@@ -134,7 +281,9 @@ def build_mjcf(
         else ""
     )
     shell_geoms = (
-        {
+        _pupper_shell_geoms(p)
+        if include_rolling_shell and p.uses_pupper_original_shell
+        else {
             "torso": _arc_shell_geoms("torso", (-torso_half_length, 0.0), (torso_half_length, 0.0), (0.0, 1.0), p),
             "front_thigh": _arc_shell_geoms("front_thigh", (0.0, 0.0), (0.0, -p.upper_length), (1.0, 0.0), p, indent=16),
             "front_shank": _arc_shell_geoms("front_shank", (0.0, 0.0), (0.0, -p.lower_length), (1.0, 0.0), p, indent=18, end_retreat=p.shank_shell_foot_retreat),
@@ -144,15 +293,29 @@ def build_mjcf(
         if include_rolling_shell
         else {name: "" for name in ("torso", "front_thigh", "front_shank", "rear_thigh", "rear_shank")}
     )
-    thigh_start = p.motor_radius + p.upper_proxy_radius + p.motor_link_clearance
-    thigh_end = p.edge_length - thigh_start
-    shank_start = p.motor_radius + p.lower_proxy_radius + p.motor_link_clearance
-    shank_end = (
-        p.edge_length
-        - p.foot_radius
-        - p.lower_proxy_radius
-        - p.motor_link_clearance
-    )
+    if p.uses_pupper_original_shell:
+        # The 64 mm circles are protective envelopes around the joint, not
+        # keep-out regions for the attached link itself.  Let the link proxy
+        # enter its own motor/foot envelope so the short Pupper links retain
+        # a useful collision representation.
+        thigh_start = p.motor_radius
+        thigh_end = p.upper_length - p.motor_radius
+        shank_start = p.motor_radius
+        shank_end = p.lower_length - p.foot_radius
+    else:
+        thigh_start = (
+            p.motor_radius + p.upper_proxy_radius + p.motor_link_clearance
+        )
+        thigh_end = p.upper_length - thigh_start
+        shank_start = (
+            p.motor_radius + p.lower_proxy_radius + p.motor_link_clearance
+        )
+        shank_end = (
+            p.lower_length
+            - p.foot_radius
+            - p.lower_proxy_radius
+            - p.motor_link_clearance
+        )
     if thigh_end <= thigh_start or shank_end <= shank_start:
         raise ValueError("joint clearance leaves no usable link collision length")
     torso_geom = (

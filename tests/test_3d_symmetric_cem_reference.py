@@ -10,6 +10,12 @@ from scripts import view_3d_cem_reference as viewer
 
 
 class SymmetricCEM3DBridgeTest(unittest.TestCase):
+    def test_headless_gif_uses_explicit_torso_tracking_camera(self) -> None:
+        source = Path(viewer.__file__).read_text(encoding="utf-8")
+        self.assertIn("render_camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING", source)
+        self.assertIn("render_camera.trackbodyid = torso_id", source)
+        self.assertIn("camera=render_camera", source)
+
     def test_defaults_are_curl_native_not_disk_robot(self) -> None:
         project_root = Path(__file__).resolve().parents[1]
         self.assertEqual(
@@ -137,6 +143,10 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
 
         self.assertFalse(feedback.linear_phase)
         self.assertTrue(linear.linear_phase)
+
+    def test_default_startup_matches_2d_compact_ramp(self) -> None:
+        self.assertEqual(bridge.parse_args([]).startup_target_scale, 0.0)
+        self.assertEqual(viewer.parse_args([]).startup_target_scale, 0.0)
 
     def test_reference_physics_is_default_and_cg12_is_selectable(self) -> None:
         reference = bridge.parse_args([])

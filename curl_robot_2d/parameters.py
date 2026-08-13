@@ -41,6 +41,19 @@ class FixedParameters:
     # Active idealized geometry.  The five center-line edges use one common
     # length: torso hip-to-hip, two thighs, and two shanks.
     edge_length: float = 0.15
+    geometry_mode: str = "regular_pentagon"
+    torso_length_override: float | None = None
+    upper_length_override: float | None = None
+    lower_length_override: float | None = None
+    shell_segments_full_circle: int = 48
+    side_rail_half_width_override: float | None = None
+    # Minimum free surface distance between a foot and shell capsules carried
+    # by the same shank.  Only used by the Pupper full-circle shell mode.
+    pupper_shank_shell_foot_clearance: float = 0.0
+    # Optional compact-pose allocation of the full circle to the torso.  The
+    # remaining covered angle is split symmetrically between the two thighs;
+    # shank coverage and the foot opening are left unchanged.
+    pupper_torso_shell_coverage_angle: float | None = None
 
     # Source Pupper geometry retained for provenance.  These values are not
     # the active link lengths in the equal-edge baseline.
@@ -138,7 +151,7 @@ class FixedParameters:
 
     # First visual keyframes.  "compact" is only an inspection pose; it is not
     # yet an optimized circular shell pose or a rolling trajectory.
-    compact_hip_angle: float = 0.3141592653589793
+    compact_hip_angle_regular: float = 0.3141592653589793
     # The two finite-size foot proxies share one sagittal plane.  Their
     # surfaces may touch in compact, but their centers may not coincide.
     compact_foot_surface_gap: float = 0.0
@@ -160,19 +173,61 @@ class FixedParameters:
 
     @property
     def torso_length(self) -> float:
-        return self.edge_length
+        return (
+            self.edge_length
+            if self.torso_length_override is None
+            else self.torso_length_override
+        )
 
     @property
     def hip_half_span(self) -> float:
-        return self.edge_length / 2.0
+        return self.torso_length / 2.0
 
     @property
     def upper_length(self) -> float:
-        return self.edge_length
+        return (
+            self.edge_length
+            if self.upper_length_override is None
+            else self.upper_length_override
+        )
 
     @property
     def lower_length(self) -> float:
-        return self.edge_length
+        return (
+            self.edge_length
+            if self.lower_length_override is None
+            else self.lower_length_override
+        )
+
+    @property
+    def uses_pupper_original_shell(self) -> bool:
+        return self.geometry_mode == "pupper_original_shell"
+
+    @property
+    def pupper_shell_design(self):
+        """Return the analytic compact design used by the Pupper mode."""
+
+        if not self.uses_pupper_original_shell:
+            raise ValueError("Pupper shell design requested for regular geometry")
+        from .pupper_shell_geometry import PupperShellDesign
+
+        return PupperShellDesign(
+            hip_center_distance=self.torso_length,
+            upper_leg_length=self.upper_length,
+            lower_leg_length=self.lower_length,
+            motor_envelope_radius=self.motor_radius,
+            foot_radius=self.foot_radius,
+            compact_foot_center_distance=self.compact_foot_center_distance,
+            shell_outer_radius=self.shell_contact_radius,
+            shell_capsule_radius=self.shell_capsule_radius,
+            shell_segments=self.shell_segments_full_circle,
+        )
+
+    @property
+    def pupper_compact_solution(self):
+        from .pupper_shell_geometry import solve_compact_geometry
+
+        return solve_compact_geometry(self.pupper_shell_design)
 
     @property
     def regular_pentagon_radius(self) -> float:
@@ -236,8 +291,17 @@ class FixedParameters:
         return 2.0 * self.foot_radius + self.compact_foot_surface_gap
 
     @property
+    def compact_hip_angle(self) -> float:
+        if self.uses_pupper_original_shell:
+            return self.pupper_compact_solution.hip_angle
+        return self.compact_hip_angle_regular
+
+    @property
     def compact_knee_angle(self) -> float:
         """Symmetric knee angle making the two foot surfaces just touch."""
+
+        if self.uses_pupper_original_shell:
+            return self.pupper_compact_solution.knee_angle
 
         target_front_foot_x = self.compact_foot_center_distance / 2.0
         sine_lower_angle = (
@@ -260,6 +324,16 @@ class FixedParameters:
 
     @property
     def compact_root_height(self) -> float:
+        if self.uses_pupper_original_shell:
+            if self.pupper_shank_shell_foot_clearance > 0.0:
+                return (
+                    self.pupper_compact_solution.foot_below_hip
+                    + self.foot_radius
+                )
+            return (
+                self.shell_contact_radius
+                + self.pupper_compact_solution.shell_center_below_hip
+            )
         lower_absolute_angle = self.compact_knee_angle - self.compact_hip_angle
         foot_supported_height = (
             self.upper_length * math.cos(self.compact_hip_angle)
@@ -311,7 +385,11 @@ class FixedParameters:
     def side_rail_half_width(self) -> float:
         """Half-width of the first 3-D curl side-rail layout."""
 
-        return self.source_torso_width / 2.0
+        return (
+            self.source_torso_width / 2.0
+            if self.side_rail_half_width_override is None
+            else self.side_rail_half_width_override
+        )
 
 
 FIXED_PARAMETERS = FixedParameters()
@@ -329,4 +407,30 @@ REAL_GEOMETRY_PARAMETERS = replace(
     shell_design_gap=0.0,
     shell_motor_clearance=0.003,
     shank_shell_foot_retreat=0.010,
+)
+
+# Pupper-link geometry with the analytically shifted circular shell.  This is
+# a separate mode so the established 150 mm and real-geometry references keep
+# their original kinematics and collision model.
+PUPPER_ORIGINAL_SHELL_PARAMETERS = replace(
+    FIXED_PARAMETERS,
+    geometry_mode="pupper_original_shell",
+    torso_length_override=0.15040,
+    upper_length_override=FIXED_PARAMETERS.source_upper_length,
+    lower_length_override=FIXED_PARAMETERS.source_lower_projected_length,
+    foot_radius=0.0195,
+    motor_radius=0.032,
+    motor_half_thickness_y=0.0165,
+    compact_foot_surface_gap=0.004,
+    shell_contact_radius_override=0.1275,
+    shell_capsule_radius=0.003,
+    pupper_shank_shell_foot_clearance=0.033,
+    torso_box_height=0.09014,
+)
+
+PUPPER_ORIGINAL_SHELL_60_PARAMETERS = replace(
+    PUPPER_ORIGINAL_SHELL_PARAMETERS,
+    pupper_shank_shell_foot_clearance=0.010,
+    side_rail_half_width_override=0.060,
+    pupper_torso_shell_coverage_angle=math.radians(150.0),
 )

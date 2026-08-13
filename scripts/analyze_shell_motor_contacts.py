@@ -14,7 +14,11 @@ import mujoco
 import numpy as np
 from PIL import Image, ImageDraw
 
-from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
+from curl_robot_2d.parameters import (
+    FIXED_PARAMETERS,
+    PUPPER_ORIGINAL_SHELL_PARAMETERS,
+    REAL_GEOMETRY_PARAMETERS,
+)
 from scripts import optimize_phase_controller as phase_controller
 from scripts.replay_active_controller import (
     advance_controller,
@@ -46,7 +50,12 @@ def parse_args(argv=None):
     parser.add_argument("--snapshot-count", type=int, default=8)
     parser.add_argument(
         "--geometry",
-        choices=("shell160-motors54x33", "real-foot39"),
+        choices=(
+            "shell160-motors54x33",
+            "real-foot39",
+            "real-foot60",
+            "pupper-original",
+        ),
         default="shell160-motors54x33",
     )
     return parser.parse_args(argv)
@@ -63,29 +72,66 @@ def _render_snapshot(path: Path, model, state, event) -> None:
     data.ctrl[:] = state["ctrl"]
     data.time = event["maximum_depth_time_s"]
     mujoco.mj_forward(model, data)
+    geom_names = event["geom_pair"].split(" / ")
+    original_rgba = np.asarray(model.geom_rgba).copy()
+    floor_id = model.geom("floor").id
+    model.geom_rgba[floor_id, 3] = 0.0
+    highlight_colors = ((1.0, 1.0, 1.0, 1.0), (0.05, 1.0, 0.2, 1.0))
+    for name, color in zip(geom_names, highlight_colors):
+        model.geom_rgba[model.geom(name).id] = color
     renderer = mujoco.Renderer(model, height=720, width=960)
     camera = mujoco.MjvCamera()
-    configure_tracking_camera(model, camera, distance=0.72)
+    configure_tracking_camera(model, camera, distance=0.48)
     option = mujoco.MjvOption()
-    option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
-    option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = True
+    option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = False
+    option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = False
     try:
         renderer.update_scene(data, camera=camera, scene_option=option)
-        image = Image.fromarray(renderer.render())
+        highlight_ids = {
+            model.geom(name).id: tuple(round(255.0 * value) for value in color)
+            for name, color in zip(geom_names, highlight_colors)
+        }
+        for scene_index in range(renderer.scene.ngeom):
+            scene_geom = renderer.scene.geoms[scene_index]
+            if scene_geom.objtype != mujoco.mjtObj.mjOBJ_GEOM:
+                continue
+            if scene_geom.objid == floor_id:
+                scene_geom.rgba[3] = 0.0
+            elif scene_geom.objid in highlight_ids:
+                scene_geom.rgba[:] = highlight_ids[scene_geom.objid]
+            else:
+                scene_geom.rgba[3] = min(int(scene_geom.rgba[3]), 45)
+            image = Image.fromarray(renderer.render())
     finally:
         renderer.close()
+        model.geom_rgba[:] = original_rgba
     draw = ImageDraw.Draw(image)
-    draw.rectangle((10, 10, 950, 92), fill=(18, 24, 33))
+    draw.rectangle((10, 10, 950, 104), fill=(18, 24, 33))
     draw.text(
         (22, 18),
         f"{event['category']}  t={event['maximum_depth_time_s']:.3f}s  "
         f"depth={1000.0 * event['maximum_depth_m']:.3f} mm",
         fill=(255, 230, 150),
     )
-    draw.text((22, 44), event["geom_pair"], fill=(255, 145, 145))
-    draw.text((22, 68), event["body_pair"], fill=(220, 229, 240))
+    draw.text((22, 46), f"WHITE: {geom_names[0]}", fill=(255, 255, 255))
+    draw.text((22, 70), f"GREEN: {geom_names[1]}", fill=(80, 255, 110))
+    draw.text((590, 70), event["body_pair"], fill=(220, 229, 240))
     path.parent.mkdir(parents=True, exist_ok=True)
-    image.save(path)
+    overview_path = path.with_name(path.stem + "_clear_overview.png")
+    image.save(overview_path)
+    # The tracking camera keeps the robot near the image centre.  A square
+    # crop removes empty scenery and makes the highlighted contact legible.
+    width, height = image.size
+    crop_size = 520
+    crop = image.crop(
+        (
+            (width - crop_size) // 2,
+            (height - crop_size) // 2,
+            (width + crop_size) // 2,
+            (height + crop_size) // 2,
+        )
+    ).resize((1000, 1000), Image.Resampling.LANCZOS)
+    crop.save(path)
 
 
 def main(argv=None) -> None:
@@ -93,10 +139,14 @@ def main(argv=None) -> None:
     if args.duration <= 0.0 or args.snapshot_count < 0:
         raise SystemExit("duration must be positive and snapshot-count nonnegative")
 
-    geometry = (
-        replace(REAL_GEOMETRY_PARAMETERS, foot_radius=0.0195)
-        if args.geometry == "real-foot39"
-        else replace(
+    if args.geometry == "pupper-original":
+        geometry = PUPPER_ORIGINAL_SHELL_PARAMETERS
+    elif args.geometry == "real-foot39":
+        geometry = replace(REAL_GEOMETRY_PARAMETERS, foot_radius=0.0195)
+    elif args.geometry == "real-foot60":
+        geometry = REAL_GEOMETRY_PARAMETERS
+    else:
+        geometry = replace(
             FIXED_PARAMETERS,
             shell_contact_radius_override=0.160,
             shell_arc_coverage_angle_override=(
@@ -105,7 +155,6 @@ def main(argv=None) -> None:
             motor_radius=0.027,
             motor_half_thickness_y=0.0165,
         )
-    )
     phase_controller._activate_geometry(geometry)
     model_path = args.model.expanduser().resolve()
     controller_path = args.controller.expanduser().resolve()

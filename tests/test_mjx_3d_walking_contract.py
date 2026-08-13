@@ -4,8 +4,11 @@ import unittest
 import mujoco
 import numpy as np
 
-from curl_robot_2d.model_3d import FOOT_SITE_NAMES_3D, JOINT_NAMES_3D
-from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
+from curl_robot_2d.model_3d import FOOT_SITE_NAMES_3D
+from curl_robot_2d.parameters import (
+    PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+    REAL_GEOMETRY_PARAMETERS,
+)
 from curl_robot_2d_mjx.config_walking_3d import (
     Walking3DConfig,
     validate_walking_3d_config,
@@ -16,6 +19,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     EXPECTED_WALKING_JOINT_AXES_3D,
     WALKING_ACTION_SIZE_3D,
     WALKING_MODEL_PATH_3D,
+    WALKING_JOINT_NAMES_3D,
     WALKING_OBSERVATION_SIZE_3D,
     validate_walking_morphology_3d,
 )
@@ -28,20 +32,24 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 class MJX3DWalkingContractTest(unittest.TestCase):
-    def test_task_uses_stand_keyframe_and_direct_eight_joint_action(self) -> None:
+    def test_task_uses_eth_style_12_dof_proprioceptive_contract(self) -> None:
         config = Walking3DConfig()
 
         self.assertEqual(
             WALKING_MODEL_PATH_3D,
-            PROJECT_ROOT / "assets" / "curl_robot_3d.xml",
+            PROJECT_ROOT
+            / "assets"
+            / "curl_robot_3d_pupper_r127p5_open60_width120.xml",
         )
         self.assertEqual(config.reset_keyframe_name, "stand")
-        self.assertEqual(len(JOINT_NAMES_3D), WALKING_ACTION_SIZE_3D)
-        self.assertEqual(WALKING_OBSERVATION_SIZE_3D, 50)
-        self.assertAlmostEqual(config.desired_speed_m_s, 0.080)
+        self.assertEqual(len(WALKING_JOINT_NAMES_3D), WALKING_ACTION_SIZE_3D)
+        self.assertEqual(WALKING_ACTION_SIZE_3D, 12)
+        self.assertEqual(WALKING_OBSERVATION_SIZE_3D, 48)
+        self.assertEqual(config.geometry, "pupper_open60")
+        self.assertAlmostEqual(config.desired_speed_m_s, 0.20)
         self.assertEqual(
             config.action_scales,
-            (0.40, 0.55, 0.40, 0.55, 0.40, 0.55, 0.40, 0.55),
+            (0.10, 0.40, 0.55) * 4,
         )
 
     def test_model_matches_mirrored_planar_leg_morphology(self) -> None:
@@ -54,8 +62,9 @@ class MJX3DWalkingContractTest(unittest.TestCase):
                 model, mujoco.mjtObj.mjOBJ_JOINT, name
             )
             np.testing.assert_allclose(model.jnt_axis[joint_id], expected_axis)
-            self.assertAlmostEqual(abs(model.jnt_axis[joint_id, 1]), 1.0)
+            self.assertAlmostEqual(np.linalg.norm(model.jnt_axis[joint_id]), 1.0)
 
+    @unittest.skip("legacy 8-DoF model is outside the 12-DoF walking task")
     def test_real_geometry_model_matches_walking_morphology(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(model_path_3d("real")))
 
@@ -104,10 +113,13 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             with self.subTest(site=name):
                 foot_z = data.site_xpos[model.site(name).id, 2]
                 self.assertAlmostEqual(
-                    foot_z, FIXED_PARAMETERS.foot_radius, places=8
+                    foot_z,
+                    PUPPER_ORIGINAL_SHELL_60_PARAMETERS.foot_radius,
+                    delta=1.0e-4,
                 )
         self.assertAlmostEqual(
-            float(data.qpos[2]), FIXED_PARAMETERS.stand_3d_root_height
+            float(data.qpos[2]),
+            PUPPER_ORIGINAL_SHELL_60_PARAMETERS.stand_3d_root_height,
         )
 
     def test_zero_action_center_has_stable_one_second_start(self) -> None:
@@ -129,7 +141,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             )
 
         self.assertTrue(np.isfinite(data.qpos).all())
-        self.assertGreater(float(data.qpos[2]), 0.28)
+        self.assertGreater(float(data.qpos[2]), 0.14)
         self.assertLess(maximum_tilt, 0.08)
         self.assertLess(abs(float(data.qpos[0]) - initial_x), 0.04)
         self.assertAlmostEqual(float(data.qpos[1]) - initial_y, 0.0, places=8)
@@ -156,7 +168,8 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertTrue(callable(mjx_3d_walking_smoke.main))
         self.assertEqual(args.physics_profile, "cg12")
         self.assertEqual(args.steps, 8)
-        self.assertAlmostEqual(args.desired_speed, 0.080)
+        self.assertAlmostEqual(args.desired_speed, 0.20)
+        self.assertAlmostEqual(args.action_scale_abduction, 0.10)
         self.assertAlmostEqual(args.action_scale_hip, 0.40)
         self.assertAlmostEqual(args.action_scale_knee, 0.55)
 

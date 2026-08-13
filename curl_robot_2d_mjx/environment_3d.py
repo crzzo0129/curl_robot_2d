@@ -9,6 +9,7 @@ import numpy as np
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
 from curl_robot_2d.parameters import (
     FIXED_PARAMETERS,
+    PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
     REAL_GEOMETRY_PARAMETERS,
 )
 from curl_robot_2d_mjx.cem_reference import (
@@ -37,9 +38,15 @@ MODEL_PATH_3D = PROJECT_ROOT / "assets" / "curl_robot_3d.xml"
 REAL_MODEL_PATH_3D = (
     PROJECT_ROOT / "assets" / "curl_robot_3d_real_geometry.xml"
 )
+PUPPER_OPEN60_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "curl_robot_3d_pupper_r127p5_open60_width120.xml"
+)
 MODEL_PATHS_3D = {
     "baseline": MODEL_PATH_3D,
     "real": REAL_MODEL_PATH_3D,
+    "pupper_open60": PUPPER_OPEN60_MODEL_PATH_3D,
 }
 DEFAULT_3D_CEM_CONTROLLER = (
     PROJECT_ROOT
@@ -85,6 +92,8 @@ def geometry_parameters_3d(name: str):
         return FIXED_PARAMETERS
     if name == "real":
         return REAL_GEOMETRY_PARAMETERS
+    if name == "pupper_open60":
+        return PUPPER_ORIGINAL_SHELL_60_PARAMETERS
     raise ValueError(f"unknown 3-D geometry: {name!r}")
 
 

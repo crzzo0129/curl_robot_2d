@@ -21,7 +21,11 @@ from scripts.evaluate_3d_symmetric_cem_reference import (
     startup_target_scale,
 )
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
-from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
+from curl_robot_2d.parameters import (
+    FIXED_PARAMETERS,
+    PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+    REAL_GEOMETRY_PARAMETERS,
+)
 from curl_robot_2d_mjx.cem_reference import (
     advance_oscillator,
     load_cem_reference,
@@ -40,7 +44,7 @@ def parse_args(argv=None):
     parser.add_argument("--xml", default=DEFAULT_XML_PATH)
     parser.add_argument("--controller", default=DEFAULT_CONTROLLER_PATH)
     parser.add_argument(
-        "--geometry", choices=("baseline", "real"), default="baseline"
+        "--geometry", choices=("baseline", "real", "pupper60"), default="baseline"
     )
     parser.add_argument("--minimum-foot-gap-mm", type=float, default=None)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float, default=None)
@@ -54,7 +58,12 @@ def parse_args(argv=None):
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
-    parser.add_argument("--startup-target-scale", type=float, default=None)
+    parser.add_argument(
+        "--startup-target-scale",
+        type=float,
+        default=0.0,
+        help="Use 0 to match the 2-D compact-to-reference startup ramp.",
+    )
     parser.add_argument(
         "--target-ramp-duration-s",
         type=float,
@@ -79,6 +88,11 @@ def parse_args(argv=None):
     parser.add_argument("--gif-fps", type=float, default=20.0)
     parser.add_argument("--gif-width", type=int, default=720)
     parser.add_argument("--gif-height", type=int, default=540)
+    parser.add_argument(
+        "--diagnostics",
+        action="store_true",
+        help="Show contact points, contact forces, and centers of mass in GIFs.",
+    )
     return parser.parse_args(argv)
 
 
@@ -125,9 +139,12 @@ def _target_for_phase(
 
 def run(argv=None):
     args = parse_args(argv)
-    activate_planar_geometry(
-        REAL_GEOMETRY_PARAMETERS if args.geometry == "real" else FIXED_PARAMETERS
-    )
+    geometry_parameters = {
+        "baseline": FIXED_PARAMETERS,
+        "real": REAL_GEOMETRY_PARAMETERS,
+        "pupper60": PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+    }[args.geometry]
+    activate_planar_geometry(geometry_parameters)
     if args.duration <= 0.0 or args.control_dt <= 0.0 or args.realtime <= 0.0:
         raise SystemExit("--duration, --control-dt and --realtime must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
@@ -207,12 +224,24 @@ def run(argv=None):
     frames = []
     next_frame_time = 0.0
     renderer = None
+    render_camera = None
+    render_option = mujoco.MjvOption()
+    if args.diagnostics:
+        render_option.flags[mujoco.mjtVisFlag.mjVIS_COM] = True
+        render_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTPOINT] = True
+        render_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = True
     if args.gif is not None:
         renderer = mujoco.Renderer(
             model,
             height=args.gif_height,
             width=args.gif_width,
         )
+        render_camera = mujoco.MjvCamera()
+        render_camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+        render_camera.trackbodyid = torso_id
+        render_camera.azimuth = args.azimuth
+        render_camera.elevation = args.elevation
+        render_camera.distance = args.camera_distance
 
     viewer_context = _null_viewer()
     if not args.headless:
@@ -285,7 +314,11 @@ def run(argv=None):
                     * control_dt
                 )
             if renderer is not None and float(data.time) >= next_frame_time:
-                renderer.update_scene(data, camera="tracking")
+                renderer.update_scene(
+                    data,
+                    camera=render_camera,
+                    scene_option=render_option,
+                )
                 frames.append(Image.fromarray(renderer.render()))
                 next_frame_time += 1.0 / args.gif_fps
             if viewer is not None:
@@ -314,13 +347,19 @@ def run(argv=None):
     return {
         "status": "ok",
         "physics_profile": args.physics_profile,
+        "geometry": args.geometry,
+        "foot_diameter_mm": 2000.0 * geometry_parameters.foot_radius,
+        "shell_contact_radius_m": geometry_parameters.shell_contact_radius,
         "solver": task.solver_name,
         "elapsed_s": float(elapsed),
         "distance_x_m": float(data.qpos[0] - start_x),
         "distance_y_m": float(data.qpos[1] - start_y),
         "distance_as_shell_turns": float(
             (data.qpos[0] - start_x)
-            / max(2.0 * math.pi * FIXED_PARAMETERS.shell_contact_radius, 1.0e-9)
+            / max(
+                2.0 * math.pi * geometry_parameters.shell_contact_radius,
+                1.0e-9,
+            )
         ),
         "phase_lock_enabled": not args.linear_phase,
         "target_scale": float(args.target_scale),

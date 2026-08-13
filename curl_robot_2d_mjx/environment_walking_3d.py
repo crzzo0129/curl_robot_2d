@@ -6,8 +6,8 @@ from pathlib import Path
 
 import numpy as np
 
-from curl_robot_2d.model_3d import FOOT_SITE_NAMES_3D, JOINT_NAMES_3D
-from curl_robot_2d.parameters import FIXED_PARAMETERS
+from curl_robot_2d.model_3d import FOOT_SITE_NAMES_3D
+from curl_robot_2d.parameters import PUPPER_ORIGINAL_SHELL_60_PARAMETERS
 from curl_robot_2d_mjx.config_walking_3d import (
     Walking3DConfig,
     smoothstep_ramp,
@@ -27,9 +27,18 @@ from curl_robot_2d_mjx.reward_walking_3d import (
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-WALKING_MODEL_PATH_3D = PROJECT_ROOT / "assets" / "curl_robot_3d.xml"
-WALKING_ACTION_SIZE_3D = 8
-WALKING_OBSERVATION_SIZE_3D = 50
+WALKING_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "curl_robot_3d_pupper_r127p5_open60_width120.xml"
+)
+WALKING_JOINT_NAMES_3D = tuple(
+    f"{leg}_{joint}"
+    for leg in ("front_left", "front_right", "rear_left", "rear_right")
+    for joint in ("hip_abduction", "hip", "knee")
+)
+WALKING_ACTION_SIZE_3D = 12
+WALKING_OBSERVATION_SIZE_3D = 48
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -37,23 +46,29 @@ FOOT_GEOM_NAMES_3D = (
     "rear_right_foot_proxy",
 )
 EXPECTED_WALKING_JOINT_AXES_3D = {
+    "front_left_hip_abduction": (1.0, 0.0, 0.0),
     "front_left_hip": (0.0, -1.0, 0.0),
     "front_left_knee": (0.0, 1.0, 0.0),
+    "front_right_hip_abduction": (-1.0, 0.0, 0.0),
     "front_right_hip": (0.0, -1.0, 0.0),
     "front_right_knee": (0.0, 1.0, 0.0),
+    "rear_left_hip_abduction": (1.0, 0.0, 0.0),
     "rear_left_hip": (0.0, 1.0, 0.0),
     "rear_left_knee": (0.0, -1.0, 0.0),
+    "rear_right_hip_abduction": (-1.0, 0.0, 0.0),
     "rear_right_hip": (0.0, 1.0, 0.0),
     "rear_right_knee": (0.0, -1.0, 0.0),
 }
 
 
-def validate_walking_morphology_3d(model, geometry=FIXED_PARAMETERS) -> None:
+def validate_walking_morphology_3d(
+    model, geometry=PUPPER_ORIGINAL_SHELL_60_PARAMETERS
+) -> None:
     """Reject models that do not match the mirrored planar-leg convention."""
 
     import mujoco
 
-    if tuple(JOINT_NAMES_3D) != tuple(EXPECTED_WALKING_JOINT_AXES_3D):
+    if tuple(WALKING_JOINT_NAMES_3D) != tuple(EXPECTED_WALKING_JOINT_AXES_3D):
         raise ValueError("unexpected 3-D walking joint order")
     for joint_name, expected_axis in EXPECTED_WALKING_JOINT_AXES_3D.items():
         joint_id = mujoco.mj_name2id(
@@ -65,6 +80,15 @@ def validate_walking_morphology_3d(model, geometry=FIXED_PARAMETERS) -> None:
             raise ValueError(
                 f"walking joint axis changed for {joint_name}: "
                 f"{model.jnt_axis[joint_id]}"
+            )
+        actuator_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{joint_name}_servo"
+        )
+        if actuator_id < 0:
+            raise ValueError(f"missing walking actuator: {joint_name}_servo")
+        if int(model.actuator_trnid[actuator_id, 0]) != joint_id:
+            raise ValueError(
+                f"walking actuator is bound to wrong joint: {joint_name}_servo"
             )
     for prefix in ("front_left", "front_right", "rear_left", "rear_right"):
         thigh_id = mujoco.mj_name2id(
@@ -96,7 +120,16 @@ def validate_walking_morphology_3d(model, geometry=FIXED_PARAMETERS) -> None:
             atol=1e-8,
         ):
             raise ValueError(f"walking foot radius changed: {prefix}")
-        thigh_position = model.body_pos[thigh_id]
+        hip_body_id = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            f"{prefix}_hip_abduction_body",
+        )
+        thigh_position = (
+            model.body_pos[hip_body_id]
+            if hip_body_id >= 0
+            else model.body_pos[thigh_id]
+        )
         expected_x_sign = 1.0 if prefix.startswith("front") else -1.0
         expected_y_sign = 1.0 if prefix.endswith("left") else -1.0
         if thigh_position[0] * expected_x_sign <= 0.0:
@@ -183,7 +216,7 @@ def make_brax_walking_env_3d(
             )
             joint_ids = [
                 object_id(mujoco.mjtObj.mjOBJ_JOINT, name)
-                for name in JOINT_NAMES_3D
+                for name in WALKING_JOINT_NAMES_3D
             ]
             self.joint_qpos_indices = jp.asarray(
                 [
@@ -219,7 +252,7 @@ def make_brax_walking_env_3d(
             )
             actuator_ids = [
                 object_id(mujoco.mjtObj.mjOBJ_ACTUATOR, f"{name}_servo")
-                for name in JOINT_NAMES_3D
+                for name in WALKING_JOINT_NAMES_3D
             ]
             self.actuator_ids = jp.asarray(actuator_ids, dtype=jp.int32)
             self.force_limits = jp.asarray(
@@ -299,6 +332,11 @@ def make_brax_walking_env_3d(
                 "normalized_torque_rms": zero,
                 "startup_action_ramp": zero,
                 "desired_speed_m_s": zero,
+                "command_forward_velocity_m_s": zero,
+                "command_lateral_velocity_m_s": zero,
+                "command_yaw_rate_rad_s": zero,
+                "planar_velocity_error_m_s": zero,
+                "yaw_rate_error_rad_s": zero,
                 "failed": zero,
                 "timeout": zero,
                 "failure_nonfinite": zero,
@@ -317,7 +355,9 @@ def make_brax_walking_env_3d(
 
         def reset(self, rng):
             rng = jax.random.fold_in(rng, self.seed)
-            joint_key, velocity_key = jax.random.split(rng, 2)
+            joint_key, velocity_key, root_velocity_key, command_key = (
+                jax.random.split(rng, 4)
+            )
             joint_noise = jax.random.uniform(
                 joint_key,
                 shape=(WALKING_ACTION_SIZE_3D,),
@@ -330,6 +370,23 @@ def make_brax_walking_env_3d(
                 minval=-task.reset_velocity_noise,
                 maxval=task.reset_velocity_noise,
             )
+            velocity_noise = velocity_noise.at[:2].set(
+                jax.random.uniform(
+                    root_velocity_key,
+                    shape=(2,),
+                    minval=-task.reset_root_xy_velocity_noise_m_s,
+                    maxval=task.reset_root_xy_velocity_noise_m_s,
+                )
+            )
+            velocity_noise = velocity_noise.at[5].set(
+                jax.random.uniform(
+                    jax.random.fold_in(root_velocity_key, 1),
+                    shape=(),
+                    minval=-task.reset_root_yaw_rate_noise_rad_s,
+                    maxval=task.reset_root_yaw_rate_noise_rad_s,
+                )
+            )
+            command = self._sample_command(command_key)
             start_target = jp.clip(
                 self.nominal_ctrl + joint_noise,
                 self.joint_low,
@@ -364,6 +421,9 @@ def make_brax_walking_env_3d(
                 "nonfoot_contact_step_count": jp.asarray(0, dtype=jp.int32),
                 "self_contact_step_count": jp.asarray(0, dtype=jp.int32),
                 "step_count": jp.asarray(0, dtype=jp.int32),
+                "command": command,
+                "command_step_count": jp.asarray(0, dtype=jp.int32),
+                "rng": rng,
             }
             observation = self._observation(
                 data,
@@ -371,6 +431,8 @@ def make_brax_walking_env_3d(
                 body,
                 initial_root_y=data.qpos[1],
                 policy_action=info["last_policy_action"],
+                command=command,
+                noise_key=jax.random.fold_in(rng, 99),
             )
             return State(
                 data,
@@ -382,6 +444,19 @@ def make_brax_walking_env_3d(
             )
 
         def step(self, state, action):
+            step_rng = jax.random.fold_in(
+                state.info["rng"], state.info["step_count"]
+            )
+            command_steps = max(
+                1, int(round(task.command_resample_time_s / task.control_timestep))
+            )
+            resample_command = state.info["command_step_count"] >= command_steps
+            command = jax.lax.cond(
+                resample_command,
+                lambda key: self._sample_command(key),
+                lambda key: state.info["command"],
+                step_rng,
+            )
             action_finite = jp.all(jp.isfinite(action))
             policy_action = jp.nan_to_num(
                 jp.clip(action, -1.0, 1.0),
@@ -438,12 +513,19 @@ def make_brax_walking_env_3d(
             )
             contacts = self._contact_metrics(data)
             body = self._body_metrics(data)
+            rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
+            body_linear_velocity = rotation.T @ data.qvel[:3]
+            body_angular_velocity = rotation.T @ data.qvel[3:6]
             root_x, root_y, root_z = data.qpos[:3]
-            forward_velocity = data.qvel[0]
-            lateral_velocity = data.qvel[1]
-            vertical_velocity = data.qvel[2]
+            forward_velocity = body_linear_velocity[0]
+            lateral_velocity = body_linear_velocity[1]
+            vertical_velocity = body_linear_velocity[2]
+            yaw_rate = body_angular_velocity[2]
+            planar_velocity_error = jp.linalg.norm(
+                body_linear_velocity[:2] - command[:2]
+            )
             roll_pitch_angular_velocity_squared = jp.mean(
-                jp.square(data.qvel[3:5])
+                jp.square(body_angular_velocity[:2])
             )
             forward_progress = root_x - state.info["previous_root_x"]
             lateral_drift = root_y - state.info["initial_root_y"]
@@ -524,6 +606,12 @@ def make_brax_walking_env_3d(
             ) / jp.maximum(self.soft_joint_margin, 1.0e-4)
             joint_limit_cost = jp.mean(
                 jp.square(normalized_limit_violation)
+            )
+            command_is_still = jp.linalg.norm(command) < 0.05
+            stand_still_cost = jp.where(
+                command_is_still,
+                jp.mean(jp.square(joint_position - self.nominal_ctrl)),
+                0.0,
             )
             normalized_torque = (
                 data.actuator_force[self.actuator_ids]
@@ -610,12 +698,11 @@ def make_brax_walking_env_3d(
                 jp,
                 reward_settings,
                 {
-                    "forward_velocity_error": (
-                        forward_velocity - task.desired_speed_m_s
-                    ),
+                    "planar_velocity_error_norm": planar_velocity_error,
+                    "yaw_rate_error": yaw_rate - command[2],
                     "normalized_forward_velocity": jp.clip(
-                        forward_velocity
-                        / max(task.desired_speed_m_s, 1.0e-4),
+                        jp.dot(body_linear_velocity[:2], command[:2])
+                        / jp.maximum(jp.linalg.norm(command[:2]), 0.05),
                         -1.0,
                         1.5,
                     ),
@@ -629,6 +716,9 @@ def make_brax_walking_env_3d(
                         roll_pitch_angular_velocity_squared
                     ),
                     "foot_air_time_reward": foot_air_time_reward,
+                    "locomotion_active": (
+                        jp.linalg.norm(command[:2]) > 0.05
+                    ).astype(jp.float32),
                     "swing_clearance_cost": swing_clearance_cost,
                     "foot_slip_velocity_squared": (
                         foot_slip_velocity_squared
@@ -637,6 +727,7 @@ def make_brax_walking_env_3d(
                     "action_magnitude_cost": action_magnitude_cost,
                     "joint_velocity_squared": joint_velocity_squared,
                     "joint_limit_cost": joint_limit_cost,
+                    "stand_still_cost": stand_still_cost,
                     "torque_cost": torque_cost,
                     "nonfoot_contact_active": nonfoot_active.astype(
                         jp.float32
@@ -687,6 +778,12 @@ def make_brax_walking_env_3d(
                 "nonfoot_contact_step_count": nonfoot_contact_step_count,
                 "self_contact_step_count": self_contact_step_count,
                 "step_count": step_count,
+                "command": command,
+                "command_step_count": jp.where(
+                    resample_command,
+                    jp.asarray(0, dtype=jp.int32),
+                    state.info["command_step_count"] + 1,
+                ),
             }
             metrics = {
                 "reward": reward,
@@ -694,9 +791,7 @@ def make_brax_walking_env_3d(
                 **rewards,
                 "forward_velocity_m_s": forward_velocity,
                 "forward_progress_m": forward_progress,
-                "velocity_error_m_s": (
-                    forward_velocity - task.desired_speed_m_s
-                ),
+                "velocity_error_m_s": forward_velocity - command[0],
                 "vertical_velocity_m_s": vertical_velocity,
                 "roll_pitch_angular_velocity_rms": jp.sqrt(
                     roll_pitch_angular_velocity_squared
@@ -739,7 +834,12 @@ def make_brax_walking_env_3d(
                 "joint_limit_cost": joint_limit_cost,
                 "normalized_torque_rms": jp.sqrt(torque_cost),
                 "startup_action_ramp": action_ramp,
-                "desired_speed_m_s": jp.asarray(task.desired_speed_m_s),
+                "desired_speed_m_s": command[0],
+                "command_forward_velocity_m_s": command[0],
+                "command_lateral_velocity_m_s": command[1],
+                "command_yaw_rate_rad_s": command[2],
+                "planar_velocity_error_m_s": planar_velocity_error,
+                "yaw_rate_error_rad_s": yaw_rate - command[2],
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),
@@ -777,6 +877,8 @@ def make_brax_walking_env_3d(
                 body,
                 initial_root_y=state.info["initial_root_y"],
                 policy_action=policy_action,
+                command=command,
+                noise_key=jax.random.fold_in(step_rng, 99),
             )
             metrics = {
                 name: jp.nan_to_num(value, nan=0.0, posinf=0.0, neginf=0.0)
@@ -857,28 +959,72 @@ def make_brax_walking_env_3d(
             *,
             initial_root_y,
             policy_action,
+            command,
+            noise_key,
         ):
             joint_position = data.qpos[self.joint_qpos_indices]
             joint_velocity = data.qvel[self.joint_dof_indices]
-            foot_height = (
-                data.site_xpos[self.foot_site_ids, 2] - task.foot_radius_m
-            )
-            return jp.concatenate(
+            rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
+            body_linear_velocity = rotation.T @ data.qvel[:3]
+            body_angular_velocity = rotation.T @ data.qvel[3:6]
+            projected_gravity = rotation.T @ jp.asarray((0.0, 0.0, -1.0))
+            observation = jp.concatenate(
                 (
-                    jp.asarray((data.qpos[2], data.qpos[1] - initial_root_y)),
-                    body["body_x_axis"],
-                    body["body_y_axis"],
-                    body["body_z_axis"],
-                    data.qvel[:3],
-                    data.qvel[3:6],
+                    body_linear_velocity,
+                    body_angular_velocity,
+                    projected_gravity,
+                    command,
                     joint_position - self.nominal_ctrl,
                     joint_velocity,
                     policy_action,
-                    contacts["foot_ground"],
-                    foot_height,
-                    jp.asarray((task.desired_speed_m_s,)),
                 )
             )
+            if not task.observation_noise_enabled:
+                return observation
+            noise_scale = task.observation_noise_level * jp.concatenate(
+                (
+                    jp.full((3,), task.observation_noise_linear_velocity_m_s),
+                    jp.full((3,), task.observation_noise_angular_velocity_rad_s),
+                    jp.full((3,), task.observation_noise_gravity),
+                    jp.zeros((3,)),
+                    jp.full((12,), task.observation_noise_joint_position_rad),
+                    jp.full((12,), task.observation_noise_joint_velocity_rad_s),
+                    jp.zeros((12,)),
+                )
+            )
+            noise = jax.random.uniform(
+                noise_key,
+                shape=(WALKING_OBSERVATION_SIZE_3D,),
+                minval=-1.0,
+                maxval=1.0,
+            )
+            return observation + noise * noise_scale
+
+        def _sample_command(self, rng):
+            forward_key, lateral_key, yaw_key, stop_key = jax.random.split(rng, 4)
+            command = jp.asarray(
+                (
+                    jax.random.uniform(
+                        forward_key,
+                        minval=task.command_forward_velocity_range_m_s[0],
+                        maxval=task.command_forward_velocity_range_m_s[1],
+                    ),
+                    jax.random.uniform(
+                        lateral_key,
+                        minval=task.command_lateral_velocity_range_m_s[0],
+                        maxval=task.command_lateral_velocity_range_m_s[1],
+                    ),
+                    jax.random.uniform(
+                        yaw_key,
+                        minval=task.command_yaw_rate_range_rad_s[0],
+                        maxval=task.command_yaw_rate_range_rad_s[1],
+                    ),
+                )
+            )
+            stopped = jax.random.bernoulli(
+                stop_key, task.command_deadband_probability
+            )
+            return jp.where(stopped, jp.zeros_like(command), command)
 
     return CurlRobot3DWalkingMJXEnv()
 

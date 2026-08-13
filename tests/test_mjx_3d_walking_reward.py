@@ -50,9 +50,9 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         )
 
         self.assertEqual(tuple(terms), WALKING_REWARD_TERM_NAMES_3D)
-        self.assertAlmostEqual(float(terms["alive"]), 0.05)
+        self.assertAlmostEqual(float(terms["alive"]), 0.0)
         self.assertAlmostEqual(float(terms["velocity_tracking"]), 2.00)
-        self.assertAlmostEqual(float(terms["forward_progress"]), 0.15)
+        self.assertAlmostEqual(float(terms["forward_progress"]), 0.0)
         self.assertAlmostEqual(float(terms["upright"]), 0.50)
 
     def test_generic_motion_costs_are_independent(self) -> None:
@@ -71,7 +71,7 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
 
         terms = reward_terms_walking_3d(np, config, inputs)
 
-        self.assertAlmostEqual(float(terms["height"]), -0.25)
+        self.assertAlmostEqual(float(terms["height"]), 0.0)
         self.assertAlmostEqual(float(terms["vertical_velocity"]), -0.05)
         self.assertAlmostEqual(float(terms["foot_slip"]), -0.05)
         self.assertAlmostEqual(float(terms["swing_clearance"]), -0.025)

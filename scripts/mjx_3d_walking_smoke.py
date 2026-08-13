@@ -25,13 +25,14 @@ def parse_args(argv=None):
     parser.add_argument(
         "--geometry",
         choices=WALKING_GEOMETRY_NAMES_3D,
-        default="fixed",
+        default="pupper_open60",
     )
     parser.add_argument("--batch-size", type=int, default=1)
     parser.add_argument("--steps", type=int, default=8)
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--desired-speed", type=float, default=0.080)
+    parser.add_argument("--desired-speed", type=float, default=0.20)
+    parser.add_argument("--action-scale-abduction", type=float, default=0.10)
     parser.add_argument("--action-scale-hip", type=float, default=0.40)
     parser.add_argument("--action-scale-knee", type=float, default=0.55)
     parser.add_argument("--startup-action-ramp", type=float, default=0.50)
@@ -79,6 +80,7 @@ def main(argv=None) -> None:
         episode_length=args.episode_length,
         desired_speed_m_s=args.desired_speed,
         action_scales=(
+            args.action_scale_abduction,
             args.action_scale_hip,
             args.action_scale_knee,
         )

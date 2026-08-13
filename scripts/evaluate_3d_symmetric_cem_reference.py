@@ -13,6 +13,7 @@ import numpy as np
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
 from curl_robot_2d.parameters import (
     FIXED_PARAMETERS,
+    PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
     REAL_GEOMETRY_PARAMETERS,
     FixedParameters,
 )
@@ -214,7 +215,8 @@ def _project_to_minimum_foot_gap(
     target: np.ndarray,
     config: CEMReferenceConfig,
 ) -> np.ndarray:
-    length = FIXED_PARAMETERS.edge_length
+    upper = FIXED_PARAMETERS.upper_length
+    lower = FIXED_PARAMETERS.lower_length
     target_distance = (
         2.0 * FIXED_PARAMETERS.foot_radius
         + config.minimum_foot_surface_gap_m
@@ -223,23 +225,23 @@ def _project_to_minimum_foot_gap(
     projected = np.asarray(target, dtype=np.float64).copy()
     for _ in range(6):
         front_hip, front_knee, rear_hip, rear_knee = projected
-        delta_x = FIXED_PARAMETERS.edge_length + length * (
-            math.sin(front_hip)
-            + math.sin(front_hip - front_knee)
-            + math.sin(rear_hip)
-            + math.sin(rear_hip - rear_knee)
+        delta_x = FIXED_PARAMETERS.torso_length + (
+            upper * math.sin(front_hip)
+            + lower * math.sin(front_hip - front_knee)
+            + upper * math.sin(rear_hip)
+            + lower * math.sin(rear_hip - rear_knee)
         )
-        delta_z = length * (
-            -math.cos(front_hip)
-            - math.cos(front_knee - front_hip)
-            + math.cos(rear_hip)
-            + math.cos(rear_knee - rear_hip)
+        delta_z = (
+            -upper * math.cos(front_hip)
+            - lower * math.cos(front_knee - front_hip)
+            + upper * math.cos(rear_hip)
+            + lower * math.cos(rear_knee - rear_hip)
         )
         distance = math.sqrt(delta_x * delta_x + delta_z * delta_z)
-        front_dx = -length * math.cos(front_hip - front_knee)
-        front_dz = -length * math.sin(front_knee - front_hip)
-        rear_dx = -length * math.cos(rear_hip - rear_knee)
-        rear_dz = -length * math.sin(rear_knee - rear_hip)
+        front_dx = -lower * math.cos(front_hip - front_knee)
+        front_dz = -lower * math.sin(front_knee - front_hip)
+        rear_dx = -lower * math.cos(rear_hip - rear_knee)
+        rear_dz = -lower * math.sin(rear_knee - rear_hip)
         front_gradient = (delta_x * front_dx + delta_z * front_dz) / max(
             distance, 1.0e-6
         )
@@ -262,7 +264,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--xml", type=Path, default=DEFAULT_XML_PATH)
     parser.add_argument("--controller", type=Path, default=DEFAULT_CONTROLLER_PATH)
     parser.add_argument(
-        "--geometry", choices=("baseline", "real"), default="baseline"
+        "--geometry", choices=("baseline", "real", "pupper60"), default="baseline"
     )
     parser.add_argument("--minimum-foot-gap-mm", type=float, default=None)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float, default=None)
@@ -276,7 +278,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
-    parser.add_argument("--startup-target-scale", type=float, default=None)
+    parser.add_argument(
+        "--startup-target-scale",
+        type=float,
+        default=0.0,
+        help=(
+            "Periodic-reference scale at reset. The 0 default reproduces "
+            "the 2-D controller's compact-to-reference 0.25 s ramp."
+        ),
+    )
     parser.add_argument(
         "--target-ramp-duration-s",
         type=float,
@@ -306,11 +316,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
-    activate_planar_geometry(
-        REAL_GEOMETRY_PARAMETERS
-        if args.geometry == "real"
-        else FixedParameters()
-    )
+    activate_planar_geometry({
+        "baseline": FixedParameters(),
+        "real": REAL_GEOMETRY_PARAMETERS,
+        "pupper60": PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+    }[args.geometry])
     if args.duration <= 0.0 or args.control_dt <= 0.0:
         raise SystemExit("--duration and --control-dt must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
@@ -581,7 +591,11 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
         "distance_x_m": distance_x,
         "distance_y_m": distance_y,
         "distance_as_shell_turns": float(
-            distance_x / max(2.0 * math.pi * FIXED_PARAMETERS.shell_contact_radius, 1.0e-9)
+            distance_x
+            / max(
+                2.0 * math.pi * FIXED_PARAMETERS.shell_contact_radius,
+                1.0e-9,
+            )
         ),
         "body_z_min_m": float(np.min(values[:, 2])),
         "roll_rms_rad": float(np.sqrt(np.mean(np.square(values[:, 3])))),

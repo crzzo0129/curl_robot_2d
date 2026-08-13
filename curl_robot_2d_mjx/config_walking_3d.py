@@ -5,10 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 import math
 
-from curl_robot_2d.parameters import FIXED_PARAMETERS, REAL_GEOMETRY_PARAMETERS
+from curl_robot_2d.parameters import (
+    FIXED_PARAMETERS,
+    PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+    REAL_GEOMETRY_PARAMETERS,
+)
 
 
-WALKING_GEOMETRY_NAMES_3D = ("fixed", "real")
+WALKING_GEOMETRY_NAMES_3D = ("pupper_open60",)
 
 
 WALKING_PHYSICS_PROFILE_NAMES_3D = (
@@ -23,7 +27,7 @@ class Walking3DConfig:
     """Task constants for reference-free 3-D locomotion PPO."""
 
     physics_profile: str = "accurate"
-    geometry: str = "fixed"
+    geometry: str = "pupper_open60"
     physics_timestep: float = 0.001
     solver_name: str = "newton"
     integrator_name: str = "implicitfast"
@@ -36,22 +40,34 @@ class Walking3DConfig:
     action_repeat: int = 20
     episode_length: int = 500
     reset_keyframe_name: str = "stand"
-    desired_speed_m_s: float = 0.080
-    nominal_root_height_m: float = FIXED_PARAMETERS.stand_3d_root_height
-    foot_radius_m: float = FIXED_PARAMETERS.foot_radius
+    desired_speed_m_s: float = 0.20
+    command_forward_velocity_range_m_s: tuple[float, float] = (-0.10, 0.35)
+    command_lateral_velocity_range_m_s: tuple[float, float] = (-0.15, 0.15)
+    command_yaw_rate_range_rad_s: tuple[float, float] = (-0.60, 0.60)
+    command_resample_time_s: float = 4.0
+    command_deadband_probability: float = 0.10
+    nominal_root_height_m: float = (
+        PUPPER_ORIGINAL_SHELL_60_PARAMETERS.stand_3d_root_height
+    )
+    foot_radius_m: float = PUPPER_ORIGINAL_SHELL_60_PARAMETERS.foot_radius
     action_scales: tuple[float, ...] = (
-        0.40,
-        0.55,
-        0.40,
-        0.55,
-        0.40,
-        0.55,
-        0.40,
-        0.55,
+        0.10, 0.40, 0.55,
+        0.10, 0.40, 0.55,
+        0.10, 0.40, 0.55,
+        0.10, 0.40, 0.55,
     )
     startup_action_ramp_s: float = 0.50
     reset_joint_noise_rad: float = 0.015
-    reset_velocity_noise: float = 0.015
+    reset_velocity_noise: float = 0.05
+    reset_root_xy_velocity_noise_m_s: float = 0.15
+    reset_root_yaw_rate_noise_rad_s: float = 0.20
+    observation_noise_enabled: bool = True
+    observation_noise_level: float = 1.0
+    observation_noise_linear_velocity_m_s: float = 0.10
+    observation_noise_angular_velocity_rad_s: float = 0.20
+    observation_noise_gravity: float = 0.05
+    observation_noise_joint_position_rad: float = 0.01
+    observation_noise_joint_velocity_rad_s: float = 1.50
     soft_joint_limit_fraction: float = 0.90
     disable_root_damping: bool = True
 
@@ -60,7 +76,7 @@ class Walking3DConfig:
     terminate_root_z_max: float = 0.46
     terminate_upright_tilt_rad: float = 0.72
     terminate_upright_tilt_duration_s: float = 0.08
-    terminate_lateral_drift_m: float = 0.25
+    terminate_lateral_drift_m: float = 1.50
     terminate_airborne_duration_s: float = 0.14
     terminate_nonfoot_depth_m: float = 0.004
     terminate_nonfoot_contact_duration_s: float = 0.06
@@ -80,8 +96,8 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         raise ValueError(
             f"unknown walking 3-D geometry: {config.geometry}"
         )
-    if len(config.action_scales) != 8:
-        raise ValueError("walking 3-D action_scales must contain 8 values")
+    if len(config.action_scales) != 12:
+        raise ValueError("walking 3-D action_scales must contain 12 values")
     if any(
         not math.isfinite(value) or value <= 0.0
         for value in config.action_scales
@@ -108,6 +124,39 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         (config.terminate_self_contact_depth_m, "terminate_self_contact_depth_m"),
     ):
         _validate_positive(value, name)
+    for limits, name in (
+        (config.command_forward_velocity_range_m_s, "forward command range"),
+        (config.command_lateral_velocity_range_m_s, "lateral command range"),
+        (config.command_yaw_rate_range_rad_s, "yaw command range"),
+    ):
+        if len(limits) != 2 or not all(math.isfinite(x) for x in limits):
+            raise ValueError(f"{name} must contain two finite values")
+        if limits[1] < limits[0]:
+            raise ValueError(f"{name} must be ordered")
+    _validate_positive(config.command_resample_time_s, "command_resample_time_s")
+    if not 0.0 <= config.command_deadband_probability <= 1.0:
+        raise ValueError("command_deadband_probability must be in [0, 1]")
+    for value, name in (
+        (config.observation_noise_level, "observation_noise_level"),
+        (
+            config.observation_noise_linear_velocity_m_s,
+            "observation_noise_linear_velocity_m_s",
+        ),
+        (
+            config.observation_noise_angular_velocity_rad_s,
+            "observation_noise_angular_velocity_rad_s",
+        ),
+        (config.observation_noise_gravity, "observation_noise_gravity"),
+        (
+            config.observation_noise_joint_position_rad,
+            "observation_noise_joint_position_rad",
+        ),
+        (
+            config.observation_noise_joint_velocity_rad_s,
+            "observation_noise_joint_velocity_rad_s",
+        ),
+    ):
+        _validate_nonnegative(value, name)
     if config.terminate_root_z_min >= config.terminate_root_z_max:
         raise ValueError("root-z termination bounds must be ordered")
     if not 0.0 < config.soft_joint_limit_fraction <= 1.0:
@@ -181,6 +230,7 @@ def walking_geometry_config_3d(config: Walking3DConfig) -> Walking3DConfig:
     geometry = {
         "fixed": FIXED_PARAMETERS,
         "real": REAL_GEOMETRY_PARAMETERS,
+        "pupper_open60": PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
     }.get(config.geometry)
     if geometry is None:
         raise ValueError(f"unknown walking 3-D geometry: {config.geometry}")

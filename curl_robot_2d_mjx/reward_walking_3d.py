@@ -8,6 +8,7 @@ from dataclasses import dataclass
 WALKING_REWARD_TERM_NAMES_3D = (
     "alive",
     "velocity_tracking",
+    "yaw_rate_tracking",
     "forward_progress",
     "upright",
     "height",
@@ -22,6 +23,7 @@ WALKING_REWARD_TERM_NAMES_3D = (
     "action_magnitude",
     "joint_velocity",
     "joint_limits",
+    "stand_still",
     "torque",
     "collision",
     "termination",
@@ -33,18 +35,20 @@ WALKING_REWARD_TERM_NAMES_3D = (
 class Walking3DRewardConfig:
     """Scales for command tracking plus generic locomotion regularization."""
 
-    alive: float = 0.05
+    alive: float = 0.0
     velocity_tracking: float = 2.00
-    velocity_tracking_sigma_m_s: float = 0.050
-    forward_progress: float = 0.15
+    velocity_tracking_sigma_m_s: float = 0.20
+    yaw_rate_tracking: float = 0.75
+    yaw_rate_tracking_sigma_rad_s: float = 0.35
+    forward_progress: float = 0.0
     upright: float = 0.50
     upright_sigma_rad: float = 0.30
-    height: float = 0.25
+    height: float = 0.0
     height_sigma_m: float = 0.050
-    heading: float = 0.15
+    heading: float = 0.0
     heading_sigma_rad: float = 0.50
     lateral_velocity: float = 0.10
-    lateral_drift: float = 0.15
+    lateral_drift: float = 0.0
     lateral_velocity_sigma_m_s: float = 0.20
     lateral_drift_sigma_m: float = 0.10
     vertical_velocity: float = 0.05
@@ -65,6 +69,7 @@ class Walking3DRewardConfig:
     joint_velocity: float = 0.005
     joint_velocity_sigma_rad_s: float = 8.0
     joint_limits: float = 0.10
+    stand_still: float = 0.20
     torque: float = 0.010
 
     nonfoot_contact: float = 2.0
@@ -79,10 +84,20 @@ class Walking3DRewardConfig:
 
 
 def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
+    planar_velocity_error = (
+        inputs["planar_velocity_error_norm"]
+        if "planar_velocity_error_norm" in inputs
+        else xp.abs(inputs["forward_velocity_error"])
+    )
     velocity_score = xp.exp(
         -xp.square(
-            inputs["forward_velocity_error"]
-            / config.velocity_tracking_sigma_m_s
+            planar_velocity_error / config.velocity_tracking_sigma_m_s
+        )
+    )
+    yaw_rate_error = inputs.get("yaw_rate_error", xp.asarray(0.0))
+    yaw_rate_score = xp.exp(
+        -xp.square(
+            yaw_rate_error / config.yaw_rate_tracking_sigma_rad_s
         )
     )
     upright_score = xp.exp(
@@ -135,6 +150,7 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
     return {
         "alive": config.alive * (1.0 - inputs["failed"]),
         "velocity_tracking": config.velocity_tracking * velocity_score,
+        "yaw_rate_tracking": config.yaw_rate_tracking * yaw_rate_score,
         "forward_progress": (
             config.forward_progress * inputs["normalized_forward_velocity"]
         ),
@@ -149,7 +165,9 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
             -config.angular_velocity * angular_velocity_cost
         ),
         "foot_air_time": (
-            config.foot_air_time * inputs["foot_air_time_reward"]
+            config.foot_air_time
+            * inputs["foot_air_time_reward"]
+            * inputs.get("locomotion_active", 1.0)
         ),
         "swing_clearance": (
             -config.swing_clearance * inputs["swing_clearance_cost"]
@@ -164,6 +182,9 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
         ),
         "joint_limits": (
             -config.joint_limits * inputs["joint_limit_cost"]
+        ),
+        "stand_still": (
+            -config.stand_still * inputs.get("stand_still_cost", 0.0)
         ),
         "torque": -config.torque * inputs["torque_cost"],
         "collision": -collision_cost,

@@ -1,5 +1,9 @@
 # Curl Robot 2D
 
+> 项目导航：先阅读 [`PROJECT_INDEX.md`](PROJECT_INDEX.md)。当前 Pupper 几何、正式
+> reference、3D paired evaluation 与结果清理规则统一记录在那里；结果文件入口见
+> [`results/RESULTS_INDEX.md`](results/RESULTS_INDEX.md)。本 README 保留项目的完整历史说明。
+
 用于探索四足机器人全身蜷缩滚动的二维侧视仿真子项目。最终目标是实现
 **行走—滚动双模态机器人及其双向切换**；二维模型是从滚动动力学和纵向
 切换机制出发、逐步迁移到完整三维四足机器人的第一阶段。

@@ -1,8 +1,17 @@
 __pycache__/
 *.py[cod]
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 renders/
 *.log
+
+# Local report/build scratch.
+ppt_design_exploration_build/
+results/**/pptx_check/
+results/**/pptx_check.zip
+results/**/CURL_robot_design_exploration_CN/
+results/**/*.inspect.ndjson
 
 # Generated experiment outputs.
 #
@@ -13,6 +22,7 @@ results/**
 
 # Keep only controller references required by current training/smoke defaults.
 !results/
+!results/RESULTS_INDEX.md
 !results/collision_constrained_cem/
 !results/collision_constrained_cem/best_phase_controller.json
 !results/collision_constrained_cem_foot_gap_2mm_short_contact/

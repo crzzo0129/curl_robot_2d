@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import math
 from pathlib import Path
+import re
 from textwrap import dedent
 
+from .model import _pupper_shell_geoms
 from .parameters import FIXED_PARAMETERS, FixedParameters
 
 
@@ -98,6 +100,33 @@ def _arc_shell_geoms_3d(
     return "\n".join(lines)
 
 
+def _pupper_shell_group_3d(
+    body_key: str,
+    prefix: str,
+    parameters: FixedParameters,
+    *,
+    y: float = 0.0,
+) -> str:
+    """Lift one analytic 2-D Pupper shell group into a 3-D side plane."""
+
+    source = _pupper_shell_geoms(parameters)[body_key]
+    output = []
+    pattern = re.compile(r'name="[^"]+" class="rolling_shell" fromto="([^"]+)"')
+    for line in source.splitlines():
+        match = pattern.search(line)
+        if match is None:
+            continue
+        values = match.group(1).split()
+        index = line.split('_shell_')[-1].split('"')[0]
+        values[1] = _f(y)
+        values[4] = _f(y)
+        output.append(
+            f'<geom name="{prefix}_shell_{index}" class="rolling_shell" '
+            f'fromto="{" ".join(values)}"/>'
+        )
+    return "\n".join(output)
+
+
 def _motor_geoms_3d(
     prefix: str,
     parameters: FixedParameters,
@@ -153,6 +182,7 @@ def _leg_chain(
     prefix = f"{'front' if front else 'rear'}_{side}"
     thigh_shell_outward = (1.0, 0.0) if front else (-1.0, 0.0)
     shank_shell_outward = thigh_shell_outward
+    abduction_axis = "1 0 0" if side == "left" else "-1 0 0"
     hip_axis = "0 -1 0" if front else "0 1 0"
     knee_axis = "0 1 0" if front else "0 -1 0"
     thigh_mass = p.thigh.mass / 2.0
@@ -167,15 +197,21 @@ def _leg_chain(
         max(p.shank.planar_inertia / 2.0, 1.0e-6),
         0.00002,
     )
-    thigh_start = p.motor_radius + p.upper_proxy_radius + p.motor_link_clearance
-    thigh_end = p.upper_length - thigh_start
-    shank_start = p.motor_radius + p.lower_proxy_radius + p.motor_link_clearance
-    shank_end = (
-        p.lower_length
-        - p.foot_radius
-        - p.lower_proxy_radius
-        - p.motor_link_clearance
-    )
+    if p.uses_pupper_original_shell:
+        thigh_start = p.motor_radius
+        thigh_end = p.upper_length - p.motor_radius
+        shank_start = p.motor_radius
+        shank_end = p.lower_length - p.foot_radius
+    else:
+        thigh_start = p.motor_radius + p.upper_proxy_radius + p.motor_link_clearance
+        thigh_end = p.upper_length - thigh_start
+        shank_start = p.motor_radius + p.lower_proxy_radius + p.motor_link_clearance
+        shank_end = (
+            p.lower_length
+            - p.foot_radius
+            - p.lower_proxy_radius
+            - p.motor_link_clearance
+        )
     thigh_fromto = (
         f"0 0 -{_f(thigh_start)} 0 0 -{_f(thigh_end)}"
         if detailed_structure
@@ -194,6 +230,20 @@ def _leg_chain(
         "\n" + _motor_geoms_3d(f"{prefix}_knee", p, indent=18)
         if detailed_structure else ""
     )
+    thigh_shell = (
+        _pupper_shell_group_3d(
+            "front_thigh" if front else "rear_thigh", prefix + "_thigh", p
+        )
+        if p.uses_pupper_original_shell
+        else _arc_shell_geoms_3d(prefix + "_thigh", (0.0, 0.0), (0.0, -p.upper_length), thigh_shell_outward, p, indent=16)
+    )
+    shank_shell = (
+        _pupper_shell_group_3d(
+            "front_shank" if front else "rear_shank", prefix + "_shank", p
+        )
+        if p.uses_pupper_original_shell
+        else _arc_shell_geoms_3d(prefix + "_shank", (0.0, 0.0), (0.0, -p.lower_length), shank_shell_outward, p, indent=18, end_retreat=(p.shank_shell_foot_retreat if detailed_structure else 0.0))
+    )
     return f"""\
               <body name="{prefix}_thigh" pos="{_f(x)} {_f(y)} 0">
                 <joint name="{prefix}_hip" type="hinge" axis="{hip_axis}"
@@ -206,7 +256,7 @@ def _leg_chain(
                       fromto="{thigh_fromto}"
                       size="{_f(p.upper_proxy_radius)}"
                       rgba="0.95 0.45 0.12 1"/>{hip_motor}
-{_arc_shell_geoms_3d(prefix + "_thigh", (0.0, 0.0), (0.0, -p.upper_length), thigh_shell_outward, p, indent=16)}
+{thigh_shell}
                 <body name="{prefix}_shank" pos="0 0 -{_f(p.upper_length)}">
                   <joint name="{prefix}_knee" type="hinge" axis="{knee_axis}"
                          class="single_knee_joint"/>
@@ -218,7 +268,7 @@ def _leg_chain(
                         fromto="{shank_fromto}"
                         size="{_f(p.lower_proxy_radius)}"
                         rgba="0.98 0.70 0.18 1"/>{knee_motor}
-{_arc_shell_geoms_3d(prefix + "_shank", (0.0, 0.0), (0.0, -p.lower_length), shank_shell_outward, p, indent=18, end_retreat=(p.shank_shell_foot_retreat if detailed_structure else 0.0))}
+{shank_shell}
                   <geom name="{prefix}_foot_proxy" type="sphere"
                         class="structure_collision"
                         pos="0 0 -{_f(p.lower_length)}"
@@ -238,9 +288,13 @@ def build_mjcf_3d(
     p = parameters
     torso_half_length = p.torso_length / 2.0
     side_y = (
-        p.torso_box_width / 2.0
-        if detailed_structure
-        else p.side_rail_half_width
+        p.side_rail_half_width_override
+        if p.side_rail_half_width_override is not None
+        else (
+            p.torso_box_width / 2.0
+            if detailed_structure
+            else p.side_rail_half_width
+        )
     )
     single_force_limit = p.hip.force_limit / 2.0
     single_kp = p.hip.kp / 2.0
@@ -276,7 +330,7 @@ def build_mjcf_3d(
         f'''<geom name="torso_box_proxy" type="box"
                     class="structure_collision"
                     pos="0 0 {_f(p.torso_box_outward_offset - p.torso_box_height / 2.0)}"
-                    size="{_f(p.torso_box_width / 2.0)} {_f(p.torso_box_width / 2.0)} {_f(p.torso_box_height / 2.0)}"
+                    size="{_f(p.torso_box_width / 2.0)} {_f(side_y)} {_f(p.torso_box_height / 2.0)}"
                     rgba="0.12 0.48 0.88 1"/>'''
         if detailed_structure
         else f'''<geom name="torso_spine_proxy" type="capsule"
@@ -305,6 +359,33 @@ def build_mjcf_3d(
                   condim="3" friction="{_f(p.nominal_ground_friction)} 0.02 0.01"
                   solref="0.002 1" solimp="0.97 0.995 0.001"/>
           </contact>'''
+    if p.uses_pupper_original_shell:
+        excludes = "\n".join(
+            f'            <exclude body1="torso" body2="{position}_{side}_{link}"/>'
+            for position in ("front", "rear")
+            for side in ("left", "right")
+            for link in ("thigh", "shank")
+        )
+        explicit_foot_pairs = f'''          <contact>
+{excludes}
+            <pair name="left_foot_pair"
+                  geom1="front_left_foot_proxy" geom2="rear_left_foot_proxy"
+                  condim="3" friction="{_f(p.nominal_ground_friction)} 0.02 0.01"
+                  solref="0.002 1" solimp="0.97 0.995 0.001"/>
+            <pair name="right_foot_pair"
+                  geom1="front_right_foot_proxy" geom2="rear_right_foot_proxy"
+                  condim="3" friction="{_f(p.nominal_ground_friction)} 0.02 0.01"
+                  solref="0.002 1" solimp="0.97 0.995 0.001"/>
+          </contact>'''
+    torso_shells = (
+        _pupper_shell_group_3d("torso", "torso_left", p, y=side_y)
+        + "\n"
+        + _pupper_shell_group_3d("torso", "torso_right", p, y=-side_y)
+        if p.uses_pupper_original_shell
+        else _arc_shell_geoms_3d("torso_left", (-torso_half_length, 0.0), (torso_half_length, 0.0), (0.0, 1.0), p, y=side_y)
+        + "\n"
+        + _arc_shell_geoms_3d("torso_right", (-torso_half_length, 0.0), (torso_half_length, 0.0), (0.0, 1.0), p, y=-side_y)
+    )
 
     return dedent(
         f"""\
@@ -363,7 +444,7 @@ def build_mjcf_3d(
             </default>
             <default class="rolling_shell">
               <geom type="capsule" size="{_f(p.shell_capsule_radius)}"
-                    contype="4" conaffinity="7"
+                    contype="4" conaffinity="{'3' if p.uses_pupper_original_shell else '7'}"
                     solref="0.003 1" solimp="0.95 0.99 0.001"
                     group="1" rgba="0.55 0.78 0.95 0.88"/>
             </default>
@@ -391,8 +472,7 @@ def build_mjcf_3d(
                         mass="{_f(p.torso_mass)}"
                         diaginertia="{' '.join(_f(v) for v in torso_inertia)}"/>
               {torso_geoms}
-{_arc_shell_geoms_3d("torso_left", (-torso_half_length, 0.0), (torso_half_length, 0.0), (0.0, 1.0), p, y=side_y)}
-{_arc_shell_geoms_3d("torso_right", (-torso_half_length, 0.0), (torso_half_length, 0.0), (0.0, 1.0), p, y=-side_y)}
+{torso_shells}
 
 {_leg_chain(side="left", front=True, y=side_y, parameters=p, detailed_structure=detailed_structure)}
 {_leg_chain(side="right", front=True, y=-side_y, parameters=p, detailed_structure=detailed_structure)}
