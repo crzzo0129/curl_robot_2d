@@ -31,6 +31,21 @@ PPO 默认使用 `clipping_epsilon=0.20`、全局梯度范数上限 `1.0`、目�
 
 ## 训练
 
+第一阶段只学习稳定直行，不加入无关难度：训练与 eval 都从无扰动 `stand` 开始，命令固定为 `vx=0.10 m/s, vy=0, yaw_rate=0`，并关闭 observation noise 与 domain randomization：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe forward_stage1_v1 \
+  --steps 3000000 \
+  --num-evals 6 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir results/mjx_pupper_forward_stage1_v1/ppo_checkpoint \
+  --out results/mjx_pupper_forward_stage1_v1
+```
+
+启动日志应显示 `reset_noise joint=0 ... root_xy=0 ... root_yaw=0`、`observation=False` 和 `domain_randomization=False`。只有当策略能够持续 10 秒、速度接近 `0.10 m/s` 且失败率明显下降后，才进入速度范围、转向和随机化阶段。
+
 ```powershell
 cd curl_robot_2d
 python -m scripts.mjx_3d_walking_smoke --mujoco-gl disable

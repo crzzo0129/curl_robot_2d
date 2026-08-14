@@ -79,15 +79,35 @@ WALKING_RECIPES_3D = {
         ),
         "args": {
             "desired_speed_m_s": 0.20,
+            "command_forward_min": -0.10,
+            "command_forward_max": 0.35,
+            "command_lateral_max": 0.15,
+            "command_yaw_rate_max": 0.60,
+            "command_resample_time": 4.0,
+            "command_stop_probability": 0.10,
+            "no_observation_noise": False,
+            "no_domain_randomization": False,
             "action_scale_abduction": 0.10,
             "action_scale_hip": 0.40,
             "action_scale_knee": 0.55,
             "startup_action_ramp_s": 0.50,
+            "reset_joint_noise": 0.015,
+            "reset_velocity_noise": 0.05,
+            "reset_root_xy_velocity_noise": 0.15,
+            "reset_root_yaw_rate_noise": 0.20,
             "terminate_airborne_duration": 0.25,
             "terminate_nonfoot_contact_duration": 0.12,
             "terminate_self_contact_duration": 0.10,
+            "updates_per_batch": 4,
             "learning_rate": 3e-4,
             "entropy_cost": 1e-2,
+            "discounting": 0.99,
+            "reward_scaling": 1.0,
+            "init_noise_std": 0.30,
+            "clipping_epsilon": 0.20,
+            "max_grad_norm": 1.0,
+            "desired_kl": 0.01,
+            "learning_rate_schedule": "ADAPTIVE_KL",
         },
         "reward": {},
     },
@@ -98,17 +118,86 @@ WALKING_RECIPES_3D = {
         ),
         "args": {
             "desired_speed_m_s": 0.080,
+            "command_forward_min": -0.10,
+            "command_forward_max": 0.35,
+            "command_lateral_max": 0.15,
+            "command_yaw_rate_max": 0.60,
+            "command_resample_time": 4.0,
+            "command_stop_probability": 0.10,
+            "no_observation_noise": False,
+            "no_domain_randomization": False,
             "action_scale_abduction": 0.10,
             "action_scale_hip": 0.40,
             "action_scale_knee": 0.55,
             "startup_action_ramp_s": 0.50,
+            "reset_joint_noise": 0.015,
+            "reset_velocity_noise": 0.05,
+            "reset_root_xy_velocity_noise": 0.15,
+            "reset_root_yaw_rate_noise": 0.20,
             "terminate_airborne_duration": 0.25,
             "terminate_nonfoot_contact_duration": 0.12,
             "terminate_self_contact_duration": 0.10,
+            "updates_per_batch": 4,
             "learning_rate": 2e-4,
             "entropy_cost": 1e-2,
+            "discounting": 0.99,
+            "reward_scaling": 1.0,
+            "init_noise_std": 0.30,
+            "clipping_epsilon": 0.20,
+            "max_grad_norm": 1.0,
+            "desired_kl": 0.01,
+            "learning_rate_schedule": "ADAPTIVE_KL",
         },
         "reward": {},
+    },
+    "forward_stage1_v1": {
+        "description": (
+            "Stage-1 curriculum: learn stable 0.10 m/s straight walking "
+            "from an exact stand reset before adding commands or randomization."
+        ),
+        "args": {
+            "desired_speed_m_s": 0.10,
+            "command_forward_min": 0.10,
+            "command_forward_max": 0.10,
+            "command_lateral_max": 0.0,
+            "command_yaw_rate_max": 0.0,
+            "command_resample_time": 4.0,
+            "command_stop_probability": 0.0,
+            "no_observation_noise": True,
+            "no_domain_randomization": True,
+            "action_scale_abduction": 0.06,
+            "action_scale_hip": 0.25,
+            "action_scale_knee": 0.35,
+            "startup_action_ramp_s": 0.50,
+            "reset_joint_noise": 0.0,
+            "reset_velocity_noise": 0.0,
+            "reset_root_xy_velocity_noise": 0.0,
+            "reset_root_yaw_rate_noise": 0.0,
+            "terminate_airborne_duration": 0.25,
+            "terminate_nonfoot_contact_duration": 0.12,
+            "terminate_self_contact_duration": 0.10,
+            "updates_per_batch": 1,
+            "learning_rate": 2e-5,
+            "entropy_cost": 0.0,
+            "discounting": 0.99,
+            "reward_scaling": 0.05,
+            "init_noise_std": 0.30,
+            "clipping_epsilon": 0.20,
+            "max_grad_norm": 1.0,
+            "desired_kl": 0.003,
+            "learning_rate_schedule": "ADAPTIVE_KL",
+        },
+        "reward": {
+            "velocity_tracking": 2.0,
+            "velocity_tracking_sigma_m_s": 0.10,
+            "forward_progress": 3.0,
+            "upright": 1.0,
+            "angular_velocity": 0.15,
+            "action_rate": 0.04,
+            "termination": 20.0,
+            "severe_extra_termination": 0.0,
+            "early_termination_scale": 0.5,
+        },
     },
 }
 
@@ -570,13 +659,24 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--num-minibatches", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--desired-speed", dest="desired_speed_m_s", type=float)
-    parser.add_argument("--command-forward-min", type=float, default=-0.10)
-    parser.add_argument("--command-forward-max", type=float, default=0.35)
-    parser.add_argument("--command-lateral-max", type=float, default=0.15)
-    parser.add_argument("--command-yaw-rate-max", type=float, default=0.60)
-    parser.add_argument("--command-resample-time", type=float, default=4.0)
-    parser.add_argument("--command-stop-probability", type=float, default=0.10)
-    parser.add_argument("--no-observation-noise", action="store_true")
+    parser.add_argument("--command-forward-min", type=float)
+    parser.add_argument("--command-forward-max", type=float)
+    parser.add_argument("--command-lateral-max", type=float)
+    parser.add_argument("--command-yaw-rate-max", type=float)
+    parser.add_argument("--command-resample-time", type=float)
+    parser.add_argument("--command-stop-probability", type=float)
+    observation_noise_group = parser.add_mutually_exclusive_group()
+    observation_noise_group.add_argument(
+        "--no-observation-noise",
+        dest="no_observation_noise",
+        action="store_true",
+    )
+    observation_noise_group.add_argument(
+        "--observation-noise",
+        dest="no_observation_noise",
+        action="store_false",
+    )
+    parser.set_defaults(no_observation_noise=None)
     parser.add_argument("--action-scale-abduction", type=float)
     parser.add_argument("--action-scale-hip", type=float)
     parser.add_argument("--action-scale-knee", type=float)
@@ -586,6 +686,10 @@ def _build_parser() -> argparse.ArgumentParser:
         dest="startup_action_ramp_s",
         type=float,
     )
+    parser.add_argument("--reset-joint-noise", type=float)
+    parser.add_argument("--reset-velocity-noise", type=float)
+    parser.add_argument("--reset-root-xy-velocity-noise", type=float)
+    parser.add_argument("--reset-root-yaw-rate-noise", type=float)
     parser.add_argument("--terminate-root-z-min", type=float, default=0.145)
     parser.add_argument(
         "--terminate-root-z-low-duration", type=float, default=0.08
@@ -622,19 +726,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--terminate-self-contact-duration", type=float
     )
     parser.add_argument("--unroll-length", type=int, default=20)
-    parser.add_argument("--updates-per-batch", type=int, default=4)
+    parser.add_argument("--updates-per-batch", type=int)
     parser.add_argument("--learning-rate", type=float)
     parser.add_argument("--entropy-cost", type=float)
-    parser.add_argument("--discounting", type=float, default=0.99)
-    parser.add_argument("--reward-scaling", type=float, default=1.0)
-    parser.add_argument("--init-noise-std", type=float, default=0.30)
-    parser.add_argument("--clipping-epsilon", type=float, default=0.20)
-    parser.add_argument("--max-grad-norm", type=float, default=1.0)
-    parser.add_argument("--desired-kl", type=float, default=0.01)
+    parser.add_argument("--discounting", type=float)
+    parser.add_argument("--reward-scaling", type=float)
+    parser.add_argument("--init-noise-std", type=float)
+    parser.add_argument("--clipping-epsilon", type=float)
+    parser.add_argument("--max-grad-norm", type=float)
+    parser.add_argument("--desired-kl", type=float)
     parser.add_argument(
         "--learning-rate-schedule",
         choices=("NONE", "ADAPTIVE_KL"),
-        default="ADAPTIVE_KL",
     )
     parser.add_argument(
         "--deterministic-eval",
@@ -688,7 +791,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppo-checkpoint-dir", type=Path)
     parser.add_argument("--skip-evaluation", action="store_true")
     parser.add_argument("--selection-target-distance", type=float)
-    parser.add_argument("--no-domain-randomization", action="store_true")
+    domain_randomization_group = parser.add_mutually_exclusive_group()
+    domain_randomization_group.add_argument(
+        "--no-domain-randomization",
+        dest="no_domain_randomization",
+        action="store_true",
+    )
+    domain_randomization_group.add_argument(
+        "--domain-randomization",
+        dest="no_domain_randomization",
+        action="store_false",
+    )
+    parser.set_defaults(no_domain_randomization=None)
     parser.add_argument("--friction-range", type=float, nargs=2, default=(0.60, 1.40))
     parser.add_argument("--mass-range", type=float, nargs=2, default=(0.90, 1.10))
     parser.add_argument("--actuator-gain-range", type=float, nargs=2, default=(0.90, 1.10))
@@ -730,13 +844,26 @@ def parse_args(argv=None):
         "clipping_epsilon",
         "max_grad_norm",
         "desired_kl",
+        "reward_scaling",
     ):
         if getattr(args, name) <= 0.0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.command_forward_max < args.command_forward_min:
         parser.error("command forward range must be ordered")
+    for name in (
+        "command_lateral_max",
+        "command_yaw_rate_max",
+        "reset_joint_noise",
+        "reset_velocity_noise",
+        "reset_root_xy_velocity_noise",
+        "reset_root_yaw_rate_noise",
+    ):
+        if getattr(args, name) < 0.0:
+            parser.error(f"--{name.replace('_', '-')} must be nonnegative")
     if not 0.0 <= args.command_stop_probability <= 1.0:
         parser.error("--command-stop-probability must be in [0, 1]")
+    if not 0.0 < args.discounting <= 1.0:
+        parser.error("--discounting must be in (0, 1]")
     return args
 
 
@@ -823,6 +950,14 @@ def main(argv=None) -> None:
             observation_noise_enabled=not args.no_observation_noise,
             action_scales=action_scales,
             startup_action_ramp_s=args.startup_action_ramp_s,
+            reset_joint_noise_rad=args.reset_joint_noise,
+            reset_velocity_noise=args.reset_velocity_noise,
+            reset_root_xy_velocity_noise_m_s=(
+                args.reset_root_xy_velocity_noise
+            ),
+            reset_root_yaw_rate_noise_rad_s=(
+                args.reset_root_yaw_rate_noise
+            ),
             terminate_root_z_min=args.terminate_root_z_min,
             terminate_root_z_low_duration_s=(
                 args.terminate_root_z_low_duration
@@ -871,6 +1006,10 @@ def main(argv=None) -> None:
         command_yaw_rate_range_rad_s=(0.0, 0.0),
         command_deadband_probability=0.0,
         observation_noise_enabled=False,
+        reset_joint_noise_rad=0.0,
+        reset_velocity_noise=0.0,
+        reset_root_xy_velocity_noise_m_s=0.0,
+        reset_root_yaw_rate_noise_rad_s=0.0,
     )
     eval_env = make_brax_walking_env_3d(
         eval_task, reward_config=reward_config, seed=args.seed + 10_000
@@ -1008,6 +1147,12 @@ def main(argv=None) -> None:
         f"abduction_scale={args.action_scale_abduction:.2f}rad "
         f"hip_scale={args.action_scale_hip:.2f}rad "
         f"knee_scale={args.action_scale_knee:.2f}rad\n"
+        f"  reset_noise joint={task.reset_joint_noise_rad:g}rad "
+        f"qvel={task.reset_velocity_noise:g} "
+        f"root_xy={task.reset_root_xy_velocity_noise_m_s:g}m/s "
+        f"root_yaw={task.reset_root_yaw_rate_noise_rad_s:g}rad/s\n"
+        f"  noise observation={task.observation_noise_enabled} "
+        f"domain_randomization={randomization_fn is not None}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  ppo_clip={args.clipping_epsilon:g} "

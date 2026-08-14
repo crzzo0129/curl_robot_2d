@@ -157,6 +157,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         for values in (
             {"action_scales": (1.0,)},
             {"desired_speed_m_s": 0.0},
+            {"reset_root_xy_velocity_noise_m_s": -0.01},
             {"terminate_root_z_min": 0.5},
             {"soft_joint_limit_fraction": 0.0},
         ):

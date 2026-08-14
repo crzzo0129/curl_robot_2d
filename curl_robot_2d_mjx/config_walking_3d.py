@@ -140,6 +140,16 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
     if not 0.0 <= config.command_deadband_probability <= 1.0:
         raise ValueError("command_deadband_probability must be in [0, 1]")
     for value, name in (
+        (config.reset_joint_noise_rad, "reset_joint_noise_rad"),
+        (config.reset_velocity_noise, "reset_velocity_noise"),
+        (
+            config.reset_root_xy_velocity_noise_m_s,
+            "reset_root_xy_velocity_noise_m_s",
+        ),
+        (
+            config.reset_root_yaw_rate_noise_rad_s,
+            "reset_root_yaw_rate_noise_rad_s",
+        ),
         (config.observation_noise_level, "observation_noise_level"),
         (
             config.observation_noise_linear_velocity_m_s,

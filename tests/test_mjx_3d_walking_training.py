@@ -34,6 +34,10 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.diagnostic_lateral_drift, 1.50)
         self.assertEqual(args.learning_rate, 3e-4)
         self.assertEqual(args.entropy_cost, 1e-2)
+        self.assertEqual(args.reset_joint_noise, 0.015)
+        self.assertEqual(args.reset_velocity_noise, 0.05)
+        self.assertEqual(args.reset_root_xy_velocity_noise, 0.15)
+        self.assertEqual(args.reset_root_yaw_rate_noise, 0.20)
         self.assertEqual(args.init_noise_std, 0.30)
         self.assertEqual(args.clipping_epsilon, 0.20)
         self.assertEqual(args.max_grad_norm, 1.0)
@@ -42,6 +46,48 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(args.deterministic_eval)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
+
+    def test_forward_stage1_recipe_is_an_exact_stand_curriculum(self) -> None:
+        args = train_mjx_3d_walking_ppo.parse_args(
+            ["--recipe", "forward_stage1_v1"]
+        )
+        reward = train_mjx_3d_walking_ppo._reward_config_from_args(args)
+
+        self.assertEqual(args.desired_speed_m_s, 0.10)
+        self.assertEqual(args.command_forward_min, 0.10)
+        self.assertEqual(args.command_forward_max, 0.10)
+        self.assertEqual(args.command_lateral_max, 0.0)
+        self.assertEqual(args.command_yaw_rate_max, 0.0)
+        self.assertEqual(args.command_stop_probability, 0.0)
+        self.assertTrue(args.no_observation_noise)
+        self.assertTrue(args.no_domain_randomization)
+        self.assertEqual(args.reset_joint_noise, 0.0)
+        self.assertEqual(args.reset_velocity_noise, 0.0)
+        self.assertEqual(args.reset_root_xy_velocity_noise, 0.0)
+        self.assertEqual(args.reset_root_yaw_rate_noise, 0.0)
+        self.assertEqual(args.updates_per_batch, 1)
+        self.assertEqual(args.learning_rate, 2e-5)
+        self.assertEqual(args.reward_scaling, 0.05)
+        self.assertEqual(args.desired_kl, 0.003)
+        self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.10)
+        self.assertEqual(reward.forward_progress, 3.0)
+        self.assertEqual(reward.termination, 20.0)
+
+    def test_noise_flags_can_override_recipe_defaults(self) -> None:
+        args = train_mjx_3d_walking_ppo.parse_args(
+            [
+                "--recipe",
+                "forward_stage1_v1",
+                "--observation-noise",
+                "--domain-randomization",
+                "--reset-root-xy-velocity-noise",
+                "0.02",
+            ]
+        )
+
+        self.assertFalse(args.no_observation_noise)
+        self.assertFalse(args.no_domain_randomization)
+        self.assertEqual(args.reset_root_xy_velocity_noise, 0.02)
 
     def test_stochastic_eval_is_an_explicit_opt_in(self) -> None:
         args = train_mjx_3d_walking_ppo.parse_args(["--stochastic-eval"])
@@ -60,6 +106,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             "deterministic_eval=args.deterministic_eval",
             "max_grad_norm=args.max_grad_norm",
             "learning_rate_schedule=args.learning_rate_schedule",
+            "reset_root_xy_velocity_noise_m_s=0.0",
         ):
             self.assertIn(token, source)
 
