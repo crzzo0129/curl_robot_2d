@@ -29,7 +29,6 @@ from curl_robot_2d_mjx.randomization_3d import (
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 from scripts.train_mjx_ppo import (
     _float,
-    _network_factory,
     _resolve_restore_checkpoint,
     _split_metrics,
     _training_step_schedule,
@@ -195,6 +194,38 @@ def _reward_config_from_args(args) -> Walking3DRewardConfig:
         }
     )
     return replace(Walking3DRewardConfig(), **overrides)
+
+
+def _walking_network_factory(
+    hidden_layers,
+    activation_name,
+    init_noise_std,
+):
+    """Build an ETH-style actor with state-independent exploration noise."""
+
+    import jax.nn as jnn
+    from brax.training.agents.ppo import networks
+
+    activation = {
+        "elu": jnn.elu,
+        "relu": jnn.relu,
+        "swish": jnn.swish,
+        "tanh": jnn.tanh,
+    }[activation_name]
+
+    def factory(*args, **kwargs):
+        return networks.make_ppo_networks(
+            *args,
+            policy_hidden_layer_sizes=tuple(hidden_layers),
+            activation=activation,
+            distribution_type="normal",
+            noise_std_type="log",
+            init_noise_std=init_noise_std,
+            state_dependent_std=False,
+            **kwargs,
+        )
+
+    return factory
 
 
 def _add_per_step_walking_metrics_3d(metrics) -> None:
@@ -403,6 +434,8 @@ def _format_eval_report_walking_3d(
         lines.append(
             f"  ppo     sps={_metric(metrics, 'training/sps'):.0f} "
             f"kl={_metric(metrics, 'training/kl_mean'):.4f} "
+            f"std={_metric(metrics, 'training/policy_dist_mean_std'):.4f} "
+            f"lr={_metric(metrics, 'training/learning_rate'):.2e} "
             f"policy_loss={_metric(metrics, 'training/policy_loss'):+.4f} "
             f"value_loss={_metric(metrics, 'training/v_loss'):.4f}"
         )
@@ -594,6 +627,27 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--entropy-cost", type=float)
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--reward-scaling", type=float, default=1.0)
+    parser.add_argument("--init-noise-std", type=float, default=0.30)
+    parser.add_argument("--clipping-epsilon", type=float, default=0.20)
+    parser.add_argument("--max-grad-norm", type=float, default=1.0)
+    parser.add_argument("--desired-kl", type=float, default=0.01)
+    parser.add_argument(
+        "--learning-rate-schedule",
+        choices=("NONE", "ADAPTIVE_KL"),
+        default="ADAPTIVE_KL",
+    )
+    parser.add_argument(
+        "--deterministic-eval",
+        dest="deterministic_eval",
+        action="store_true",
+        default=True,
+    )
+    parser.add_argument(
+        "--stochastic-eval",
+        dest="deterministic_eval",
+        action="store_false",
+        help="sample policy actions during periodic eval instead of using the mean",
+    )
     parser.add_argument(
         "--hidden-layers", type=int, nargs="+", default=[256, 256, 128]
     )
@@ -671,6 +725,11 @@ def parse_args(argv=None):
         "action_scale_abduction",
         "action_scale_hip",
         "action_scale_knee",
+        "learning_rate",
+        "init_noise_std",
+        "clipping_epsilon",
+        "max_grad_norm",
+        "desired_kl",
     ):
         if getattr(args, name) <= 0.0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
@@ -897,6 +956,15 @@ def main(argv=None) -> None:
         "entropy_cost": args.entropy_cost,
         "discounting": args.discounting,
         "reward_scaling": args.reward_scaling,
+        "policy_distribution": "normal",
+        "policy_noise_std_type": "log",
+        "policy_state_dependent_std": False,
+        "init_noise_std": args.init_noise_std,
+        "deterministic_eval": args.deterministic_eval,
+        "clipping_epsilon": args.clipping_epsilon,
+        "max_grad_norm": args.max_grad_norm,
+        "desired_kl": args.desired_kl,
+        "learning_rate_schedule": args.learning_rate_schedule,
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
         "seed": args.seed,
@@ -942,12 +1010,34 @@ def main(argv=None) -> None:
         f"knee_scale={args.action_scale_knee:.2f}rad\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
+        f"  ppo_clip={args.clipping_epsilon:g} "
+        f"grad_norm={args.max_grad_norm:g} "
+        f"desired_kl={args.desired_kl:g} "
+        f"lr_schedule={args.learning_rate_schedule}\n"
+        f"  policy=normal state_dependent_std=false "
+        f"init_std={args.init_noise_std:g} "
+        f"deterministic_eval={args.deterministic_eval}\n"
         f"  output={args.out.resolve()}",
         flush=True,
     )
 
     checkpoint_kwargs = {}
     train_parameters = inspect.signature(ppo.train).parameters
+    required_stability_parameters = {
+        "clipping_epsilon",
+        "max_grad_norm",
+        "desired_kl",
+        "learning_rate_schedule",
+        "deterministic_eval",
+    }
+    missing_stability_parameters = sorted(
+        required_stability_parameters - set(train_parameters)
+    )
+    if missing_stability_parameters:
+        raise SystemExit(
+            "Installed Brax PPO lacks required stability parameters: "
+            + ", ".join(missing_stability_parameters)
+        )
     if randomization_fn is not None:
         if "randomization_fn" not in train_parameters:
             raise SystemExit("Installed Brax does not support randomization_fn.")
@@ -987,8 +1077,15 @@ def main(argv=None) -> None:
         num_minibatches=values["num_minibatches"],
         num_updates_per_batch=args.updates_per_batch,
         normalize_observations=True,
-        network_factory=_network_factory(
-            args.hidden_layers, args.activation
+        clipping_epsilon=args.clipping_epsilon,
+        max_grad_norm=args.max_grad_norm,
+        desired_kl=args.desired_kl,
+        learning_rate_schedule=args.learning_rate_schedule,
+        deterministic_eval=args.deterministic_eval,
+        network_factory=_walking_network_factory(
+            args.hidden_layers,
+            args.activation,
+            args.init_noise_std,
         ),
         seed=args.seed,
         progress_fn=progress_fn,

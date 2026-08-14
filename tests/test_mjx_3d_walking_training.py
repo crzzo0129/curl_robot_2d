@@ -34,8 +34,34 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.diagnostic_lateral_drift, 1.50)
         self.assertEqual(args.learning_rate, 3e-4)
         self.assertEqual(args.entropy_cost, 1e-2)
+        self.assertEqual(args.init_noise_std, 0.30)
+        self.assertEqual(args.clipping_epsilon, 0.20)
+        self.assertEqual(args.max_grad_norm, 1.0)
+        self.assertEqual(args.desired_kl, 0.01)
+        self.assertEqual(args.learning_rate_schedule, "ADAPTIVE_KL")
+        self.assertTrue(args.deterministic_eval)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
+
+    def test_stochastic_eval_is_an_explicit_opt_in(self) -> None:
+        args = train_mjx_3d_walking_ppo.parse_args(["--stochastic-eval"])
+
+        self.assertFalse(args.deterministic_eval)
+
+    def test_walking_ppo_uses_stable_distribution_contract(self) -> None:
+        source = Path(train_mjx_3d_walking_ppo.__file__).read_text(
+            encoding="utf-8"
+        )
+
+        for token in (
+            'distribution_type="normal"',
+            'noise_std_type="log"',
+            'state_dependent_std=False',
+            "deterministic_eval=args.deterministic_eval",
+            "max_grad_norm=args.max_grad_norm",
+            "learning_rate_schedule=args.learning_rate_schedule",
+        ):
+            self.assertIn(token, source)
 
     def test_lateral_drift_threshold_is_diagnostic_with_legacy_alias(self) -> None:
         current = train_mjx_3d_walking_ppo.parse_args(
