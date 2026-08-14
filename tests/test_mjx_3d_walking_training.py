@@ -31,10 +31,30 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.terminate_airborne_duration, 0.25)
         self.assertEqual(args.terminate_nonfoot_contact_duration, 0.12)
         self.assertEqual(args.terminate_self_contact_duration, 0.10)
+        self.assertEqual(args.diagnostic_lateral_drift, 1.50)
         self.assertEqual(args.learning_rate, 3e-4)
         self.assertEqual(args.entropy_cost, 1e-2)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
+
+    def test_lateral_drift_threshold_is_diagnostic_with_legacy_alias(self) -> None:
+        current = train_mjx_3d_walking_ppo.parse_args(
+            ["--diagnostic-lateral-drift", "0.75"]
+        )
+        legacy = train_mjx_3d_walking_ppo.parse_args(
+            ["--terminate-lateral-drift", "0.90"]
+        )
+
+        self.assertEqual(current.diagnostic_lateral_drift, 0.75)
+        self.assertEqual(legacy.diagnostic_lateral_drift, 0.90)
+        self.assertNotIn(
+            "failure_lateral_drift",
+            train_mjx_3d_walking_ppo.WALKING_FAILURE_METRICS_3D,
+        )
+        self.assertIn(
+            "lateral_drift_exceeded",
+            train_mjx_3d_walking_ppo.PER_STEP_WALKING_METRICS_3D,
+        )
 
     def test_real_geometry_overnight_entry_uses_h200_preset(self) -> None:
         args = train_mjx_3d_real_geometry_walking.parse_args([])
@@ -71,6 +91,8 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             "eval/episode_failure_nonfinite": 0.0,
             "eval/episode_forward_progress_m": 0.28,
             "eval/avg_forward_velocity_m_s": 0.028,
+            "eval/avg_planar_velocity_error_m_s": 0.002,
+            "eval/avg_yaw_rate_error_rad_s": 0.01,
             "eval/avg_upright_tilt_rad": 0.05,
             "eval/avg_lateral_drift_m": 0.005,
             "eval/avg_nonfoot_ground_contact_count": 0.0,
@@ -104,11 +126,24 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             target_distance_m=0.28,
             desired_speed_m_s=0.028,
         )
+        poor_tracking = (
+            train_mjx_3d_walking_ppo._checkpoint_selection_walking_3d(
+                {
+                    **base,
+                    "eval/avg_planar_velocity_error_m_s": 0.20,
+                    "eval/avg_yaw_rate_error_rad_s": 0.60,
+                },
+                500,
+                target_distance_m=0.28,
+                desired_speed_m_s=0.028,
+            )
+        )
 
         self.assertFalse(stable["rejected"])
         self.assertGreater(stable["score"], drifted["score"])
         self.assertGreater(stable["score"], tilted["score"])
         self.assertGreater(stable["score"], stopped["score"])
+        self.assertGreater(stable["score"], poor_tracking["score"])
 
     def test_checkpoint_progress_is_gated_by_survival(self) -> None:
         crash = {

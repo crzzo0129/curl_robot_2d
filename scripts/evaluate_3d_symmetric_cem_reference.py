@@ -308,6 +308,18 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--torque-limit", type=float, default=3.0)
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
+        "--joint-plot",
+        type=Path,
+        default=None,
+        help="Save actual/commanded angle curves for every hinge joint.",
+    )
+    parser.add_argument(
+        "--joint-series-out",
+        type=Path,
+        default=None,
+        help="Save the joint-angle time series as CSV.",
+    )
+    parser.add_argument(
         "--no-foot-gap-projection",
         action="store_true",
         help="Use the raw sinusoid without the 2-D foot-gap projection.",
@@ -315,7 +327,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     return parser.parse_args(argv)
 
 
-def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
+def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     activate_planar_geometry({
         "baseline": FixedParameters(),
         "real": REAL_GEOMETRY_PARAMETERS,
@@ -371,6 +383,27 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
     actuator_ids = np.asarray(
         [model.actuator(f"{name}_servo").id for name in JOINT_NAMES_3D]
     )
+    measured_joint_ids = np.asarray(
+        [
+            joint_id
+            for joint_id in range(model.njnt)
+            if model.jnt_type[joint_id] == mujoco.mjtJoint.mjJNT_HINGE
+        ],
+        dtype=np.int32,
+    )
+    measured_joint_names = [
+        mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_JOINT, int(joint_id))
+        or f"joint_{joint_id}"
+        for joint_id in measured_joint_ids
+    ]
+    measured_qpos_indices = np.asarray(
+        [model.jnt_qposadr[joint_id] for joint_id in measured_joint_ids],
+        dtype=np.int32,
+    )
+    measured_actuator_ids = np.asarray(
+        [model.actuator(f"{name}_servo").id for name in measured_joint_names],
+        dtype=np.int32,
+    )
     ctrl_low = np.asarray(model.actuator_ctrlrange[actuator_ids, 0], dtype=np.float64)
     ctrl_high = np.asarray(model.actuator_ctrlrange[actuator_ids, 1], dtype=np.float64)
     torso_body_id = model.body("torso").id
@@ -416,6 +449,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
     control_dt = control_repeat * float(model.opt.timestep)
     steps = max(1, round(args.duration / control_dt))
     records = []
+    joint_times = []
+    actual_joint_angles = []
+    commanded_joint_angles = []
     self_contact_pair_steps: dict[str, int] = {}
     self_contact_pair_max_penetration: dict[str, float] = {}
     nonfinite = False
@@ -550,6 +586,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
                 float(np.mean(phase_rates)) if phase_rates else 0.0,
             )
         )
+        joint_times.append(float(data.time))
+        actual_joint_angles.append(data.qpos[measured_qpos_indices].copy())
+        commanded_joint_angles.append(data.ctrl[measured_actuator_ids].copy())
         if nonfinite:
             break
 
@@ -557,6 +596,48 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
     elapsed = len(records) * control_dt
     if len(values) == 0:
         raise RuntimeError("simulation produced no records")
+    joint_times_array = np.asarray(joint_times, dtype=np.float64)
+    actual_joint_angles_array = np.asarray(actual_joint_angles, dtype=np.float64)
+    commanded_joint_angles_array = np.asarray(
+        commanded_joint_angles, dtype=np.float64
+    )
+    joint_ranges_deg = {}
+    for column, (joint_id, name) in enumerate(
+        zip(measured_joint_ids, measured_joint_names, strict=True)
+    ):
+        actual_deg = np.rad2deg(actual_joint_angles_array[:, column])
+        commanded_deg = np.rad2deg(commanded_joint_angles_array[:, column])
+        limited = bool(model.jnt_limited[joint_id])
+        limit_deg = (
+            np.rad2deg(model.jnt_range[joint_id]).tolist() if limited else None
+        )
+        joint_ranges_deg[name] = {
+            "actual_min": float(np.min(actual_deg)),
+            "actual_max": float(np.max(actual_deg)),
+            "actual_peak_to_peak": float(np.ptp(actual_deg)),
+            "commanded_min": float(np.min(commanded_deg)),
+            "commanded_max": float(np.max(commanded_deg)),
+            "xml_limit": limit_deg,
+        }
+
+    if args.joint_series_out is not None:
+        _write_joint_series(
+            args.joint_series_out,
+            joint_times_array,
+            measured_joint_names,
+            actual_joint_angles_array,
+            commanded_joint_angles_array,
+        )
+    if args.joint_plot is not None:
+        _plot_joint_angles(
+            args.joint_plot,
+            joint_times_array,
+            measured_joint_names,
+            measured_joint_ids,
+            actual_joint_angles_array,
+            commanded_joint_angles_array,
+            model,
+        )
     distance_x = float(values[-1, 0] - start_x)
     distance_y = float(values[-1, 1] - start_y)
     status = "failed" if nonfinite else "ok"
@@ -631,7 +712,159 @@ def run_smoke(args: argparse.Namespace) -> dict[str, float | str | bool]:
             float(args.startup_target_boost_duration_s)
         ),
         "phase_rate_scale": float(args.phase_rate_scale),
+        "joint_angle_ranges_deg": joint_ranges_deg,
+        "joint_plot": (
+            None if args.joint_plot is None else str(args.joint_plot.resolve())
+        ),
+        "joint_series": (
+            None
+            if args.joint_series_out is None
+            else str(args.joint_series_out.resolve())
+        ),
     }
+
+
+def _write_joint_series(
+    path: Path,
+    times: np.ndarray,
+    joint_names: list[str],
+    actual_angles: np.ndarray,
+    commanded_angles: np.ndarray,
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    columns = [times]
+    header = ["time_s"]
+    for column, name in enumerate(joint_names):
+        columns.extend(
+            (
+                np.rad2deg(actual_angles[:, column]),
+                np.rad2deg(commanded_angles[:, column]),
+            )
+        )
+        header.extend((f"{name}_actual_deg", f"{name}_commanded_deg"))
+    np.savetxt(
+        path,
+        np.column_stack(columns),
+        delimiter=",",
+        header=",".join(header),
+        comments="",
+    )
+
+
+def _plot_joint_angles(
+    path: Path,
+    times: np.ndarray,
+    joint_names: list[str],
+    joint_ids: np.ndarray,
+    actual_angles: np.ndarray,
+    commanded_angles: np.ndarray,
+    model,
+) -> None:
+    from PIL import Image, ImageDraw, ImageFont
+
+    columns = 3
+    rows = math.ceil(len(joint_names) / columns)
+    cell_width, cell_height = 500, 310
+    top_margin = 80
+    image = Image.new(
+        "RGB", (columns * cell_width, top_margin + rows * cell_height), "white"
+    )
+    draw = ImageDraw.Draw(image)
+    try:
+        title_font = ImageFont.truetype("arial.ttf", 24)
+        panel_font = ImageFont.truetype("arial.ttf", 16)
+        label_font = ImageFont.truetype("arial.ttf", 12)
+    except OSError:
+        title_font = panel_font = label_font = ImageFont.load_default()
+
+    actual_color = (0, 104, 181)
+    commanded_color = (229, 107, 31)
+    limit_color = (115, 115, 115)
+    grid_color = (220, 224, 228)
+    draw.text((25, 15), "3-D rolling joint angles", fill=(25, 25, 25), font=title_font)
+    draw.line((780, 29, 820, 29), fill=actual_color, width=3)
+    draw.text((828, 20), "actual", fill=(30, 30, 30), font=label_font)
+    for x in range(930, 970, 10):
+        draw.line((x, 29, min(x + 6, 970), 29), fill=commanded_color, width=2)
+    draw.text((978, 20), "commanded", fill=(30, 30, 30), font=label_font)
+    draw.line((1120, 29, 1160, 29), fill=limit_color, width=1)
+    draw.text((1168, 20), "XML limit", fill=(30, 30, 30), font=label_font)
+
+    time_min = float(times[0])
+    time_max = float(times[-1])
+    time_span = max(time_max - time_min, 1.0e-9)
+    for column, (joint_id, name) in enumerate(
+        zip(joint_ids, joint_names, strict=True)
+    ):
+        row, grid_column = divmod(column, columns)
+        origin_x = grid_column * cell_width
+        origin_y = top_margin + row * cell_height
+        left, right = origin_x + 65, origin_x + cell_width - 20
+        top, bottom = origin_y + 38, origin_y + cell_height - 48
+        actual_deg = np.rad2deg(actual_angles[:, column])
+        commanded_deg = np.rad2deg(commanded_angles[:, column])
+        y_values = [float(np.min(actual_deg)), float(np.max(actual_deg))]
+        y_values.extend((float(np.min(commanded_deg)), float(np.max(commanded_deg))))
+        if model.jnt_limited[joint_id]:
+            limit_low, limit_high = np.rad2deg(model.jnt_range[joint_id])
+            y_values.extend((float(limit_low), float(limit_high)))
+        y_min, y_max = min(y_values), max(y_values)
+        padding = max(4.0, 0.06 * max(y_max - y_min, 1.0))
+        y_min -= padding
+        y_max += padding
+        y_span = max(y_max - y_min, 1.0e-9)
+
+        def x_pixel(time: float) -> int:
+            return round(left + (time - time_min) / time_span * (right - left))
+
+        def y_pixel(angle: float) -> int:
+            return round(bottom - (angle - y_min) / y_span * (bottom - top))
+
+        for tick in range(5):
+            fraction = tick / 4.0
+            y = round(top + fraction * (bottom - top))
+            value = y_max - fraction * y_span
+            draw.line((left, y, right, y), fill=grid_color, width=1)
+            draw.text((origin_x + 5, y - 7), f"{value:6.1f}", fill=(80, 80, 80), font=label_font)
+        for tick in range(6):
+            fraction = tick / 5.0
+            x = round(left + fraction * (right - left))
+            draw.line((x, top, x, bottom), fill=grid_color, width=1)
+            draw.text(
+                (x - 13, bottom + 7),
+                f"{time_min + fraction * time_span:.1f}",
+                fill=(80, 80, 80),
+                font=label_font,
+            )
+        if model.jnt_limited[joint_id]:
+            for limit in (float(limit_low), float(limit_high)):
+                y = y_pixel(limit)
+                for x in range(left, right, 8):
+                    draw.line((x, y, min(x + 4, right), y), fill=limit_color, width=1)
+        commanded_points = [
+            (x_pixel(float(time)), y_pixel(float(angle)))
+            for time, angle in zip(times, commanded_deg, strict=True)
+        ]
+        for start in range(0, len(commanded_points) - 1, 8):
+            end = min(start + 5, len(commanded_points) - 1)
+            draw.line(commanded_points[start : end + 1], fill=commanded_color, width=2)
+        actual_points = [
+            (x_pixel(float(time)), y_pixel(float(angle)))
+            for time, angle in zip(times, actual_deg, strict=True)
+        ]
+        draw.line(actual_points, fill=actual_color, width=3)
+        draw.rectangle((left, top, right, bottom), outline=(100, 100, 100), width=1)
+        draw.text(
+            (left, origin_y + 8),
+            name.replace("_", " "),
+            fill=(25, 25, 25),
+            font=panel_font,
+        )
+        draw.text((right - 58, bottom + 28), "time (s)", fill=(60, 60, 60), font=label_font)
+        draw.text((origin_x + 5, top - 2), "deg", fill=(60, 60, 60), font=label_font)
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    image.save(path)
 
 
 def _reset_data(model, data, mujoco, qpos_indices, actuator_ids, ctrl) -> None:

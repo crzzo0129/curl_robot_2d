@@ -76,7 +76,7 @@ class Walking3DConfig:
     terminate_root_z_max: float = 0.46
     terminate_upright_tilt_rad: float = 0.72
     terminate_upright_tilt_duration_s: float = 0.08
-    terminate_lateral_drift_m: float = 1.50
+    diagnostic_lateral_drift_m: float = 1.50
     terminate_airborne_duration_s: float = 0.14
     terminate_nonfoot_depth_m: float = 0.004
     terminate_nonfoot_contact_duration_s: float = 0.06
@@ -119,7 +119,10 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         (config.terminate_root_z_min, "terminate_root_z_min"),
         (config.terminate_root_z_max, "terminate_root_z_max"),
         (config.terminate_upright_tilt_rad, "terminate_upright_tilt_rad"),
-        (config.terminate_lateral_drift_m, "terminate_lateral_drift_m"),
+        (
+            config.diagnostic_lateral_drift_m,
+            "diagnostic_lateral_drift_m",
+        ),
         (config.terminate_nonfoot_depth_m, "terminate_nonfoot_depth_m"),
         (config.terminate_self_contact_depth_m, "terminate_self_contact_depth_m"),
     ):

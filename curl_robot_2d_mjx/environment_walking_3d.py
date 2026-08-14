@@ -349,7 +349,7 @@ def make_brax_walking_env_3d(
                 "failure_root_low": zero,
                 "failure_root_high": zero,
                 "failure_upright_tilt": zero,
-                "failure_lateral_drift": zero,
+                "lateral_drift_exceeded": zero,
                 "failure_airborne": zero,
                 "failure_nonfoot_depth": zero,
                 "failure_nonfoot_contact": zero,
@@ -660,8 +660,8 @@ def make_brax_walking_env_3d(
             failure_upright_tilt = (
                 upright_tilt_step_count >= self.upright_tilt_steps
             )
-            failure_lateral_drift = (
-                jp.abs(lateral_drift) > task.terminate_lateral_drift_m
+            lateral_drift_exceeded = (
+                jp.abs(lateral_drift) > task.diagnostic_lateral_drift_m
             )
             failure_airborne = airborne_step_count >= self.airborne_steps
             failure_nonfoot_depth = (
@@ -683,7 +683,6 @@ def make_brax_walking_env_3d(
                 | failure_root_low
                 | failure_root_high
                 | failure_upright_tilt
-                | failure_lateral_drift
                 | failure_airborne
                 | failure_nonfoot_depth
                 | failure_nonfoot_contact
@@ -843,7 +842,7 @@ def make_brax_walking_env_3d(
                 "command_lateral_velocity_m_s": command[1],
                 "command_yaw_rate_rad_s": command[2],
                 "planar_velocity_error_m_s": planar_velocity_error,
-                "yaw_rate_error_rad_s": yaw_rate - command[2],
+                "yaw_rate_error_rad_s": jp.abs(yaw_rate - command[2]),
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),
@@ -858,7 +857,7 @@ def make_brax_walking_env_3d(
                 "failure_upright_tilt": failure_upright_tilt.astype(
                     jp.float32
                 ),
-                "failure_lateral_drift": failure_lateral_drift.astype(
+                "lateral_drift_exceeded": lateral_drift_exceeded.astype(
                     jp.float32
                 ),
                 "failure_airborne": failure_airborne.astype(jp.float32),

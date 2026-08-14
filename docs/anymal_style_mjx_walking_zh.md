@@ -17,6 +17,12 @@
 
 这套结构不使用参考轨迹、固定 gait phase 或规定接触序列；策略可自行形成步态。壳体与非足端接触仍被保留为安全代价，因为本机器人有滚动外壳，后续若要训练 walk/roll 混合策略，应另建任务而不是把行走任务的碰撞约束直接删除。
 
+## 横向位移与终止
+
+世界坐标系下相对初始位置的横向位移 `lateral_drift_m` 只作为诊断指标，不参与 episode 终止或 `episode_failed`。超过 `--diagnostic-lateral-drift`（默认 1.50 m）时会记录 `lateral_drift_exceeded`；旧参数名 `--terminate-lateral-drift` 仅作为兼容别名保留，同样不会触发终止。
+
+训练质量应主要依据机体坐标系中的 `vx, vy, yaw_rate` 命令跟踪误差。固定直行 eval 的命令目标没有横向速度，此时 checkpoint 评分继续使用 `avg_lateral_drift_m` 作为辅助指标，以排除直行时持续侧滑的策略。
+
 ## 训练
 
 ```powershell

@@ -47,6 +47,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertEqual(WALKING_OBSERVATION_SIZE_3D, 48)
         self.assertEqual(config.geometry, "pupper_open60")
         self.assertAlmostEqual(config.desired_speed_m_s, 0.20)
+        self.assertAlmostEqual(config.diagnostic_lateral_drift_m, 1.50)
         self.assertEqual(
             config.action_scales,
             (0.10, 0.40, 0.55) * 4,
@@ -196,6 +197,10 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             "transition_finite",
         ):
             self.assertIn(token, source)
+
+        self.assertIn('"lateral_drift_exceeded"', source)
+        self.assertNotIn("failure_lateral_drift", source)
+        self.assertNotIn("| lateral_drift_exceeded", source)
 
 
 if __name__ == "__main__":

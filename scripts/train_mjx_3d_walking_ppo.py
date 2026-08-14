@@ -125,6 +125,7 @@ PER_STEP_WALKING_METRICS_3D = (
     "root_z_m",
     "root_height_error_m",
     "lateral_drift_m",
+    "lateral_drift_exceeded",
     "lateral_velocity_m_s",
     "upright_tilt_rad",
     "heading_error_rad",
@@ -164,7 +165,6 @@ WALKING_FAILURE_METRICS_3D = (
     "failure_root_low",
     "failure_root_high",
     "failure_upright_tilt",
-    "failure_lateral_drift",
     "failure_airborne",
     "failure_nonfoot_depth",
     "failure_nonfoot_contact",
@@ -235,6 +235,15 @@ def _checkpoint_selection_walking_3d(
     nonfinite_rate = metrics.get("eval/episode_failure_nonfinite", 0.0)
     distance = metrics.get("eval/episode_forward_progress_m", -math.inf)
     velocity = metrics.get("eval/avg_forward_velocity_m_s", math.inf)
+    planar_tracking_error = abs(
+        metrics.get(
+            "eval/avg_planar_velocity_error_m_s",
+            abs(velocity - desired_speed_m_s),
+        )
+    )
+    yaw_tracking_error = abs(
+        metrics.get("eval/avg_yaw_rate_error_rad_s", 0.0)
+    )
     upright_tilt = metrics.get("eval/avg_upright_tilt_rad", math.inf)
     lateral_drift = abs(metrics.get("eval/avg_lateral_drift_m", math.inf))
     nonfoot = metrics.get(
@@ -251,6 +260,17 @@ def _checkpoint_selection_walking_3d(
         / max(abs(desired_speed_m_s), 1.0e-4),
         1.0,
     )
+    planar_tracking_quality = 1.0 - min(
+        planar_tracking_error / max(abs(desired_speed_m_s), 0.10),
+        1.0,
+    )
+    yaw_tracking_quality = 1.0 - min(
+        yaw_tracking_error / 0.60,
+        1.0,
+    )
+    tracking_quality = (
+        0.75 * planar_tracking_quality + 0.25 * yaw_tracking_quality
+    )
     nonfailure_quality = 1.0 - min(max(failed_rate, 0.0), 1.0)
     upright_quality = 1.0 - min(max(upright_tilt / 0.30, 0.0), 1.0)
     lateral_quality = 1.0 - min(max(lateral_drift / 0.05, 0.0), 1.0)
@@ -259,18 +279,20 @@ def _checkpoint_selection_walking_3d(
         1.0,
     )
     score = (
-        0.30 * survival
-        + 0.30 * progress_quality
-        + 0.15 * velocity_quality
+        0.20 * survival
+        + 0.20 * progress_quality
+        + 0.30 * tracking_quality
         + 0.10 * nonfailure_quality
         + 0.05 * upright_quality
         + 0.05 * lateral_quality
-        + 0.05 * contact_quality
+        + 0.10 * contact_quality
     )
     rejected = (
         nonfinite_rate > 0.0
         or not math.isfinite(distance)
         or not math.isfinite(velocity)
+        or not math.isfinite(planar_tracking_error)
+        or not math.isfinite(yaw_tracking_error)
         or not math.isfinite(upright_tilt)
         or not math.isfinite(lateral_drift)
         or not math.isfinite(nonfoot)
@@ -286,6 +308,9 @@ def _checkpoint_selection_walking_3d(
         "progress_quality": progress_quality,
         "forward_velocity_m_s": velocity,
         "velocity_quality": velocity_quality,
+        "planar_tracking_error_m_s": planar_tracking_error,
+        "yaw_tracking_error_rad_s": yaw_tracking_error,
+        "tracking_quality": tracking_quality,
         "upright_tilt_rad": upright_tilt,
         "lateral_drift_m": lateral_drift,
         "contact_quality": contact_quality,
@@ -324,7 +349,13 @@ def _format_eval_report_walking_3d(
             f"{target_distance_m:.3f}m "
             f"velocity={selection['forward_velocity_m_s']:+.3f}/"
             f"{desired_speed_m_s:.3f}m/s "
-            f"velocity_quality={selection['velocity_quality']:.2f}"
+            f"tracking_quality={selection['tracking_quality']:.2f}"
+        ),
+        (
+            f"  tracking planar_error="
+            f"{selection['planar_tracking_error_m_s']:.3f}m/s "
+            f"yaw_rate_error="
+            f"{selection['yaw_tracking_error_rad_s']:.3f}rad/s"
         ),
         (
             f"  pose    z={_metric(metrics, 'eval/avg_root_z_m'):.3f}m "
@@ -532,7 +563,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--terminate-upright-tilt-duration", type=float, default=0.08
     )
     parser.add_argument(
-        "--terminate-lateral-drift", type=float, default=0.25
+        "--diagnostic-lateral-drift",
+        "--terminate-lateral-drift",
+        dest="diagnostic_lateral_drift",
+        type=float,
+        default=1.50,
+        help=(
+            "absolute world-y displacement threshold used only for logging; "
+            "the legacy --terminate-lateral-drift name is retained as an alias"
+        ),
     )
     parser.add_argument(
         "--terminate-airborne-duration", type=float
@@ -734,7 +773,7 @@ def main(argv=None) -> None:
             terminate_upright_tilt_duration_s=(
                 args.terminate_upright_tilt_duration
             ),
-            terminate_lateral_drift_m=args.terminate_lateral_drift,
+            diagnostic_lateral_drift_m=args.diagnostic_lateral_drift,
             terminate_airborne_duration_s=(
                 args.terminate_airborne_duration
             ),
