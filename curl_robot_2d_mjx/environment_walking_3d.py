@@ -10,7 +10,6 @@ from curl_robot_2d.model_3d import FOOT_SITE_NAMES_3D
 from curl_robot_2d.parameters import PUPPER_ORIGINAL_SHELL_60_PARAMETERS
 from curl_robot_2d_mjx.config_walking_3d import (
     Walking3DConfig,
-    smoothstep_ramp,
     validate_walking_3d_config,
     walking_geometry_config_3d,
 )
@@ -32,6 +31,16 @@ WALKING_MODEL_PATH_3D = (
     / "assets"
     / "curl_robot_3d_pupper_r127p5_open60_width120.xml"
 )
+
+
+def freejoint_body_velocity_3d(xp, rotation, qvel):
+    """Return torso-frame linear and angular velocity for a free joint.
+
+    MuJoCo stores free-joint translation velocity in the world frame but its
+    rotational velocity in the body's local frame.
+    """
+
+    return rotation.T @ qvel[:3], qvel[3:6]
 WALKING_JOINT_NAMES_3D = tuple(
     f"{leg}_{joint}"
     for leg in ("front_left", "front_right", "rear_left", "rear_right")
@@ -334,7 +343,6 @@ def make_brax_walking_env_3d(
                 "joint_velocity_rms_rad_s": zero,
                 "joint_limit_cost": zero,
                 "normalized_torque_rms": zero,
-                "startup_action_ramp": zero,
                 "desired_speed_m_s": zero,
                 "command_forward_velocity_m_s": zero,
                 "command_lateral_velocity_m_s": zero,
@@ -427,6 +435,7 @@ def make_brax_walking_env_3d(
                 "step_count": jp.asarray(0, dtype=jp.int32),
                 "command": command,
                 "command_step_count": jp.asarray(0, dtype=jp.int32),
+                "time_out": jp.zeros((), dtype=jp.float32),
                 "rng": rng,
             }
             observation = self._observation(
@@ -469,13 +478,9 @@ def make_brax_walking_env_3d(
                 neginf=-1.0,
             )
             control_dt = task.control_timestep
-            elapsed_s = state.info["step_count"].astype(jp.float32) * control_dt
-            action_ramp = smoothstep_ramp(
-                jp, elapsed_s, task.startup_action_ramp_s
-            )
             target = jp.clip(
                 self.nominal_ctrl
-                + action_ramp * policy_action * self.action_scales,
+                + policy_action * self.action_scales,
                 self.joint_low,
                 self.joint_high,
             )
@@ -518,8 +523,9 @@ def make_brax_walking_env_3d(
             contacts = self._contact_metrics(data)
             body = self._body_metrics(data)
             rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
-            body_linear_velocity = rotation.T @ data.qvel[:3]
-            body_angular_velocity = rotation.T @ data.qvel[3:6]
+            body_linear_velocity, body_angular_velocity = (
+                freejoint_body_velocity_3d(jp, rotation, data.qvel)
+            )
             root_x, root_y, root_z = data.qpos[:3]
             forward_velocity = body_linear_velocity[0]
             lateral_velocity = body_linear_velocity[1]
@@ -692,6 +698,8 @@ def make_brax_walking_env_3d(
             failure_severe = failed_bool & (~failure_nonfinite)
             step_count = state.info["step_count"] + 1
             timeout_bool = step_count >= task.episode_length
+            # Brax PPO bootstraps healthy time limits via info["time_out"],
+            # while genuine failures remain ordinary terminal transitions.
             done = (failed_bool | timeout_bool).astype(jp.float32)
             remaining_fraction = jp.maximum(
                 task.episode_length - step_count, 0
@@ -787,6 +795,7 @@ def make_brax_walking_env_3d(
                     jp.asarray(0, dtype=jp.int32),
                     state.info["command_step_count"] + 1,
                 ),
+                "time_out": timeout_bool.astype(jp.float32),
             }
             metrics = {
                 "reward": reward,
@@ -836,7 +845,6 @@ def make_brax_walking_env_3d(
                 "joint_velocity_rms_rad_s": jp.sqrt(joint_velocity_squared),
                 "joint_limit_cost": joint_limit_cost,
                 "normalized_torque_rms": jp.sqrt(torque_cost),
-                "startup_action_ramp": action_ramp,
                 "desired_speed_m_s": command[0],
                 "command_forward_velocity_m_s": command[0],
                 "command_lateral_velocity_m_s": command[1],
@@ -968,10 +976,28 @@ def make_brax_walking_env_3d(
             joint_position = data.qpos[self.joint_qpos_indices]
             joint_velocity = data.qvel[self.joint_dof_indices]
             rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
-            body_linear_velocity = rotation.T @ data.qvel[:3]
-            body_angular_velocity = rotation.T @ data.qvel[3:6]
+            body_linear_velocity, body_angular_velocity = (
+                freejoint_body_velocity_3d(jp, rotation, data.qvel)
+            )
             projected_gravity = rotation.T @ jp.asarray((0.0, 0.0, -1.0))
-            observation = jp.concatenate(
+            observation_scale = jp.concatenate(
+                (
+                    jp.full((3,), task.observation_scale_linear_velocity),
+                    jp.full((3,), task.observation_scale_angular_velocity),
+                    jp.full((3,), task.observation_scale_projected_gravity),
+                    jp.asarray(
+                        (
+                            task.observation_scale_command_linear_velocity,
+                            task.observation_scale_command_linear_velocity,
+                            task.observation_scale_command_yaw_rate,
+                        )
+                    ),
+                    jp.full((12,), task.observation_scale_joint_position),
+                    jp.full((12,), task.observation_scale_joint_velocity),
+                    jp.full((12,), task.observation_scale_previous_action),
+                )
+            )
+            physical_observation = jp.concatenate(
                 (
                     body_linear_velocity,
                     body_angular_velocity,
@@ -983,7 +1009,7 @@ def make_brax_walking_env_3d(
                 )
             )
             if not task.observation_noise_enabled:
-                return observation
+                return physical_observation * observation_scale
             noise_scale = task.observation_noise_level * jp.concatenate(
                 (
                     jp.full((3,), task.observation_noise_linear_velocity_m_s),
@@ -1001,7 +1027,7 @@ def make_brax_walking_env_3d(
                 minval=-1.0,
                 maxval=1.0,
             )
-            return observation + noise * noise_scale
+            return (physical_observation + noise * noise_scale) * observation_scale
 
         def _sample_command(self, rng):
             forward_key, lateral_key, yaw_key, stop_key = jax.random.split(rng, 4)

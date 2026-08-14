@@ -27,7 +27,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertFalse(args.no_domain_randomization)
         self.assertEqual(args.action_scale_hip, 0.40)
         self.assertEqual(args.action_scale_knee, 0.55)
-        self.assertEqual(args.startup_action_ramp_s, 0.50)
+        self.assertFalse(hasattr(args, "startup_action_ramp_s"))
         self.assertEqual(args.terminate_airborne_duration, 0.25)
         self.assertEqual(args.terminate_nonfoot_contact_duration, 0.12)
         self.assertEqual(args.terminate_self_contact_duration, 0.10)
@@ -70,7 +70,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.reward_scaling, 0.05)
         self.assertEqual(args.desired_kl, 0.003)
         self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.10)
-        self.assertEqual(reward.forward_progress, 3.0)
+        self.assertEqual(reward.forward_progress, 0.0)
         self.assertEqual(reward.termination, 20.0)
 
     def test_noise_flags_can_override_recipe_defaults(self) -> None:
@@ -103,12 +103,36 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             'distribution_type="normal"',
             'noise_std_type="log"',
             'state_dependent_std=False',
+            "mean_kernel_init_fn=jnn.initializers.uniform",
+            'mean_kernel_init_kwargs={"scale": WALKING_ACTOR_MEAN_INIT_SCALE}',
             "deterministic_eval=args.deterministic_eval",
             "max_grad_norm=args.max_grad_norm",
             "learning_rate_schedule=args.learning_rate_schedule",
+            "normalize_observations=False",
+            "bootstrap_on_timeout=True",
             "reset_root_xy_velocity_noise_m_s=0.0",
         ):
             self.assertIn(token, source)
+
+    def test_h200_uses_many_smaller_ppo_updates(self) -> None:
+        preset = train_mjx_3d_walking_ppo.PRESETS_WALKING_3D["h200"]
+        schedule = train_mjx_3d_walking_ppo._training_step_schedule(
+            requested_steps=3_000_000,
+            num_evals=6,
+            batch_size=preset["batch_size"],
+            unroll_length=20,
+            num_minibatches=preset["num_minibatches"],
+        )
+
+        self.assertEqual(preset["envs"], 2048)
+        self.assertEqual(preset["batch_size"], 256)
+        self.assertEqual(preset["num_minibatches"], 8)
+        self.assertEqual(schedule["rollout_quantum"], 40_960)
+        self.assertEqual(schedule["effective_steps"], 3_072_000)
+        self.assertEqual(
+            schedule["eval_intervals"] * schedule["updates_per_interval"],
+            75,
+        )
 
     def test_lateral_drift_threshold_is_diagnostic_with_legacy_alias(self) -> None:
         current = train_mjx_3d_walking_ppo.parse_args(
@@ -242,6 +266,48 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
 
         self.assertEqual(selection["raw_progress_quality"], 1.0)
         self.assertAlmostEqual(selection["progress_quality"], 0.1)
+
+    def test_checkpoint_rank_never_trades_survival_for_contact_quality(self) -> None:
+        stable = train_mjx_3d_walking_ppo._checkpoint_selection_walking_3d(
+            {
+                "eval/avg_episode_length": 450.0,
+                "eval/episode_failed": 0.10,
+                "eval/episode_failure_upright_tilt": 0.05,
+                "eval/episode_failure_nonfinite": 0.0,
+                "eval/episode_forward_progress_m": 0.70,
+                "eval/avg_forward_velocity_m_s": 0.08,
+                "eval/avg_planar_velocity_error_m_s": 0.03,
+                "eval/avg_yaw_rate_error_rad_s": 0.02,
+                "eval/avg_upright_tilt_rad": 0.10,
+                "eval/avg_lateral_drift_m": 0.02,
+                "eval/avg_nonfoot_ground_contact_count": 0.20,
+                "eval/avg_self_contact_count": 0.10,
+            },
+            500,
+            target_distance_m=1.0,
+            desired_speed_m_s=0.10,
+        )
+        crashed = train_mjx_3d_walking_ppo._checkpoint_selection_walking_3d(
+            {
+                "eval/avg_episode_length": 60.0,
+                "eval/episode_failed": 1.0,
+                "eval/episode_failure_upright_tilt": 1.0,
+                "eval/episode_failure_nonfinite": 0.0,
+                "eval/episode_forward_progress_m": 0.12,
+                "eval/avg_forward_velocity_m_s": 0.10,
+                "eval/avg_planar_velocity_error_m_s": 0.01,
+                "eval/avg_yaw_rate_error_rad_s": 0.01,
+                "eval/avg_upright_tilt_rad": 0.20,
+                "eval/avg_lateral_drift_m": 0.01,
+                "eval/avg_nonfoot_ground_contact_count": 0.0,
+                "eval/avg_self_contact_count": 0.0,
+            },
+            500,
+            target_distance_m=1.0,
+            desired_speed_m_s=0.10,
+        )
+
+        self.assertGreater(stable["rank"], crashed["rank"])
 
     def test_checkpoint_selection_rejects_nonfinite_eval(self) -> None:
         rejected = (

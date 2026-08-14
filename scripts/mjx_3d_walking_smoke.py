@@ -35,7 +35,6 @@ def parse_args(argv=None):
     parser.add_argument("--action-scale-abduction", type=float, default=0.10)
     parser.add_argument("--action-scale-hip", type=float, default=0.40)
     parser.add_argument("--action-scale-knee", type=float, default=0.55)
-    parser.add_argument("--startup-action-ramp", type=float, default=0.50)
     parser.add_argument("--memory-fraction", type=float, default=0.90)
     parser.add_argument(
         "--mujoco-gl",
@@ -85,7 +84,6 @@ def main(argv=None) -> None:
             args.action_scale_knee,
         )
         * 4,
-        startup_action_ramp_s=args.startup_action_ramp,
     )
     task = walking_physics_profile_3d(args.physics_profile, base)
     print("stage=environment_create_start", flush=True)

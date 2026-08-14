@@ -56,7 +56,6 @@ class Walking3DConfig:
         0.10, 0.40, 0.55,
         0.10, 0.40, 0.55,
     )
-    startup_action_ramp_s: float = 0.50
     reset_joint_noise_rad: float = 0.015
     reset_velocity_noise: float = 0.05
     reset_root_xy_velocity_noise_m_s: float = 0.15
@@ -68,6 +67,14 @@ class Walking3DConfig:
     observation_noise_gravity: float = 0.05
     observation_noise_joint_position_rad: float = 0.01
     observation_noise_joint_velocity_rad_s: float = 1.50
+    observation_scale_linear_velocity: float = 2.0
+    observation_scale_angular_velocity: float = 0.25
+    observation_scale_projected_gravity: float = 1.0
+    observation_scale_command_linear_velocity: float = 2.0
+    observation_scale_command_yaw_rate: float = 0.25
+    observation_scale_joint_position: float = 1.0
+    observation_scale_joint_velocity: float = 0.05
+    observation_scale_previous_action: float = 1.0
     soft_joint_limit_fraction: float = 0.90
     disable_root_damping: bool = True
 
@@ -125,6 +132,38 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         ),
         (config.terminate_nonfoot_depth_m, "terminate_nonfoot_depth_m"),
         (config.terminate_self_contact_depth_m, "terminate_self_contact_depth_m"),
+        (
+            config.observation_scale_linear_velocity,
+            "observation_scale_linear_velocity",
+        ),
+        (
+            config.observation_scale_angular_velocity,
+            "observation_scale_angular_velocity",
+        ),
+        (
+            config.observation_scale_projected_gravity,
+            "observation_scale_projected_gravity",
+        ),
+        (
+            config.observation_scale_command_linear_velocity,
+            "observation_scale_command_linear_velocity",
+        ),
+        (
+            config.observation_scale_command_yaw_rate,
+            "observation_scale_command_yaw_rate",
+        ),
+        (
+            config.observation_scale_joint_position,
+            "observation_scale_joint_position",
+        ),
+        (
+            config.observation_scale_joint_velocity,
+            "observation_scale_joint_velocity",
+        ),
+        (
+            config.observation_scale_previous_action,
+            "observation_scale_previous_action",
+        ),
     ):
         _validate_positive(value, name)
     for limits, name in (
@@ -175,7 +214,6 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
     if not 0.0 < config.soft_joint_limit_fraction <= 1.0:
         raise ValueError("soft_joint_limit_fraction must be in (0, 1]")
     for value, name in (
-        (config.startup_action_ramp_s, "startup_action_ramp_s"),
         (config.terminate_root_z_low_duration_s, "terminate_root_z_low_duration_s"),
         (
             config.terminate_upright_tilt_duration_s,
@@ -192,11 +230,6 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         ),
     ):
         _validate_nonnegative(value, name)
-def smoothstep_ramp(xp, elapsed_s, duration_s: float):
-    if duration_s <= 0.0:
-        return xp.ones_like(elapsed_s)
-    normalized = xp.clip(elapsed_s / duration_s, 0.0, 1.0)
-    return normalized * normalized * (3.0 - 2.0 * normalized)
 
 
 def walking_physics_profile_3d(

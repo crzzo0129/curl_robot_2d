@@ -35,6 +35,9 @@ from scripts.train_mjx_ppo import (
 )
 
 
+WALKING_ACTOR_MEAN_INIT_SCALE = 1.0e-3
+
+
 PRESETS_WALKING_3D = {
     "smoke": {
         "steps": 131_072,
@@ -65,8 +68,8 @@ PRESETS_WALKING_3D = {
         "envs": 2048,
         "eval_envs": 256,
         "num_evals": 10,
-        "batch_size": 1024,
-        "num_minibatches": 32,
+        "batch_size": 256,
+        "num_minibatches": 8,
     },
 }
 
@@ -90,7 +93,6 @@ WALKING_RECIPES_3D = {
             "action_scale_abduction": 0.10,
             "action_scale_hip": 0.40,
             "action_scale_knee": 0.55,
-            "startup_action_ramp_s": 0.50,
             "reset_joint_noise": 0.015,
             "reset_velocity_noise": 0.05,
             "reset_root_xy_velocity_noise": 0.15,
@@ -129,7 +131,6 @@ WALKING_RECIPES_3D = {
             "action_scale_abduction": 0.10,
             "action_scale_hip": 0.40,
             "action_scale_knee": 0.55,
-            "startup_action_ramp_s": 0.50,
             "reset_joint_noise": 0.015,
             "reset_velocity_noise": 0.05,
             "reset_root_xy_velocity_noise": 0.15,
@@ -168,7 +169,6 @@ WALKING_RECIPES_3D = {
             "action_scale_abduction": 0.06,
             "action_scale_hip": 0.25,
             "action_scale_knee": 0.35,
-            "startup_action_ramp_s": 0.50,
             "reset_joint_noise": 0.0,
             "reset_velocity_noise": 0.0,
             "reset_root_xy_velocity_noise": 0.0,
@@ -190,7 +190,7 @@ WALKING_RECIPES_3D = {
         "reward": {
             "velocity_tracking": 2.0,
             "velocity_tracking_sigma_m_s": 0.10,
-            "forward_progress": 3.0,
+            "forward_progress": 0.0,
             "upright": 1.0,
             "angular_velocity": 0.15,
             "action_rate": 0.04,
@@ -236,7 +236,6 @@ PER_STEP_WALKING_METRICS_3D = (
     "joint_velocity_rms_rad_s",
     "joint_limit_cost",
     "normalized_torque_rms",
-    "startup_action_ramp",
     "desired_speed_m_s",
     "command_forward_velocity_m_s",
     "command_lateral_velocity_m_s",
@@ -311,6 +310,8 @@ def _walking_network_factory(
             noise_std_type="log",
             init_noise_std=init_noise_std,
             state_dependent_std=False,
+            mean_kernel_init_fn=jnn.initializers.uniform,
+            mean_kernel_init_kwargs={"scale": WALKING_ACTOR_MEAN_INIT_SCALE},
             **kwargs,
         )
 
@@ -352,6 +353,9 @@ def _checkpoint_selection_walking_3d(
 
     average_length = metrics.get("eval/avg_episode_length", 0.0)
     failed_rate = metrics.get("eval/episode_failed", 1.0)
+    upright_failure_rate = metrics.get(
+        "eval/episode_failure_upright_tilt", failed_rate
+    )
     nonfinite_rate = metrics.get("eval/episode_failure_nonfinite", 0.0)
     distance = metrics.get("eval/episode_forward_progress_m", -math.inf)
     velocity = metrics.get("eval/avg_forward_velocity_m_s", math.inf)
@@ -398,14 +402,30 @@ def _checkpoint_selection_walking_3d(
         max(nonfoot / 0.02, 0.0) + max(self_contact / 0.02, 0.0),
         1.0,
     )
+    completed = float(survival >= 0.999 and failed_rate <= 0.001)
+    rank = (
+        completed,
+        survival,
+        1.0 - min(max(upright_failure_rate, 0.0), 1.0),
+        nonfailure_quality,
+        tracking_quality,
+        progress_quality,
+        contact_quality,
+        upright_quality,
+        lateral_quality,
+    )
+    # A readable scalar for logs.  Actual selection uses the lexicographic
+    # rank above so contact quality can never outweigh a survival regression.
     score = (
-        0.20 * survival
-        + 0.20 * progress_quality
-        + 0.30 * tracking_quality
-        + 0.10 * nonfailure_quality
-        + 0.05 * upright_quality
-        + 0.05 * lateral_quality
-        + 0.10 * contact_quality
+        1000.0 * completed
+        + 100.0 * survival
+        + 20.0 * rank[2]
+        + 10.0 * nonfailure_quality
+        + 5.0 * tracking_quality
+        + 3.0 * progress_quality
+        + upright_quality
+        + 0.5 * lateral_quality
+        + 0.5 * contact_quality
     )
     rejected = (
         nonfinite_rate > 0.0
@@ -417,11 +437,14 @@ def _checkpoint_selection_walking_3d(
         or not math.isfinite(lateral_drift)
         or not math.isfinite(nonfoot)
         or not math.isfinite(self_contact)
+        or not math.isfinite(upright_failure_rate)
         or not math.isfinite(score)
     )
     return {
         "score": -1_000_000.0 if rejected else score,
+        "rank": ((float("-inf"),) * len(rank)) if rejected else rank,
         "rejected": rejected,
+        "completed": completed,
         "survival": survival,
         "distance_m": distance,
         "raw_progress_quality": raw_progress_quality,
@@ -431,6 +454,7 @@ def _checkpoint_selection_walking_3d(
         "planar_tracking_error_m_s": planar_tracking_error,
         "yaw_tracking_error_rad_s": yaw_tracking_error,
         "tracking_quality": tracking_quality,
+        "upright_failure_rate": upright_failure_rate,
         "upright_tilt_rad": upright_tilt,
         "lateral_drift_m": lateral_drift,
         "contact_quality": contact_quality,
@@ -681,11 +705,6 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--action-scale-hip", type=float)
     parser.add_argument("--action-scale-knee", type=float)
     parser.add_argument("--reset-keyframe", default="stand")
-    parser.add_argument(
-        "--startup-action-ramp",
-        dest="startup_action_ramp_s",
-        type=float,
-    )
     parser.add_argument("--reset-joint-noise", type=float)
     parser.add_argument("--reset-velocity-noise", type=float)
     parser.add_argument("--reset-root-xy-velocity-noise", type=float)
@@ -822,8 +841,6 @@ def parse_args(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
     _apply_recipe_defaults(args)
-    if args.startup_action_ramp_s < 0.0:
-        parser.error("--startup-action-ramp must be nonnegative")
     if args.ppo_checkpoint_dir is not None and not args.save_ppo_checkpoints:
         parser.error("--ppo-checkpoint-dir requires --save-ppo-checkpoints")
     if (
@@ -949,7 +966,6 @@ def main(argv=None) -> None:
             command_deadband_probability=args.command_stop_probability,
             observation_noise_enabled=not args.no_observation_noise,
             action_scales=action_scales,
-            startup_action_ramp_s=args.startup_action_ramp_s,
             reset_joint_noise_rad=args.reset_joint_noise,
             reset_velocity_noise=args.reset_velocity_noise,
             reset_root_xy_velocity_noise_m_s=(
@@ -1024,6 +1040,7 @@ def main(argv=None) -> None:
     reward_history = []
     best = {
         "score": float("-inf"),
+        "rank": None,
         "reward": float("-inf"),
         "step": None,
         "params": None,
@@ -1060,10 +1077,14 @@ def main(argv=None) -> None:
         )
         selected = (
             not selection["rejected"]
-            and selection["score"] > best["score"]
+            and (
+                best["rank"] is None
+                or selection["rank"] > best["rank"]
+            )
         )
         if selected:
             best["score"] = selection["score"]
+            best["rank"] = selection["rank"]
             best["reward"] = reward
             best["step"] = int(step)
             if best["candidate_step"] == int(step):
@@ -1098,7 +1119,12 @@ def main(argv=None) -> None:
         "policy_distribution": "normal",
         "policy_noise_std_type": "log",
         "policy_state_dependent_std": False,
+        "policy_mean_kernel_init": "uniform",
+        "policy_mean_kernel_init_scale": WALKING_ACTOR_MEAN_INIT_SCALE,
         "init_noise_std": args.init_noise_std,
+        "observation_normalization": False,
+        "observation_scaling": "fixed_task_scales",
+        "bootstrap_on_timeout": True,
         "deterministic_eval": args.deterministic_eval,
         "clipping_epsilon": args.clipping_epsilon,
         "max_grad_norm": args.max_grad_norm,
@@ -1160,8 +1186,10 @@ def main(argv=None) -> None:
         f"desired_kl={args.desired_kl:g} "
         f"lr_schedule={args.learning_rate_schedule}\n"
         f"  policy=normal state_dependent_std=false "
+        f"mean_init_scale={WALKING_ACTOR_MEAN_INIT_SCALE:g} "
         f"init_std={args.init_noise_std:g} "
         f"deterministic_eval={args.deterministic_eval}\n"
+        f"  observation=fixed_task_scaling bootstrap_timeout=true\n"
         f"  output={args.out.resolve()}",
         flush=True,
     )
@@ -1174,6 +1202,7 @@ def main(argv=None) -> None:
         "desired_kl",
         "learning_rate_schedule",
         "deterministic_eval",
+        "bootstrap_on_timeout",
     }
     missing_stability_parameters = sorted(
         required_stability_parameters - set(train_parameters)
@@ -1221,7 +1250,8 @@ def main(argv=None) -> None:
         batch_size=values["batch_size"],
         num_minibatches=values["num_minibatches"],
         num_updates_per_batch=args.updates_per_batch,
-        normalize_observations=True,
+        normalize_observations=False,
+        bootstrap_on_timeout=True,
         clipping_epsilon=args.clipping_epsilon,
         max_grad_norm=args.max_grad_norm,
         desired_kl=args.desired_kl,
@@ -1256,6 +1286,9 @@ def main(argv=None) -> None:
         "elapsed_s": elapsed,
         "best_selection_score": (
             best["score"] if math.isfinite(best["score"]) else None
+        ),
+        "best_selection_rank": (
+            list(best["rank"]) if best["rank"] is not None else None
         ),
         "best_eval_reward": (
             best["reward"] if math.isfinite(best["reward"]) else None

@@ -21,6 +21,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_MODEL_PATH_3D,
     WALKING_JOINT_NAMES_3D,
     WALKING_OBSERVATION_SIZE_3D,
+    freejoint_body_velocity_3d,
     validate_walking_morphology_3d,
 )
 from curl_robot_2d_mjx.environment_3d import model_path_3d
@@ -52,6 +53,22 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             config.action_scales,
             (0.10, 0.40, 0.55) * 4,
         )
+        self.assertEqual(config.observation_scale_linear_velocity, 2.0)
+        self.assertEqual(config.observation_scale_angular_velocity, 0.25)
+        self.assertEqual(config.observation_scale_command_linear_velocity, 2.0)
+        self.assertEqual(config.observation_scale_command_yaw_rate, 0.25)
+        self.assertEqual(config.observation_scale_joint_velocity, 0.05)
+
+    def test_freejoint_angular_velocity_is_already_body_local(self) -> None:
+        rotation = np.asarray(
+            ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        )
+        qvel = np.asarray((0.0, 1.0, 0.0, 0.1, 0.2, 0.3))
+
+        linear, angular = freejoint_body_velocity_3d(np, rotation, qvel)
+
+        np.testing.assert_allclose(linear, (1.0, 0.0, 0.0), atol=1.0e-8)
+        np.testing.assert_allclose(angular, (0.1, 0.2, 0.3), atol=1.0e-8)
 
     def test_model_matches_mirrored_planar_leg_morphology(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(WALKING_MODEL_PATH_3D))
@@ -160,6 +177,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             {"reset_root_xy_velocity_noise_m_s": -0.01},
             {"terminate_root_z_min": 0.5},
             {"soft_joint_limit_fraction": 0.0},
+            {"observation_scale_joint_velocity": 0.0},
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 validate_walking_3d_config(Walking3DConfig(**values))
@@ -196,12 +214,16 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             "joint_limit_cost",
             "jax.lax.cond",
             "transition_finite",
+            '"time_out": timeout_bool.astype(jp.float32)',
         ):
             self.assertIn(token, source)
 
         self.assertIn('"lateral_drift_exceeded"', source)
         self.assertNotIn("failure_lateral_drift", source)
         self.assertNotIn("| lateral_drift_exceeded", source)
+        self.assertNotIn("startup_action_ramp", source)
+        self.assertNotIn("smoothstep_ramp", source)
+        self.assertIn("+ policy_action * self.action_scales", source)
 
 
 if __name__ == "__main__":
