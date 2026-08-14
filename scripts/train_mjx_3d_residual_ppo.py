@@ -1018,8 +1018,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--geometry",
         choices=GEOMETRY_NAMES_3D,
-        default="baseline",
-        help="Select the validated baseline or the 180 mm real geometry.",
+        default="pupper_open60",
+        help=(
+            "Select the latest 12-joint Pupper geometry or a legacy "
+            "8-joint rolling geometry."
+        ),
     )
     parser.add_argument(
         "--recipe",

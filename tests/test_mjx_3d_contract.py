@@ -16,6 +16,7 @@ from curl_robot_2d_mjx.environment_3d import (
     ACTION_SIZE_3D,
     DEFAULT_3D_CEM_CONTROLLER,
     MODEL_PATH_3D,
+    PUPPER_OPEN60_MODEL_PATH_3D,
     REAL_MODEL_PATH_3D,
     OBSERVATION_SIZE_3D,
     PHASE_FEEDBACK_SIZE_3D,
@@ -27,8 +28,10 @@ from curl_robot_2d_mjx.environment_3d import (
     pair_coupled_reset_noise_3d,
     phase_feedback_observation_3d,
     reference_startup_scale_3d,
+    rolling_target_ctrl_3d,
     geometry_parameters_3d,
     model_path_3d,
+    validate_rolling_morphology_3d,
 )
 from curl_robot_2d_mjx.randomization_3d import (
     Rolling3DDomainRandomization,
@@ -48,8 +51,14 @@ class MJX3DContractTest(unittest.TestCase):
         )
         self.assertTrue(MODEL_PATH_3D.exists())
         self.assertTrue(REAL_MODEL_PATH_3D.exists())
-        self.assertEqual(GEOMETRY_NAMES_3D, ("baseline", "real"))
+        self.assertTrue(PUPPER_OPEN60_MODEL_PATH_3D.exists())
+        self.assertEqual(
+            GEOMETRY_NAMES_3D, ("baseline", "real", "pupper_open60")
+        )
         self.assertEqual(model_path_3d("real"), REAL_MODEL_PATH_3D)
+        self.assertEqual(
+            model_path_3d("pupper_open60"), PUPPER_OPEN60_MODEL_PATH_3D
+        )
         self.assertAlmostEqual(geometry_parameters_3d("real").edge_length, 0.18)
         self.assertAlmostEqual(geometry_parameters_3d("real").foot_radius, 0.03)
         self.assertEqual(DEFAULT_3D_CEM_CONTROLLER.name, "best_phase_controller.json")
@@ -60,6 +69,7 @@ class MJX3DContractTest(unittest.TestCase):
     def test_3d_config_defaults_are_training_smoke_safe(self) -> None:
         config = Rolling3DConfig()
 
+        self.assertEqual(config.geometry, "pupper_open60")
         self.assertAlmostEqual(config.control_timestep, 0.02)
         self.assertEqual(config.episode_length, 500)
         self.assertEqual(len(config.action_scales), 8)
@@ -163,6 +173,33 @@ class MJX3DContractTest(unittest.TestCase):
             mapped,
             np.asarray((0.1, 0.2, 0.1, 0.2, 0.3, 0.4, 0.3, 0.4)),
         )
+
+    def test_eight_rolling_targets_leave_abduction_controls_locked(self) -> None:
+        compact = np.asarray(
+            (0.0, 0.1, 0.9, 0.0, 0.1, 0.9, 0.0, 0.1, 0.9, 0.0, 0.1, 0.9)
+        )
+        actuator_ids = np.asarray((1, 2, 4, 5, 7, 8, 10, 11))
+        action = np.full((8,), 0.25)
+        target = rolling_target_ctrl_3d(
+            np,
+            compact,
+            actuator_ids,
+            action,
+            np.ones((8,)),
+            np.full((8,), -2.0),
+            np.full((8,), 2.0),
+        )
+
+        np.testing.assert_allclose(target[[0, 3, 6, 9]], 0.0)
+        np.testing.assert_allclose(
+            target[actuator_ids], compact[actuator_ids] + 0.25
+        )
+
+    def test_latest_rolling_model_has_valid_twelve_joint_contract(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(PUPPER_OPEN60_MODEL_PATH_3D))
+
+        validate_rolling_morphology_3d(model, "pupper_open60")
+        self.assertEqual(model.nu, 12)
 
     def test_rolling_phase_integrates_signed_local_y_velocity(self) -> None:
         forward = advance_rolling_phase_3d(np, 0.2, 3.0, 0.01)

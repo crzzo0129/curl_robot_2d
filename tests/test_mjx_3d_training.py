@@ -29,6 +29,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(callable(train_mjx_3d_residual_ppo.main))
         self.assertEqual(args.preset, "smoke")
+        self.assertEqual(args.geometry, "pupper_open60")
         self.assertEqual(args.recipe, "anchored_v1")
         self.assertEqual(args.physics_profile, "cg12")
         self.assertEqual(args.curriculum, "none")

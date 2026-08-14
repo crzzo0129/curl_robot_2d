@@ -264,7 +264,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER)
     parser.add_argument(
-        "--geometry", choices=GEOMETRY_NAMES_3D, default="baseline"
+        "--geometry", choices=GEOMETRY_NAMES_3D, default="pupper_open60"
     )
     parser.add_argument("--minimum-foot-gap-mm", type=float)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float)

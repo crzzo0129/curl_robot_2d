@@ -333,7 +333,7 @@ def parse_args(argv=None):
     parser.add_argument("rollout", type=Path)
     parser.add_argument("--model-xml", type=Path)
     parser.add_argument(
-        "--geometry", choices=GEOMETRY_NAMES_3D, default="baseline"
+        "--geometry", choices=GEOMETRY_NAMES_3D, default="pupper_open60"
     )
     parser.add_argument(
         "--physics-profile",

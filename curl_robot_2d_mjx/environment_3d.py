@@ -108,6 +108,64 @@ FOOT_GEOM_NAMES_3D = (
     "rear_left_foot_proxy",
     "rear_right_foot_proxy",
 )
+PUPPER_JOINT_NAMES_3D = tuple(
+    f"{leg}_{joint}"
+    for leg in ("front_left", "front_right", "rear_left", "rear_right")
+    for joint in ("hip_abduction", "hip", "knee")
+)
+
+
+def validate_rolling_morphology_3d(model, geometry: str) -> None:
+    """Reject a model whose joint/actuator contract cannot drive rolling."""
+
+    import mujoco
+
+    expected_names = (
+        PUPPER_JOINT_NAMES_3D
+        if geometry == "pupper_open60"
+        else JOINT_NAMES_3D
+    )
+    if model.nu != len(expected_names):
+        raise ValueError(
+            f"{geometry} rolling model has {model.nu} actuators; "
+            f"expected {len(expected_names)}"
+        )
+    for joint_name in expected_names:
+        joint_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+        )
+        actuator_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{joint_name}_servo"
+        )
+        if min(joint_id, actuator_id) < 0:
+            raise ValueError(f"incomplete rolling joint/actuator: {joint_name}")
+        if int(model.actuator_trnid[actuator_id, 0]) != joint_id:
+            raise ValueError(
+                f"rolling actuator is bound to the wrong joint: {joint_name}_servo"
+            )
+
+
+def rolling_target_ctrl_3d(
+    xp,
+    compact_ctrl,
+    actuator_ids,
+    action,
+    action_scales,
+    joint_low,
+    joint_high,
+):
+    """Embed the eight rolling targets in either an 8- or 12-actuator model."""
+
+    controlled_target = xp.clip(
+        compact_ctrl[actuator_ids] + action * action_scales,
+        joint_low,
+        joint_high,
+    )
+    if hasattr(compact_ctrl, "at"):
+        return compact_ctrl.at[actuator_ids].set(controlled_target)
+    target = compact_ctrl.copy()
+    target[actuator_ids] = controlled_target
+    return target
 
 
 def duplicate_planar_action_3d(xp, planar_action):
@@ -378,6 +436,7 @@ def make_brax_env_3d(
                 foot_diameter_m=2.0 * self.geometry_parameters.foot_radius,
             )
             self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
+            validate_rolling_morphology_3d(self.mj_model, task.geometry)
             apply_physics_options_3d(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)
             self.mjx_model = mjx.put_model(self.mj_model)
@@ -472,6 +531,30 @@ def make_brax_env_3d(
             )
             self.joint_dof_indices = jp.asarray(
                 [int(self.mj_model.jnt_dofadr[joint_id]) for joint_id in joint_ids]
+            )
+            locked_joint_ids = (
+                [
+                    mujoco.mj_name2id(
+                        self.mj_model,
+                        mujoco.mjtObj.mjOBJ_JOINT,
+                        f"{leg}_hip_abduction",
+                    )
+                    for leg in (
+                        "front_left",
+                        "front_right",
+                        "rear_left",
+                        "rear_right",
+                    )
+                ]
+                if task.geometry == "pupper_open60"
+                else []
+            )
+            self.locked_joint_dof_indices = jp.asarray(
+                [
+                    int(self.mj_model.jnt_dofadr[joint_id])
+                    for joint_id in locked_joint_ids
+                ],
+                dtype=jp.int32,
             )
             self.joint_low = jp.asarray(
                 [self.mj_model.jnt_range[joint_id, 0] for joint_id in joint_ids]
@@ -600,6 +683,9 @@ def make_brax_env_3d(
                     minval=-task.reset_velocity_noise,
                     maxval=task.reset_velocity_noise,
                 )
+                velocity_noise = velocity_noise.at[
+                    self.locked_joint_dof_indices
+                ].set(0.0)
             else:
                 (
                     joint_common_key,
@@ -671,13 +757,17 @@ def make_brax_env_3d(
                 oscillator_phase,
                 jp.zeros((), dtype=jp.float32),
             )
-            start_ctrl = jp.clip(
-                self.compact_ctrl + cem_action * self.action_scales,
+            start_ctrl = rolling_target_ctrl_3d(
+                jp,
+                self.compact_ctrl,
+                self.actuator_ids,
+                cem_action,
+                self.action_scales,
                 self.joint_low,
                 self.joint_high,
             )
             noisy_start_ctrl = jp.clip(
-                start_ctrl + joint_noise,
+                start_ctrl[self.actuator_ids] + joint_noise,
                 self.joint_low,
                 self.joint_high,
             )
@@ -805,9 +895,12 @@ def make_brax_env_3d(
                     -1.0,
                     1.0,
                 )
-                current_target = jp.clip(
-                    self.compact_ctrl
-                    + current_action * self.action_scales,
+                current_target = rolling_target_ctrl_3d(
+                    jp,
+                    self.compact_ctrl,
+                    self.actuator_ids,
+                    current_action,
+                    self.action_scales,
                     self.joint_low,
                     self.joint_high,
                 )
