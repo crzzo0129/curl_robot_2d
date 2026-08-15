@@ -13,6 +13,7 @@ def zero_inputs():
     zero = np.asarray(0.0, dtype=np.float32)
     return {
         "forward_velocity_error": zero,
+        "overspeed": zero,
         "normalized_forward_velocity": zero,
         "upright_tilt": zero,
         "root_height_error": zero,
@@ -93,6 +94,18 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         self.assertAlmostEqual(
             float(terms["forward_progress"]), upright_gate
         )
+
+    def test_overspeed_is_a_bounded_penalty_without_upright_gating(self) -> None:
+        config = Walking3DRewardConfig(
+            overspeed=1.0, overspeed_scale_m_s=0.15
+        )
+        inputs = zero_inputs()
+        inputs["overspeed"] = np.asarray(0.30)
+        inputs["upright_tilt"] = np.asarray(1.0)
+
+        terms = reward_terms_walking_3d(np, config, inputs)
+
+        self.assertAlmostEqual(float(terms["overspeed"]), -1.0)
 
     def test_touchdown_air_time_is_rewarded_without_phase_schedule(self) -> None:
         inputs = zero_inputs()

@@ -8,6 +8,7 @@ from dataclasses import dataclass
 WALKING_REWARD_TERM_NAMES_3D = (
     "alive",
     "velocity_tracking",
+    "overspeed",
     "yaw_rate_tracking",
     "forward_progress",
     "upright",
@@ -38,6 +39,9 @@ class Walking3DRewardConfig:
     alive: float = 0.0
     velocity_tracking: float = 2.00
     velocity_tracking_sigma_m_s: float = 0.20
+    overspeed: float = 0.0
+    overspeed_margin_m_s: float = 0.05
+    overspeed_scale_m_s: float = 0.15
     yaw_rate_tracking: float = 0.75
     yaw_rate_tracking_sigma_rad_s: float = 0.35
     forward_progress: float = 0.0
@@ -85,6 +89,7 @@ class Walking3DRewardConfig:
 
 
 def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
+    overspeed_scale = max(config.overspeed_scale_m_s, 1.0e-6)
     planar_velocity_error = (
         inputs["planar_velocity_error_norm"]
         if "planar_velocity_error_norm" in inputs
@@ -94,6 +99,14 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
         -xp.square(
             planar_velocity_error / config.velocity_tracking_sigma_m_s
         )
+    )
+    overspeed_cost = xp.square(
+        xp.clip(
+            inputs.get("overspeed", xp.asarray(0.0)),
+            0.0,
+            overspeed_scale,
+        )
+        / overspeed_scale
     )
     yaw_rate_error = inputs.get("yaw_rate_error", xp.asarray(0.0))
     yaw_rate_score = xp.exp(
@@ -153,6 +166,7 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
         "velocity_tracking": (
             config.velocity_tracking * velocity_score * upright_score
         ),
+        "overspeed": -config.overspeed * overspeed_cost,
         "yaw_rate_tracking": config.yaw_rate_tracking * yaw_rate_score,
         "forward_progress": (
             config.forward_progress

@@ -64,6 +64,13 @@ def heading_frame_planar_velocity_3d(xp, rotation, world_linear_velocity):
     )
 
 
+def torso_local_points_3d(xp, rotation, torso_position, world_points):
+    """Express world points in the translating and rotating torso frame."""
+
+    del xp
+    return (world_points - torso_position) @ rotation
+
+
 def normalized_command_progress_3d(xp, planar_velocity, command):
     """Target-relative directional progress, saturated at commanded speed."""
 
@@ -78,29 +85,40 @@ def normalized_command_progress_3d(xp, planar_velocity, command):
     )
 
 
+def command_overspeed_3d(xp, planar_velocity, command, margin_m_s):
+    """Return positive speed excess along a nonzero planar command."""
+
+    command_speed = xp.linalg.norm(command[:2])
+    command_direction = command[:2] / xp.maximum(command_speed, 1.0e-6)
+    directional_speed = xp.dot(planar_velocity[:2], command_direction)
+    return xp.where(
+        command_speed > 0.05,
+        xp.maximum(directional_speed - command_speed - margin_m_s, 0.0),
+        xp.asarray(0.0),
+    )
+
+
 def swing_clearance_reward_3d(
     xp,
     foot_contact,
     foot_height,
-    foot_velocity_xy,
-    root_velocity_xy,
+    torso_local_foot_velocity_xy,
     *,
     clearance_m,
     swing_speed_m_s,
 ):
     """Reward useful swing clearance without rewarding a held-up foot.
 
-    Planar foot speed is measured relative to the root, so a rigid forward
-    lunge does not masquerade as a leg swing.  Averaging over all four feet
-    also keeps the scale independent of the number of feet currently airborne.
+    Foot speed must already be expressed in the torso frame, so neither rigid
+    translation nor rotation can masquerade as a leg swing.  Averaging over
+    all four feet keeps the scale independent of the airborne foot count.
     """
 
     swing = ~foot_contact
     clearance_fraction = xp.clip(
         foot_height / max(clearance_m, 1.0e-4), 0.0, 1.0
     )
-    relative_foot_velocity_xy = foot_velocity_xy - root_velocity_xy
-    swing_speed = xp.linalg.norm(relative_foot_velocity_xy, axis=1)
+    swing_speed = xp.linalg.norm(torso_local_foot_velocity_xy, axis=1)
     swing_speed_fraction = xp.clip(
         swing_speed / max(swing_speed_m_s, 1.0e-4), 0.0, 1.0
     )
@@ -418,6 +436,7 @@ def make_brax_walking_env_3d(
                 "command_lateral_velocity_m_s": zero,
                 "command_yaw_rate_rad_s": zero,
                 "planar_velocity_error_m_s": zero,
+                "overspeed_m_s": zero,
                 "yaw_rate_error_rad_s": zero,
                 "failed": zero,
                 "timeout": zero,
@@ -486,11 +505,21 @@ def make_brax_walking_env_3d(
             contacts = self._contact_metrics(data)
             body = self._body_metrics(data)
             foot_position = data.site_xpos[self.foot_site_ids]
+            torso_rotation = jp.reshape(
+                data.xmat[self.torso_body_id], (3, 3)
+            )
+            foot_position_local = torso_local_points_3d(
+                jp,
+                torso_rotation,
+                data.xpos[self.torso_body_id],
+                foot_position,
+            )
             last_foot_contact = contacts["foot_ground"] > 0.0
             info = {
                 "initial_root_y": data.qpos[1],
                 "previous_root_x": data.qpos[0],
                 "previous_foot_position": foot_position,
+                "previous_foot_position_local": foot_position_local,
                 "last_foot_contact": last_foot_contact,
                 "foot_air_time": jp.zeros((4,), dtype=jp.float32),
                 "last_policy_action": jp.zeros(
@@ -607,6 +636,12 @@ def make_brax_walking_env_3d(
             planar_velocity_error = jp.linalg.norm(
                 reward_planar_velocity - command[:2]
             )
+            overspeed = command_overspeed_3d(
+                jp,
+                reward_planar_velocity,
+                command,
+                reward_settings.overspeed_margin_m_s,
+            )
             roll_pitch_angular_velocity_squared = jp.mean(
                 jp.square(body_angular_velocity[:2])
             )
@@ -623,12 +658,21 @@ def make_brax_walking_env_3d(
                 foot_position[:, :2]
                 - state.info["previous_foot_position"][:, :2]
             ) / control_dt
+            foot_position_local = torso_local_points_3d(
+                jp,
+                rotation,
+                data.xpos[self.torso_body_id],
+                foot_position,
+            )
+            foot_velocity_local_xy = (
+                foot_position_local[:, :2]
+                - state.info["previous_foot_position_local"][:, :2]
+            ) / control_dt
             swing_clearance_reward = swing_clearance_reward_3d(
                 jp,
                 foot_contact,
                 foot_height,
-                foot_velocity_xy,
-                data.qvel[:2],
+                foot_velocity_local_xy,
                 clearance_m=reward_settings.swing_clearance_m,
                 swing_speed_m_s=(
                     reward_settings.swing_clearance_speed_m_s
@@ -779,6 +823,7 @@ def make_brax_walking_env_3d(
                 reward_settings,
                 {
                     "planar_velocity_error_norm": planar_velocity_error,
+                    "overspeed": overspeed,
                     "yaw_rate_error": yaw_rate - command[2],
                     "normalized_forward_velocity": (
                         normalized_command_progress_3d(
@@ -847,6 +892,7 @@ def make_brax_walking_env_3d(
                 **state.info,
                 "previous_root_x": root_x,
                 "previous_foot_position": foot_position,
+                "previous_foot_position_local": foot_position_local,
                 "last_foot_contact": foot_contact,
                 "foot_air_time": foot_air_time,
                 "last_policy_action": policy_action,
@@ -918,6 +964,7 @@ def make_brax_walking_env_3d(
                 "command_lateral_velocity_m_s": command[1],
                 "command_yaw_rate_rad_s": command[2],
                 "planar_velocity_error_m_s": planar_velocity_error,
+                "overspeed_m_s": overspeed,
                 "yaw_rate_error_rad_s": jp.abs(yaw_rate - command[2]),
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),

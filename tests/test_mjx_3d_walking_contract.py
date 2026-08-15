@@ -21,10 +21,12 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_MODEL_PATH_3D,
     WALKING_JOINT_NAMES_3D,
     WALKING_OBSERVATION_SIZE_3D,
+    command_overspeed_3d,
     freejoint_body_velocity_3d,
     heading_frame_planar_velocity_3d,
     normalized_command_progress_3d,
     swing_clearance_reward_3d,
+    torso_local_points_3d,
     validate_walking_morphology_3d,
 )
 from curl_robot_2d_mjx.environment_3d import model_path_3d
@@ -147,32 +149,70 @@ class MJX3DWalkingContractTest(unittest.TestCase):
     def test_swing_clearance_requires_relative_horizontal_foot_motion(self) -> None:
         contact = np.asarray((False, True, True, True))
         height = np.asarray((0.015, 0.0, 0.0, 0.0))
-        root_velocity = np.asarray((0.2, 0.0))
-        rigid_foot_velocity = np.tile(root_velocity, (4, 1))
+        rigid_foot_velocity = np.zeros((4, 2))
 
         rigid_reward = swing_clearance_reward_3d(
             np,
             contact,
             height,
             rigid_foot_velocity,
-            root_velocity,
             clearance_m=0.015,
             swing_speed_m_s=0.10,
         )
         swinging_foot_velocity = rigid_foot_velocity.copy()
-        swinging_foot_velocity[0, 0] += 0.10
+        swinging_foot_velocity[0, 0] = 0.10
         swing_reward = swing_clearance_reward_3d(
             np,
             contact,
             height,
             swinging_foot_velocity,
-            root_velocity,
             clearance_m=0.015,
             swing_speed_m_s=0.10,
         )
 
         self.assertAlmostEqual(float(rigid_reward), 0.0)
         self.assertAlmostEqual(float(swing_reward), 0.25)
+
+    def test_torso_local_feet_ignore_rigid_translation_and_rotation(self) -> None:
+        theta = np.deg2rad(35.0)
+        rotation = np.asarray(
+            (
+                (np.cos(theta), -np.sin(theta), 0.0),
+                (np.sin(theta), np.cos(theta), 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        )
+        local_points = np.asarray(
+            ((0.1, 0.05, -0.2), (-0.1, -0.05, -0.2))
+        )
+        torso_position = np.asarray((1.2, -0.4, 0.3))
+        world_points = local_points @ rotation.T + torso_position
+
+        recovered = torso_local_points_3d(
+            np, rotation, torso_position, world_points
+        )
+
+        np.testing.assert_allclose(recovered, local_points, atol=1.0e-8)
+
+    def test_command_overspeed_has_a_margin(self) -> None:
+        command = np.asarray((0.1, 0.0, 0.0))
+
+        self.assertAlmostEqual(
+            float(
+                command_overspeed_3d(
+                    np, np.asarray((0.15, 0.0)), command, 0.05
+                )
+            ),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            float(
+                command_overspeed_3d(
+                    np, np.asarray((0.4, 0.0)), command, 0.05
+                )
+            ),
+            0.25,
+        )
 
     def test_model_matches_mirrored_planar_leg_morphology(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(WALKING_MODEL_PATH_3D))

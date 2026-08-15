@@ -188,10 +188,10 @@ WALKING_RECIPES_3D = {
             "learning_rate": 2e-5,
             "adaptive_kl_min_lr": 2e-6,
             "adaptive_kl_max_lr": 2e-5,
-            "entropy_cost": 0.005,
+            "entropy_cost": 0.01,
             "discounting": 0.99,
             "reward_scaling": 0.05,
-            "init_noise_std": 0.15,
+            "init_noise_std": 0.10,
             "clipping_epsilon": 0.20,
             "max_grad_norm": 1.0,
             "desired_kl": 0.003,
@@ -200,6 +200,9 @@ WALKING_RECIPES_3D = {
         "reward": {
             "velocity_tracking": 4.0,
             "velocity_tracking_sigma_m_s": 0.05,
+            "overspeed": 1.0,
+            "overspeed_margin_m_s": 0.05,
+            "overspeed_scale_m_s": 0.15,
             "yaw_rate_tracking": 0.25,
             "forward_progress": 0.0,
             "upright": 0.2,
@@ -207,6 +210,7 @@ WALKING_RECIPES_3D = {
             "angular_velocity": 0.15,
             "foot_air_time": 0.8,
             "swing_clearance": 0.15,
+            "swing_clearance_m": 0.025,
             "swing_clearance_speed_m_s": 0.10,
             "action_rate": 0.04,
             "termination": 20.0,
@@ -256,6 +260,7 @@ PER_STEP_WALKING_METRICS_3D = (
     "command_lateral_velocity_m_s",
     "command_yaw_rate_rad_s",
     "planar_velocity_error_m_s",
+    "overspeed_m_s",
     "yaw_rate_error_rad_s",
 )
 
@@ -514,6 +519,7 @@ def _format_eval_report_walking_3d(
         (
             f"  tracking planar_error="
             f"{selection['planar_tracking_error_m_s']:.3f}m/s "
+            f"overspeed={_metric(metrics, 'eval/avg_overspeed_m_s'):.3f}m/s "
             f"yaw_rate_error="
             f"{selection['yaw_tracking_error_rad_s']:.3f}rad/s"
         ),
