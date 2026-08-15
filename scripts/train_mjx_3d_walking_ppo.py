@@ -36,6 +36,7 @@ from scripts.train_mjx_ppo import (
 
 
 WALKING_ACTOR_MEAN_INIT_SCALE = 1.0e-3
+WALKING_ACTOR_MEAN_CLIP_SCALE = 1.0
 
 
 PRESETS_WALKING_3D = {
@@ -181,7 +182,7 @@ WALKING_RECIPES_3D = {
             "entropy_cost": 0.0,
             "discounting": 0.99,
             "reward_scaling": 0.05,
-            "init_noise_std": 0.30,
+            "init_noise_std": 0.08,
             "clipping_epsilon": 0.20,
             "max_grad_norm": 1.0,
             "desired_kl": 0.003,
@@ -189,8 +190,9 @@ WALKING_RECIPES_3D = {
         },
         "reward": {
             "velocity_tracking": 2.0,
-            "velocity_tracking_sigma_m_s": 0.10,
-            "forward_progress": 0.0,
+            "velocity_tracking_sigma_m_s": 0.05,
+            "yaw_rate_tracking": 0.25,
+            "forward_progress": 0.75,
             "upright": 1.0,
             "angular_velocity": 0.15,
             "action_rate": 0.04,
@@ -312,6 +314,7 @@ def _walking_network_factory(
             state_dependent_std=False,
             mean_kernel_init_fn=jnn.initializers.uniform,
             mean_kernel_init_kwargs={"scale": WALKING_ACTOR_MEAN_INIT_SCALE},
+            mean_clip_scale=WALKING_ACTOR_MEAN_CLIP_SCALE,
             **kwargs,
         )
 
@@ -1121,6 +1124,7 @@ def main(argv=None) -> None:
         "policy_state_dependent_std": False,
         "policy_mean_kernel_init": "uniform",
         "policy_mean_kernel_init_scale": WALKING_ACTOR_MEAN_INIT_SCALE,
+        "policy_mean_clip_scale": WALKING_ACTOR_MEAN_CLIP_SCALE,
         "init_noise_std": args.init_noise_std,
         "observation_normalization": False,
         "observation_scaling": "fixed_task_scales",
@@ -1187,6 +1191,7 @@ def main(argv=None) -> None:
         f"lr_schedule={args.learning_rate_schedule}\n"
         f"  policy=normal state_dependent_std=false "
         f"mean_init_scale={WALKING_ACTOR_MEAN_INIT_SCALE:g} "
+        f"mean_clip={WALKING_ACTOR_MEAN_CLIP_SCALE:g} "
         f"init_std={args.init_noise_std:g} "
         f"deterministic_eval={args.deterministic_eval}\n"
         f"  observation=fixed_task_scaling bootstrap_timeout=true\n"

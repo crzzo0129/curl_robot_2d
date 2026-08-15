@@ -68,9 +68,11 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.updates_per_batch, 1)
         self.assertEqual(args.learning_rate, 2e-5)
         self.assertEqual(args.reward_scaling, 0.05)
+        self.assertEqual(args.init_noise_std, 0.08)
         self.assertEqual(args.desired_kl, 0.003)
-        self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.10)
-        self.assertEqual(reward.forward_progress, 0.0)
+        self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.05)
+        self.assertEqual(reward.yaw_rate_tracking, 0.25)
+        self.assertEqual(reward.forward_progress, 0.75)
         self.assertEqual(reward.termination, 20.0)
 
     def test_noise_flags_can_override_recipe_defaults(self) -> None:
@@ -105,6 +107,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             'state_dependent_std=False',
             "mean_kernel_init_fn=jnn.initializers.uniform",
             'mean_kernel_init_kwargs={"scale": WALKING_ACTOR_MEAN_INIT_SCALE}',
+            "mean_clip_scale=WALKING_ACTOR_MEAN_CLIP_SCALE",
             "deterministic_eval=args.deterministic_eval",
             "max_grad_norm=args.max_grad_norm",
             "learning_rate_schedule=args.learning_rate_schedule",

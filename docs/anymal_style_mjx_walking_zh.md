@@ -40,13 +40,15 @@ python -m scripts.train_mjx_3d_walking_ppo \
   --steps 3000000 \
   --num-evals 16 \
   --save-ppo-checkpoints \
-  --ppo-checkpoint-dir results/mjx_pupper_forward_stage1_v2/ppo_checkpoint \
-  --out results/mjx_pupper_forward_stage1_v2
+  --ppo-checkpoint-dir results/mjx_pupper_forward_stage1_v3/ppo_checkpoint \
+  --out results/mjx_pupper_forward_stage1_v3
 ```
 
 当前实现对 48 维 observation 使用固定物理缩放，不再同时启用 PPO 的运行时 observation normalization。自由关节线速度由世界坐标旋转到机体坐标，MuJoCo 已经以机体局部坐标给出的角速度则不再重复旋转。动作从第一步起直接作为 `stand + scale * action` 的关节目标，不再使用启动 ramp。
 
-Actor 均值输出层使用范围为 `1e-3` 的小随机初始化、bias 为框架默认的零；这不是固定零输出，参数会正常接收梯度。H200 preset 使用 `batch_size=256`、`num_minibatches=8`，rollout quantum 为 40,960；300 万请求步、16 次 eval 时约有 75 次 PPO 更新，而不是旧配置的约 5 次。stage-1 只保留速度命令跟踪，不再叠加与目标速度无关的原始 forward-progress 奖励。
+Actor 均值输出层使用范围为 `1e-3` 的小随机初始化、bias 为框架默认的零；这不是固定零输出，参数会正常接收梯度。H200 preset 使用 `batch_size=256`、`num_minibatches=8`，rollout quantum 为 40,960；300 万请求步、16 次 eval 时约有 75 次 PPO 更新，而不是旧配置的约 5 次。
+
+在稳定站立被错误选成局部最优的诊断后，stage-1 改为目标归一化 progress：沿命令方向的速度除以目标速度，并在达到目标后饱和为 1，因此超速不会继续增加 progress reward。该项权重为 `0.75`，速度跟踪核收紧到 `0.05 m/s`，二者都乘 upright score，避免倾斜猛冲获得任务奖励。直行阶段的 yaw-rate 权重降为 `0.25`，初始探索标准差降为 `0.08`，Actor mean 限制在 `[-1, 1]`。
 
 时间上限通过环境的 `info["time_out"]` 明确交给 Brax PPO，并允许 value function bootstrap；真正跌倒仍是普通 termination，不做 bootstrap。最优 checkpoint 按“完整存活、存活时长、upright 失败率、命令跟踪、进度和接触质量”的字典序选择，后面的接触改善不能覆盖前面的存活退化。
 

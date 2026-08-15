@@ -22,6 +22,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_JOINT_NAMES_3D,
     WALKING_OBSERVATION_SIZE_3D,
     freejoint_body_velocity_3d,
+    normalized_command_progress_3d,
     validate_walking_morphology_3d,
 )
 from curl_robot_2d_mjx.environment_3d import model_path_3d
@@ -69,6 +70,46 @@ class MJX3DWalkingContractTest(unittest.TestCase):
 
         np.testing.assert_allclose(linear, (1.0, 0.0, 0.0), atol=1.0e-8)
         np.testing.assert_allclose(angular, (0.1, 0.2, 0.3), atol=1.0e-8)
+
+    def test_command_progress_is_target_relative_and_saturating(self) -> None:
+        command = np.asarray((0.1, 0.0, 0.0))
+
+        self.assertAlmostEqual(
+            float(
+                normalized_command_progress_3d(
+                    np, np.asarray((0.0, 0.0)), command
+                )
+            ),
+            0.0,
+        )
+        self.assertAlmostEqual(
+            float(
+                normalized_command_progress_3d(
+                    np, np.asarray((0.05, 0.0)), command
+                )
+            ),
+            0.5,
+        )
+        for forward_speed in (0.1, 0.4):
+            with self.subTest(forward_speed=forward_speed):
+                self.assertAlmostEqual(
+                    float(
+                        normalized_command_progress_3d(
+                            np,
+                            np.asarray((forward_speed, 0.0)),
+                            command,
+                        )
+                    ),
+                    1.0,
+                )
+        self.assertAlmostEqual(
+            float(
+                normalized_command_progress_3d(
+                    np, np.asarray((-0.1, 0.0)), command
+                )
+            ),
+            0.0,
+        )
 
     def test_model_matches_mirrored_planar_leg_morphology(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(WALKING_MODEL_PATH_3D))

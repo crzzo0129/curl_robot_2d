@@ -149,10 +149,14 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
     )
     return {
         "alive": config.alive * (1.0 - inputs["failed"]),
-        "velocity_tracking": config.velocity_tracking * velocity_score,
+        "velocity_tracking": (
+            config.velocity_tracking * velocity_score * upright_score
+        ),
         "yaw_rate_tracking": config.yaw_rate_tracking * yaw_rate_score,
         "forward_progress": (
-            config.forward_progress * inputs["normalized_forward_velocity"]
+            config.forward_progress
+            * inputs["normalized_forward_velocity"]
+            * upright_score
         ),
         "upright": config.upright * upright_score,
         "height": -config.height * height_cost,

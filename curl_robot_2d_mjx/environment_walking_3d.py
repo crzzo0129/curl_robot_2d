@@ -41,6 +41,20 @@ def freejoint_body_velocity_3d(xp, rotation, qvel):
     """
 
     return rotation.T @ qvel[:3], qvel[3:6]
+
+
+def normalized_command_progress_3d(xp, planar_velocity, command):
+    """Target-relative directional progress, saturated at commanded speed."""
+
+    command_speed = xp.linalg.norm(command[:2])
+    command_direction = command[:2] / xp.maximum(command_speed, 1.0e-6)
+    directional_speed = xp.dot(planar_velocity[:2], command_direction)
+    progress_ratio = directional_speed / xp.maximum(command_speed, 1.0e-6)
+    return xp.where(
+        command_speed > 0.05,
+        xp.clip(progress_ratio, 0.0, 1.0),
+        xp.asarray(0.0),
+    )
 WALKING_JOINT_NAMES_3D = tuple(
     f"{leg}_{joint}"
     for leg in ("front_left", "front_right", "rear_left", "rear_right")
@@ -711,11 +725,10 @@ def make_brax_walking_env_3d(
                 {
                     "planar_velocity_error_norm": planar_velocity_error,
                     "yaw_rate_error": yaw_rate - command[2],
-                    "normalized_forward_velocity": jp.clip(
-                        jp.dot(body_linear_velocity[:2], command[:2])
-                        / jp.maximum(jp.linalg.norm(command[:2]), 0.05),
-                        -1.0,
-                        1.5,
+                    "normalized_forward_velocity": (
+                        normalized_command_progress_3d(
+                            jp, body_linear_velocity[:2], command
+                        )
                     ),
                     "upright_tilt": body["upright_tilt"],
                     "root_height_error": root_height_error,

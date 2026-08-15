@@ -77,6 +77,23 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         self.assertAlmostEqual(float(terms["swing_clearance"]), -0.025)
         self.assertAlmostEqual(float(terms["collision"]), -2.70, places=6)
 
+    def test_task_rewards_are_gated_by_upright_posture(self) -> None:
+        config = Walking3DRewardConfig(forward_progress=1.0)
+        inputs = zero_inputs()
+        inputs["normalized_forward_velocity"] = np.asarray(1.0)
+        inputs["upright_tilt"] = np.asarray(config.upright_sigma_rad)
+
+        terms = reward_terms_walking_3d(np, config, inputs)
+        upright_gate = np.exp(-1.0)
+
+        self.assertAlmostEqual(
+            float(terms["velocity_tracking"]),
+            config.velocity_tracking * upright_gate,
+        )
+        self.assertAlmostEqual(
+            float(terms["forward_progress"]), upright_gate
+        )
+
     def test_touchdown_air_time_is_rewarded_without_phase_schedule(self) -> None:
         inputs = zero_inputs()
         inputs["foot_air_time_reward"] = np.asarray(0.5)
