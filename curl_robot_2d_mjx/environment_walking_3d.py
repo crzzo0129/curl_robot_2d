@@ -76,6 +76,41 @@ def normalized_command_progress_3d(xp, planar_velocity, command):
         xp.clip(progress_ratio, 0.0, 1.0),
         xp.asarray(0.0),
     )
+
+
+def swing_clearance_reward_3d(
+    xp,
+    foot_contact,
+    foot_height,
+    foot_velocity_xy,
+    root_velocity_xy,
+    *,
+    clearance_m,
+    swing_speed_m_s,
+):
+    """Reward useful swing clearance without rewarding a held-up foot.
+
+    Planar foot speed is measured relative to the root, so a rigid forward
+    lunge does not masquerade as a leg swing.  Averaging over all four feet
+    also keeps the scale independent of the number of feet currently airborne.
+    """
+
+    swing = ~foot_contact
+    clearance_fraction = xp.clip(
+        foot_height / max(clearance_m, 1.0e-4), 0.0, 1.0
+    )
+    relative_foot_velocity_xy = foot_velocity_xy - root_velocity_xy
+    swing_speed = xp.linalg.norm(relative_foot_velocity_xy, axis=1)
+    swing_speed_fraction = xp.clip(
+        swing_speed / max(swing_speed_m_s, 1.0e-4), 0.0, 1.0
+    )
+    return xp.mean(
+        swing.astype(foot_height.dtype)
+        * clearance_fraction
+        * swing_speed_fraction
+    )
+
+
 WALKING_JOINT_NAMES_3D = tuple(
     f"{leg}_{joint}"
     for leg in ("front_left", "front_right", "rear_left", "rear_right")
@@ -361,7 +396,7 @@ def make_brax_walking_env_3d(
                 "heading_error_rad": zero,
                 "foot_contact_count": zero,
                 "foot_air_time_reward": zero,
-                "swing_clearance_cost": zero,
+                "swing_clearance_reward": zero,
                 "foot_slip_rms_m_s": zero,
                 "nonfoot_ground_contact_count": zero,
                 "nonfoot_ground_depth_m": zero,
@@ -584,25 +619,21 @@ def make_brax_walking_env_3d(
             foot_height = jp.maximum(
                 foot_position[:, 2] - task.foot_radius_m, 0.0
             )
-            swing = ~foot_contact
-            swing_count = jp.maximum(jp.sum(swing), 1)
-            clearance_shortfall = jp.maximum(
-                reward_settings.swing_clearance_m - foot_height, 0.0
-            )
-            swing_clearance_cost = (
-                jp.sum(
-                    swing
-                    * jp.square(
-                        clearance_shortfall
-                        / max(reward_settings.swing_clearance_m, 1.0e-4)
-                    )
-                )
-                / swing_count.astype(jp.float32)
-            )
             foot_velocity_xy = (
                 foot_position[:, :2]
                 - state.info["previous_foot_position"][:, :2]
             ) / control_dt
+            swing_clearance_reward = swing_clearance_reward_3d(
+                jp,
+                foot_contact,
+                foot_height,
+                foot_velocity_xy,
+                data.qvel[:2],
+                clearance_m=reward_settings.swing_clearance_m,
+                swing_speed_m_s=(
+                    reward_settings.swing_clearance_speed_m_s
+                ),
+            )
             foot_slip_velocity_squared = (
                 jp.sum(
                     foot_contact
@@ -767,7 +798,7 @@ def make_brax_walking_env_3d(
                     "locomotion_active": (
                         jp.linalg.norm(command[:2]) > 0.05
                     ).astype(jp.float32),
-                    "swing_clearance_cost": swing_clearance_cost,
+                    "swing_clearance_reward": swing_clearance_reward,
                     "foot_slip_velocity_squared": (
                         foot_slip_velocity_squared
                     ),
@@ -855,7 +886,7 @@ def make_brax_walking_env_3d(
                 "heading_error_rad": body["heading_error"],
                 "foot_contact_count": contacts["foot_ground_count"],
                 "foot_air_time_reward": foot_air_time_reward,
-                "swing_clearance_cost": swing_clearance_cost,
+                "swing_clearance_reward": swing_clearance_reward,
                 "foot_slip_rms_m_s": jp.sqrt(foot_slip_velocity_squared),
                 "nonfoot_ground_contact_count": contacts[
                     "nonfoot_ground_count"

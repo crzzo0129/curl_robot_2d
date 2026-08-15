@@ -24,6 +24,40 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertEqual(args.physics_profile, "cg20")
 
+    def test_gpu_presets_provide_many_fresh_rollout_updates(self) -> None:
+        expected_updates = {"4090": 252, "h200": 495}
+
+        for preset, expected in expected_updates.items():
+            with self.subTest(preset=preset):
+                args = train_mjx_3d_residual_ppo.parse_args(
+                    ["--preset", preset]
+                )
+                values = train_mjx_3d_residual_ppo.PRESETS[preset].copy()
+                plan = train_mjx_3d_residual_ppo._curriculum_training_plan(
+                    args, values
+                )
+                counts = train_mjx_3d_residual_ppo._ppo_update_counts(
+                    plan,
+                    updates_per_batch=args.updates_per_batch,
+                    num_minibatches=values["num_minibatches"],
+                )
+
+                self.assertEqual(values["batch_size"], 256)
+                self.assertEqual(values["num_minibatches"], 8)
+                self.assertEqual(
+                    values["batch_size"] * values["num_minibatches"]
+                    % values["envs"],
+                    0,
+                )
+                self.assertEqual(
+                    plan[0]["schedule"]["rollout_quantum"], 40_960
+                )
+                self.assertEqual(counts["rollout_updates"], expected)
+                self.assertGreaterEqual(counts["rollout_updates"], 200)
+                self.assertEqual(
+                    counts["optimizer_steps"], expected * 4 * 8
+                )
+
     def test_training_entry_imports_without_jax(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args([])
 

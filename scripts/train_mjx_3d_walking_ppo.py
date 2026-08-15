@@ -102,7 +102,10 @@ WALKING_RECIPES_3D = {
             "terminate_nonfoot_contact_duration": 0.12,
             "terminate_self_contact_duration": 0.10,
             "updates_per_batch": 4,
+            "unroll_length": 20,
             "learning_rate": 3e-4,
+            "adaptive_kl_min_lr": 3e-5,
+            "adaptive_kl_max_lr": 3e-4,
             "entropy_cost": 1e-2,
             "discounting": 0.99,
             "reward_scaling": 1.0,
@@ -140,7 +143,10 @@ WALKING_RECIPES_3D = {
             "terminate_nonfoot_contact_duration": 0.12,
             "terminate_self_contact_duration": 0.10,
             "updates_per_batch": 4,
+            "unroll_length": 20,
             "learning_rate": 2e-4,
+            "adaptive_kl_min_lr": 2e-5,
+            "adaptive_kl_max_lr": 2e-4,
             "entropy_cost": 1e-2,
             "discounting": 0.99,
             "reward_scaling": 1.0,
@@ -168,8 +174,8 @@ WALKING_RECIPES_3D = {
             "no_observation_noise": True,
             "no_domain_randomization": True,
             "action_scale_abduction": 0.06,
-            "action_scale_hip": 0.25,
-            "action_scale_knee": 0.35,
+            "action_scale_hip": 0.50,
+            "action_scale_knee": 0.65,
             "reset_joint_noise": 0.0,
             "reset_velocity_noise": 0.0,
             "reset_root_xy_velocity_noise": 0.0,
@@ -178,11 +184,14 @@ WALKING_RECIPES_3D = {
             "terminate_nonfoot_contact_duration": 0.12,
             "terminate_self_contact_duration": 0.10,
             "updates_per_batch": 1,
+            "unroll_length": 40,
             "learning_rate": 2e-5,
-            "entropy_cost": 0.0,
+            "adaptive_kl_min_lr": 2e-6,
+            "adaptive_kl_max_lr": 2e-5,
+            "entropy_cost": 0.005,
             "discounting": 0.99,
             "reward_scaling": 0.05,
-            "init_noise_std": 0.08,
+            "init_noise_std": 0.15,
             "clipping_epsilon": 0.20,
             "max_grad_norm": 1.0,
             "desired_kl": 0.003,
@@ -196,6 +205,9 @@ WALKING_RECIPES_3D = {
             "upright": 0.2,
             "upright_sigma_rad": 0.20,
             "angular_velocity": 0.15,
+            "foot_air_time": 0.8,
+            "swing_clearance": 0.15,
+            "swing_clearance_speed_m_s": 0.10,
             "action_rate": 0.04,
             "termination": 20.0,
             "severe_extra_termination": 0.0,
@@ -222,7 +234,7 @@ PER_STEP_WALKING_METRICS_3D = (
     "heading_error_rad",
     "foot_contact_count",
     "foot_air_time_reward",
-    "swing_clearance_cost",
+    "swing_clearance_reward",
     "foot_slip_rms_m_s",
     "nonfoot_ground_contact_count",
     "nonfoot_ground_depth_m",
@@ -515,7 +527,7 @@ def _format_eval_report_walking_3d(
             f"  feet    contacts="
             f"{_metric(metrics, 'eval/avg_foot_contact_count'):.2f} "
             f"air_time={_metric(metrics, 'eval/avg_foot_air_time_reward'):.3f} "
-            f"clearance={_metric(metrics, 'eval/avg_swing_clearance_cost'):.3f} "
+            f"clearance={_metric(metrics, 'eval/avg_swing_clearance_reward'):.3f} "
             f"slip={_metric(metrics, 'eval/avg_foot_slip_rms_m_s'):.3f}m/s"
         ),
         (
@@ -748,9 +760,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--terminate-self-contact-duration", type=float
     )
-    parser.add_argument("--unroll-length", type=int, default=20)
+    parser.add_argument("--unroll-length", type=int)
     parser.add_argument("--updates-per-batch", type=int)
     parser.add_argument("--learning-rate", type=float)
+    parser.add_argument("--adaptive-kl-min-lr", type=float)
+    parser.add_argument("--adaptive-kl-max-lr", type=float)
     parser.add_argument("--entropy-cost", type=float)
     parser.add_argument("--discounting", type=float)
     parser.add_argument("--reward-scaling", type=float)
@@ -861,6 +875,8 @@ def parse_args(argv=None):
         "action_scale_hip",
         "action_scale_knee",
         "learning_rate",
+        "adaptive_kl_min_lr",
+        "adaptive_kl_max_lr",
         "init_noise_std",
         "clipping_epsilon",
         "max_grad_norm",
@@ -871,6 +887,14 @@ def parse_args(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.command_forward_max < args.command_forward_min:
         parser.error("command forward range must be ordered")
+    if args.adaptive_kl_min_lr > args.adaptive_kl_max_lr:
+        parser.error("adaptive KL learning-rate range must be ordered")
+    if not (
+        args.adaptive_kl_min_lr
+        <= args.learning_rate
+        <= args.adaptive_kl_max_lr
+    ):
+        parser.error("--learning-rate must lie inside the adaptive KL bounds")
     for name in (
         "command_lateral_max",
         "command_yaw_rate_max",
@@ -1117,6 +1141,8 @@ def main(argv=None) -> None:
         "unroll_length": args.unroll_length,
         "updates_per_batch": args.updates_per_batch,
         "learning_rate": args.learning_rate,
+        "adaptive_kl_min_lr": args.adaptive_kl_min_lr,
+        "adaptive_kl_max_lr": args.adaptive_kl_max_lr,
         "entropy_cost": args.entropy_cost,
         "discounting": args.discounting,
         "reward_scaling": args.reward_scaling,
@@ -1189,7 +1215,9 @@ def main(argv=None) -> None:
         f"  ppo_clip={args.clipping_epsilon:g} "
         f"grad_norm={args.max_grad_norm:g} "
         f"desired_kl={args.desired_kl:g} "
-        f"lr_schedule={args.learning_rate_schedule}\n"
+        f"lr_schedule={args.learning_rate_schedule} "
+        f"lr_bounds=[{args.adaptive_kl_min_lr:g}, "
+        f"{args.adaptive_kl_max_lr:g}]\n"
         f"  policy=normal state_dependent_std=false "
         f"mean_init_scale={WALKING_ACTOR_MEAN_INIT_SCALE:g} "
         f"mean_clip={WALKING_ACTOR_MEAN_CLIP_SCALE:g} "
@@ -1207,6 +1235,8 @@ def main(argv=None) -> None:
         "max_grad_norm",
         "desired_kl",
         "learning_rate_schedule",
+        "learning_rate_schedule_min_lr",
+        "learning_rate_schedule_max_lr",
         "deterministic_eval",
         "bootstrap_on_timeout",
     }
@@ -1262,6 +1292,8 @@ def main(argv=None) -> None:
         max_grad_norm=args.max_grad_norm,
         desired_kl=args.desired_kl,
         learning_rate_schedule=args.learning_rate_schedule,
+        learning_rate_schedule_min_lr=args.adaptive_kl_min_lr,
+        learning_rate_schedule_max_lr=args.adaptive_kl_max_lr,
         deterministic_eval=args.deterministic_eval,
         network_factory=_walking_network_factory(
             args.hidden_layers,

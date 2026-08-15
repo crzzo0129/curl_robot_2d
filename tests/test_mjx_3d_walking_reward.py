@@ -22,7 +22,7 @@ def zero_inputs():
         "vertical_velocity": zero,
         "roll_pitch_angular_velocity_squared": zero,
         "foot_air_time_reward": zero,
-        "swing_clearance_cost": zero,
+        "swing_clearance_reward": zero,
         "foot_slip_velocity_squared": zero,
         "action_rate_cost": zero,
         "action_magnitude_cost": zero,
@@ -65,7 +65,7 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         inputs["foot_slip_velocity_squared"] = np.asarray(
             config.foot_slip_sigma_m_s**2
         )
-        inputs["swing_clearance_cost"] = np.asarray(0.5)
+        inputs["swing_clearance_reward"] = np.asarray(0.5)
         inputs["nonfoot_contact_active"] = np.asarray(1.0)
         inputs["nonfoot_depth"] = np.asarray(0.002)
 
@@ -74,7 +74,7 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         self.assertAlmostEqual(float(terms["height"]), 0.0)
         self.assertAlmostEqual(float(terms["vertical_velocity"]), -0.05)
         self.assertAlmostEqual(float(terms["foot_slip"]), -0.05)
-        self.assertAlmostEqual(float(terms["swing_clearance"]), -0.025)
+        self.assertAlmostEqual(float(terms["swing_clearance"]), 0.025)
         self.assertAlmostEqual(float(terms["collision"]), -2.70, places=6)
 
     def test_task_rewards_are_gated_by_upright_posture(self) -> None:

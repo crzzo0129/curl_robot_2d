@@ -43,6 +43,8 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.max_grad_norm, 1.0)
         self.assertEqual(args.desired_kl, 0.01)
         self.assertEqual(args.learning_rate_schedule, "ADAPTIVE_KL")
+        self.assertEqual(args.adaptive_kl_min_lr, 3e-5)
+        self.assertEqual(args.adaptive_kl_max_lr, 3e-4)
         self.assertTrue(args.deterministic_eval)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
@@ -66,9 +68,15 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.reset_root_xy_velocity_noise, 0.0)
         self.assertEqual(args.reset_root_yaw_rate_noise, 0.0)
         self.assertEqual(args.updates_per_batch, 1)
+        self.assertEqual(args.unroll_length, 40)
         self.assertEqual(args.learning_rate, 2e-5)
+        self.assertEqual(args.adaptive_kl_min_lr, 2e-6)
+        self.assertEqual(args.adaptive_kl_max_lr, 2e-5)
+        self.assertEqual(args.entropy_cost, 0.005)
         self.assertEqual(args.reward_scaling, 0.05)
-        self.assertEqual(args.init_noise_std, 0.08)
+        self.assertEqual(args.init_noise_std, 0.15)
+        self.assertEqual(args.action_scale_hip, 0.50)
+        self.assertEqual(args.action_scale_knee, 0.65)
         self.assertEqual(args.desired_kl, 0.003)
         self.assertEqual(reward.velocity_tracking, 4.0)
         self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.05)
@@ -76,6 +84,8 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.forward_progress, 0.0)
         self.assertEqual(reward.upright, 0.2)
         self.assertEqual(reward.upright_sigma_rad, 0.20)
+        self.assertEqual(reward.foot_air_time, 0.8)
+        self.assertEqual(reward.swing_clearance, 0.15)
         self.assertEqual(reward.termination, 20.0)
 
     def test_noise_flags_can_override_recipe_defaults(self) -> None:
@@ -114,6 +124,8 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             "deterministic_eval=args.deterministic_eval",
             "max_grad_norm=args.max_grad_norm",
             "learning_rate_schedule=args.learning_rate_schedule",
+            "learning_rate_schedule_min_lr=args.adaptive_kl_min_lr",
+            "learning_rate_schedule_max_lr=args.adaptive_kl_max_lr",
             "normalize_observations=False",
             "bootstrap_on_timeout=True",
             "reset_root_xy_velocity_noise_m_s=0.0",

@@ -61,6 +61,7 @@ class Walking3DRewardConfig:
     foot_air_time_cap_s: float = 0.30
     swing_clearance: float = 0.05
     swing_clearance_m: float = 0.015
+    swing_clearance_speed_m_s: float = 0.10
     foot_slip: float = 0.05
     foot_slip_sigma_m_s: float = 0.15
 
@@ -174,7 +175,9 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
             * inputs.get("locomotion_active", 1.0)
         ),
         "swing_clearance": (
-            -config.swing_clearance * inputs["swing_clearance_cost"]
+            config.swing_clearance
+            * inputs["swing_clearance_reward"]
+            * inputs.get("locomotion_active", 1.0)
         ),
         "foot_slip": -config.foot_slip * foot_slip_cost,
         "action_rate": -config.action_rate * inputs["action_rate_cost"],

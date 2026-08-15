@@ -27,7 +27,7 @@
 
 行走 Actor 使用对角高斯策略：动作均值由 observation 决定，探索标准差是状态无关的全局可学习参数，默认初值为 `0.30`，随后动作仍由环境裁剪到 `[-1, 1]`。周期 eval 默认使用确定性动作均值；`--stochastic-eval` 仅用于额外检查带策略采样噪声的表现。
 
-PPO 默认使用 `clipping_epsilon=0.20`、全局梯度范数上限 `1.0`、目标 KL `0.01` 和 `ADAPTIVE_KL` 学习率调度。eval 日志同时显示 `kl`、策略标准差 `std` 和实际学习率 `lr`，用于区分动作均值漂移与探索方差失控。
+PPO 默认使用 `clipping_epsilon=0.20`、全局梯度范数上限 `1.0`、目标 KL `0.01` 和 `ADAPTIVE_KL` 学习率调度。每个 recipe 都显式限制自适应学习率的上下界，避免 Brax 在低 KL 时按 minibatch 连续放大学习率。eval 日志同时显示 `kl`、策略标准差 `std` 和实际学习率 `lr`，用于区分动作均值漂移与探索方差失控。
 
 ## 训练
 
@@ -37,18 +37,22 @@ PPO 默认使用 `clipping_epsilon=0.20`、全局梯度范数上限 `1.0`、目�
 python -m scripts.train_mjx_3d_walking_ppo \
   --preset h200 \
   --recipe forward_stage1_v1 \
-  --steps 3000000 \
-  --num-evals 16 \
+  --steps 15000000 \
+  --num-evals 32 \
   --save-ppo-checkpoints \
-  --ppo-checkpoint-dir results/mjx_pupper_forward_stage1_v3/ppo_checkpoint \
-  --out results/mjx_pupper_forward_stage1_v3
+  --ppo-checkpoint-dir results/mjx_pupper_forward_stage1_v7/ppo_checkpoint \
+  --out results/mjx_pupper_forward_stage1_v7
 ```
 
 当前实现对 48 维 observation 使用固定物理缩放，不再同时启用 PPO 的运行时 observation normalization。自由关节线速度由世界坐标旋转到机体坐标，MuJoCo 已经以机体局部坐标给出的角速度则不再重复旋转。动作从第一步起直接作为 `stand + scale * action` 的关节目标，不再使用启动 ramp。
 
-Actor 均值输出层使用范围为 `1e-3` 的小随机初始化、bias 为框架默认的零；这不是固定零输出，参数会正常接收梯度。H200 preset 使用 `batch_size=256`、`num_minibatches=8`，rollout quantum 为 40,960；300 万请求步、16 次 eval 时约有 75 次 PPO 更新，而不是旧配置的约 5 次。
+Actor 均值输出层使用范围为 `1e-3` 的小随机初始化、bias 为框架默认的零；这不是固定零输出，参数会正常接收梯度。H200 preset 使用 `batch_size=256`、`num_minibatches=8`。stage-1 的 `unroll_length=40`，rollout quantum 为 81,920；1500 万请求步、32 次 eval 时约有 186 次 PPO 更新。
 
-在稳定站立被错误选成局部最优的诊断后，stage-1 改为目标归一化 progress：沿命令方向的速度除以目标速度，并在达到目标后饱和为 1，因此超速不会继续增加 progress reward。该项权重为 `0.75`，速度跟踪核收紧到 `0.05 m/s`，二者都乘 upright score，避免倾斜猛冲获得任务奖励。直行阶段的 yaw-rate 权重降为 `0.25`，初始探索标准差降为 `0.08`，Actor mean 限制在 `[-1, 1]`。
+stage-1 取消 progress reward，速度跟踪权重为 `4.0`、核宽为 `0.05 m/s`，并乘以 `upright_sigma=0.20 rad` 的姿态门控。奖励所用平面速度只取世界水平运动并旋转到 torso heading frame，roll/pitch 和世界竖直速度不会泄漏进前向速度。直行阶段的 yaw-rate 权重为 `0.25`，独立 upright 权重为 `0.2`。
+
+stage-1 的归一化动作尺度为 `abduction/hip/knee = 0.06/0.50/0.65`，初始探索标准差为 `0.15`，entropy cost 为 `0.005`。足端净空不再在刚离地时扣分；脚离地、达到净空且相对机身产生水平摆动时获得即时正奖励。整机刚性前扑或静止举腿不会获得该项奖励，完整腾空时间仍在落地瞬间通过 air-time 项奖励。
+
+stage-1 保留 `ADAPTIVE_KL`，但把学习率硬限制在 `[2e-6, 2e-5]`，初值为 `2e-5`。这允许高 KL 时降低学习率，同时禁止低 KL 连续触发后把学习率放大到危险范围。
 
 时间上限通过环境的 `info["time_out"]` 明确交给 Brax PPO，并允许 value function bootstrap；真正跌倒仍是普通 termination，不做 bootstrap。最优 checkpoint 按“完整存活、存活时长、upright 失败率、命令跟踪、进度和接触质量”的字典序选择，后面的接触改善不能覆盖前面的存活退化。
 

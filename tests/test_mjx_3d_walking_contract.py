@@ -24,6 +24,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     freejoint_body_velocity_3d,
     heading_frame_planar_velocity_3d,
     normalized_command_progress_3d,
+    swing_clearance_reward_3d,
     validate_walking_morphology_3d,
 )
 from curl_robot_2d_mjx.environment_3d import model_path_3d
@@ -142,6 +143,36 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             ),
             0.0,
         )
+
+    def test_swing_clearance_requires_relative_horizontal_foot_motion(self) -> None:
+        contact = np.asarray((False, True, True, True))
+        height = np.asarray((0.015, 0.0, 0.0, 0.0))
+        root_velocity = np.asarray((0.2, 0.0))
+        rigid_foot_velocity = np.tile(root_velocity, (4, 1))
+
+        rigid_reward = swing_clearance_reward_3d(
+            np,
+            contact,
+            height,
+            rigid_foot_velocity,
+            root_velocity,
+            clearance_m=0.015,
+            swing_speed_m_s=0.10,
+        )
+        swinging_foot_velocity = rigid_foot_velocity.copy()
+        swinging_foot_velocity[0, 0] += 0.10
+        swing_reward = swing_clearance_reward_3d(
+            np,
+            contact,
+            height,
+            swinging_foot_velocity,
+            root_velocity,
+            clearance_m=0.015,
+            swing_speed_m_s=0.10,
+        )
+
+        self.assertAlmostEqual(float(rigid_reward), 0.0)
+        self.assertAlmostEqual(float(swing_reward), 0.25)
 
     def test_model_matches_mirrored_planar_leg_morphology(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(WALKING_MODEL_PATH_3D))

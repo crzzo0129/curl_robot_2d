@@ -64,16 +64,16 @@ PRESETS = {
         "envs": 512,
         "eval_envs": 64,
         "num_evals": 10,
-        "batch_size": 512,
-        "num_minibatches": 16,
+        "batch_size": 256,
+        "num_minibatches": 8,
     },
     "h200": {
         "steps": 20_000_000,
         "envs": 2048,
         "eval_envs": 256,
         "num_evals": 10,
-        "batch_size": 1024,
-        "num_minibatches": 32,
+        "batch_size": 256,
+        "num_minibatches": 8,
     },
 }
 
@@ -153,6 +153,23 @@ def _curriculum_training_plan(args, values):
             }
         )
     return tuple(plan)
+
+
+def _ppo_update_counts(plan, *, updates_per_batch, num_minibatches):
+    """Count fresh-rollout PPO cycles and the gradient work they trigger."""
+
+    rollout_updates = sum(
+        item["schedule"]["eval_intervals"]
+        * item["schedule"]["updates_per_interval"]
+        for item in plan
+    )
+    data_reuse_passes = rollout_updates * updates_per_batch
+    return {
+        "rollout_updates": rollout_updates,
+        "data_reuse_passes": data_reuse_passes,
+        "optimizer_steps": data_reuse_passes * num_minibatches,
+    }
+
 
 RECIPES_3D = {
     "anchored_v1": {
@@ -1340,6 +1357,11 @@ def main(argv=None) -> None:
         if override is not None:
             values[name] = override
     curriculum_plan = _curriculum_training_plan(args, values)
+    update_counts = _ppo_update_counts(
+        curriculum_plan,
+        updates_per_batch=args.updates_per_batch,
+        num_minibatches=values["num_minibatches"],
+    )
     total_curriculum_evals = sum(
         item["num_evals"] for item in curriculum_plan
     )
@@ -1352,6 +1374,7 @@ def main(argv=None) -> None:
         "rollout_quantum": curriculum_plan[0]["schedule"][
             "rollout_quantum"
         ],
+        **update_counts,
         "stage_count": len(curriculum_plan),
         "stages": [
             {
@@ -1601,6 +1624,9 @@ def main(argv=None) -> None:
         f"  rollout_quantum={schedule['rollout_quantum']:,} "
         f"stages={len(curriculum_plan)} "
         f"evals={total_curriculum_evals}\n"
+        f"  ppo_rollout_updates={schedule['rollout_updates']:,} "
+        f"data_reuse_passes={schedule['data_reuse_passes']:,} "
+        f"optimizer_steps={schedule['optimizer_steps']:,}\n"
         f"  curriculum={args.curriculum} [{curriculum_text}]\n"
         f"  envs={values['envs']} eval_envs={values['eval_envs']} "
         f"batch={values['batch_size']} "
