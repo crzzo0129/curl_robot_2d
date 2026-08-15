@@ -70,9 +70,12 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.reward_scaling, 0.05)
         self.assertEqual(args.init_noise_std, 0.08)
         self.assertEqual(args.desired_kl, 0.003)
+        self.assertEqual(reward.velocity_tracking, 4.0)
         self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.05)
         self.assertEqual(reward.yaw_rate_tracking, 0.25)
-        self.assertEqual(reward.forward_progress, 0.75)
+        self.assertEqual(reward.forward_progress, 0.0)
+        self.assertEqual(reward.upright, 0.2)
+        self.assertEqual(reward.upright_sigma_rad, 0.20)
         self.assertEqual(reward.termination, 20.0)
 
     def test_noise_flags_can_override_recipe_defaults(self) -> None:

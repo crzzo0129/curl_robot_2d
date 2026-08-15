@@ -22,6 +22,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_JOINT_NAMES_3D,
     WALKING_OBSERVATION_SIZE_3D,
     freejoint_body_velocity_3d,
+    heading_frame_planar_velocity_3d,
     normalized_command_progress_3d,
     validate_walking_morphology_3d,
 )
@@ -70,6 +71,37 @@ class MJX3DWalkingContractTest(unittest.TestCase):
 
         np.testing.assert_allclose(linear, (1.0, 0.0, 0.0), atol=1.0e-8)
         np.testing.assert_allclose(angular, (0.1, 0.2, 0.3), atol=1.0e-8)
+
+    def test_planar_reward_velocity_ignores_pitch_and_vertical_motion(self) -> None:
+        pitch = np.deg2rad(45.0)
+        rotation = np.asarray(
+            (
+                (np.cos(pitch), 0.0, np.sin(pitch)),
+                (0.0, 1.0, 0.0),
+                (-np.sin(pitch), 0.0, np.cos(pitch)),
+            )
+        )
+
+        body_linear, _ = freejoint_body_velocity_3d(
+            np, rotation, np.asarray((0.0, 0.0, -1.0, 0.0, 0.0, 0.0))
+        )
+        reward_planar = heading_frame_planar_velocity_3d(
+            np, rotation, np.asarray((0.0, 0.0, -1.0))
+        )
+
+        self.assertGreater(float(body_linear[0]), 0.5)
+        np.testing.assert_allclose(reward_planar, (0.0, 0.0), atol=1.0e-8)
+
+    def test_planar_reward_velocity_uses_heading_not_world_axes(self) -> None:
+        rotation = np.asarray(
+            ((0.0, -1.0, 0.0), (1.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+        )
+
+        reward_planar = heading_frame_planar_velocity_3d(
+            np, rotation, np.asarray((0.0, 0.1, 0.7))
+        )
+
+        np.testing.assert_allclose(reward_planar, (0.1, 0.0), atol=1.0e-8)
 
     def test_command_progress_is_target_relative_and_saturating(self) -> None:
         command = np.asarray((0.1, 0.0, 0.0))

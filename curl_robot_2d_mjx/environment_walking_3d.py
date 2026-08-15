@@ -43,6 +43,27 @@ def freejoint_body_velocity_3d(xp, rotation, qvel):
     return rotation.T @ qvel[:3], qvel[3:6]
 
 
+def heading_frame_planar_velocity_3d(xp, rotation, world_linear_velocity):
+    """Return horizontal velocity in the torso heading frame.
+
+    Only the torso's yaw determines this frame.  Roll, pitch, and world-z
+    velocity therefore cannot leak into the forward/lateral tracking reward.
+    """
+
+    heading_x = rotation[:2, 0]
+    heading_norm = xp.linalg.norm(heading_x)
+    heading_x = xp.where(
+        heading_norm > 1.0e-6,
+        heading_x / xp.maximum(heading_norm, 1.0e-6),
+        xp.asarray((1.0, 0.0)),
+    )
+    heading_y = xp.stack((-heading_x[1], heading_x[0]))
+    world_xy = world_linear_velocity[:2]
+    return xp.stack(
+        (xp.dot(world_xy, heading_x), xp.dot(world_xy, heading_y))
+    )
+
+
 def normalized_command_progress_3d(xp, planar_velocity, command):
     """Target-relative directional progress, saturated at commanded speed."""
 
@@ -540,13 +561,16 @@ def make_brax_walking_env_3d(
             body_linear_velocity, body_angular_velocity = (
                 freejoint_body_velocity_3d(jp, rotation, data.qvel)
             )
+            reward_planar_velocity = heading_frame_planar_velocity_3d(
+                jp, rotation, data.qvel[:3]
+            )
             root_x, root_y, root_z = data.qpos[:3]
-            forward_velocity = body_linear_velocity[0]
-            lateral_velocity = body_linear_velocity[1]
+            forward_velocity = reward_planar_velocity[0]
+            lateral_velocity = reward_planar_velocity[1]
             vertical_velocity = body_linear_velocity[2]
             yaw_rate = body_angular_velocity[2]
             planar_velocity_error = jp.linalg.norm(
-                body_linear_velocity[:2] - command[:2]
+                reward_planar_velocity - command[:2]
             )
             roll_pitch_angular_velocity_squared = jp.mean(
                 jp.square(body_angular_velocity[:2])
@@ -727,7 +751,7 @@ def make_brax_walking_env_3d(
                     "yaw_rate_error": yaw_rate - command[2],
                     "normalized_forward_velocity": (
                         normalized_command_progress_3d(
-                            jp, body_linear_velocity[:2], command
+                            jp, reward_planar_velocity, command
                         )
                     ),
                     "upright_tilt": body["upright_tilt"],
