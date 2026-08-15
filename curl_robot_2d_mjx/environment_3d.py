@@ -48,12 +48,32 @@ MODEL_PATHS_3D = {
     "real": REAL_MODEL_PATH_3D,
     "pupper_open60": PUPPER_OPEN60_MODEL_PATH_3D,
 }
-DEFAULT_3D_CEM_CONTROLLER = (
+BASELINE_3D_CEM_CONTROLLER = (
     PROJECT_ROOT
     / "results"
     / "collision_constrained_cem_foot_gap_2mm_short_contact"
     / "best_phase_controller.json"
 )
+REAL_3D_CEM_CONTROLLER = (
+    PROJECT_ROOT
+    / "results"
+    / "staged_cem_real_geometry_180_d50_foot60"
+    / "03_foot_gap_2mm"
+    / "best_phase_controller.json"
+)
+PUPPER_OPEN60_CEM_CONTROLLER = (
+    PROJECT_ROOT
+    / "results"
+    / "pupper_r127p5_open60_shell150_45_three_stage_cem"
+    / "03_strict_forbidden_collision"
+    / "best_phase_controller.json"
+)
+CEM_CONTROLLER_PATHS_3D = {
+    "baseline": BASELINE_3D_CEM_CONTROLLER,
+    "real": REAL_3D_CEM_CONTROLLER,
+    "pupper_open60": PUPPER_OPEN60_CEM_CONTROLLER,
+}
+DEFAULT_3D_CEM_CONTROLLER = PUPPER_OPEN60_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
 OBSERVATION_SIZE_3D = 59
 PHASE_FEEDBACK_SIZE_3D = 4
@@ -102,6 +122,17 @@ def model_path_3d(name: str) -> Path:
         return MODEL_PATHS_3D[name]
     except KeyError as exc:
         raise ValueError(f"unknown 3-D geometry: {name!r}") from exc
+
+
+def cem_controller_path_3d(name: str) -> Path:
+    """Return the CEM reference optimized for the selected geometry."""
+
+    try:
+        return CEM_CONTROLLER_PATHS_3D[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown 3-D geometry: {name!r}") from exc
+
+
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -419,7 +450,7 @@ def make_brax_env_3d(
     jax, jp, mujoco, mjx, Env, State = _load_dependencies_3d()
     reward_settings = reward_config or Rolling3DRewardConfig()
     reference_settings = cem_reference or load_cem_reference(
-        DEFAULT_3D_CEM_CONTROLLER
+        cem_controller_path_3d(task.geometry)
     )
 
     class CurlRobot3DMJXEnv(Env):

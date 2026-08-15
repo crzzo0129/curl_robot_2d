@@ -26,9 +26,9 @@ from curl_robot_2d_mjx.curriculum_3d import (
     curriculum_stages_3d,
 )
 from curl_robot_2d_mjx.environment_3d import (
-    DEFAULT_3D_CEM_CONTROLLER,
     OBSERVATION_SIZE_3D,
     PHASE_FEEDBACK_SIZE_3D,
+    cem_controller_path_3d,
 )
 from curl_robot_2d_mjx.randomization_3d import (
     make_domain_randomization_fn_3d,
@@ -1112,14 +1112,19 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.20,
     )
-    parser.add_argument("--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER)
+    parser.add_argument(
+        "--controller",
+        type=Path,
+        default=None,
+        help="CEM reference; defaults to the controller matched to --geometry.",
+    )
     parser.add_argument("--minimum-foot-gap-mm", type=float)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float)
     parser.add_argument("--reference-weight", type=float)
     parser.add_argument("--minimum-residual-gain", type=float)
     parser.add_argument("--phase-rate-scale", type=float)
     parser.add_argument("--reference-action-scale", type=float, default=1.0)
-    parser.add_argument("--reference-ramp-start-scale", type=float, default=None)
+    parser.add_argument("--reference-ramp-start-scale", type=float, default=0.0)
     parser.add_argument("--reference-ramp-duration-s", type=float, default=0.25)
     parser.add_argument("--reference-startup-boost", type=float, default=0.0)
     parser.add_argument(
@@ -1254,6 +1259,8 @@ def parse_args(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
     _apply_recipe_defaults(args)
+    if args.controller is None:
+        args.controller = cem_controller_path_3d(args.geometry)
     if args.selection_objective is None:
         args.selection_objective = "balanced"
     if not 0.0 <= args.reference_weight <= 1.0:

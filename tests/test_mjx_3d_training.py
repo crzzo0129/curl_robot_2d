@@ -6,7 +6,10 @@ import unittest
 
 import numpy as np
 
-from curl_robot_2d_mjx.environment_3d import DEFAULT_3D_CEM_CONTROLLER
+from curl_robot_2d_mjx.environment_3d import (
+    DEFAULT_3D_CEM_CONTROLLER,
+    REAL_3D_CEM_CONTROLLER,
+)
 from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
 from scripts import (
     evaluate_mjx_3d_policy,
@@ -23,6 +26,20 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
 
         self.assertEqual(args.physics_profile, "cg20")
+
+    def test_default_controller_tracks_selected_geometry(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--geometry", "real"]
+        )
+
+        self.assertEqual(args.controller, REAL_3D_CEM_CONTROLLER)
+
+        custom = Path("custom_controller.json")
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--geometry", "real", "--controller", str(custom)]
+        )
+
+        self.assertEqual(args.controller, custom)
 
     def test_gpu_presets_provide_many_fresh_rollout_updates(self) -> None:
         expected_updates = {"4090": 252, "h200": 495}
@@ -72,7 +89,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.reference_weight, 1.0)
         self.assertEqual(args.minimum_residual_gain, 0.05)
         self.assertEqual(args.reference_action_scale, 1.0)
-        self.assertIsNone(args.reference_ramp_start_scale)
+        self.assertEqual(args.reference_ramp_start_scale, 0.0)
         self.assertEqual(args.reference_ramp_duration_s, 0.25)
         self.assertEqual(args.reference_startup_boost, 0.0)
         self.assertEqual(args.reference_startup_boost_duration_s, 0.25)
@@ -658,8 +675,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertEqual(args.reset_joint_noise_rad, 0.005)
         self.assertEqual(args.reset_velocity_noise, 0.005)
-        self.assertEqual(args.reference_ramp_start_scale, 0.50)
-        self.assertEqual(args.reference_ramp_duration_s, 0.10)
+        self.assertEqual(args.reference_ramp_start_scale, 0.0)
+        self.assertEqual(args.reference_ramp_duration_s, 0.25)
         self.assertEqual(args.reference_startup_boost, 0.0)
         self.assertTrue(args.zero_residual_policy_init)
         self.assertEqual(args.initial_policy_std, 0.20)

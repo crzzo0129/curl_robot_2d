@@ -65,7 +65,7 @@ def parse_args(argv=None):
     parser.add_argument("--memory-fraction", type=float, default=0.50)
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--reference-action-scale", type=float, default=1.0)
-    parser.add_argument("--reference-ramp-start-scale", type=float, default=None)
+    parser.add_argument("--reference-ramp-start-scale", type=float, default=0.0)
     parser.add_argument("--reference-ramp-duration-s", type=float, default=0.25)
     parser.add_argument("--reference-startup-boost", type=float, default=0.0)
     parser.add_argument(

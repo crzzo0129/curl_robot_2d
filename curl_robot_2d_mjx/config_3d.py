@@ -55,7 +55,7 @@ class Rolling3DConfig:
     reset_axis_tilt_noise_rad: float = 0.0
     reference_phase_rate_scale: float = 1.0
     reference_action_scale: float = 1.0
-    reference_ramp_start_scale: float | None = None
+    reference_ramp_start_scale: float | None = 0.0
     reference_ramp_duration_s: float = 0.25
     reference_startup_boost: float = 0.0
     reference_startup_boost_duration_s: float = 0.25

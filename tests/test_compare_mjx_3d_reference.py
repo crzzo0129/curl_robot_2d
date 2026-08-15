@@ -11,7 +11,7 @@ class CompareMJX3DReferenceTest(unittest.TestCase):
         self.assertEqual(args.episode_length, 500)
         self.assertEqual(args.noise_seeds, 64)
         self.assertEqual(args.reference_action_scale, 1.0)
-        self.assertIsNone(args.reference_ramp_start_scale)
+        self.assertEqual(args.reference_ramp_start_scale, 0.0)
         self.assertEqual(args.reference_ramp_duration_s, 0.25)
         self.assertEqual(args.reference_startup_boost, 0.0)
         self.assertEqual(args.reference_startup_boost_duration_s, 0.25)

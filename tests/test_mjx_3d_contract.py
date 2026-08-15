@@ -14,9 +14,12 @@ from curl_robot_2d_mjx.config_3d import (
 from curl_robot_2d_mjx.curriculum_3d import curriculum_stages_3d
 from curl_robot_2d_mjx.environment_3d import (
     ACTION_SIZE_3D,
+    BASELINE_3D_CEM_CONTROLLER,
     DEFAULT_3D_CEM_CONTROLLER,
     MODEL_PATH_3D,
     PUPPER_OPEN60_MODEL_PATH_3D,
+    PUPPER_OPEN60_CEM_CONTROLLER,
+    REAL_3D_CEM_CONTROLLER,
     REAL_MODEL_PATH_3D,
     OBSERVATION_SIZE_3D,
     PHASE_FEEDBACK_SIZE_3D,
@@ -30,6 +33,7 @@ from curl_robot_2d_mjx.environment_3d import (
     reference_startup_scale_3d,
     rolling_target_ctrl_3d,
     geometry_parameters_3d,
+    cem_controller_path_3d,
     model_path_3d,
     validate_rolling_morphology_3d,
 )
@@ -61,8 +65,26 @@ class MJX3DContractTest(unittest.TestCase):
         )
         self.assertAlmostEqual(geometry_parameters_3d("real").edge_length, 0.18)
         self.assertAlmostEqual(geometry_parameters_3d("real").foot_radius, 0.03)
-        self.assertEqual(DEFAULT_3D_CEM_CONTROLLER.name, "best_phase_controller.json")
-        self.assertTrue(DEFAULT_3D_CEM_CONTROLLER.exists())
+        self.assertEqual(
+            DEFAULT_3D_CEM_CONTROLLER, PUPPER_OPEN60_CEM_CONTROLLER
+        )
+        self.assertEqual(
+            cem_controller_path_3d("baseline"),
+            BASELINE_3D_CEM_CONTROLLER,
+        )
+        self.assertEqual(
+            cem_controller_path_3d("real"), REAL_3D_CEM_CONTROLLER
+        )
+        self.assertEqual(
+            cem_controller_path_3d("pupper_open60"),
+            PUPPER_OPEN60_CEM_CONTROLLER,
+        )
+        for controller in (
+            BASELINE_3D_CEM_CONTROLLER,
+            REAL_3D_CEM_CONTROLLER,
+            PUPPER_OPEN60_CEM_CONTROLLER,
+        ):
+            self.assertTrue(controller.exists())
         self.assertEqual(len(JOINT_NAMES_3D), ACTION_SIZE_3D)
         self.assertEqual(OBSERVATION_SIZE_3D, 59)
 
@@ -79,7 +101,7 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.terminate_axis_tilt_rad, 0.50)
         self.assertEqual(config.terminate_forbidden_depth_m, 0.004)
         self.assertEqual(config.reference_action_scale, 1.0)
-        self.assertIsNone(config.reference_ramp_start_scale)
+        self.assertEqual(config.reference_ramp_start_scale, 0.0)
         self.assertEqual(config.reference_ramp_duration_s, 0.25)
         self.assertEqual(config.reference_startup_boost, 0.0)
         self.assertEqual(config.reference_startup_boost_duration_s, 0.25)
@@ -148,6 +170,7 @@ class MJX3DContractTest(unittest.TestCase):
     def test_reference_startup_scale_boost_decays_to_nominal(self) -> None:
         config = Rolling3DConfig(
             reference_action_scale=1.0,
+            reference_ramp_start_scale=None,
             reference_startup_boost=0.25,
             reference_startup_boost_duration_s=0.5,
         )

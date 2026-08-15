@@ -18,7 +18,7 @@ from curl_robot_2d_mjx.config_3d import (
     Rolling3DConfig,
     physics_profile_3d,
 )
-from curl_robot_2d_mjx.environment_3d import DEFAULT_3D_CEM_CONTROLLER
+from curl_robot_2d_mjx.environment_3d import cem_controller_path_3d
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 from scripts.train_mjx_ppo import _network_factory
 from scripts.train_mjx_3d_residual_ppo import (
@@ -262,7 +262,12 @@ def parse_args(argv=None):
             "with zero residual action."
         ),
     )
-    parser.add_argument("--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER)
+    parser.add_argument(
+        "--controller",
+        type=Path,
+        default=None,
+        help="CEM reference; defaults to the controller matched to --geometry.",
+    )
     parser.add_argument(
         "--geometry", choices=GEOMETRY_NAMES_3D, default="pupper_open60"
     )
@@ -314,8 +319,8 @@ def parse_args(argv=None):
     parser.add_argument("--minimum-residual-gain", type=float, default=0.15)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--reference-action-scale", type=float, default=1.0)
-    parser.add_argument("--reference-ramp-start-scale", type=float, default=0.50)
-    parser.add_argument("--reference-ramp-duration-s", type=float, default=0.10)
+    parser.add_argument("--reference-ramp-start-scale", type=float, default=0.0)
+    parser.add_argument("--reference-ramp-duration-s", type=float, default=0.25)
     parser.add_argument("--reference-startup-boost", type=float, default=0.0)
     parser.add_argument(
         "--reference-startup-boost-duration-s",
@@ -376,6 +381,8 @@ def parse_args(argv=None):
     parser.add_argument("--save-rollout", action="store_true")
     parser.add_argument("--rollout-index", type=int, default=0)
     args = parser.parse_args(argv)
+    if args.controller is None:
+        args.controller = cem_controller_path_3d(args.geometry)
     if args.evaluation_mode == "policy" and args.checkpoint is None:
         parser.error("checkpoint is required in policy evaluation mode")
     if args.evaluation_mode == "reference" and args.checkpoint is not None:
