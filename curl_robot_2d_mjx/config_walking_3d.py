@@ -75,6 +75,10 @@ class Walking3DConfig:
     observation_scale_joint_position: float = 1.0
     observation_scale_joint_velocity: float = 0.05
     observation_scale_previous_action: float = 1.0
+    gait_phase_enabled: bool = False
+    gait_cycle_time_s: float = 0.625
+    gait_duty_factor: float = 0.68
+    observation_scale_gait_phase: float = 1.0
     soft_joint_limit_fraction: float = 0.90
     disable_root_damping: bool = True
 
@@ -164,6 +168,8 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
             config.observation_scale_previous_action,
             "observation_scale_previous_action",
         ),
+        (config.gait_cycle_time_s, "gait_cycle_time_s"),
+        (config.observation_scale_gait_phase, "observation_scale_gait_phase"),
     ):
         _validate_positive(value, name)
     for limits, name in (
@@ -213,6 +219,8 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         raise ValueError("root-z termination bounds must be ordered")
     if not 0.0 < config.soft_joint_limit_fraction <= 1.0:
         raise ValueError("soft_joint_limit_fraction must be in (0, 1]")
+    if not 0.0 < config.gait_duty_factor < 1.0:
+        raise ValueError("gait_duty_factor must be in (0, 1)")
     for value, name in (
         (config.terminate_root_z_low_duration_s, "terminate_root_z_low_duration_s"),
         (

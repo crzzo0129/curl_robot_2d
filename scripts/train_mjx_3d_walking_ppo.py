@@ -91,6 +91,9 @@ WALKING_RECIPES_3D = {
             "command_stop_probability": 0.10,
             "no_observation_noise": False,
             "no_domain_randomization": False,
+            "gait_phase_enabled": False,
+            "gait_cycle_time": 0.625,
+            "gait_duty_factor": 0.68,
             "action_scale_abduction": 0.10,
             "action_scale_hip": 0.40,
             "action_scale_knee": 0.55,
@@ -132,6 +135,9 @@ WALKING_RECIPES_3D = {
             "command_stop_probability": 0.10,
             "no_observation_noise": False,
             "no_domain_randomization": False,
+            "gait_phase_enabled": False,
+            "gait_cycle_time": 0.625,
+            "gait_duty_factor": 0.68,
             "action_scale_abduction": 0.10,
             "action_scale_hip": 0.40,
             "action_scale_knee": 0.55,
@@ -173,6 +179,9 @@ WALKING_RECIPES_3D = {
             "command_stop_probability": 0.0,
             "no_observation_noise": True,
             "no_domain_randomization": True,
+            "gait_phase_enabled": False,
+            "gait_cycle_time": 0.625,
+            "gait_duty_factor": 0.68,
             "action_scale_abduction": 0.06,
             "action_scale_hip": 0.50,
             "action_scale_knee": 0.65,
@@ -222,6 +231,77 @@ WALKING_RECIPES_3D = {
             "early_termination_scale": 0.5,
         },
     },
+    "forward_phase_bootstrap_v1": {
+        "description": (
+            "Stage-A 0.10 m/s bootstrap with an observable 0.625 s diagonal "
+            "trot phase, dense contact scheduling, and small reset noise."
+        ),
+        "args": {
+            "desired_speed_m_s": 0.10,
+            "command_forward_min": 0.10,
+            "command_forward_max": 0.10,
+            "command_lateral_max": 0.0,
+            "command_yaw_rate_max": 0.0,
+            "command_resample_time": 4.0,
+            "command_stop_probability": 0.0,
+            "no_observation_noise": True,
+            "no_domain_randomization": True,
+            "gait_phase_enabled": True,
+            "gait_cycle_time": 0.625,
+            "gait_duty_factor": 0.68,
+            "action_scale_abduction": 0.06,
+            "action_scale_hip": 0.50,
+            "action_scale_knee": 0.65,
+            "reset_joint_noise": 0.01,
+            "reset_velocity_noise": 0.02,
+            "reset_root_xy_velocity_noise": 0.03,
+            "reset_root_yaw_rate_noise": 0.05,
+            "terminate_airborne_duration": 0.25,
+            "terminate_nonfoot_contact_duration": 0.12,
+            "terminate_self_contact_duration": 0.10,
+            "updates_per_batch": 4,
+            "unroll_length": 40,
+            "learning_rate": 1e-4,
+            "adaptive_kl_min_lr": 1e-5,
+            "adaptive_kl_max_lr": 1e-4,
+            "entropy_cost": 0.01,
+            "discounting": 0.99,
+            "reward_scaling": 0.05,
+            "init_noise_std": 0.30,
+            "clipping_epsilon": 0.20,
+            "max_grad_norm": 1.0,
+            "desired_kl": 0.01,
+            "learning_rate_schedule": "ADAPTIVE_KL",
+        },
+        "reward": {
+            "velocity_tracking": 4.0,
+            "velocity_tracking_sigma_m_s": 0.05,
+            "velocity_tracking_upright_gate": 0.0,
+            "overspeed": 1.0,
+            "overspeed_margin_m_s": 0.05,
+            "overspeed_scale_m_s": 0.15,
+            "yaw_rate_tracking": 0.25,
+            "forward_progress": 0.0,
+            "upright": 0.4,
+            "upright_sigma_rad": 0.20,
+            "stagnation": 0.2,
+            "stagnation_window_s": 1.0,
+            "stagnation_min_progress_m": 0.05,
+            "upright_stagnation_gate": 1.0,
+            "angular_velocity": 0.15,
+            "foot_air_time": 0.2,
+            "gait_contact": 1.0,
+            "swing_clearance": 0.25,
+            "swing_clearance_m": 0.025,
+            "swing_clearance_target_sigma_m": 0.0075,
+            "swing_clearance_target_tracking": 1.0,
+            "swing_clearance_speed_m_s": 0.10,
+            "action_rate": 0.04,
+            "termination": 20.0,
+            "severe_extra_termination": 0.0,
+            "early_termination_scale": 0.5,
+        },
+    },
 }
 
 
@@ -242,7 +322,9 @@ PER_STEP_WALKING_METRICS_3D = (
     "heading_error_rad",
     "foot_contact_count",
     "foot_air_time_reward",
+    "gait_contact_reward",
     "swing_clearance_reward",
+    "gait_phase",
     "foot_slip_rms_m_s",
     "nonfoot_ground_contact_count",
     "nonfoot_ground_depth_m",
@@ -731,6 +813,20 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
     )
     parser.set_defaults(no_observation_noise=None)
+    gait_phase_group = parser.add_mutually_exclusive_group()
+    gait_phase_group.add_argument(
+        "--gait-phase",
+        dest="gait_phase_enabled",
+        action="store_true",
+    )
+    gait_phase_group.add_argument(
+        "--no-gait-phase",
+        dest="gait_phase_enabled",
+        action="store_false",
+    )
+    parser.set_defaults(gait_phase_enabled=None)
+    parser.add_argument("--gait-cycle-time", type=float)
+    parser.add_argument("--gait-duty-factor", type=float)
     parser.add_argument("--action-scale-abduction", type=float)
     parser.add_argument("--action-scale-hip", type=float)
     parser.add_argument("--action-scale-knee", type=float)
@@ -896,6 +992,7 @@ def parse_args(argv=None):
         "max_grad_norm",
         "desired_kl",
         "reward_scaling",
+        "gait_cycle_time",
     ):
         if getattr(args, name) <= 0.0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
@@ -921,6 +1018,8 @@ def parse_args(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be nonnegative")
     if not 0.0 <= args.command_stop_probability <= 1.0:
         parser.error("--command-stop-probability must be in [0, 1]")
+    if not 0.0 < args.gait_duty_factor < 1.0:
+        parser.error("--gait-duty-factor must be in (0, 1)")
     if not 0.0 < args.discounting <= 1.0:
         parser.error("--discounting must be in (0, 1]")
     return args
@@ -1007,6 +1106,9 @@ def main(argv=None) -> None:
             command_resample_time_s=args.command_resample_time,
             command_deadband_probability=args.command_stop_probability,
             observation_noise_enabled=not args.no_observation_noise,
+            gait_phase_enabled=args.gait_phase_enabled,
+            gait_cycle_time_s=args.gait_cycle_time,
+            gait_duty_factor=args.gait_duty_factor,
             action_scales=action_scales,
             reset_joint_noise_rad=args.reset_joint_noise,
             reset_velocity_noise=args.reset_velocity_noise,

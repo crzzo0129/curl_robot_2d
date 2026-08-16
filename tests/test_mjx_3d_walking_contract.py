@@ -21,10 +21,14 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_MODEL_PATH_3D,
     WALKING_JOINT_NAMES_3D,
     WALKING_OBSERVATION_SIZE_3D,
+    WALKING_PHASE_OBSERVATION_SIZE_3D,
     command_overspeed_3d,
+    contact_schedule_reward_3d,
+    diagonal_contact_schedule_3d,
     freejoint_body_velocity_3d,
     heading_frame_planar_velocity_3d,
     normalized_command_progress_3d,
+    gait_phase_features_3d,
     swing_clearance_reward_3d,
     torso_local_points_3d,
     validate_walking_morphology_3d,
@@ -51,6 +55,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertEqual(len(WALKING_JOINT_NAMES_3D), WALKING_ACTION_SIZE_3D)
         self.assertEqual(WALKING_ACTION_SIZE_3D, 12)
         self.assertEqual(WALKING_OBSERVATION_SIZE_3D, 48)
+        self.assertEqual(WALKING_PHASE_OBSERVATION_SIZE_3D, 50)
         self.assertEqual(config.geometry, "pupper_open60")
         self.assertAlmostEqual(config.desired_speed_m_s, 0.20)
         self.assertAlmostEqual(config.diagnostic_lateral_drift_m, 1.50)
@@ -172,6 +177,56 @@ class MJX3DWalkingContractTest(unittest.TestCase):
 
         self.assertAlmostEqual(float(rigid_reward), 0.0)
         self.assertAlmostEqual(float(swing_reward), 0.25)
+
+    def test_target_clearance_penalizes_excessive_foot_height(self) -> None:
+        contact = np.asarray((False, True, True, True))
+        velocity = np.zeros((4, 2))
+        velocity[0, 0] = 0.10
+
+        target_reward = swing_clearance_reward_3d(
+            np,
+            contact,
+            np.asarray((0.025, 0.0, 0.0, 0.0)),
+            velocity,
+            clearance_m=0.025,
+            swing_speed_m_s=0.10,
+            target_sigma_m=0.0075,
+            target_tracking=1.0,
+        )
+        excessive_reward = swing_clearance_reward_3d(
+            np,
+            contact,
+            np.asarray((0.050, 0.0, 0.0, 0.0)),
+            velocity,
+            clearance_m=0.025,
+            swing_speed_m_s=0.10,
+            target_sigma_m=0.0075,
+            target_tracking=1.0,
+        )
+
+        self.assertAlmostEqual(float(target_reward), 0.25)
+        self.assertLess(float(excessive_reward), 1.0e-4)
+
+    def test_diagonal_phase_schedule_matches_handcrafted_trot(self) -> None:
+        np.testing.assert_allclose(gait_phase_features_3d(np, 0.0), (0.0, 1.0))
+        phase_zero = diagonal_contact_schedule_3d(np, 0.0, 0.68)
+        phase_half = diagonal_contact_schedule_3d(np, 0.5, 0.68)
+
+        np.testing.assert_array_equal(phase_zero, (True, True, True, True))
+        np.testing.assert_array_equal(phase_half, (True, True, True, True))
+        desired = diagonal_contact_schedule_3d(np, 0.20, 0.68)
+        np.testing.assert_array_equal(desired, (True, False, False, True))
+        self.assertAlmostEqual(
+            float(contact_schedule_reward_3d(np, desired, desired)), 1.0
+        )
+        self.assertAlmostEqual(
+            float(
+                contact_schedule_reward_3d(
+                    np, np.logical_not(desired), desired
+                )
+            ),
+            0.0,
+        )
 
     def test_torso_local_feet_ignore_rigid_translation_and_rotation(self) -> None:
         theta = np.deg2rad(35.0)
@@ -337,13 +392,12 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertAlmostEqual(args.action_scale_hip, 0.40)
         self.assertAlmostEqual(args.action_scale_knee, 0.55)
 
-    def test_environment_has_no_gait_reference_path(self) -> None:
+    def test_environment_has_optional_phase_scaffold_without_joint_reference(self) -> None:
         source = (
             PROJECT_ROOT / "curl_robot_2d_mjx" / "environment_walking_3d.py"
         ).read_text(encoding="utf-8")
         for token in (
             "walking_reference_3d",
-            "oscillator_phase",
             "reference_target",
             "stance_miss",
         ):
@@ -358,6 +412,8 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             "joint_limit_cost",
             "jax.lax.cond",
             "transition_finite",
+            "gait_phase_features_3d",
+            "diagonal_contact_schedule_3d",
             '"time_out": timeout_bool.astype(jp.float32)',
         ):
             self.assertIn(token, source)

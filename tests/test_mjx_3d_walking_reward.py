@@ -24,6 +24,7 @@ def zero_inputs():
         "vertical_velocity": zero,
         "roll_pitch_angular_velocity_squared": zero,
         "foot_air_time_reward": zero,
+        "gait_contact_reward": zero,
         "swing_clearance_reward": zero,
         "foot_slip_velocity_squared": zero,
         "action_rate_cost": zero,
@@ -95,6 +96,21 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         self.assertAlmostEqual(
             float(terms["forward_progress"]), upright_gate
         )
+
+    def test_velocity_tracking_can_be_decoupled_from_upright(self) -> None:
+        config = Walking3DRewardConfig(
+            velocity_tracking=4.0,
+            velocity_tracking_upright_gate=0.0,
+            gait_contact=1.0,
+        )
+        inputs = zero_inputs()
+        inputs["upright_tilt"] = np.asarray(1.0)
+        inputs["gait_contact_reward"] = np.asarray(0.75)
+
+        terms = reward_terms_walking_3d(np, config, inputs)
+
+        self.assertAlmostEqual(float(terms["velocity_tracking"]), 4.0)
+        self.assertAlmostEqual(float(terms["gait_contact"]), 0.75)
 
     def test_overspeed_is_a_bounded_penalty_without_upright_gating(self) -> None:
         config = Walking3DRewardConfig(

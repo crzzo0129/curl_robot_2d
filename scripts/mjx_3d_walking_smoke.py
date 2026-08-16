@@ -35,6 +35,9 @@ def parse_args(argv=None):
     parser.add_argument("--action-scale-abduction", type=float, default=0.10)
     parser.add_argument("--action-scale-hip", type=float, default=0.40)
     parser.add_argument("--action-scale-knee", type=float, default=0.55)
+    parser.add_argument("--gait-phase", action="store_true")
+    parser.add_argument("--gait-cycle-time", type=float, default=0.625)
+    parser.add_argument("--gait-duty-factor", type=float, default=0.68)
     parser.add_argument("--memory-fraction", type=float, default=0.90)
     parser.add_argument(
         "--mujoco-gl",
@@ -78,6 +81,9 @@ def main(argv=None) -> None:
         geometry=args.geometry,
         episode_length=args.episode_length,
         desired_speed_m_s=args.desired_speed,
+        gait_phase_enabled=args.gait_phase,
+        gait_cycle_time_s=args.gait_cycle_time,
+        gait_duty_factor=args.gait_duty_factor,
         action_scales=(
             args.action_scale_abduction,
             args.action_scale_hip,

@@ -106,8 +106,10 @@ def swing_clearance_reward_3d(
     *,
     clearance_m,
     swing_speed_m_s,
+    target_sigma_m=None,
+    target_tracking=0.0,
 ):
-    """Reward useful swing clearance without rewarding a held-up foot.
+    """Reward moving swing feet near a useful clearance target.
 
     Foot speed must already be expressed in the torso frame, so neither rigid
     translation nor rotation can masquerade as a leg swing.  Averaging over
@@ -115,8 +117,21 @@ def swing_clearance_reward_3d(
     """
 
     swing = ~foot_contact
-    clearance_fraction = xp.clip(
+    minimum_clearance_score = xp.clip(
         foot_height / max(clearance_m, 1.0e-4), 0.0, 1.0
+    )
+    target_sigma_m = (
+        max(0.5 * clearance_m, 1.0e-4)
+        if target_sigma_m is None
+        else max(target_sigma_m, 1.0e-4)
+    )
+    target_clearance_score = xp.exp(
+        -xp.square((foot_height - clearance_m) / target_sigma_m)
+    )
+    target_tracking = xp.clip(xp.asarray(target_tracking), 0.0, 1.0)
+    clearance_score = (
+        (1.0 - target_tracking) * minimum_clearance_score
+        + target_tracking * target_clearance_score
     )
     swing_speed = xp.linalg.norm(torso_local_foot_velocity_xy, axis=1)
     swing_speed_fraction = xp.clip(
@@ -124,9 +139,32 @@ def swing_clearance_reward_3d(
     )
     return xp.mean(
         swing.astype(foot_height.dtype)
-        * clearance_fraction
+        * clearance_score
         * swing_speed_fraction
     )
+
+
+TROT_PHASE_OFFSETS_3D = (0.0, 0.5, 0.5, 0.0)
+
+
+def gait_phase_features_3d(xp, phase):
+    """Encode a normalized gait phase without a wrap discontinuity."""
+
+    angle = 2.0 * np.pi * phase
+    return xp.stack((xp.sin(angle), xp.cos(angle)))
+
+
+def diagonal_contact_schedule_3d(xp, phase, duty_factor):
+    """Return desired FL/FR/RL/RR stance flags for a diagonal trot."""
+
+    leg_phase = xp.mod(phase + xp.asarray(TROT_PHASE_OFFSETS_3D), 1.0)
+    return leg_phase < duty_factor
+
+
+def contact_schedule_reward_3d(xp, foot_contact, desired_contact):
+    """Fraction of feet whose measured contact matches the phase schedule."""
+
+    return xp.mean((foot_contact == desired_contact).astype(xp.float32))
 
 
 WALKING_JOINT_NAMES_3D = tuple(
@@ -136,6 +174,7 @@ WALKING_JOINT_NAMES_3D = tuple(
 )
 WALKING_ACTION_SIZE_3D = 12
 WALKING_OBSERVATION_SIZE_3D = 48
+WALKING_PHASE_OBSERVATION_SIZE_3D = WALKING_OBSERVATION_SIZE_3D + 2
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -384,7 +423,11 @@ def make_brax_walking_env_3d(
 
         @property
         def observation_size(self):
-            return WALKING_OBSERVATION_SIZE_3D
+            return (
+                WALKING_PHASE_OBSERVATION_SIZE_3D
+                if task.gait_phase_enabled
+                else WALKING_OBSERVATION_SIZE_3D
+            )
 
         @property
         def action_size(self):
@@ -418,7 +461,9 @@ def make_brax_walking_env_3d(
                 "heading_error_rad": zero,
                 "foot_contact_count": zero,
                 "foot_air_time_reward": zero,
+                "gait_contact_reward": zero,
                 "swing_clearance_reward": zero,
+                "gait_phase": zero,
                 "foot_slip_rms_m_s": zero,
                 "nonfoot_ground_contact_count": zero,
                 "nonfoot_ground_depth_m": zero,
@@ -533,6 +578,7 @@ def make_brax_walking_env_3d(
                 "progress_history_index": jp.asarray(0, dtype=jp.int32),
                 "last_foot_contact": last_foot_contact,
                 "foot_air_time": jp.zeros((4,), dtype=jp.float32),
+                "gait_phase": jp.asarray(0.0, dtype=jp.float32),
                 "last_policy_action": jp.zeros(
                     (WALKING_ACTION_SIZE_3D,), dtype=jp.float32
                 ),
@@ -555,6 +601,7 @@ def make_brax_walking_env_3d(
                 initial_root_y=data.qpos[1],
                 policy_action=info["last_policy_action"],
                 command=command,
+                gait_phase=info["gait_phase"],
                 noise_key=jax.random.fold_in(rng, 99),
             )
             return State(
@@ -719,6 +766,17 @@ def make_brax_walking_env_3d(
             root_height_error = root_z - task.nominal_root_height_m
 
             foot_contact = contacts["foot_ground"] > 0.0
+            gait_phase = state.info["gait_phase"]
+            desired_foot_contact = diagonal_contact_schedule_3d(
+                jp, gait_phase, task.gait_duty_factor
+            )
+            gait_contact_reward = jp.where(
+                task.gait_phase_enabled,
+                contact_schedule_reward_3d(
+                    jp, foot_contact, desired_foot_contact
+                ),
+                jp.asarray(0.0),
+            )
             foot_position = data.site_xpos[self.foot_site_ids]
             foot_height = jp.maximum(
                 foot_position[:, 2] - task.foot_radius_m, 0.0
@@ -745,6 +803,12 @@ def make_brax_walking_env_3d(
                 clearance_m=reward_settings.swing_clearance_m,
                 swing_speed_m_s=(
                     reward_settings.swing_clearance_speed_m_s
+                ),
+                target_sigma_m=(
+                    reward_settings.swing_clearance_target_sigma_m
+                ),
+                target_tracking=(
+                    reward_settings.swing_clearance_target_tracking
                 ),
             )
             foot_slip_velocity_squared = (
@@ -910,6 +974,7 @@ def make_brax_walking_env_3d(
                         roll_pitch_angular_velocity_squared
                     ),
                     "foot_air_time_reward": foot_air_time_reward,
+                    "gait_contact_reward": gait_contact_reward,
                     "locomotion_active": (
                         jp.linalg.norm(command[:2]) > 0.05
                     ).astype(jp.float32),
@@ -967,6 +1032,9 @@ def make_brax_walking_env_3d(
                 "progress_history_index": next_progress_history_index,
                 "last_foot_contact": foot_contact,
                 "foot_air_time": foot_air_time,
+                "gait_phase": jp.mod(
+                    gait_phase + control_dt / task.gait_cycle_time_s, 1.0
+                ),
                 "last_policy_action": policy_action,
                 "last_target": target,
                 "root_low_step_count": root_low_step_count,
@@ -1004,7 +1072,9 @@ def make_brax_walking_env_3d(
                 "heading_error_rad": body["heading_error"],
                 "foot_contact_count": contacts["foot_ground_count"],
                 "foot_air_time_reward": foot_air_time_reward,
+                "gait_contact_reward": gait_contact_reward,
                 "swing_clearance_reward": swing_clearance_reward,
+                "gait_phase": gait_phase,
                 "foot_slip_rms_m_s": jp.sqrt(foot_slip_velocity_squared),
                 "nonfoot_ground_contact_count": contacts[
                     "nonfoot_ground_count"
@@ -1078,6 +1148,7 @@ def make_brax_walking_env_3d(
                 initial_root_y=state.info["initial_root_y"],
                 policy_action=policy_action,
                 command=command,
+                gait_phase=info["gait_phase"],
                 noise_key=jax.random.fold_in(step_rng, 99),
             )
             metrics = {
@@ -1160,6 +1231,7 @@ def make_brax_walking_env_3d(
             initial_root_y,
             policy_action,
             command,
+            gait_phase,
             noise_key,
         ):
             joint_position = data.qpos[self.joint_qpos_indices]
@@ -1184,6 +1256,11 @@ def make_brax_walking_env_3d(
                     jp.full((12,), task.observation_scale_joint_position),
                     jp.full((12,), task.observation_scale_joint_velocity),
                     jp.full((12,), task.observation_scale_previous_action),
+                    *(
+                        (jp.full((2,), task.observation_scale_gait_phase),)
+                        if task.gait_phase_enabled
+                        else ()
+                    ),
                 )
             )
             physical_observation = jp.concatenate(
@@ -1195,6 +1272,11 @@ def make_brax_walking_env_3d(
                     joint_position - self.nominal_ctrl,
                     joint_velocity,
                     policy_action,
+                    *(
+                        (gait_phase_features_3d(jp, gait_phase),)
+                        if task.gait_phase_enabled
+                        else ()
+                    ),
                 )
             )
             if not task.observation_noise_enabled:
@@ -1208,11 +1290,12 @@ def make_brax_walking_env_3d(
                     jp.full((12,), task.observation_noise_joint_position_rad),
                     jp.full((12,), task.observation_noise_joint_velocity_rad_s),
                     jp.zeros((12,)),
+                    *((jp.zeros((2,)),) if task.gait_phase_enabled else ()),
                 )
             )
             noise = jax.random.uniform(
                 noise_key,
-                shape=(WALKING_OBSERVATION_SIZE_3D,),
+                shape=(self.observation_size,),
                 minval=-1.0,
                 maxval=1.0,
             )

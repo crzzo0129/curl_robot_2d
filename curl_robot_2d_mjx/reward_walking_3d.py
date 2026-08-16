@@ -19,6 +19,7 @@ WALKING_REWARD_TERM_NAMES_3D = (
     "vertical_velocity",
     "angular_velocity",
     "foot_air_time",
+    "gait_contact",
     "swing_clearance",
     "foot_slip",
     "action_rate",
@@ -40,6 +41,7 @@ class Walking3DRewardConfig:
     alive: float = 0.0
     velocity_tracking: float = 2.00
     velocity_tracking_sigma_m_s: float = 0.20
+    velocity_tracking_upright_gate: float = 1.0
     overspeed: float = 0.0
     overspeed_margin_m_s: float = 0.05
     overspeed_scale_m_s: float = 0.15
@@ -68,8 +70,11 @@ class Walking3DRewardConfig:
     foot_air_time: float = 0.15
     foot_air_time_threshold_s: float = 0.08
     foot_air_time_cap_s: float = 0.30
+    gait_contact: float = 0.0
     swing_clearance: float = 0.05
     swing_clearance_m: float = 0.015
+    swing_clearance_target_sigma_m: float = 0.0075
+    swing_clearance_target_tracking: float = 0.0
     swing_clearance_speed_m_s: float = 0.10
     foot_slip: float = 0.05
     foot_slip_sigma_m_s: float = 0.15
@@ -121,6 +126,14 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
     )
     upright_score = xp.exp(
         -xp.square(inputs["upright_tilt"] / config.upright_sigma_rad)
+    )
+    velocity_gate_strength = xp.clip(
+        xp.asarray(config.velocity_tracking_upright_gate), 0.0, 1.0
+    )
+    velocity_upright_gate = (
+        1.0
+        - velocity_gate_strength
+        + velocity_gate_strength * upright_score
     )
     stagnation_fraction = xp.clip(
         inputs.get("stagnation_fraction", xp.asarray(0.0)), 0.0, 1.0
@@ -177,7 +190,7 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
     return {
         "alive": config.alive * (1.0 - inputs["failed"]),
         "velocity_tracking": (
-            config.velocity_tracking * velocity_score * upright_score
+            config.velocity_tracking * velocity_score * velocity_upright_gate
         ),
         "overspeed": -config.overspeed * overspeed_cost,
         "yaw_rate_tracking": config.yaw_rate_tracking * yaw_rate_score,
@@ -200,6 +213,11 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
         "foot_air_time": (
             config.foot_air_time
             * inputs["foot_air_time_reward"]
+            * inputs.get("locomotion_active", 1.0)
+        ),
+        "gait_contact": (
+            config.gait_contact
+            * inputs.get("gait_contact_reward", 0.0)
             * inputs.get("locomotion_active", 1.0)
         ),
         "swing_clearance": (

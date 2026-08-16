@@ -30,6 +30,9 @@ results/**
 !results/staged_cem_real_geometry_180_d50_foot60/
 !results/staged_cem_real_geometry_180_d50_foot60/03_foot_gap_2mm/
 !results/staged_cem_real_geometry_180_d50_foot60/03_foot_gap_2mm/best_phase_controller.json
+!results/pupper_r127p5_open60_shell150_45_three_stage_cem/
+!results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/
+!results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json
 
 # Version the validated rolling-reset dataset required by stopping PPO.
 # Other rolling-stop searches, reports, and generated terminal states remain local.

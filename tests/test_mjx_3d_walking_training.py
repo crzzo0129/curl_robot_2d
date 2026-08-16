@@ -110,6 +110,27 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertFalse(args.no_domain_randomization)
         self.assertEqual(args.reset_root_xy_velocity_noise, 0.02)
 
+    def test_phase_bootstrap_recipe_enables_stage_a_scaffolding(self) -> None:
+        args = train_mjx_3d_walking_ppo.parse_args(
+            ["--recipe", "forward_phase_bootstrap_v1"]
+        )
+        reward = train_mjx_3d_walking_ppo._reward_config_from_args(args)
+
+        self.assertTrue(args.gait_phase_enabled)
+        self.assertEqual(args.gait_cycle_time, 0.625)
+        self.assertEqual(args.gait_duty_factor, 0.68)
+        self.assertEqual(args.reset_joint_noise, 0.01)
+        self.assertEqual(args.reset_velocity_noise, 0.02)
+        self.assertEqual(args.reset_root_xy_velocity_noise, 0.03)
+        self.assertEqual(args.updates_per_batch, 4)
+        self.assertEqual(args.learning_rate, 1e-4)
+        self.assertEqual(args.desired_kl, 0.01)
+        self.assertEqual(args.init_noise_std, 0.30)
+        self.assertEqual(reward.velocity_tracking_upright_gate, 0.0)
+        self.assertEqual(reward.gait_contact, 1.0)
+        self.assertEqual(reward.swing_clearance_m, 0.025)
+        self.assertEqual(reward.swing_clearance_target_tracking, 1.0)
+
     def test_stochastic_eval_is_an_explicit_opt_in(self) -> None:
         args = train_mjx_3d_walking_ppo.parse_args(["--stochastic-eval"])
 
