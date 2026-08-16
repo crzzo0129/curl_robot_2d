@@ -549,7 +549,7 @@ python -m scripts.mjx_3d_walking_smoke \
 - phase 只有 `sin/cos` 两维，只给出步态时钟；
 - FL+RR 与 FR+RL 的对角相位只用于足端接触匹配，不生成 hip/knee 目标角；
 - actor 直接输出相对本机 `stand` keyframe 的12维关节位置增量，正负方向由当前 MJCF 的真实关节轴决定；
-- 行走命令下没有 phase-conditioned posture/reference reward；零速度命令才启用弱 `stand_still` 正则；
+- 行走命令下没有 phase-conditioned posture/reference reward；路线 B 当前只采样正向 `vx`，不采样零速、横移或转向命令；
 - 旧的 `forward_phase_bootstrap_v1` 被保留作对照，不再作为推荐长训 recipe。
 
 ### 非对称 observation
@@ -560,7 +560,7 @@ Critic 为74维：无噪声 actor 状态47，加机体线速度3、足高4、各
 
 ### 奖励和终止
 
-核心项与 Unitree velocity task 对齐：三维线速度跟踪、三轴角速度跟踪、投影重力姿态、全身角动量、对角接触节律、目标足高、支撑足滑移、软着陆、动作变化、关节加速度、软关节限位、零命令站立和失败终止。没有手写足端轨迹，也没有 walking joint-pose reward。
+核心项与 Unitree velocity task 对齐：三维线速度跟踪、三轴角速度跟踪、投影重力姿态、全身角动量、对角接触节律、目标足高、支撑足滑移、软着陆、动作变化、关节加速度、软关节限位、零命令站立和失败终止。没有手写足端轨迹，也没有 walking joint-pose reward。当前路线 B 的训练命令收窄为 `vx∈[0.10, 0.30] m/s, vy=0, yaw_rate=0`，周期 eval 使用 `vx=0.20 m/s`。
 
 `gait_cycle_time=0.60 s`、`duty_factor=0.56`，所以单腿相位计划中的摆动窗为：
 
@@ -621,8 +621,14 @@ python -m scripts.train_mjx_3d_walking_ppo \
   --steps 20000000 \
   --num-evals 32 \
   --save-ppo-checkpoints \
-  --ppo-checkpoint-dir results/mjx_pupper_unitree_shellfree_v2/ppo_checkpoint \
-  --out results/mjx_pupper_unitree_shellfree_v2
+  --ppo-checkpoint-dir results/mjx_pupper_unitree_lowprogress_v3/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_lowprogress_v3
 ```
 
-修订后本地完整回归为292通过、1个既有跳过；非对称 MJX smoke 通过，零动作起始仍为四足接触、无非足端接触。
+### 站立退化、命令换挡和接触力诊断修订
+
+为了避免“站满10秒”被保存成 `params_best`，路线 B 新增独立于 reward 的低进展终止：维护0.5秒前向位移窗口，要求位移至少达到 `min(0.05 m, 0.5 * vx_command * 0.5 s)`；窗口持续不达标2秒才失败。最低0.10 m/s命令对应0.025 m门槛，而不是误要求100%瞬时跟踪。每次命令重采样都会清空窗口和连续计数；第一段命令也有0.5秒观察宽限。因此完全站立策略约在2.5秒终止，而不会活满10秒。
+
+checkpoint 的字典序 rank 同时加入 `meaningful_progress`，且 `completed` 必须满足实际位移和最小 tracking quality，作为环境终止之外的第二道保险。命令重采样移动到 transition 末尾：当前动作始终按生成它时 observation 中的旧命令结算，新命令只进入下一 observation。`nonfoot_force_avg` 保留逐步均值，新增 `nonfoot_force_peak`；峰值通过逐步峰值增量累加，使 Brax 的 episode sum 正好还原每回合峰值，不再被 episode length 稀释。
+
+修订后本地完整回归为295通过、1个既有跳过；非对称 MJX smoke 通过。nominal stand 动态验证在第124控制步由 `failure_low_progress` 终止，即2.48秒，0.5秒窗口位移约0而门槛为0.05 m。

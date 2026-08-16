@@ -98,6 +98,22 @@ def command_overspeed_3d(xp, planar_velocity, command, margin_m_s):
     )
 
 
+def required_forward_progress_3d(
+    xp,
+    forward_command_m_s,
+    *,
+    window_s,
+    command_ratio,
+    cap_m,
+):
+    """Return a speed-relative progress floor capped in metres."""
+
+    return xp.minimum(
+        cap_m,
+        command_ratio * xp.maximum(forward_command_m_s, 0.0) * window_s,
+    )
+
+
 def swing_clearance_reward_3d(
     xp,
     foot_contact,
@@ -443,6 +459,14 @@ def make_brax_walking_env_3d(
                 reward_settings.stagnation_window_s,
                 task.control_timestep,
             )
+            self.low_progress_window_steps = _duration_to_steps(
+                task.terminate_low_progress_window_s,
+                task.control_timestep,
+            )
+            self.low_progress_duration_steps = _duration_to_steps(
+                task.terminate_low_progress_duration_s,
+                task.control_timestep,
+            )
 
         @property
         def observation_size(self):
@@ -506,6 +530,7 @@ def make_brax_walking_env_3d(
                 "nonfoot_ground_contact_count": zero,
                 "nonfoot_ground_depth_m": zero,
                 "nonfoot_ground_max_force_n": zero,
+                "nonfoot_ground_peak_force_n": zero,
                 "self_contact_count": zero,
                 "self_contact_depth_m": zero,
                 "airborne_active": zero,
@@ -514,6 +539,7 @@ def make_brax_walking_env_3d(
                 "upright_tilt_step_count": zero,
                 "nonfoot_contact_step_count": zero,
                 "self_contact_step_count": zero,
+                "low_progress_step_count": zero,
                 "action_rms": zero,
                 "action_rate_rms": zero,
                 "joint_velocity_rms_rad_s": zero,
@@ -528,6 +554,9 @@ def make_brax_walking_env_3d(
                 "yaw_rate_error_rad_s": zero,
                 "progress_window_m": zero,
                 "stagnation_fraction": zero,
+                "low_progress_window_m": zero,
+                "low_progress_required_m": zero,
+                "low_progress_active": zero,
                 "failed": zero,
                 "timeout": zero,
                 "failure_nonfinite": zero,
@@ -542,6 +571,7 @@ def make_brax_walking_env_3d(
                 "failure_nonfoot_contact": zero,
                 "failure_self_contact_depth": zero,
                 "failure_self_contact": zero,
+                "failure_low_progress": zero,
             }
 
         def _sanitize_observation(self, observation):
@@ -623,6 +653,11 @@ def make_brax_walking_env_3d(
                     (self.stagnation_window_steps, 1),
                 ),
                 "progress_history_index": jp.asarray(0, dtype=jp.int32),
+                "low_progress_position_history": jp.tile(
+                    data.qpos[:2][None, :],
+                    (self.low_progress_window_steps, 1),
+                ),
+                "low_progress_history_index": jp.asarray(0, dtype=jp.int32),
                 "last_foot_contact": last_foot_contact,
                 "foot_air_time": jp.zeros((4,), dtype=jp.float32),
                 "gait_phase": jp.asarray(0.0, dtype=jp.float32),
@@ -636,6 +671,10 @@ def make_brax_walking_env_3d(
                 "airborne_step_count": jp.asarray(0, dtype=jp.int32),
                 "nonfoot_contact_step_count": jp.asarray(0, dtype=jp.int32),
                 "self_contact_step_count": jp.asarray(0, dtype=jp.int32),
+                "low_progress_step_count": jp.asarray(0, dtype=jp.int32),
+                "nonfoot_ground_peak_force_n": jp.zeros(
+                    (), dtype=jp.float32
+                ),
                 "step_count": jp.asarray(0, dtype=jp.int32),
                 "command": command,
                 "command_step_count": jp.asarray(0, dtype=jp.int32),
@@ -669,16 +708,20 @@ def make_brax_walking_env_3d(
             command_steps = max(
                 1, int(round(task.command_resample_time_s / task.control_timestep))
             )
-            resample_command = state.info["command_step_count"] >= command_steps
-            command = jax.lax.cond(
-                resample_command,
+            # The action was produced from state.obs and must therefore be
+            # rewarded against the same command that state.obs contained.
+            # A newly sampled command is exposed only in the next observation.
+            command = state.info["command"]
+            next_command_step_count = state.info["command_step_count"] + 1
+            resample_next_command = next_command_step_count >= command_steps
+            next_command = jax.lax.cond(
+                resample_next_command,
                 lambda key: self._sample_command(key),
-                lambda key: state.info["command"],
+                lambda key: command,
                 step_rng,
             )
-            progress_command_changed = resample_command & (
-                jp.linalg.norm(command[:2] - state.info["command"][:2])
-                > 1.0e-6
+            progress_command_changed = resample_next_command & (
+                jp.linalg.norm(next_command[:2] - command[:2]) > 1.0e-6
             )
             action_finite = jp.all(jp.isfinite(action))
             policy_action = jp.nan_to_num(
@@ -759,9 +802,9 @@ def make_brax_walking_env_3d(
                 heading_window_displacement, command_direction
             )
             progress_window_ready = (
-                state.info["step_count"] + 1
+                state.info["command_step_count"] + 1
                 >= self.stagnation_window_steps
-            ) & (~progress_command_changed)
+            )
             stagnation_fraction = jp.where(
                 progress_window_ready & (command_speed > 0.05),
                 jp.clip(
@@ -777,6 +820,61 @@ def make_brax_walking_env_3d(
                     1.0,
                 ),
                 jp.asarray(0.0),
+            )
+
+            low_progress_history_index = state.info[
+                "low_progress_history_index"
+            ]
+            low_progress_reference_xy = state.info[
+                "low_progress_position_history"
+            ][low_progress_history_index]
+            low_progress_world_displacement = jp.concatenate(
+                (root_xy - low_progress_reference_xy, jp.zeros((1,)))
+            )
+            low_progress_heading_displacement = (
+                heading_frame_planar_velocity_3d(
+                    jp, rotation, low_progress_world_displacement
+                )
+            )
+            low_progress_window_m = low_progress_heading_displacement[0]
+            low_progress_required_m = required_forward_progress_3d(
+                jp,
+                command[0],
+                window_s=task.terminate_low_progress_window_s,
+                command_ratio=task.terminate_low_progress_command_ratio,
+                cap_m=task.terminate_low_progress_cap_m,
+            )
+            low_progress_window_ready = (
+                state.info["command_step_count"] + 1
+                >= self.low_progress_window_steps
+            )
+            low_progress_active = (
+                task.terminate_low_progress_enabled
+                & low_progress_window_ready
+                & (command[0] > 0.05)
+                & (low_progress_window_m < low_progress_required_m)
+            )
+            low_progress_step_count = _next_active_count(
+                jp,
+                low_progress_active,
+                state.info["low_progress_step_count"],
+            )
+            updated_low_progress_history = state.info[
+                "low_progress_position_history"
+            ].at[low_progress_history_index].set(root_xy)
+            reset_low_progress_history = jp.tile(
+                root_xy[None, :], (self.low_progress_window_steps, 1)
+            )
+            low_progress_position_history = jp.where(
+                progress_command_changed,
+                reset_low_progress_history,
+                updated_low_progress_history,
+            )
+            next_low_progress_history_index = jp.where(
+                progress_command_changed,
+                jp.asarray(0, dtype=jp.int32),
+                (low_progress_history_index + 1)
+                % self.low_progress_window_steps,
             )
             updated_progress_history = state.info[
                 "progress_position_history"
@@ -1002,6 +1100,17 @@ def make_brax_walking_env_3d(
                 self_contact_active,
                 state.info["self_contact_step_count"],
             )
+            nonfoot_ground_peak_force_n = jp.maximum(
+                state.info["nonfoot_ground_peak_force_n"],
+                contacts["nonfoot_ground_max_force_n"],
+            )
+            # Brax forms episode metrics by summing per-step metrics.  Emitting
+            # only the positive peak increment makes the episode sum equal the
+            # actual peak force instead of an average of per-step maxima.
+            nonfoot_ground_peak_force_increment_n = (
+                nonfoot_ground_peak_force_n
+                - state.info["nonfoot_ground_peak_force_n"]
+            )
 
             failure_nonfinite_action = ~action_finite
             failure_nonfinite_physics = action_finite & (~physics_finite)
@@ -1029,6 +1138,13 @@ def make_brax_walking_env_3d(
             failure_self_contact = (
                 self_contact_step_count >= self.self_contact_steps
             )
+            failure_low_progress = (
+                task.terminate_low_progress_enabled
+                & (
+                    low_progress_step_count
+                    >= self.low_progress_duration_steps
+                )
+            )
             failed_bool = (
                 failure_nonfinite
                 | failure_root_low
@@ -1039,6 +1155,7 @@ def make_brax_walking_env_3d(
                 | failure_nonfoot_contact
                 | failure_self_contact_depth
                 | failure_self_contact
+                | failure_low_progress
             )
             failure_severe = failed_bool & (~failure_nonfinite)
             step_count = state.info["step_count"] + 1
@@ -1138,6 +1255,12 @@ def make_brax_walking_env_3d(
                 "previous_foot_position_local": foot_position_local,
                 "progress_position_history": progress_position_history,
                 "progress_history_index": next_progress_history_index,
+                "low_progress_position_history": (
+                    low_progress_position_history
+                ),
+                "low_progress_history_index": (
+                    next_low_progress_history_index
+                ),
                 "last_foot_contact": foot_contact,
                 "foot_air_time": foot_air_time,
                 "gait_phase": jp.mod(
@@ -1151,12 +1274,20 @@ def make_brax_walking_env_3d(
                 "airborne_step_count": airborne_step_count,
                 "nonfoot_contact_step_count": nonfoot_contact_step_count,
                 "self_contact_step_count": self_contact_step_count,
-                "step_count": step_count,
-                "command": command,
-                "command_step_count": jp.where(
-                    resample_command,
+                "low_progress_step_count": jp.where(
+                    progress_command_changed,
                     jp.asarray(0, dtype=jp.int32),
-                    state.info["command_step_count"] + 1,
+                    low_progress_step_count,
+                ),
+                "nonfoot_ground_peak_force_n": (
+                    nonfoot_ground_peak_force_n
+                ),
+                "step_count": step_count,
+                "command": next_command,
+                "command_step_count": jp.where(
+                    resample_next_command,
+                    jp.asarray(0, dtype=jp.int32),
+                    next_command_step_count,
                 ),
                 "time_out": timeout_bool.astype(jp.float32),
             }
@@ -1198,6 +1329,9 @@ def make_brax_walking_env_3d(
                 "nonfoot_ground_max_force_n": contacts[
                     "nonfoot_ground_max_force_n"
                 ],
+                "nonfoot_ground_peak_force_n": (
+                    nonfoot_ground_peak_force_increment_n
+                ),
                 "self_contact_count": contacts["self_contact_count"],
                 "self_contact_depth_m": contacts["self_contact_depth"],
                 "airborne_active": airborne_active.astype(jp.float32),
@@ -1210,6 +1344,9 @@ def make_brax_walking_env_3d(
                     nonfoot_contact_step_count.astype(jp.float32)
                 ),
                 "self_contact_step_count": self_contact_step_count.astype(
+                    jp.float32
+                ),
+                "low_progress_step_count": low_progress_step_count.astype(
                     jp.float32
                 ),
                 "action_rms": jp.sqrt(action_magnitude_cost),
@@ -1226,6 +1363,11 @@ def make_brax_walking_env_3d(
                 "yaw_rate_error_rad_s": jp.abs(yaw_rate - command[2]),
                 "progress_window_m": progress_window_m,
                 "stagnation_fraction": stagnation_fraction,
+                "low_progress_window_m": low_progress_window_m,
+                "low_progress_required_m": low_progress_required_m,
+                "low_progress_active": low_progress_active.astype(
+                    jp.float32
+                ),
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),
@@ -1256,6 +1398,9 @@ def make_brax_walking_env_3d(
                 "failure_self_contact": failure_self_contact.astype(
                     jp.float32
                 ),
+                "failure_low_progress": failure_low_progress.astype(
+                    jp.float32
+                ),
             }
             observation = self._observation(
                 data,
@@ -1263,7 +1408,7 @@ def make_brax_walking_env_3d(
                 body,
                 initial_root_y=state.info["initial_root_y"],
                 policy_action=policy_action,
-                command=command,
+                command=next_command,
                 gait_phase=info["gait_phase"],
                 foot_air_time=foot_air_time,
                 noise_key=jax.random.fold_in(step_rng, 99),

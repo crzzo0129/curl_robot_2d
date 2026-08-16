@@ -30,6 +30,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     freejoint_body_velocity_3d,
     heading_frame_planar_velocity_3d,
     normalized_command_progress_3d,
+    required_forward_progress_3d,
     gait_phase_features_3d,
     swing_clearance_reward_3d,
     torso_local_points_3d,
@@ -73,6 +74,9 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertEqual(config.observation_scale_command_yaw_rate, 0.25)
         self.assertEqual(config.observation_scale_joint_velocity, 0.05)
         self.assertFalse(config.asymmetric_observation_enabled)
+        self.assertFalse(config.terminate_low_progress_enabled)
+        self.assertEqual(config.terminate_low_progress_window_s, 0.50)
+        self.assertEqual(config.terminate_low_progress_duration_s, 2.0)
 
     def test_freejoint_angular_velocity_is_already_body_local(self) -> None:
         rotation = np.asarray(
@@ -127,6 +131,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             ),
             0.0,
         )
+
         self.assertAlmostEqual(
             float(
                 normalized_command_progress_3d(
@@ -155,6 +160,17 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             ),
             0.0,
         )
+
+    def test_low_progress_floor_is_command_relative_and_capped(self) -> None:
+        thresholds = required_forward_progress_3d(
+            np,
+            np.asarray((0.10, 0.20, 0.30)),
+            window_s=0.50,
+            command_ratio=0.50,
+            cap_m=0.05,
+        )
+
+        np.testing.assert_allclose(thresholds, (0.025, 0.05, 0.05))
 
     def test_swing_clearance_requires_relative_horizontal_foot_motion(self) -> None:
         contact = np.asarray((False, True, True, True))
@@ -405,6 +421,11 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             {"soft_joint_limit_fraction": 0.0},
             {"observation_scale_joint_velocity": 0.0},
             {"terminate_nonfoot_force_min_n": 0.0},
+            {"terminate_low_progress_window_s": 0.0},
+            {"terminate_low_progress_duration_s": 0.0},
+            {"terminate_low_progress_command_ratio": 0.0},
+            {"terminate_low_progress_command_ratio": 1.1},
+            {"terminate_low_progress_cap_m": 0.0},
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 validate_walking_3d_config(Walking3DConfig(**values))
@@ -445,6 +466,10 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             '"privileged_state": privileged_observation',
             "data._impl.cfrc_ext",
             '"time_out": timeout_bool.astype(jp.float32)',
+            'command = state.info["command"]',
+            '"command": next_command',
+            '"failure_low_progress"',
+            '"nonfoot_ground_peak_force_n"',
         ):
             self.assertIn(token, source)
 
@@ -453,6 +478,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertNotIn("| lateral_drift_exceeded", source)
         self.assertNotIn("startup_action_ramp", source)
         self.assertNotIn("smoothstep_ramp", source)
+        self.assertNotIn("\n            command = jax.lax.cond", source)
         self.assertIn("+ policy_action * self.action_scales", source)
         self.assertNotIn("phase_joint", source)
         self.assertNotIn("joint_pose_reference", source)

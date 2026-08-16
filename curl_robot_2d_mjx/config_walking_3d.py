@@ -99,6 +99,11 @@ class Walking3DConfig:
     terminate_nonfoot_contact_duration_s: float = 0.06
     terminate_self_contact_depth_m: float = 0.004
     terminate_self_contact_duration_s: float = 0.08
+    terminate_low_progress_enabled: bool = False
+    terminate_low_progress_window_s: float = 0.50
+    terminate_low_progress_duration_s: float = 2.0
+    terminate_low_progress_command_ratio: float = 0.50
+    terminate_low_progress_cap_m: float = 0.05
 
     solver_iterations: int = 20
     solver_ls_iterations: int = 10
@@ -193,6 +198,18 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         ),
         (config.gait_cycle_time_s, "gait_cycle_time_s"),
         (config.observation_scale_gait_phase, "observation_scale_gait_phase"),
+        (
+            config.terminate_low_progress_window_s,
+            "terminate_low_progress_window_s",
+        ),
+        (
+            config.terminate_low_progress_duration_s,
+            "terminate_low_progress_duration_s",
+        ),
+        (
+            config.terminate_low_progress_cap_m,
+            "terminate_low_progress_cap_m",
+        ),
     ):
         _validate_positive(value, name)
     for limits, name in (
@@ -244,6 +261,10 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         raise ValueError("soft_joint_limit_fraction must be in (0, 1]")
     if not 0.0 < config.gait_duty_factor < 1.0:
         raise ValueError("gait_duty_factor must be in (0, 1)")
+    if not 0.0 < config.terminate_low_progress_command_ratio <= 1.0:
+        raise ValueError(
+            "terminate_low_progress_command_ratio must be in (0, 1]"
+        )
     for value, name in (
         (config.terminate_root_z_low_duration_s, "terminate_root_z_low_duration_s"),
         (

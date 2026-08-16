@@ -308,13 +308,13 @@ WALKING_RECIPES_3D = {
             "with an asymmetric critic and no joint-pose trajectory reference."
         ),
         "args": {
-            "desired_speed_m_s": 0.10,
-            "command_forward_min": 0.05,
-            "command_forward_max": 0.20,
-            "command_lateral_max": 0.05,
-            "command_yaw_rate_max": 0.30,
+            "desired_speed_m_s": 0.20,
+            "command_forward_min": 0.10,
+            "command_forward_max": 0.30,
+            "command_lateral_max": 0.0,
+            "command_yaw_rate_max": 0.0,
             "command_resample_time": 4.0,
-            "command_stop_probability": 0.10,
+            "command_stop_probability": 0.0,
             "no_observation_noise": False,
             "no_domain_randomization": False,
             "gait_phase_enabled": True,
@@ -340,6 +340,11 @@ WALKING_RECIPES_3D = {
             "terminate_nonfoot_force_min": 1.0,
             "terminate_nonfoot_contact_duration": 0.02,
             "terminate_self_contact_duration": 0.04,
+            "terminate_low_progress_enabled": True,
+            "terminate_low_progress_window": 0.50,
+            "terminate_low_progress_duration": 2.0,
+            "terminate_low_progress_command_ratio": 0.50,
+            "terminate_low_progress_cap": 0.05,
             "updates_per_batch": 5,
             "unroll_length": 24,
             "learning_rate": 3e-4,
@@ -451,6 +456,9 @@ PER_STEP_WALKING_METRICS_3D = (
     "yaw_rate_error_rad_s",
     "progress_window_m",
     "stagnation_fraction",
+    "low_progress_window_m",
+    "low_progress_required_m",
+    "low_progress_active",
 )
 
 
@@ -466,6 +474,7 @@ WALKING_FAILURE_METRICS_3D = (
     "failure_nonfoot_contact",
     "failure_self_contact_depth",
     "failure_self_contact",
+    "failure_low_progress",
 )
 
 
@@ -627,11 +636,21 @@ def _checkpoint_selection_walking_3d(
         max(nonfoot / 0.02, 0.0) + max(self_contact / 0.02, 0.0),
         1.0,
     )
-    completed = float(survival >= 0.999 and failed_rate <= 0.001)
+    meaningful_progress = float(raw_progress_quality >= 0.25)
+    upright_nonfailure_quality = 1.0 - min(
+        max(upright_failure_rate, 0.0), 1.0
+    )
+    completed = float(
+        survival >= 0.999
+        and failed_rate <= 0.001
+        and raw_progress_quality >= 0.50
+        and planar_tracking_quality >= 0.25
+    )
     rank = (
         completed,
+        meaningful_progress,
         survival,
-        1.0 - min(max(upright_failure_rate, 0.0), 1.0),
+        upright_nonfailure_quality,
         nonfailure_quality,
         tracking_quality,
         progress_quality,
@@ -643,8 +662,9 @@ def _checkpoint_selection_walking_3d(
     # rank above so contact quality can never outweigh a survival regression.
     score = (
         1000.0 * completed
+        + 100.0 * meaningful_progress
         + 100.0 * survival
-        + 20.0 * rank[2]
+        + 20.0 * upright_nonfailure_quality
         + 10.0 * nonfailure_quality
         + 5.0 * tracking_quality
         + 3.0 * progress_quality
@@ -670,6 +690,7 @@ def _checkpoint_selection_walking_3d(
         "rank": ((float("-inf"),) * len(rank)) if rejected else rank,
         "rejected": rejected,
         "completed": completed,
+        "meaningful_progress": meaningful_progress,
         "survival": survival,
         "distance_m": distance,
         "raw_progress_quality": raw_progress_quality,
@@ -731,6 +752,11 @@ def _format_eval_report_walking_3d(
             f"overspeed={_metric(metrics, 'eval/avg_overspeed_m_s'):.3f}m/s "
             f"progress_1s={_metric(metrics, 'eval/avg_progress_window_m'):.3f}m "
             f"stagnation={_metric(metrics, 'eval/avg_stagnation_fraction'):.2f} "
+            f"progress_0.5s="
+            f"{_metric(metrics, 'eval/avg_low_progress_window_m'):.3f}/"
+            f"{_metric(metrics, 'eval/avg_low_progress_required_m'):.3f}m "
+            f"low_progress="
+            f"{_metric(metrics, 'eval/avg_low_progress_active'):.1%} "
             f"yaw_rate_error="
             f"{selection['yaw_tracking_error_rad_s']:.3f}rad/s"
         ),
@@ -752,8 +778,10 @@ def _format_eval_report_walking_3d(
         (
             f"  safety  nonfoot="
             f"{_metric(metrics, 'eval/avg_nonfoot_ground_contact_count'):.3f} "
-            f"nonfoot_force="
+            f"nonfoot_force_avg="
             f"{_metric(metrics, 'eval/avg_nonfoot_ground_max_force_n'):.2f}N "
+            f"nonfoot_force_peak="
+            f"{_metric(metrics, 'eval/episode_nonfoot_ground_peak_force_n'):.2f}N "
             f"self={_metric(metrics, 'eval/avg_self_contact_count'):.3f} "
             f"air={_metric(metrics, 'eval/avg_airborne_active'):.2%}"
         ),
@@ -852,8 +880,15 @@ def _evaluate_policy_walking_3d(
     steps = len(reward_rows)
     final_x = _float(state.pipeline_state.qpos[0])
     final_y = _float(state.pipeline_state.qpos[1])
+    episode_only_metric_names = {"nonfoot_ground_peak_force_n"}
     averages = {
-        name: value / max(steps, 1) for name, value in metric_totals.items()
+        name: value / max(steps, 1)
+        for name, value in metric_totals.items()
+        if name not in episode_only_metric_names
+    }
+    episode_metrics = {
+        name: metric_totals.get(name, 0.0)
+        for name in episode_only_metric_names
     }
     failures = {
         name.removeprefix("failure_"): bool(metric_totals.get(name, 0.0))
@@ -879,7 +914,11 @@ def _evaluate_policy_walking_3d(
                 for name, value in reward_totals.items()
             },
         },
-        "metrics": {"totals": metric_totals, "per_step": averages},
+        "metrics": {
+            "totals": metric_totals,
+            "per_step": averages,
+            "episode": episode_metrics,
+        },
     }
     output_dir.mkdir(parents=True, exist_ok=True)
     np.savez_compressed(
@@ -1034,6 +1073,30 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--terminate-self-contact-duration", type=float
     )
+    low_progress_group = parser.add_mutually_exclusive_group()
+    low_progress_group.add_argument(
+        "--terminate-low-progress",
+        dest="terminate_low_progress_enabled",
+        action="store_true",
+    )
+    low_progress_group.add_argument(
+        "--no-terminate-low-progress",
+        dest="terminate_low_progress_enabled",
+        action="store_false",
+    )
+    parser.set_defaults(terminate_low_progress_enabled=None)
+    parser.add_argument(
+        "--terminate-low-progress-window", type=float, default=0.50
+    )
+    parser.add_argument(
+        "--terminate-low-progress-duration", type=float, default=2.0
+    )
+    parser.add_argument(
+        "--terminate-low-progress-command-ratio", type=float, default=0.50
+    )
+    parser.add_argument(
+        "--terminate-low-progress-cap", type=float, default=0.05
+    )
     parser.add_argument("--unroll-length", type=int)
     parser.add_argument("--updates-per-batch", type=int)
     parser.add_argument("--learning-rate", type=float)
@@ -1134,6 +1197,7 @@ def _apply_recipe_defaults(args) -> None:
         "critic_hidden_layers": [256, 256, 128],
         "terminate_upright_tilt": 0.72,
         "terminate_upright_tilt_duration": 0.08,
+        "terminate_low_progress_enabled": False,
     }
     for name, value in fallbacks.items():
         if getattr(args, name) is None:
@@ -1169,6 +1233,9 @@ def parse_args(argv=None):
         "reward_scaling",
         "gait_cycle_time",
         "terminate_nonfoot_force_min",
+        "terminate_low_progress_window",
+        "terminate_low_progress_duration",
+        "terminate_low_progress_cap",
     ):
         if getattr(args, name) <= 0.0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
@@ -1196,6 +1263,10 @@ def parse_args(argv=None):
         parser.error("--command-stop-probability must be in [0, 1]")
     if not 0.0 < args.gait_duty_factor < 1.0:
         parser.error("--gait-duty-factor must be in (0, 1)")
+    if not 0.0 < args.terminate_low_progress_command_ratio <= 1.0:
+        parser.error(
+            "--terminate-low-progress-command-ratio must be in (0, 1]"
+        )
     if args.asymmetric_observations and not args.gait_phase_enabled:
         parser.error("--asymmetric-observations requires --gait-phase")
     if not 0.0 < args.discounting <= 1.0:
@@ -1321,6 +1392,19 @@ def main(argv=None) -> None:
             terminate_self_contact_duration_s=(
                 args.terminate_self_contact_duration
             ),
+            terminate_low_progress_enabled=(
+                args.terminate_low_progress_enabled
+            ),
+            terminate_low_progress_window_s=(
+                args.terminate_low_progress_window
+            ),
+            terminate_low_progress_duration_s=(
+                args.terminate_low_progress_duration
+            ),
+            terminate_low_progress_command_ratio=(
+                args.terminate_low_progress_command_ratio
+            ),
+            terminate_low_progress_cap_m=args.terminate_low_progress_cap,
         ),
     )
     reward_config = _reward_config_from_args(args)
