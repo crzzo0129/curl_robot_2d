@@ -90,6 +90,7 @@ class Walking3DRewardConfig:
     foot_slip: float = 0.05
     foot_slip_sigma_m_s: float = 0.15
     soft_landing: float = 0.0
+    soft_landing_velocity_m_s: float = 0.50
 
     action_rate: float = 0.020
     action_magnitude: float = 0.004

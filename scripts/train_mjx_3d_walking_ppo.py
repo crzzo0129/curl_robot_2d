@@ -328,8 +328,8 @@ WALKING_RECIPES_3D = {
             # Robot-specific action radii.  These are not phase poses and do
             # not assume Unitree's rear-folding front knees.
             "action_scale_abduction": 0.08,
-            "action_scale_hip": 0.35,
-            "action_scale_knee": 0.45,
+            "action_scale_hip": 0.25,
+            "action_scale_knee": 0.25,
             "reset_joint_noise": 0.015,
             "reset_velocity_noise": 0.05,
             "reset_root_xy_velocity_noise": 0.10,
@@ -337,17 +337,18 @@ WALKING_RECIPES_3D = {
             "terminate_upright_tilt": 1.22,
             "terminate_upright_tilt_duration": 0.02,
             "terminate_airborne_duration": 0.25,
+            "terminate_nonfoot_force_min": 1.0,
             "terminate_nonfoot_contact_duration": 0.02,
             "terminate_self_contact_duration": 0.04,
             "updates_per_batch": 5,
             "unroll_length": 24,
-            "learning_rate": 1e-3,
-            "adaptive_kl_min_lr": 1e-5,
-            "adaptive_kl_max_lr": 1e-3,
+            "learning_rate": 3e-4,
+            "adaptive_kl_min_lr": 3e-5,
+            "adaptive_kl_max_lr": 3e-4,
             "entropy_cost": 0.01,
             "discounting": 0.99,
             "reward_scaling": 1.0,
-            "init_noise_std": 1.0,
+            "init_noise_std": 0.50,
             "clipping_epsilon": 0.20,
             "max_grad_norm": 1.0,
             "desired_kl": 0.01,
@@ -422,10 +423,12 @@ PER_STEP_WALKING_METRICS_3D = (
     "foot_air_time_mean_s",
     "gait_contact_reward",
     "swing_clearance_reward",
+    "foot_clearance_cost",
     "gait_phase",
     "foot_slip_rms_m_s",
     "nonfoot_ground_contact_count",
     "nonfoot_ground_depth_m",
+    "nonfoot_ground_max_force_n",
     "self_contact_count",
     "self_contact_depth_m",
     "airborne_active",
@@ -742,12 +745,15 @@ def _format_eval_report_walking_3d(
             f"{_metric(metrics, 'eval/avg_foot_contact_count'):.2f} "
             f"air_time={touchdown_air_time_s:.3f}s "
             f"air_mean={_metric(metrics, 'eval/avg_foot_air_time_mean_s'):.3f}s "
-            f"clearance={_metric(metrics, 'eval/avg_swing_clearance_reward'):.3f} "
+            f"clearance_cost="
+            f"{_metric(metrics, 'eval/avg_foot_clearance_cost'):.3f} "
             f"slip={_metric(metrics, 'eval/avg_foot_slip_rms_m_s'):.3f}m/s"
         ),
         (
             f"  safety  nonfoot="
             f"{_metric(metrics, 'eval/avg_nonfoot_ground_contact_count'):.3f} "
+            f"nonfoot_force="
+            f"{_metric(metrics, 'eval/avg_nonfoot_ground_max_force_n'):.2f}N "
             f"self={_metric(metrics, 'eval/avg_self_contact_count'):.3f} "
             f"air={_metric(metrics, 'eval/avg_airborne_active'):.2%}"
         ),
@@ -1017,6 +1023,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--terminate-nonfoot-depth", type=float, default=0.004
     )
     parser.add_argument(
+        "--terminate-nonfoot-force-min", type=float, default=1.0
+    )
+    parser.add_argument(
         "--terminate-nonfoot-contact-duration", type=float
     )
     parser.add_argument(
@@ -1159,6 +1168,7 @@ def parse_args(argv=None):
         "desired_kl",
         "reward_scaling",
         "gait_cycle_time",
+        "terminate_nonfoot_force_min",
     ):
         if getattr(args, name) <= 0.0:
             parser.error(f"--{name.replace('_', '-')} must be positive")
@@ -1301,6 +1311,7 @@ def main(argv=None) -> None:
                 args.terminate_airborne_duration
             ),
             terminate_nonfoot_depth_m=args.terminate_nonfoot_depth,
+            terminate_nonfoot_force_min_n=args.terminate_nonfoot_force_min,
             terminate_nonfoot_contact_duration_s=(
                 args.terminate_nonfoot_contact_duration
             ),

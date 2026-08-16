@@ -284,6 +284,7 @@ def build_mjcf_3d(
     parameters: FixedParameters = FIXED_PARAMETERS,
     *,
     detailed_structure: bool = False,
+    shell_collisions_enabled: bool = True,
 ) -> str:
     p = parameters
     torso_half_length = p.torso_length / 2.0
@@ -444,7 +445,7 @@ def build_mjcf_3d(
             </default>
             <default class="rolling_shell">
               <geom type="capsule" size="{_f(p.shell_capsule_radius)}"
-                    contype="4" conaffinity="{'3' if p.uses_pupper_original_shell else '7'}"
+                    contype="{'4' if shell_collisions_enabled else '0'}" conaffinity="{('3' if p.uses_pupper_original_shell else '7') if shell_collisions_enabled else '0'}"
                     solref="0.003 1" solimp="0.95 0.99 0.001"
                     group="1" rgba="0.55 0.78 0.95 0.88"/>
             </default>
@@ -546,10 +547,15 @@ def write_mjcf_3d(
     parameters: FixedParameters = FIXED_PARAMETERS,
     *,
     detailed_structure: bool = False,
+    shell_collisions_enabled: bool = True,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        build_mjcf_3d(parameters, detailed_structure=detailed_structure),
+        build_mjcf_3d(
+            parameters,
+            detailed_structure=detailed_structure,
+            shell_collisions_enabled=shell_collisions_enabled,
+        ),
         encoding="utf-8",
     )
     return path

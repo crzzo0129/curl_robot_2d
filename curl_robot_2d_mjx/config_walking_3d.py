@@ -95,6 +95,7 @@ class Walking3DConfig:
     diagnostic_lateral_drift_m: float = 1.50
     terminate_airborne_duration_s: float = 0.14
     terminate_nonfoot_depth_m: float = 0.004
+    terminate_nonfoot_force_min_n: float = 1.0
     terminate_nonfoot_contact_duration_s: float = 0.06
     terminate_self_contact_depth_m: float = 0.004
     terminate_self_contact_duration_s: float = 0.08
@@ -140,6 +141,10 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
             "diagnostic_lateral_drift_m",
         ),
         (config.terminate_nonfoot_depth_m, "terminate_nonfoot_depth_m"),
+        (
+            config.terminate_nonfoot_force_min_n,
+            "terminate_nonfoot_force_min_n",
+        ),
         (config.terminate_self_contact_depth_m, "terminate_self_contact_depth_m"),
         (
             config.observation_scale_linear_velocity,

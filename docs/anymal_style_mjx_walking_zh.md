@@ -106,3 +106,5 @@ python -m scripts.train_mjx_3d_walking_ppo \
 ```
 
 该网络与旧48/50维 checkpoint 不兼容，必须从零训练。`T=0.60 s`、`duty=0.56` 对应计划摆动窗0.264秒；新日志的 `air_time` 是 touchdown 事件的真实腾空秒数，而旧日志中的同名值实际是稀疏奖励均值。
+
+首轮路线 B 暴露出两个适配问题：壳体的浅层接触会立即触发非法接触，且 `std=1.0/LR=1e-3` 在 Brax PPO 中把确定性动作均值推到接近饱和。当前版本已经让全部 `rolling_shell` 退出碰撞，保留内部结构代理；非法接触改为三维接触力模长超过1 N才累计，与 Unitree 判据一致。路线 B 现在使用 `std=0.5`、`LR∈[3e-5, 3e-4]` 和 `abduction/hip/knee=0.08/0.25/0.25 rad`。足高、软着陆和角动量也按本机尺度无量纲化。不要恢复首轮 checkpoint，建议输出到 `results/mjx_pupper_unitree_shellfree_v2`。

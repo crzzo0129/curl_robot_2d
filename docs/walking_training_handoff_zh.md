@@ -596,3 +596,33 @@ python -m scripts.mjx_3d_walking_smoke \
 ```
 
 本地验证结果：非对称环境 actor/critic shape 为 `47/74`，reset 和 step 均成功 JIT；完整单元测试为290通过、1个既有跳过。
+
+### eval 15–22 后的 shell-free 修订
+
+首轮路线 B 在 eval 17 曾把平均 episode 提升到3.59秒，但 eval 18–22 退化为约0.45秒冲刺，确定性 action RMS 接近0.91，失败几乎全部来自 `nonfoot_contact`。真实 touchdown air time 只有约0.06–0.07秒，平均接触足数约1.2，不能视为成形步态。
+
+根据这次失败，当前实现作了以下结构修订，而不是增加 joint-pose reference：
+
+- `rolling_shell` 类全部改为 `contype=0, conaffinity=0`，躯干和腿部外壳仅用于显示；
+- `torso/thigh/shank/motor/foot` 的 `structure_collision` 代理仍参与物理碰撞；
+- 非足端持续接触只在三维接触力模长超过1 N时累计，和 Unitree illegal-contact 判据一致，避免任意浅层数值擦碰在一个控制步内终止；深度超过0.004 m仍立即失败；
+- 路线 B 的 hip/knee action scale 从 `0.35/0.45` 收到 `0.25/0.25 rad`，abduction因实际关节范围只有约±0.17 rad而保留0.08；
+- 初始策略标准差从1.0降到0.5；学习率和 adaptive-KL 上限从 `1e-3` 降到 `3e-4`，下限为 `3e-5`；
+- foot clearance 使用相对0.025 m目标高度误差和相对0.10 m/s足速，无量纲化后再计入奖励；
+- soft landing 按0.50 m/s向下触地速度归一化；角动量按本机总质量、躯干长度和目标速度归一化；
+- eval 新增 `nonfoot_force` 和 `clearance_cost`，确保这些量不是“权重非零但实际打印为0”。
+
+这次任务动力学和优化器均已改变，不应恢复首轮路线 B checkpoint。新训练使用新目录：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 20000000 \
+  --num-evals 32 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir results/mjx_pupper_unitree_shellfree_v2/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_shellfree_v2
+```
+
+修订后本地完整回归为292通过、1个既有跳过；非对称 MJX smoke 通过，零动作起始仍为四足接触、无非足端接触。

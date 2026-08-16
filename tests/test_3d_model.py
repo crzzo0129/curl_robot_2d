@@ -81,6 +81,21 @@ class CurlRobot3DModelTest(unittest.TestCase):
     def test_checked_in_3d_model_matches_generator(self) -> None:
         self.assertEqual(MODEL_PATH.read_text(encoding="utf-8"), build_mjcf_3d())
 
+    def test_generator_can_make_shell_visual_only(self) -> None:
+        model = mujoco.MjModel.from_xml_string(
+            build_mjcf_3d(shell_collisions_enabled=False)
+        )
+        shell_ids = [
+            geom_id
+            for geom_id in range(model.ngeom)
+            if "_shell_" in (model.geom(geom_id).name or "")
+        ]
+
+        self.assertGreater(len(shell_ids), 0)
+        for geom_id in shell_ids:
+            self.assertEqual(int(model.geom_contype[geom_id]), 0)
+            self.assertEqual(int(model.geom_conaffinity[geom_id]), 0)
+
     def test_3d_model_contract(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(MODEL_PATH))
 

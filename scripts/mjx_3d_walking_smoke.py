@@ -209,6 +209,9 @@ def main(argv=None) -> None:
         "mean_nonfoot_ground_contacts": float(
             jp.mean(state.metrics["nonfoot_ground_contact_count"])
         ),
+        "mean_nonfoot_ground_max_force_n": float(
+            jp.mean(state.metrics["nonfoot_ground_max_force_n"])
+        ),
         "mean_self_contacts": float(
             jp.mean(state.metrics["self_contact_count"])
         ),

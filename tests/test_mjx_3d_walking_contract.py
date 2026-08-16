@@ -286,6 +286,28 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             np.testing.assert_allclose(model.jnt_axis[joint_id], expected_axis)
             self.assertAlmostEqual(np.linalg.norm(model.jnt_axis[joint_id]), 1.0)
 
+    def test_walking_shell_is_visual_only_but_proxies_still_collide(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(WALKING_MODEL_PATH_3D))
+        shell_ids = [
+            geom_id
+            for geom_id in range(model.ngeom)
+            if "_shell_" in (model.geom(geom_id).name or "")
+        ]
+
+        self.assertGreater(len(shell_ids), 0)
+        for geom_id in shell_ids:
+            self.assertEqual(int(model.geom_contype[geom_id]), 0)
+            self.assertEqual(int(model.geom_conaffinity[geom_id]), 0)
+        for name in (
+            "torso_box_proxy",
+            "front_left_thigh_proxy",
+            "front_left_shank_proxy",
+            "front_left_foot_proxy",
+        ):
+            geom_id = model.geom(name).id
+            self.assertNotEqual(int(model.geom_contype[geom_id]), 0)
+            self.assertNotEqual(int(model.geom_conaffinity[geom_id]), 0)
+
     @unittest.skip("legacy 8-DoF model is outside the 12-DoF walking task")
     def test_real_geometry_model_matches_walking_morphology(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(model_path_3d("real")))
@@ -382,6 +404,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             {"terminate_root_z_min": 0.5},
             {"soft_joint_limit_fraction": 0.0},
             {"observation_scale_joint_velocity": 0.0},
+            {"terminate_nonfoot_force_min_n": 0.0},
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 validate_walking_3d_config(Walking3DConfig(**values))

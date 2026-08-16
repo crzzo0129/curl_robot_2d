@@ -316,6 +316,13 @@ def make_brax_walking_env_3d(
                 self.mj_model, self.geometry_parameters
             )
             apply_physics_options_3d(self.mj_model, task)
+            total_mass = float(np.sum(self.mj_model.body_mass))
+            self.angular_momentum_scale = max(
+                total_mass
+                * self.geometry_parameters.torso_length
+                * max(task.desired_speed_m_s, 0.10),
+                1.0e-4,
+            )
             self.cpu_data = mujoco.MjData(self.mj_model)
             # Brax's DomainRandomizationVmapWrapper requires the physics model
             # under ``env.sys`` and temporarily replaces it for every vmapped
@@ -493,10 +500,12 @@ def make_brax_walking_env_3d(
                 "touchdown_air_time_sum_s": zero,
                 "gait_contact_reward": zero,
                 "swing_clearance_reward": zero,
+                "foot_clearance_cost": zero,
                 "gait_phase": zero,
                 "foot_slip_rms_m_s": zero,
                 "nonfoot_ground_contact_count": zero,
                 "nonfoot_ground_depth_m": zero,
+                "nonfoot_ground_max_force_n": zero,
                 "self_contact_count": zero,
                 "self_contact_depth_m": zero,
                 "airborne_active": zero,
@@ -857,9 +866,16 @@ def make_brax_walking_env_3d(
             )
             foot_clearance_cost = jp.mean(
                 jp.square(
-                    foot_height - reward_settings.foot_clearance_target_m
+                    (
+                        foot_height
+                        - reward_settings.foot_clearance_target_m
+                    )
+                    / max(reward_settings.foot_clearance_target_m, 1.0e-4)
                 )
-                * jp.linalg.norm(foot_velocity_local_xy, axis=1)
+                * (
+                    jp.linalg.norm(foot_velocity_local_xy, axis=1)
+                    / max(reward_settings.swing_clearance_speed_m_s, 1.0e-4)
+                )
                 * (~foot_contact).astype(jp.float32)
             )
             foot_slip_velocity_squared = (
@@ -873,7 +889,13 @@ def make_brax_walking_env_3d(
             touchdown = foot_contact & (~state.info["last_foot_contact"])
             soft_landing_cost = jp.mean(
                 touchdown.astype(jp.float32)
-                * jp.square(jp.minimum(foot_vertical_velocity, 0.0))
+                * jp.square(
+                    jp.minimum(foot_vertical_velocity, 0.0)
+                    / max(
+                        reward_settings.soft_landing_velocity_m_s,
+                        1.0e-4,
+                    )
+                )
             )
             air_time_span = max(
                 reward_settings.foot_air_time_cap_s
@@ -945,6 +967,7 @@ def make_brax_walking_env_3d(
             angular_momentum_squared = jp.mean(
                 jp.square(
                     data._impl.subtree_angmom[self.torso_body_id]
+                    / self.angular_momentum_scale
                 )
             )
 
@@ -953,7 +976,10 @@ def make_brax_walking_env_3d(
                 body["upright_tilt"] > task.terminate_upright_tilt_rad
             )
             airborne_active = contacts["foot_ground_count"] < 0.5
-            nonfoot_active = contacts["nonfoot_ground_count"] > 0.0
+            nonfoot_active = (
+                contacts["nonfoot_ground_max_force_n"]
+                > task.terminate_nonfoot_force_min_n
+            )
             self_contact_active = contacts["self_contact_count"] > 0.0
             root_low_step_count = _next_active_count(
                 jp, root_low_active, state.info["root_low_step_count"]
@@ -1160,6 +1186,7 @@ def make_brax_walking_env_3d(
                 "touchdown_air_time_sum_s": touchdown_air_time_sum_s,
                 "gait_contact_reward": gait_contact_reward,
                 "swing_clearance_reward": swing_clearance_reward,
+                "foot_clearance_cost": foot_clearance_cost,
                 "gait_phase": gait_phase,
                 "foot_slip_rms_m_s": jp.sqrt(foot_slip_velocity_squared),
                 "nonfoot_ground_contact_count": contacts[
@@ -1167,6 +1194,9 @@ def make_brax_walking_env_3d(
                 ],
                 "nonfoot_ground_depth_m": contacts[
                     "nonfoot_ground_depth"
+                ],
+                "nonfoot_ground_max_force_n": contacts[
+                    "nonfoot_ground_max_force_n"
                 ],
                 "self_contact_count": contacts["self_contact_count"],
                 "self_contact_depth_m": contacts["self_contact_depth"],
@@ -1279,6 +1309,28 @@ def make_brax_walking_env_3d(
             )
             nonfoot_ground = ground & (~geom1_foot) & (~geom2_foot)
             self_contact = valid & (~ground)
+            contact_address = jp.asarray(
+                data.contact.efc_address, dtype=jp.int32
+            )
+            valid_address = (
+                (contact_address >= 0)
+                & (contact_address + 2 < data._impl.efc_force.shape[0])
+            )
+            safe_address = jp.clip(
+                contact_address, 0, data._impl.efc_force.shape[0] - 3
+            )
+            contact_force = jp.stack(
+                tuple(
+                    data._impl.efc_force[safe_address + offset]
+                    for offset in range(3)
+                ),
+                axis=1,
+            )
+            contact_force_norm = jp.where(
+                valid_address,
+                jp.linalg.norm(contact_force, axis=1),
+                0.0,
+            )
             return {
                 "foot_ground": foot_ground,
                 "foot_ground_count": jp.sum(foot_ground),
@@ -1287,6 +1339,9 @@ def make_brax_walking_env_3d(
                 ),
                 "nonfoot_ground_depth": jp.max(
                     jp.where(nonfoot_ground, -distance, 0.0)
+                ),
+                "nonfoot_ground_max_force_n": jp.max(
+                    jp.where(nonfoot_ground, contact_force_norm, 0.0)
                 ),
                 "self_contact_count": jp.sum(self_contact).astype(jp.float32),
                 "self_contact_depth": jp.max(

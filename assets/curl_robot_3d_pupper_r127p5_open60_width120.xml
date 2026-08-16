@@ -58,7 +58,7 @@
             </default>
             <default class="rolling_shell">
               <geom type="capsule" size="0.003"
-                    contype="4" conaffinity="3"
+                    contype="0" conaffinity="0"
                     solref="0.003 1" solimp="0.95 0.99 0.001"
                     group="1" rgba="0.55 0.78 0.95 0.88"/>
             </default>

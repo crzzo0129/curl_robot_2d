@@ -30,5 +30,6 @@ if __name__ == "__main__":
         PUPPER_OPEN60_MODEL_PATH,
         PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
         detailed_structure=True,
+        shell_collisions_enabled=False,
     )
     print(pupper_path)
