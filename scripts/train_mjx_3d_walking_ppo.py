@@ -340,7 +340,8 @@ WALKING_RECIPES_3D = {
             "terminate_nonfoot_force_min": 1.0,
             "terminate_nonfoot_contact_duration": 0.02,
             "terminate_self_contact_duration": 0.04,
-            "terminate_low_progress_enabled": True,
+            "terminate_low_progress_enabled": False,
+            "eval_terminate_low_progress_enabled": True,
             "terminate_low_progress_window": 0.50,
             "terminate_low_progress_duration": 2.0,
             "terminate_low_progress_command_ratio": 0.50,
@@ -1085,6 +1086,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
     )
     parser.set_defaults(terminate_low_progress_enabled=None)
+    eval_low_progress_group = parser.add_mutually_exclusive_group()
+    eval_low_progress_group.add_argument(
+        "--eval-terminate-low-progress",
+        dest="eval_terminate_low_progress_enabled",
+        action="store_true",
+    )
+    eval_low_progress_group.add_argument(
+        "--no-eval-terminate-low-progress",
+        dest="eval_terminate_low_progress_enabled",
+        action="store_false",
+    )
+    parser.set_defaults(eval_terminate_low_progress_enabled=None)
     parser.add_argument(
         "--terminate-low-progress-window", type=float, default=0.50
     )
@@ -1198,6 +1211,7 @@ def _apply_recipe_defaults(args) -> None:
         "terminate_upright_tilt": 0.72,
         "terminate_upright_tilt_duration": 0.08,
         "terminate_low_progress_enabled": False,
+        "eval_terminate_low_progress_enabled": False,
     }
     for name, value in fallbacks.items():
         if getattr(args, name) is None:
@@ -1434,6 +1448,9 @@ def main(argv=None) -> None:
         reset_velocity_noise=0.0,
         reset_root_xy_velocity_noise_m_s=0.0,
         reset_root_yaw_rate_noise_rad_s=0.0,
+        terminate_low_progress_enabled=(
+            args.eval_terminate_low_progress_enabled
+        ),
     )
     eval_env = make_brax_walking_env_3d(
         eval_task, reward_config=reward_config, seed=args.seed + 10_000

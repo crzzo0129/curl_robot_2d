@@ -627,7 +627,9 @@ python -m scripts.train_mjx_3d_walking_ppo \
 
 ### 站立退化、命令换挡和接触力诊断修订
 
-为了避免“站满10秒”被保存成 `params_best`，路线 B 新增独立于 reward 的低进展终止：维护0.5秒前向位移窗口，要求位移至少达到 `min(0.05 m, 0.5 * vx_command * 0.5 s)`；窗口持续不达标2秒才失败。最低0.10 m/s命令对应0.025 m门槛，而不是误要求100%瞬时跟踪。每次命令重采样都会清空窗口和连续计数；第一段命令也有0.5秒观察宽限。因此完全站立策略约在2.5秒终止，而不会活满10秒。
+为了避免“站满10秒”被保存成 `params_best`，路线 B 的周期 eval 环境新增独立于 reward 的低进展终止：维护0.5秒前向位移窗口，要求位移至少达到 `min(0.05 m, 0.5 * vx_command * 0.5 s)`；窗口持续不达标2秒才失败。最低0.10 m/s命令对应0.025 m门槛，而不是误要求100%瞬时跟踪。第一段命令有0.5秒观察宽限，因此完全站立策略约在2.5秒终止，而不会在 eval 中活满10秒。
+
+训练环境默认关闭这个终止，只保留物理失败终止和完整10秒探索窗口。原因是从零策略在早期几乎都会低进展，如果统一在约2.5秒施加 `-200` 并重置，会让终止项支配 return，并切断发现步态所需的探索。可以用 `--terminate-low-progress` 显式做消融，但推荐配置只启用 `--eval-terminate-low-progress`。
 
 checkpoint 的字典序 rank 同时加入 `meaningful_progress`，且 `completed` 必须满足实际位移和最小 tracking quality，作为环境终止之外的第二道保险。命令重采样移动到 transition 末尾：当前动作始终按生成它时 observation 中的旧命令结算，新命令只进入下一 observation。`nonfoot_force_avg` 保留逐步均值，新增 `nonfoot_force_peak`；峰值通过逐步峰值增量累加，使 Brax 的 episode sum 正好还原每回合峰值，不再被 episode length 稀释。
 

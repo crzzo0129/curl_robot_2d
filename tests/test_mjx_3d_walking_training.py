@@ -136,6 +136,19 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
 
         self.assertFalse(args.deterministic_eval)
 
+    def test_training_and_eval_low_progress_termination_are_independent(self) -> None:
+        args = train_mjx_3d_walking_ppo.parse_args(
+            [
+                "--recipe",
+                "unitree_mjlab_velocity_v1",
+                "--terminate-low-progress",
+                "--no-eval-terminate-low-progress",
+            ]
+        )
+
+        self.assertTrue(args.terminate_low_progress_enabled)
+        self.assertFalse(args.eval_terminate_low_progress_enabled)
+
     def test_walking_ppo_uses_stable_distribution_contract(self) -> None:
         source = Path(train_mjx_3d_walking_ppo.__file__).read_text(
             encoding="utf-8"
@@ -157,6 +170,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             "normalize_observations=args.normalize_observations",
             "bootstrap_on_timeout=True",
             "reset_root_xy_velocity_noise_m_s=0.0",
+            "args.eval_terminate_low_progress_enabled",
         ):
             self.assertIn(token, source)
 
@@ -185,7 +199,8 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.action_scale_knee, 0.25)
         self.assertEqual(args.terminate_upright_tilt, 1.22)
         self.assertEqual(args.terminate_nonfoot_force_min, 1.0)
-        self.assertTrue(args.terminate_low_progress_enabled)
+        self.assertFalse(args.terminate_low_progress_enabled)
+        self.assertTrue(args.eval_terminate_low_progress_enabled)
         self.assertEqual(args.terminate_low_progress_window, 0.50)
         self.assertEqual(args.terminate_low_progress_duration, 2.0)
         self.assertEqual(args.terminate_low_progress_command_ratio, 0.50)

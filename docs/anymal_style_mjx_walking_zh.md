@@ -109,4 +109,4 @@ python -m scripts.train_mjx_3d_walking_ppo \
 
 首轮路线 B 暴露出两个适配问题：壳体的浅层接触会立即触发非法接触，且 `std=1.0/LR=1e-3` 在 Brax PPO 中把确定性动作均值推到接近饱和。当前版本已经让全部 `rolling_shell` 退出碰撞，保留内部结构代理；非法接触改为三维接触力模长超过1 N才累计，与 Unitree 判据一致。路线 B 现在使用 `std=0.5`、`LR∈[3e-5, 3e-4]` 和 `abduction/hip/knee=0.08/0.25/0.25 rad`。足高、软着陆和角动量也按本机尺度无量纲化。
 
-当前路线 B 暂时只训练 `vx∈[0.10, 0.30] m/s`，`vy=yaw_rate=0`，eval 使用0.20 m/s。环境维护0.5秒前向位移窗口；最低进展为 `min(0.05 m, 50% * vx_command * 0.5 s)`，连续2秒不达标才以 `failure_low_progress` 终止。命令换挡发生在 transition 末尾，新命令只进入下一 observation；checkpoint rank 也要求实际位移，避免站立策略成为 `params_best`。接触日志分别输出逐步均值 `nonfoot_force_avg` 和回合峰值 `nonfoot_force_peak`。不要恢复旧 checkpoint，建议输出到 `results/mjx_pupper_unitree_lowprogress_v3`。
+当前路线 B 暂时只训练 `vx∈[0.10, 0.30] m/s`，`vy=yaw_rate=0`，eval 使用0.20 m/s。周期 eval 环境维护0.5秒前向位移窗口；最低进展为 `min(0.05 m, 50% * vx_command * 0.5 s)`，连续2秒不达标才以 `failure_low_progress` 终止。训练环境默认关闭该终止，避免从零策略统一在约2.5秒承受 `-200` 并失去完整探索窗口；checkpoint rank 仍要求实际位移，因此站立策略不会成为 `params_best`。命令换挡发生在 transition 末尾，新命令只进入下一 observation。接触日志分别输出逐步均值 `nonfoot_force_avg` 和回合峰值 `nonfoot_force_peak`。不要恢复旧 checkpoint，建议输出到 `results/mjx_pupper_unitree_lowprogress_v3`。
