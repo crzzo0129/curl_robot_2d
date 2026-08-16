@@ -146,18 +146,48 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             'noise_std_type="log"',
             'state_dependent_std=False',
             "mean_kernel_init_fn=jnn.initializers.uniform",
-            'mean_kernel_init_kwargs={"scale": WALKING_ACTOR_MEAN_INIT_SCALE}',
+            '"scale": WALKING_ACTOR_MEAN_INIT_SCALE',
             "mean_clip_scale=WALKING_ACTOR_MEAN_CLIP_SCALE",
+            'value_obs_key="privileged_state"',
             "deterministic_eval=args.deterministic_eval",
             "max_grad_norm=args.max_grad_norm",
             "learning_rate_schedule=args.learning_rate_schedule",
             "learning_rate_schedule_min_lr=args.adaptive_kl_min_lr",
             "learning_rate_schedule_max_lr=args.adaptive_kl_max_lr",
-            "normalize_observations=False",
+            "normalize_observations=args.normalize_observations",
             "bootstrap_on_timeout=True",
             "reset_root_xy_velocity_noise_m_s=0.0",
         ):
             self.assertIn(token, source)
+
+    def test_unitree_route_b_is_asymmetric_and_pose_reference_free(self) -> None:
+        args = train_mjx_3d_walking_ppo.parse_args(
+            ["--recipe", "unitree_mjlab_velocity_v1"]
+        )
+        reward = train_mjx_3d_walking_ppo._reward_config_from_args(args)
+
+        self.assertTrue(args.gait_phase_enabled)
+        self.assertTrue(args.asymmetric_observations)
+        self.assertTrue(args.normalize_observations)
+        self.assertFalse(args.small_actor_mean_init)
+        self.assertEqual(args.gait_cycle_time, 0.60)
+        self.assertEqual(args.gait_duty_factor, 0.56)
+        self.assertEqual(args.hidden_layers, [512, 256, 128])
+        self.assertEqual(args.critic_hidden_layers, [512, 256, 128])
+        self.assertEqual(args.action_scale_abduction, 0.08)
+        self.assertEqual(args.action_scale_hip, 0.35)
+        self.assertEqual(args.action_scale_knee, 0.45)
+        self.assertEqual(args.terminate_upright_tilt, 1.22)
+        self.assertEqual(args.unroll_length, 24)
+        self.assertEqual(args.updates_per_batch, 5)
+        self.assertEqual(args.init_noise_std, 1.0)
+        self.assertEqual(reward.gait_contact, 0.5)
+        self.assertEqual(reward.orientation, 1.0)
+        self.assertEqual(reward.foot_clearance, 1.0)
+        self.assertEqual(reward.joint_acceleration, 2.5e-7)
+        self.assertEqual(reward.termination, 200.0)
+        self.assertEqual(reward.upright, 0.0)
+        self.assertEqual(reward.swing_clearance, 0.0)
 
     def test_h200_uses_many_smaller_ppo_updates(self) -> None:
         preset = train_mjx_3d_walking_ppo.PRESETS_WALKING_3D["h200"]

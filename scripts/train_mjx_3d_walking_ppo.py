@@ -302,6 +302,103 @@ WALKING_RECIPES_3D = {
             "early_termination_scale": 0.5,
         },
     },
+    "unitree_mjlab_velocity_v1": {
+        "description": (
+            "Route B: Unitree/MjLab-style phase-guided velocity locomotion "
+            "with an asymmetric critic and no joint-pose trajectory reference."
+        ),
+        "args": {
+            "desired_speed_m_s": 0.10,
+            "command_forward_min": 0.05,
+            "command_forward_max": 0.20,
+            "command_lateral_max": 0.05,
+            "command_yaw_rate_max": 0.30,
+            "command_resample_time": 4.0,
+            "command_stop_probability": 0.10,
+            "no_observation_noise": False,
+            "no_domain_randomization": False,
+            "gait_phase_enabled": True,
+            "gait_cycle_time": 0.60,
+            "gait_duty_factor": 0.56,
+            "asymmetric_observations": True,
+            "normalize_observations": True,
+            "small_actor_mean_init": False,
+            "hidden_layers": [512, 256, 128],
+            "critic_hidden_layers": [512, 256, 128],
+            # Robot-specific action radii.  These are not phase poses and do
+            # not assume Unitree's rear-folding front knees.
+            "action_scale_abduction": 0.08,
+            "action_scale_hip": 0.35,
+            "action_scale_knee": 0.45,
+            "reset_joint_noise": 0.015,
+            "reset_velocity_noise": 0.05,
+            "reset_root_xy_velocity_noise": 0.10,
+            "reset_root_yaw_rate_noise": 0.15,
+            "terminate_upright_tilt": 1.22,
+            "terminate_upright_tilt_duration": 0.02,
+            "terminate_airborne_duration": 0.25,
+            "terminate_nonfoot_contact_duration": 0.02,
+            "terminate_self_contact_duration": 0.04,
+            "updates_per_batch": 5,
+            "unroll_length": 24,
+            "learning_rate": 1e-3,
+            "adaptive_kl_min_lr": 1e-5,
+            "adaptive_kl_max_lr": 1e-3,
+            "entropy_cost": 0.01,
+            "discounting": 0.99,
+            "reward_scaling": 1.0,
+            "init_noise_std": 1.0,
+            "clipping_epsilon": 0.20,
+            "max_grad_norm": 1.0,
+            "desired_kl": 0.01,
+            "learning_rate_schedule": "ADAPTIVE_KL",
+        },
+        "reward": {
+            "velocity_tracking": 1.0,
+            "velocity_tracking_sigma_m_s": 0.50,
+            "velocity_tracking_vertical_weight": 2.0,
+            "velocity_tracking_upright_gate": 0.0,
+            "overspeed": 0.0,
+            "yaw_rate_tracking": 1.0,
+            "yaw_rate_tracking_sigma_rad_s": 0.50,
+            "yaw_rate_tracking_roll_pitch_weight": 0.05,
+            "forward_progress": 0.0,
+            "upright": 0.0,
+            "stagnation": 0.0,
+            "height": 0.0,
+            "heading": 0.0,
+            "lateral_velocity": 0.0,
+            "lateral_drift": 0.0,
+            "vertical_velocity": 0.0,
+            "angular_velocity": 0.05,
+            "angular_velocity_sigma_rad_s": 1.0,
+            "orientation": 1.0,
+            "angular_momentum": 0.025,
+            "foot_air_time": 0.0,
+            "gait_contact": 0.5,
+            "swing_clearance": 0.0,
+            "foot_clearance": 1.0,
+            "foot_clearance_target_m": 0.025,
+            "foot_slip": 0.25,
+            "foot_slip_sigma_m_s": 1.0,
+            "soft_landing": 0.001,
+            "action_rate": 0.05,
+            "action_magnitude": 0.0,
+            "joint_velocity": 0.0,
+            "joint_acceleration": 2.5e-7,
+            "joint_limits": 10.0,
+            "stand_still": 1.0,
+            "torque": 0.0,
+            "nonfoot_contact": 0.0,
+            "nonfoot_depth": 0.0,
+            "self_contact": 0.0,
+            "self_contact_depth": 0.0,
+            "termination": 200.0,
+            "severe_extra_termination": 0.0,
+            "nonfinite_termination": 200.0,
+            "early_termination_scale": 0.0,
+        },
+    },
 }
 
 
@@ -322,6 +419,7 @@ PER_STEP_WALKING_METRICS_3D = (
     "heading_error_rad",
     "foot_contact_count",
     "foot_air_time_reward",
+    "foot_air_time_mean_s",
     "gait_contact_reward",
     "swing_clearance_reward",
     "gait_phase",
@@ -394,8 +492,12 @@ def _reward_config_from_args(args) -> Walking3DRewardConfig:
 
 def _walking_network_factory(
     hidden_layers,
+    critic_hidden_layers,
     activation_name,
     init_noise_std,
+    *,
+    asymmetric_observations,
+    small_actor_mean_init,
 ):
     """Build an ETH-style actor with state-independent exploration noise."""
 
@@ -410,19 +512,30 @@ def _walking_network_factory(
     }[activation_name]
 
     def factory(*args, **kwargs):
-        return networks.make_ppo_networks(
-            *args,
+        network_kwargs = dict(
             policy_hidden_layer_sizes=tuple(hidden_layers),
+            value_hidden_layer_sizes=tuple(critic_hidden_layers),
             activation=activation,
             distribution_type="normal",
             noise_std_type="log",
             init_noise_std=init_noise_std,
             state_dependent_std=False,
-            mean_kernel_init_fn=jnn.initializers.uniform,
-            mean_kernel_init_kwargs={"scale": WALKING_ACTOR_MEAN_INIT_SCALE},
             mean_clip_scale=WALKING_ACTOR_MEAN_CLIP_SCALE,
             **kwargs,
         )
+        if asymmetric_observations:
+            network_kwargs.update(
+                policy_obs_key="state",
+                value_obs_key="privileged_state",
+            )
+        if small_actor_mean_init:
+            network_kwargs.update(
+                mean_kernel_init_fn=jnn.initializers.uniform,
+                mean_kernel_init_kwargs={
+                    "scale": WALKING_ACTOR_MEAN_INIT_SCALE
+                },
+            )
+        return networks.make_ppo_networks(*args, **network_kwargs)
 
     return factory
 
@@ -584,6 +697,11 @@ def _format_eval_report_walking_3d(
     selected,
 ):
     marker = " new_best" if selected else ""
+    touchdown_count = _metric(metrics, "eval/episode_touchdown_count")
+    touchdown_air_time_s = (
+        _metric(metrics, "eval/episode_touchdown_air_time_sum_s")
+        / max(touchdown_count, 1.0)
+    )
     lines = [
         (
             f"[eval {eval_index}/{total_evals}] step={int(step)} "
@@ -622,7 +740,8 @@ def _format_eval_report_walking_3d(
         (
             f"  feet    contacts="
             f"{_metric(metrics, 'eval/avg_foot_contact_count'):.2f} "
-            f"air_time={_metric(metrics, 'eval/avg_foot_air_time_reward'):.3f} "
+            f"air_time={touchdown_air_time_s:.3f}s "
+            f"air_mean={_metric(metrics, 'eval/avg_foot_air_time_mean_s'):.3f}s "
             f"clearance={_metric(metrics, 'eval/avg_swing_clearance_reward'):.3f} "
             f"slip={_metric(metrics, 'eval/avg_foot_slip_rms_m_s'):.3f}m/s"
         ),
@@ -827,6 +946,42 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.set_defaults(gait_phase_enabled=None)
     parser.add_argument("--gait-cycle-time", type=float)
     parser.add_argument("--gait-duty-factor", type=float)
+    asymmetric_group = parser.add_mutually_exclusive_group()
+    asymmetric_group.add_argument(
+        "--asymmetric-observations",
+        dest="asymmetric_observations",
+        action="store_true",
+    )
+    asymmetric_group.add_argument(
+        "--symmetric-observations",
+        dest="asymmetric_observations",
+        action="store_false",
+    )
+    parser.set_defaults(asymmetric_observations=None)
+    normalization_group = parser.add_mutually_exclusive_group()
+    normalization_group.add_argument(
+        "--normalize-observations",
+        dest="normalize_observations",
+        action="store_true",
+    )
+    normalization_group.add_argument(
+        "--no-normalize-observations",
+        dest="normalize_observations",
+        action="store_false",
+    )
+    parser.set_defaults(normalize_observations=None)
+    actor_init_group = parser.add_mutually_exclusive_group()
+    actor_init_group.add_argument(
+        "--small-actor-mean-init",
+        dest="small_actor_mean_init",
+        action="store_true",
+    )
+    actor_init_group.add_argument(
+        "--standard-actor-mean-init",
+        dest="small_actor_mean_init",
+        action="store_false",
+    )
+    parser.set_defaults(small_actor_mean_init=None)
     parser.add_argument("--action-scale-abduction", type=float)
     parser.add_argument("--action-scale-hip", type=float)
     parser.add_argument("--action-scale-knee", type=float)
@@ -840,9 +995,9 @@ def _build_parser() -> argparse.ArgumentParser:
         "--terminate-root-z-low-duration", type=float, default=0.08
     )
     parser.add_argument("--terminate-root-z-max", type=float, default=0.46)
-    parser.add_argument("--terminate-upright-tilt", type=float, default=0.72)
+    parser.add_argument("--terminate-upright-tilt", type=float)
     parser.add_argument(
-        "--terminate-upright-tilt-duration", type=float, default=0.08
+        "--terminate-upright-tilt-duration", type=float
     )
     parser.add_argument(
         "--diagnostic-lateral-drift",
@@ -898,9 +1053,8 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
         help="sample policy actions during periodic eval instead of using the mean",
     )
-    parser.add_argument(
-        "--hidden-layers", type=int, nargs="+", default=[256, 256, 128]
-    )
+    parser.add_argument("--hidden-layers", type=int, nargs="+")
+    parser.add_argument("--critic-hidden-layers", type=int, nargs="+")
     parser.add_argument(
         "--activation", choices=("elu", "relu", "swish", "tanh"), default="elu"
     )
@@ -963,6 +1117,18 @@ def _apply_recipe_defaults(args) -> None:
     for name, value in WALKING_RECIPES_3D[args.recipe]["args"].items():
         if getattr(args, name) is None:
             setattr(args, name, value)
+    fallbacks = {
+        "asymmetric_observations": False,
+        "normalize_observations": False,
+        "small_actor_mean_init": True,
+        "hidden_layers": [256, 256, 128],
+        "critic_hidden_layers": [256, 256, 128],
+        "terminate_upright_tilt": 0.72,
+        "terminate_upright_tilt_duration": 0.08,
+    }
+    for name, value in fallbacks.items():
+        if getattr(args, name) is None:
+            setattr(args, name, value)
 
 
 def parse_args(argv=None):
@@ -1020,6 +1186,8 @@ def parse_args(argv=None):
         parser.error("--command-stop-probability must be in [0, 1]")
     if not 0.0 < args.gait_duty_factor < 1.0:
         parser.error("--gait-duty-factor must be in (0, 1)")
+    if args.asymmetric_observations and not args.gait_phase_enabled:
+        parser.error("--asymmetric-observations requires --gait-phase")
     if not 0.0 < args.discounting <= 1.0:
         parser.error("--discounting must be in (0, 1]")
     return args
@@ -1106,6 +1274,7 @@ def main(argv=None) -> None:
             command_resample_time_s=args.command_resample_time,
             command_deadband_probability=args.command_stop_probability,
             observation_noise_enabled=not args.no_observation_noise,
+            asymmetric_observation_enabled=args.asymmetric_observations,
             gait_phase_enabled=args.gait_phase_enabled,
             gait_cycle_time_s=args.gait_cycle_time,
             gait_duty_factor=args.gait_duty_factor,
@@ -1265,11 +1434,18 @@ def main(argv=None) -> None:
         "policy_distribution": "normal",
         "policy_noise_std_type": "log",
         "policy_state_dependent_std": False,
-        "policy_mean_kernel_init": "uniform",
-        "policy_mean_kernel_init_scale": WALKING_ACTOR_MEAN_INIT_SCALE,
+        "policy_mean_kernel_init": (
+            "small_uniform" if args.small_actor_mean_init else "lecun_uniform"
+        ),
+        "policy_mean_kernel_init_scale": (
+            WALKING_ACTOR_MEAN_INIT_SCALE
+            if args.small_actor_mean_init
+            else None
+        ),
         "policy_mean_clip_scale": WALKING_ACTOR_MEAN_CLIP_SCALE,
         "init_noise_std": args.init_noise_std,
-        "observation_normalization": False,
+        "observation_normalization": args.normalize_observations,
+        "asymmetric_observations": args.asymmetric_observations,
         "observation_scaling": "fixed_task_scales",
         "bootstrap_on_timeout": True,
         "deterministic_eval": args.deterministic_eval,
@@ -1278,6 +1454,7 @@ def main(argv=None) -> None:
         "desired_kl": args.desired_kl,
         "learning_rate_schedule": args.learning_rate_schedule,
         "hidden_layers": args.hidden_layers,
+        "critic_hidden_layers": args.critic_hidden_layers,
         "activation": args.activation,
         "seed": args.seed,
         "task": asdict(task),
@@ -1339,7 +1516,10 @@ def main(argv=None) -> None:
         f"mean_clip={WALKING_ACTOR_MEAN_CLIP_SCALE:g} "
         f"init_std={args.init_noise_std:g} "
         f"deterministic_eval={args.deterministic_eval}\n"
-        f"  observation=fixed_task_scaling bootstrap_timeout=true\n"
+        f"  observation=fixed_task_scaling "
+        f"normalize={args.normalize_observations} "
+        f"asymmetric={args.asymmetric_observations} "
+        f"bootstrap_timeout=true\n"
         f"  output={args.out.resolve()}",
         flush=True,
     )
@@ -1402,7 +1582,7 @@ def main(argv=None) -> None:
         batch_size=values["batch_size"],
         num_minibatches=values["num_minibatches"],
         num_updates_per_batch=args.updates_per_batch,
-        normalize_observations=False,
+        normalize_observations=args.normalize_observations,
         bootstrap_on_timeout=True,
         clipping_epsilon=args.clipping_epsilon,
         max_grad_norm=args.max_grad_norm,
@@ -1413,8 +1593,11 @@ def main(argv=None) -> None:
         deterministic_eval=args.deterministic_eval,
         network_factory=_walking_network_factory(
             args.hidden_layers,
+            args.critic_hidden_layers,
             args.activation,
             args.init_noise_std,
+            asymmetric_observations=args.asymmetric_observations,
+            small_actor_mean_init=args.small_actor_mean_init,
         ),
         seed=args.seed,
         progress_fn=progress_fn,

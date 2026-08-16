@@ -540,3 +540,59 @@ python -m scripts.mjx_3d_walking_smoke \
 ## 16. 一句话结论
 
 机构已经被手写步态证明可以稳定行走；当前失败的核心不是“reward或observation完全不通用”，而是**缺少步态发现脚手架、训练状态分布过窄、tracking与upright耦合，以及PPO在经历KL崩溃后被调得过度保守**。下一步应重构训练课程，而不是继续围绕单个reward系数反复试错。
+
+## 17. 路线 B：Unitree/MjLab 风格、无关节轨迹 reference（2026-08-16）
+
+用户最终选择路线 B。当前新增 recipe 为 `unitree_mjlab_velocity_v1`，它借用 Unitree/MjLab 的速度行走训练结构，但不复制 Unitree 的腿型和关节姿态：
+
+- 本机器人的前腿膝盖朝外，不能套用 Unitree 前膝向后的 joint pose；
+- phase 只有 `sin/cos` 两维，只给出步态时钟；
+- FL+RR 与 FR+RL 的对角相位只用于足端接触匹配，不生成 hip/knee 目标角；
+- actor 直接输出相对本机 `stand` keyframe 的12维关节位置增量，正负方向由当前 MJCF 的真实关节轴决定；
+- 行走命令下没有 phase-conditioned posture/reference reward；零速度命令才启用弱 `stand_still` 正则；
+- 旧的 `forward_phase_bootstrap_v1` 被保留作对照，不再作为推荐长训 recipe。
+
+### 非对称 observation
+
+Actor 为47维：机体角速度3、投影重力3、速度命令3、phase 2、相对默认关节角12、关节速度12、上一动作12。Actor 不读取真实机体线速度、接触力或足端状态。
+
+Critic 为74维：无噪声 actor 状态47，加机体线速度3、足高4、各足 air time 4、接触标志4、小腿刚体外部接触力12。部署时只需要47维 actor 输入。PPO 对这两棵 observation 分别维护运行统计，网络为 actor/critic `512/256/128` ELU。
+
+### 奖励和终止
+
+核心项与 Unitree velocity task 对齐：三维线速度跟踪、三轴角速度跟踪、投影重力姿态、全身角动量、对角接触节律、目标足高、支撑足滑移、软着陆、动作变化、关节加速度、软关节限位、零命令站立和失败终止。没有手写足端轨迹，也没有 walking joint-pose reward。
+
+`gait_cycle_time=0.60 s`、`duty_factor=0.56`，所以单腿相位计划中的摆动窗为：
+
+```text
+0.60 * (1 - 0.56) = 0.264 s
+```
+
+正常成形步态的 touchdown air time 应大致落在 `0.20–0.30 s`；训练早期低于 `0.05 s` 通常还是挪动/抖腿，高于约 `0.35–0.40 s` 且四足平均接触数偏低则要检查跳跃或失稳。日志中的 `air_time` 现已改成“touchdown 事件的实际腾空时间（秒）”；旧日志的 `air_time=0.007` 是逐步平均的稀疏奖励分数，不是7毫秒。
+
+### 从零启动
+
+47/74维网络与旧48维、50维 checkpoint 都不兼容，必须新开输出目录，不要传 `--restore-checkpoint`：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 20000000 \
+  --num-evals 32 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir results/mjx_pupper_unitree_mjlab_velocity_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_mjlab_velocity_v1
+```
+
+训练前 smoke：
+
+```bash
+python -m scripts.mjx_3d_walking_smoke \
+  --gait-phase \
+  --asymmetric-observations \
+  --physics-profile cg12 \
+  --steps 8
+```
+
+本地验证结果：非对称环境 actor/critic shape 为 `47/74`，reset 和 step 均成功 JIT；完整单元测试为290通过、1个既有跳过。

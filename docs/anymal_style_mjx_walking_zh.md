@@ -87,3 +87,22 @@ python -m scripts.train_mjx_3d_walking_ppo --preset 4090 --recipe anymal_v1 --ou
 ```
 
 默认启用批量 MJX 模型随机化：地面摩擦、各刚体质量/惯量、执行器增益、关节阻尼和 armature。可用 `--no-domain-randomization` 做 nominal baseline；各范围均有独立命令行参数。建议先通过 smoke，再做 nominal 短训，最后启用随机化长训，避免把模型或奖励错误误判为鲁棒性不足。
+
+## 推荐路线 B：Unitree/MjLab 风格非对称训练
+
+`unitree_mjlab_velocity_v1` 是当前推荐的新训练 recipe。它使用47维 actor observation 和74维 privileged critic observation，加入0.60秒对角步态 phase、Unitree 风格速度/接触/足高/滑移/动作与关节正则，并启用 observation normalization。它不使用手写关节轨迹或 phase-conditioned joint pose。
+
+本机器人前腿膝盖朝外，与 Unitree 前腿膝盖向后的机构不同。这里的 phase 只给步态时钟和期望接触组 `FL+RR / FR+RL`；actor 始终直接学习当前 MJCF 关节轴下的12维位置增量，不复制 Unitree 的 hip/knee 角度。
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 20000000 \
+  --num-evals 32 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir results/mjx_pupper_unitree_mjlab_velocity_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_mjlab_velocity_v1
+```
+
+该网络与旧48/50维 checkpoint 不兼容，必须从零训练。`T=0.60 s`、`duty=0.56` 对应计划摆动窗0.264秒；新日志的 `air_time` 是 touchdown 事件的真实腾空秒数，而旧日志中的同名值实际是稀疏奖励均值。

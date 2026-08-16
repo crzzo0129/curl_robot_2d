@@ -112,6 +112,29 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         self.assertAlmostEqual(float(terms["velocity_tracking"]), 4.0)
         self.assertAlmostEqual(float(terms["gait_contact"]), 0.75)
 
+    def test_unitree_tracking_includes_vertical_and_roll_pitch_errors(self) -> None:
+        config = Walking3DRewardConfig(
+            velocity_tracking=1.0,
+            velocity_tracking_sigma_m_s=0.5,
+            velocity_tracking_vertical_weight=2.0,
+            velocity_tracking_upright_gate=0.0,
+            yaw_rate_tracking=1.0,
+            yaw_rate_tracking_sigma_rad_s=0.5,
+            yaw_rate_tracking_roll_pitch_weight=0.05,
+        )
+        inputs = zero_inputs()
+        inputs["vertical_velocity"] = np.asarray(0.5)
+        inputs["roll_pitch_angular_velocity_squared"] = np.asarray(1.0)
+
+        terms = reward_terms_walking_3d(np, config, inputs)
+
+        self.assertAlmostEqual(
+            float(terms["velocity_tracking"]), np.exp(-2.0)
+        )
+        self.assertAlmostEqual(
+            float(terms["yaw_rate_tracking"]), np.exp(-0.2)
+        )
+
     def test_overspeed_is_a_bounded_penalty_without_upright_gating(self) -> None:
         config = Walking3DRewardConfig(
             overspeed=1.0, overspeed_scale_m_s=0.15

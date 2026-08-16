@@ -36,6 +36,7 @@ def parse_args(argv=None):
     parser.add_argument("--action-scale-hip", type=float, default=0.40)
     parser.add_argument("--action-scale-knee", type=float, default=0.55)
     parser.add_argument("--gait-phase", action="store_true")
+    parser.add_argument("--asymmetric-observations", action="store_true")
     parser.add_argument("--gait-cycle-time", type=float, default=0.625)
     parser.add_argument("--gait-duty-factor", type=float, default=0.68)
     parser.add_argument("--memory-fraction", type=float, default=0.90)
@@ -81,6 +82,7 @@ def main(argv=None) -> None:
         geometry=args.geometry,
         episode_length=args.episode_length,
         desired_speed_m_s=args.desired_speed,
+        asymmetric_observation_enabled=args.asymmetric_observations,
         gait_phase_enabled=args.gait_phase,
         gait_cycle_time_s=args.gait_cycle_time,
         gait_duty_factor=args.gait_duty_factor,
@@ -120,7 +122,19 @@ def main(argv=None) -> None:
     print(
         f"stage=reset_compile_done seconds={reset_compile_s:.3f}", flush=True
     )
-    if state.obs.shape != (args.batch_size, env.observation_size):
+    if isinstance(env.observation_size, dict):
+        actual_shapes = {
+            name: tuple(value.shape) for name, value in state.obs.items()
+        }
+        expected_shapes = {
+            name: (args.batch_size, width)
+            for name, width in env.observation_size.items()
+        }
+        if actual_shapes != expected_shapes:
+            raise RuntimeError(
+                f"unexpected observation shapes: {actual_shapes}"
+            )
+    elif state.obs.shape != (args.batch_size, env.observation_size):
         raise RuntimeError(f"unexpected observation shape: {state.obs.shape}")
 
     actions = jp.zeros((args.batch_size, env.action_size))
@@ -153,7 +167,11 @@ def main(argv=None) -> None:
         f"stage=cached_rollout_done seconds={cached_rollout_s:.3f}",
         flush=True,
     )
-    if not bool(jp.all(jp.isfinite(state.obs))):
+    observations_finite = all(
+        bool(jp.all(jp.isfinite(value)))
+        for value in jax.tree_util.tree_leaves(state.obs)
+    )
+    if not observations_finite:
         raise RuntimeError("non-finite 3-D walking observation")
     if not bool(jp.all(jp.isfinite(state.reward))):
         raise RuntimeError("non-finite 3-D walking reward")

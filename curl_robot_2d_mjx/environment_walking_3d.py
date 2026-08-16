@@ -175,6 +175,8 @@ WALKING_JOINT_NAMES_3D = tuple(
 WALKING_ACTION_SIZE_3D = 12
 WALKING_OBSERVATION_SIZE_3D = 48
 WALKING_PHASE_OBSERVATION_SIZE_3D = WALKING_OBSERVATION_SIZE_3D + 2
+WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D = 47
+WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D = 74
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -354,6 +356,20 @@ def make_brax_walking_env_3d(
                 ],
                 dtype=jp.int32,
             )
+            self.foot_body_ids = jp.asarray(
+                [
+                    object_id(
+                        mujoco.mjtObj.mjOBJ_BODY, f"{prefix}_shank"
+                    )
+                    for prefix in (
+                        "front_left",
+                        "front_right",
+                        "rear_left",
+                        "rear_right",
+                    )
+                ],
+                dtype=jp.int32,
+            )
             joint_ids = [
                 object_id(mujoco.mjtObj.mjOBJ_JOINT, name)
                 for name in WALKING_JOINT_NAMES_3D
@@ -423,6 +439,17 @@ def make_brax_walking_env_3d(
 
         @property
         def observation_size(self):
+            if task.asymmetric_observation_enabled:
+                if not task.gait_phase_enabled:
+                    raise ValueError(
+                        "asymmetric Unitree-style observations require gait phase"
+                    )
+                return {
+                    "state": WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D,
+                    "privileged_state": (
+                        WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D
+                    ),
+                }
             return (
                 WALKING_PHASE_OBSERVATION_SIZE_3D
                 if task.gait_phase_enabled
@@ -461,6 +488,9 @@ def make_brax_walking_env_3d(
                 "heading_error_rad": zero,
                 "foot_contact_count": zero,
                 "foot_air_time_reward": zero,
+                "foot_air_time_mean_s": zero,
+                "touchdown_count": zero,
+                "touchdown_air_time_sum_s": zero,
                 "gait_contact_reward": zero,
                 "swing_clearance_reward": zero,
                 "gait_phase": zero,
@@ -504,6 +534,14 @@ def make_brax_walking_env_3d(
                 "failure_self_contact_depth": zero,
                 "failure_self_contact": zero,
             }
+
+        def _sanitize_observation(self, observation):
+            return jax.tree_util.tree_map(
+                lambda value: jp.nan_to_num(
+                    value, nan=0.0, posinf=0.0, neginf=0.0
+                ),
+                observation,
+            )
 
         def reset(self, rng):
             rng = jax.random.fold_in(rng, self.seed)
@@ -582,6 +620,7 @@ def make_brax_walking_env_3d(
                 "last_policy_action": jp.zeros(
                     (WALKING_ACTION_SIZE_3D,), dtype=jp.float32
                 ),
+                "last_joint_velocity": data.qvel[self.joint_dof_indices],
                 "last_target": start_target,
                 "root_low_step_count": jp.asarray(0, dtype=jp.int32),
                 "upright_tilt_step_count": jp.asarray(0, dtype=jp.int32),
@@ -602,11 +641,12 @@ def make_brax_walking_env_3d(
                 policy_action=info["last_policy_action"],
                 command=command,
                 gait_phase=info["gait_phase"],
+                foot_air_time=info["foot_air_time"],
                 noise_key=jax.random.fold_in(rng, 99),
             )
             return State(
                 data,
-                jp.nan_to_num(observation, nan=0.0, posinf=0.0, neginf=0.0),
+                self._sanitize_observation(observation),
                 jp.zeros((), dtype=jp.float32),
                 jp.zeros((), dtype=jp.float32),
                 metrics=self._zero_metrics(),
@@ -785,6 +825,10 @@ def make_brax_walking_env_3d(
                 foot_position[:, :2]
                 - state.info["previous_foot_position"][:, :2]
             ) / control_dt
+            foot_vertical_velocity = (
+                foot_position[:, 2]
+                - state.info["previous_foot_position"][:, 2]
+            ) / control_dt
             foot_position_local = torso_local_points_3d(
                 jp,
                 rotation,
@@ -811,6 +855,13 @@ def make_brax_walking_env_3d(
                     reward_settings.swing_clearance_target_tracking
                 ),
             )
+            foot_clearance_cost = jp.mean(
+                jp.square(
+                    foot_height - reward_settings.foot_clearance_target_m
+                )
+                * jp.linalg.norm(foot_velocity_local_xy, axis=1)
+                * (~foot_contact).astype(jp.float32)
+            )
             foot_slip_velocity_squared = (
                 jp.sum(
                     foot_contact
@@ -820,6 +871,10 @@ def make_brax_walking_env_3d(
             )
             air_time_at_touchdown = state.info["foot_air_time"] + control_dt
             touchdown = foot_contact & (~state.info["last_foot_contact"])
+            soft_landing_cost = jp.mean(
+                touchdown.astype(jp.float32)
+                * jp.square(jp.minimum(foot_vertical_velocity, 0.0))
+            )
             air_time_span = max(
                 reward_settings.foot_air_time_cap_s
                 - reward_settings.foot_air_time_threshold_s,
@@ -843,9 +898,19 @@ def make_brax_walking_env_3d(
                 0.0,
                 air_time_at_touchdown,
             )
+            touchdown_count = jp.sum(touchdown).astype(jp.float32)
+            touchdown_air_time_sum_s = jp.sum(
+                jp.where(touchdown, air_time_at_touchdown, 0.0)
+            )
 
             joint_position = data.qpos[self.joint_qpos_indices]
             joint_velocity = data.qvel[self.joint_dof_indices]
+            joint_acceleration_squared = jp.mean(
+                jp.square(
+                    (joint_velocity - state.info["last_joint_velocity"])
+                    / control_dt
+                )
+            )
             action_rate_cost = jp.mean(
                 jp.square(policy_action - state.info["last_policy_action"])
             )
@@ -874,6 +939,14 @@ def make_brax_walking_env_3d(
                 / jp.maximum(self.force_limits, 1.0e-6)
             )
             torque_cost = jp.mean(jp.square(normalized_torque))
+            projected_gravity_xy_squared = jp.sum(
+                jp.square(rotation.T @ jp.asarray((0.0, 0.0, -1.0)))[:2]
+            )
+            angular_momentum_squared = jp.mean(
+                jp.square(
+                    data._impl.subtree_angmom[self.torso_body_id]
+                )
+            )
 
             root_low_active = root_z < task.terminate_root_z_min
             upright_tilt_active = (
@@ -973,18 +1046,27 @@ def make_brax_walking_env_3d(
                     "roll_pitch_angular_velocity_squared": (
                         roll_pitch_angular_velocity_squared
                     ),
+                    "projected_gravity_xy_squared": (
+                        projected_gravity_xy_squared
+                    ),
+                    "angular_momentum_squared": angular_momentum_squared,
                     "foot_air_time_reward": foot_air_time_reward,
                     "gait_contact_reward": gait_contact_reward,
                     "locomotion_active": (
                         jp.linalg.norm(command[:2]) > 0.05
                     ).astype(jp.float32),
                     "swing_clearance_reward": swing_clearance_reward,
+                    "foot_clearance_cost": foot_clearance_cost,
                     "foot_slip_velocity_squared": (
                         foot_slip_velocity_squared
                     ),
+                    "soft_landing_cost": soft_landing_cost,
                     "action_rate_cost": action_rate_cost,
                     "action_magnitude_cost": action_magnitude_cost,
                     "joint_velocity_squared": joint_velocity_squared,
+                    "joint_acceleration_squared": (
+                        joint_acceleration_squared
+                    ),
                     "joint_limit_cost": joint_limit_cost,
                     "stand_still_cost": stand_still_cost,
                     "torque_cost": torque_cost,
@@ -1036,6 +1118,7 @@ def make_brax_walking_env_3d(
                     gait_phase + control_dt / task.gait_cycle_time_s, 1.0
                 ),
                 "last_policy_action": policy_action,
+                "last_joint_velocity": joint_velocity,
                 "last_target": target,
                 "root_low_step_count": root_low_step_count,
                 "upright_tilt_step_count": upright_tilt_step_count,
@@ -1072,6 +1155,9 @@ def make_brax_walking_env_3d(
                 "heading_error_rad": body["heading_error"],
                 "foot_contact_count": contacts["foot_ground_count"],
                 "foot_air_time_reward": foot_air_time_reward,
+                "foot_air_time_mean_s": jp.mean(foot_air_time),
+                "touchdown_count": touchdown_count,
+                "touchdown_air_time_sum_s": touchdown_air_time_sum_s,
                 "gait_contact_reward": gait_contact_reward,
                 "swing_clearance_reward": swing_clearance_reward,
                 "gait_phase": gait_phase,
@@ -1149,6 +1235,7 @@ def make_brax_walking_env_3d(
                 policy_action=policy_action,
                 command=command,
                 gait_phase=info["gait_phase"],
+                foot_air_time=foot_air_time,
                 noise_key=jax.random.fold_in(step_rng, 99),
             )
             metrics = {
@@ -1157,7 +1244,7 @@ def make_brax_walking_env_3d(
             }
             return State(
                 data,
-                jp.nan_to_num(observation, nan=0.0, posinf=0.0, neginf=0.0),
+                self._sanitize_observation(observation),
                 reward,
                 done,
                 metrics=metrics,
@@ -1232,8 +1319,10 @@ def make_brax_walking_env_3d(
             policy_action,
             command,
             gait_phase,
+            foot_air_time,
             noise_key,
         ):
+            del body, initial_root_y
             joint_position = data.qpos[self.joint_qpos_indices]
             joint_velocity = data.qvel[self.joint_dof_indices]
             rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
@@ -1241,65 +1330,151 @@ def make_brax_walking_env_3d(
                 freejoint_body_velocity_3d(jp, rotation, data.qvel)
             )
             projected_gravity = rotation.T @ jp.asarray((0.0, 0.0, -1.0))
-            observation_scale = jp.concatenate(
+            command_scale = jp.asarray(
                 (
-                    jp.full((3,), task.observation_scale_linear_velocity),
-                    jp.full((3,), task.observation_scale_angular_velocity),
-                    jp.full((3,), task.observation_scale_projected_gravity),
-                    jp.asarray(
-                        (
-                            task.observation_scale_command_linear_velocity,
-                            task.observation_scale_command_linear_velocity,
-                            task.observation_scale_command_yaw_rate,
-                        )
-                    ),
-                    jp.full((12,), task.observation_scale_joint_position),
-                    jp.full((12,), task.observation_scale_joint_velocity),
-                    jp.full((12,), task.observation_scale_previous_action),
-                    *(
-                        (jp.full((2,), task.observation_scale_gait_phase),)
-                        if task.gait_phase_enabled
-                        else ()
-                    ),
+                    task.observation_scale_command_linear_velocity,
+                    task.observation_scale_command_linear_velocity,
+                    task.observation_scale_command_yaw_rate,
                 )
             )
-            physical_observation = jp.concatenate(
+            phase_features = gait_phase_features_3d(jp, gait_phase)
+            if task.asymmetric_observation_enabled:
+                # Unitree/MjLab-style actor observation.  Phase is only a clock;
+                # it never maps to a joint pose or action reference.
+                physical_actor = jp.concatenate(
+                    (
+                        body_angular_velocity,
+                        projected_gravity,
+                        command,
+                        phase_features,
+                        joint_position - self.nominal_ctrl,
+                        joint_velocity,
+                        policy_action,
+                    )
+                )
+                actor_scale = jp.concatenate(
+                    (
+                        jp.full((3,), task.observation_scale_angular_velocity),
+                        jp.full(
+                            (3,), task.observation_scale_projected_gravity
+                        ),
+                        command_scale,
+                        jp.full((2,), task.observation_scale_gait_phase),
+                        jp.full((12,), task.observation_scale_joint_position),
+                        jp.full((12,), task.observation_scale_joint_velocity),
+                        jp.full((12,), task.observation_scale_previous_action),
+                    )
+                )
+                noise_scale = task.observation_noise_level * jp.concatenate(
+                    (
+                        jp.full(
+                            (3,), task.observation_noise_angular_velocity_rad_s
+                        ),
+                        jp.full((3,), task.observation_noise_gravity),
+                        jp.zeros((3,)),
+                        jp.zeros((2,)),
+                        jp.full(
+                            (12,), task.observation_noise_joint_position_rad
+                        ),
+                        jp.full(
+                            (12,), task.observation_noise_joint_velocity_rad_s
+                        ),
+                        jp.zeros((12,)),
+                    )
+                )
+            else:
+                physical_actor = jp.concatenate(
+                    (
+                        body_linear_velocity,
+                        body_angular_velocity,
+                        projected_gravity,
+                        command,
+                        joint_position - self.nominal_ctrl,
+                        joint_velocity,
+                        policy_action,
+                        *((phase_features,) if task.gait_phase_enabled else ()),
+                    )
+                )
+                actor_scale = jp.concatenate(
+                    (
+                        jp.full((3,), task.observation_scale_linear_velocity),
+                        jp.full((3,), task.observation_scale_angular_velocity),
+                        jp.full(
+                            (3,), task.observation_scale_projected_gravity
+                        ),
+                        command_scale,
+                        jp.full((12,), task.observation_scale_joint_position),
+                        jp.full((12,), task.observation_scale_joint_velocity),
+                        jp.full((12,), task.observation_scale_previous_action),
+                        *(
+                            (jp.full((2,), task.observation_scale_gait_phase),)
+                            if task.gait_phase_enabled
+                            else ()
+                        ),
+                    )
+                )
+                noise_scale = task.observation_noise_level * jp.concatenate(
+                    (
+                        jp.full(
+                            (3,), task.observation_noise_linear_velocity_m_s
+                        ),
+                        jp.full(
+                            (3,), task.observation_noise_angular_velocity_rad_s
+                        ),
+                        jp.full((3,), task.observation_noise_gravity),
+                        jp.zeros((3,)),
+                        jp.full(
+                            (12,), task.observation_noise_joint_position_rad
+                        ),
+                        jp.full(
+                            (12,), task.observation_noise_joint_velocity_rad_s
+                        ),
+                        jp.zeros((12,)),
+                        *((jp.zeros((2,)),) if task.gait_phase_enabled else ()),
+                    )
+                )
+            clean_actor = physical_actor * actor_scale
+            if task.observation_noise_enabled:
+                noise = jax.random.uniform(
+                    noise_key,
+                    shape=physical_actor.shape,
+                    minval=-1.0,
+                    maxval=1.0,
+                )
+                actor_observation = (
+                    physical_actor + noise * noise_scale
+                ) * actor_scale
+            else:
+                actor_observation = clean_actor
+            if not task.asymmetric_observation_enabled:
+                return actor_observation
+
+            foot_position = data.site_xpos[self.foot_site_ids]
+            foot_height = jp.maximum(
+                foot_position[:, 2] - task.foot_radius_m, 0.0
+            )
+            # MuJoCo cfrc_ext stores spatial torque then force for each body.
+            # This is critic-only privileged simulation state.
+            foot_contact_force = data._impl.cfrc_ext[
+                self.foot_body_ids, 3:6
+            ]
+            privileged_observation = jp.concatenate(
                 (
-                    body_linear_velocity,
-                    body_angular_velocity,
-                    projected_gravity,
-                    command,
-                    joint_position - self.nominal_ctrl,
-                    joint_velocity,
-                    policy_action,
-                    *(
-                        (gait_phase_features_3d(jp, gait_phase),)
-                        if task.gait_phase_enabled
-                        else ()
-                    ),
+                    clean_actor,
+                    body_linear_velocity
+                    * task.observation_scale_linear_velocity,
+                    foot_height * task.observation_scale_foot_height,
+                    foot_air_time * task.observation_scale_foot_air_time,
+                    contacts["foot_ground"]
+                    * task.observation_scale_foot_contact,
+                    jp.ravel(foot_contact_force)
+                    * task.observation_scale_foot_contact_force,
                 )
             )
-            if not task.observation_noise_enabled:
-                return physical_observation * observation_scale
-            noise_scale = task.observation_noise_level * jp.concatenate(
-                (
-                    jp.full((3,), task.observation_noise_linear_velocity_m_s),
-                    jp.full((3,), task.observation_noise_angular_velocity_rad_s),
-                    jp.full((3,), task.observation_noise_gravity),
-                    jp.zeros((3,)),
-                    jp.full((12,), task.observation_noise_joint_position_rad),
-                    jp.full((12,), task.observation_noise_joint_velocity_rad_s),
-                    jp.zeros((12,)),
-                    *((jp.zeros((2,)),) if task.gait_phase_enabled else ()),
-                )
-            )
-            noise = jax.random.uniform(
-                noise_key,
-                shape=(self.observation_size,),
-                minval=-1.0,
-                maxval=1.0,
-            )
-            return (physical_observation + noise * noise_scale) * observation_scale
+            return {
+                "state": actor_observation,
+                "privileged_state": privileged_observation,
+            }
 
         def _sample_command(self, rng):
             forward_key, lateral_key, yaw_key, stop_key = jax.random.split(rng, 4)

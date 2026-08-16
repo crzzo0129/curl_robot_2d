@@ -18,13 +18,18 @@ WALKING_REWARD_TERM_NAMES_3D = (
     "lateral",
     "vertical_velocity",
     "angular_velocity",
+    "orientation",
+    "angular_momentum",
     "foot_air_time",
     "gait_contact",
     "swing_clearance",
+    "foot_clearance",
     "foot_slip",
+    "soft_landing",
     "action_rate",
     "action_magnitude",
     "joint_velocity",
+    "joint_acceleration",
     "joint_limits",
     "stand_still",
     "torque",
@@ -41,12 +46,14 @@ class Walking3DRewardConfig:
     alive: float = 0.0
     velocity_tracking: float = 2.00
     velocity_tracking_sigma_m_s: float = 0.20
+    velocity_tracking_vertical_weight: float = 0.0
     velocity_tracking_upright_gate: float = 1.0
     overspeed: float = 0.0
     overspeed_margin_m_s: float = 0.05
     overspeed_scale_m_s: float = 0.15
     yaw_rate_tracking: float = 0.75
     yaw_rate_tracking_sigma_rad_s: float = 0.35
+    yaw_rate_tracking_roll_pitch_weight: float = 0.0
     forward_progress: float = 0.0
     upright: float = 0.50
     upright_sigma_rad: float = 0.30
@@ -66,6 +73,8 @@ class Walking3DRewardConfig:
     vertical_velocity_sigma_m_s: float = 0.20
     angular_velocity: float = 0.08
     angular_velocity_sigma_rad_s: float = 0.75
+    orientation: float = 0.0
+    angular_momentum: float = 0.0
 
     foot_air_time: float = 0.15
     foot_air_time_threshold_s: float = 0.08
@@ -76,13 +85,17 @@ class Walking3DRewardConfig:
     swing_clearance_target_sigma_m: float = 0.0075
     swing_clearance_target_tracking: float = 0.0
     swing_clearance_speed_m_s: float = 0.10
+    foot_clearance: float = 0.0
+    foot_clearance_target_m: float = 0.025
     foot_slip: float = 0.05
     foot_slip_sigma_m_s: float = 0.15
+    soft_landing: float = 0.0
 
     action_rate: float = 0.020
     action_magnitude: float = 0.004
     joint_velocity: float = 0.005
     joint_velocity_sigma_rad_s: float = 8.0
+    joint_acceleration: float = 0.0
     joint_limits: float = 0.10
     stand_still: float = 0.20
     torque: float = 0.010
@@ -105,10 +118,13 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
         if "planar_velocity_error_norm" in inputs
         else xp.abs(inputs["forward_velocity_error"])
     )
+    velocity_error_squared = (
+        xp.square(planar_velocity_error)
+        + config.velocity_tracking_vertical_weight
+        * xp.square(inputs.get("vertical_velocity", xp.asarray(0.0)))
+    )
     velocity_score = xp.exp(
-        -xp.square(
-            planar_velocity_error / config.velocity_tracking_sigma_m_s
-        )
+        -velocity_error_squared / (config.velocity_tracking_sigma_m_s**2)
     )
     overspeed_cost = xp.square(
         xp.clip(
@@ -119,10 +135,15 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
         / overspeed_scale
     )
     yaw_rate_error = inputs.get("yaw_rate_error", xp.asarray(0.0))
-    yaw_rate_score = xp.exp(
-        -xp.square(
-            yaw_rate_error / config.yaw_rate_tracking_sigma_rad_s
+    yaw_error_squared = (
+        xp.square(yaw_rate_error)
+        + config.yaw_rate_tracking_roll_pitch_weight
+        * inputs.get(
+            "roll_pitch_angular_velocity_squared", xp.asarray(0.0)
         )
+    )
+    yaw_rate_score = xp.exp(
+        -yaw_error_squared / (config.yaw_rate_tracking_sigma_rad_s**2)
     )
     upright_score = xp.exp(
         -xp.square(inputs["upright_tilt"] / config.upright_sigma_rad)
@@ -210,6 +231,14 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
         "angular_velocity": (
             -config.angular_velocity * angular_velocity_cost
         ),
+        "orientation": (
+            -config.orientation
+            * inputs.get("projected_gravity_xy_squared", 0.0)
+        ),
+        "angular_momentum": (
+            -config.angular_momentum
+            * inputs.get("angular_momentum_squared", 0.0)
+        ),
         "foot_air_time": (
             config.foot_air_time
             * inputs["foot_air_time_reward"]
@@ -225,13 +254,25 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
             * inputs["swing_clearance_reward"]
             * inputs.get("locomotion_active", 1.0)
         ),
+        "foot_clearance": (
+            -config.foot_clearance
+            * inputs.get("foot_clearance_cost", 0.0)
+            * inputs.get("locomotion_active", 1.0)
+        ),
         "foot_slip": -config.foot_slip * foot_slip_cost,
+        "soft_landing": (
+            -config.soft_landing * inputs.get("soft_landing_cost", 0.0)
+        ),
         "action_rate": -config.action_rate * inputs["action_rate_cost"],
         "action_magnitude": (
             -config.action_magnitude * inputs["action_magnitude_cost"]
         ),
         "joint_velocity": (
             -config.joint_velocity * joint_velocity_cost
+        ),
+        "joint_acceleration": (
+            -config.joint_acceleration
+            * inputs.get("joint_acceleration_squared", 0.0)
         ),
         "joint_limits": (
             -config.joint_limits * inputs["joint_limit_cost"]

@@ -75,6 +75,11 @@ class Walking3DConfig:
     observation_scale_joint_position: float = 1.0
     observation_scale_joint_velocity: float = 0.05
     observation_scale_previous_action: float = 1.0
+    asymmetric_observation_enabled: bool = False
+    observation_scale_foot_height: float = 10.0
+    observation_scale_foot_air_time: float = 1.0
+    observation_scale_foot_contact: float = 1.0
+    observation_scale_foot_contact_force: float = 0.02
     gait_phase_enabled: bool = False
     gait_cycle_time_s: float = 0.625
     gait_duty_factor: float = 0.68
@@ -167,6 +172,19 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
         (
             config.observation_scale_previous_action,
             "observation_scale_previous_action",
+        ),
+        (config.observation_scale_foot_height, "observation_scale_foot_height"),
+        (
+            config.observation_scale_foot_air_time,
+            "observation_scale_foot_air_time",
+        ),
+        (
+            config.observation_scale_foot_contact,
+            "observation_scale_foot_contact",
+        ),
+        (
+            config.observation_scale_foot_contact_force,
+            "observation_scale_foot_contact_force",
         ),
         (config.gait_cycle_time_s, "gait_cycle_time_s"),
         (config.observation_scale_gait_phase, "observation_scale_gait_phase"),

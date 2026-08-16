@@ -18,6 +18,8 @@ from curl_robot_2d_mjx.config_walking_3d import (
 from curl_robot_2d_mjx.environment_walking_3d import (
     EXPECTED_WALKING_JOINT_AXES_3D,
     WALKING_ACTION_SIZE_3D,
+    WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D,
+    WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D,
     WALKING_MODEL_PATH_3D,
     WALKING_JOINT_NAMES_3D,
     WALKING_OBSERVATION_SIZE_3D,
@@ -56,6 +58,8 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertEqual(WALKING_ACTION_SIZE_3D, 12)
         self.assertEqual(WALKING_OBSERVATION_SIZE_3D, 48)
         self.assertEqual(WALKING_PHASE_OBSERVATION_SIZE_3D, 50)
+        self.assertEqual(WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D, 47)
+        self.assertEqual(WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D, 74)
         self.assertEqual(config.geometry, "pupper_open60")
         self.assertAlmostEqual(config.desired_speed_m_s, 0.20)
         self.assertAlmostEqual(config.diagnostic_lateral_drift_m, 1.50)
@@ -68,6 +72,7 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertEqual(config.observation_scale_command_linear_velocity, 2.0)
         self.assertEqual(config.observation_scale_command_yaw_rate, 0.25)
         self.assertEqual(config.observation_scale_joint_velocity, 0.05)
+        self.assertFalse(config.asymmetric_observation_enabled)
 
     def test_freejoint_angular_velocity_is_already_body_local(self) -> None:
         rotation = np.asarray(
@@ -414,6 +419,8 @@ class MJX3DWalkingContractTest(unittest.TestCase):
             "transition_finite",
             "gait_phase_features_3d",
             "diagonal_contact_schedule_3d",
+            '"privileged_state": privileged_observation',
+            "data._impl.cfrc_ext",
             '"time_out": timeout_bool.astype(jp.float32)',
         ):
             self.assertIn(token, source)
@@ -424,6 +431,8 @@ class MJX3DWalkingContractTest(unittest.TestCase):
         self.assertNotIn("startup_action_ramp", source)
         self.assertNotIn("smoothstep_ramp", source)
         self.assertIn("+ policy_action * self.action_scales", source)
+        self.assertNotIn("phase_joint", source)
+        self.assertNotIn("joint_pose_reference", source)
 
 
 if __name__ == "__main__":
