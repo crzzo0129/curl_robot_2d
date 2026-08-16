@@ -40,8 +40,8 @@ python -m scripts.train_mjx_3d_walking_ppo \
   --steps 15000000 \
   --num-evals 32 \
   --save-ppo-checkpoints \
-  --ppo-checkpoint-dir results/mjx_pupper_forward_stage1_v7/ppo_checkpoint \
-  --out results/mjx_pupper_forward_stage1_v7
+  --ppo-checkpoint-dir results/mjx_pupper_forward_stage1_v9/ppo_checkpoint \
+  --out results/mjx_pupper_forward_stage1_v9
 ```
 
 当前实现对 48 维 observation 使用固定物理缩放，不再同时启用 PPO 的运行时 observation normalization。自由关节线速度由世界坐标旋转到机体坐标，MuJoCo 已经以机体局部坐标给出的角速度则不再重复旋转。动作从第一步起直接作为 `stand + scale * action` 的关节目标，不再使用启动 ramp。
@@ -54,11 +54,31 @@ stage-1 的归一化动作尺度为 `abduction/hip/knee = 0.06/0.50/0.65`，初�
 
 速度 tracking 之外另有不乘 upright gate 的超速惩罚：沿命令方向超过 `command_speed + 0.05 m/s` 后开始扣分，在额外超速 `0.15 m/s` 时达到每步 `-1.0` 上限。正常 `0.10 m/s` 跟踪和小幅步态速度波动不受影响，`0.30~0.40 m/s` 的短暂前扑则会持续受到负反馈。
 
+stage-1 还维护一个50个控制步（1秒）的根节点水平位置环形缓冲。沿当前平面命令方向的1秒位移低于 `0.05 m` 时，`upright` 正奖励按进度缺口线性衰减，并额外施加最多 `-0.2/step` 的 stagnation 惩罚；第一秒不处罚。达到或超过 `0.05 m/s` 的持续前进后，两项限制都自动解除。日志中的 `progress_1s` 和 `stagnation` 用于核对这一行为。
+
 stage-1 保留 `ADAPTIVE_KL`，但把学习率硬限制在 `[2e-6, 2e-5]`，初值为 `2e-5`。这允许高 KL 时降低学习率，同时禁止低 KL 连续触发后把学习率放大到危险范围。
 
 时间上限通过环境的 `info["time_out"]` 明确交给 Brax PPO，并允许 value function bootstrap；真正跌倒仍是普通 termination，不做 bootstrap。最优 checkpoint 按“完整存活、存活时长、upright 失败率、命令跟踪、进度和接触质量”的字典序选择，后面的接触改善不能覆盖前面的存活退化。
 
 启动日志应显示 `reset_noise joint=0 ... root_xy=0 ... root_yaw=0`、`observation=False` 和 `domain_randomization=False`。只有当策略能够持续 10 秒、速度接近 `0.10 m/s` 且失败率明显下降后，才进入速度范围、转向和随机化阶段。
+
+## 非学习的机构可行性验证
+
+`demo_handcrafted_3d_walk` 对同一个12-DoF XML使用解析IK和对角小跑足端轨迹，不读取策略或reward。默认控制器在本地 nominal `cg12` 物理中连续6秒前进约0.534 m、平均0.089 m/s，最大tilt约0.093 rad，可用于区分机构问题和RL问题：
+
+```bash
+python -m scripts.demo_handcrafted_3d_walk \
+  --duration 6 \
+  --output results/handcrafted_3d_walk_default
+
+python -m scripts.render_mjx_3d_policy \
+  results/handcrafted_3d_walk_default/evaluation_rollout.npz \
+  --model-xml assets/curl_robot_3d_pupper_r127p5_open60_width120.xml \
+  --physics-profile cg12 \
+  --output results/handcrafted_3d_walk_default/handcrafted_walk.gif
+```
+
+模型的前腿hip轴为 `-Y`、后腿为 `+Y`，这是前后镜像机构所需的符号。正hip增量使前足向 `+X`、后足向 `-X`，也就是都向各自外侧运动；世界坐标中同向摆腿时，前后hip增量本来就应异号。单独弯曲前hip会让前足前移并略微抬高、卸载前支撑，若knee不协同就可能绕后足向前俯倒，这不等于关节轴配置错误。
 
 ```powershell
 cd curl_robot_2d

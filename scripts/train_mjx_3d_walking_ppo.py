@@ -207,6 +207,10 @@ WALKING_RECIPES_3D = {
             "forward_progress": 0.0,
             "upright": 0.2,
             "upright_sigma_rad": 0.20,
+            "stagnation": 0.2,
+            "stagnation_window_s": 1.0,
+            "stagnation_min_progress_m": 0.05,
+            "upright_stagnation_gate": 1.0,
             "angular_velocity": 0.15,
             "foot_air_time": 0.8,
             "swing_clearance": 0.15,
@@ -262,6 +266,8 @@ PER_STEP_WALKING_METRICS_3D = (
     "planar_velocity_error_m_s",
     "overspeed_m_s",
     "yaw_rate_error_rad_s",
+    "progress_window_m",
+    "stagnation_fraction",
 )
 
 
@@ -520,6 +526,8 @@ def _format_eval_report_walking_3d(
             f"  tracking planar_error="
             f"{selection['planar_tracking_error_m_s']:.3f}m/s "
             f"overspeed={_metric(metrics, 'eval/avg_overspeed_m_s'):.3f}m/s "
+            f"progress_1s={_metric(metrics, 'eval/avg_progress_window_m'):.3f}m "
+            f"stagnation={_metric(metrics, 'eval/avg_stagnation_fraction'):.2f} "
             f"yaw_rate_error="
             f"{selection['yaw_tracking_error_rad_s']:.3f}rad/s"
         ),

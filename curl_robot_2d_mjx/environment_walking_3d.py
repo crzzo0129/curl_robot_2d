@@ -377,6 +377,10 @@ def make_brax_walking_env_3d(
                 task.terminate_self_contact_duration_s,
                 task.control_timestep,
             )
+            self.stagnation_window_steps = _duration_to_steps(
+                reward_settings.stagnation_window_s,
+                task.control_timestep,
+            )
 
         @property
         def observation_size(self):
@@ -438,6 +442,8 @@ def make_brax_walking_env_3d(
                 "planar_velocity_error_m_s": zero,
                 "overspeed_m_s": zero,
                 "yaw_rate_error_rad_s": zero,
+                "progress_window_m": zero,
+                "stagnation_fraction": zero,
                 "failed": zero,
                 "timeout": zero,
                 "failure_nonfinite": zero,
@@ -520,6 +526,11 @@ def make_brax_walking_env_3d(
                 "previous_root_x": data.qpos[0],
                 "previous_foot_position": foot_position,
                 "previous_foot_position_local": foot_position_local,
+                "progress_position_history": jp.tile(
+                    data.qpos[:2][None, :],
+                    (self.stagnation_window_steps, 1),
+                ),
+                "progress_history_index": jp.asarray(0, dtype=jp.int32),
                 "last_foot_contact": last_foot_contact,
                 "foot_air_time": jp.zeros((4,), dtype=jp.float32),
                 "last_policy_action": jp.zeros(
@@ -568,6 +579,10 @@ def make_brax_walking_env_3d(
                 lambda key: self._sample_command(key),
                 lambda key: state.info["command"],
                 step_rng,
+            )
+            progress_command_changed = resample_command & (
+                jp.linalg.norm(command[:2] - state.info["command"][:2])
+                > 1.0e-6
             )
             action_finite = jp.all(jp.isfinite(action))
             policy_action = jp.nan_to_num(
@@ -629,6 +644,60 @@ def make_brax_walking_env_3d(
                 jp, rotation, data.qvel[:3]
             )
             root_x, root_y, root_z = data.qpos[:3]
+            root_xy = data.qpos[:2]
+            progress_history_index = state.info["progress_history_index"]
+            progress_reference_xy = state.info[
+                "progress_position_history"
+            ][progress_history_index]
+            world_window_displacement = jp.concatenate(
+                (root_xy - progress_reference_xy, jp.zeros((1,)))
+            )
+            heading_window_displacement = heading_frame_planar_velocity_3d(
+                jp, rotation, world_window_displacement
+            )
+            command_speed = jp.linalg.norm(command[:2])
+            command_direction = command[:2] / jp.maximum(
+                command_speed, 1.0e-6
+            )
+            progress_window_m = jp.dot(
+                heading_window_displacement, command_direction
+            )
+            progress_window_ready = (
+                state.info["step_count"] + 1
+                >= self.stagnation_window_steps
+            ) & (~progress_command_changed)
+            stagnation_fraction = jp.where(
+                progress_window_ready & (command_speed > 0.05),
+                jp.clip(
+                    (
+                        reward_settings.stagnation_min_progress_m
+                        - progress_window_m
+                    )
+                    / max(
+                        reward_settings.stagnation_min_progress_m,
+                        1.0e-6,
+                    ),
+                    0.0,
+                    1.0,
+                ),
+                jp.asarray(0.0),
+            )
+            updated_progress_history = state.info[
+                "progress_position_history"
+            ].at[progress_history_index].set(root_xy)
+            reset_progress_history = jp.tile(
+                root_xy[None, :], (self.stagnation_window_steps, 1)
+            )
+            progress_position_history = jp.where(
+                progress_command_changed,
+                reset_progress_history,
+                updated_progress_history,
+            )
+            next_progress_history_index = jp.where(
+                progress_command_changed,
+                jp.asarray(0, dtype=jp.int32),
+                (progress_history_index + 1) % self.stagnation_window_steps,
+            )
             forward_velocity = reward_planar_velocity[0]
             lateral_velocity = reward_planar_velocity[1]
             vertical_velocity = body_linear_velocity[2]
@@ -831,6 +900,7 @@ def make_brax_walking_env_3d(
                         )
                     ),
                     "upright_tilt": body["upright_tilt"],
+                    "stagnation_fraction": stagnation_fraction,
                     "root_height_error": root_height_error,
                     "heading_error": body["heading_error"],
                     "lateral_velocity": lateral_velocity,
@@ -893,6 +963,8 @@ def make_brax_walking_env_3d(
                 "previous_root_x": root_x,
                 "previous_foot_position": foot_position,
                 "previous_foot_position_local": foot_position_local,
+                "progress_position_history": progress_position_history,
+                "progress_history_index": next_progress_history_index,
                 "last_foot_contact": foot_contact,
                 "foot_air_time": foot_air_time,
                 "last_policy_action": policy_action,
@@ -966,6 +1038,8 @@ def make_brax_walking_env_3d(
                 "planar_velocity_error_m_s": planar_velocity_error,
                 "overspeed_m_s": overspeed,
                 "yaw_rate_error_rad_s": jp.abs(yaw_rate - command[2]),
+                "progress_window_m": progress_window_m,
+                "stagnation_fraction": stagnation_fraction,
                 "failed": failed_bool.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),

@@ -12,6 +12,7 @@ WALKING_REWARD_TERM_NAMES_3D = (
     "yaw_rate_tracking",
     "forward_progress",
     "upright",
+    "stagnation",
     "height",
     "heading",
     "lateral",
@@ -47,6 +48,10 @@ class Walking3DRewardConfig:
     forward_progress: float = 0.0
     upright: float = 0.50
     upright_sigma_rad: float = 0.30
+    stagnation: float = 0.0
+    stagnation_window_s: float = 1.0
+    stagnation_min_progress_m: float = 0.05
+    upright_stagnation_gate: float = 0.0
     height: float = 0.0
     height_sigma_m: float = 0.050
     heading: float = 0.0
@@ -117,6 +122,14 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
     upright_score = xp.exp(
         -xp.square(inputs["upright_tilt"] / config.upright_sigma_rad)
     )
+    stagnation_fraction = xp.clip(
+        inputs.get("stagnation_fraction", xp.asarray(0.0)), 0.0, 1.0
+    )
+    upright_progress_gate = xp.clip(
+        1.0 - config.upright_stagnation_gate * stagnation_fraction,
+        0.0,
+        1.0,
+    )
     height_cost = xp.square(
         inputs["root_height_error"] / config.height_sigma_m
     )
@@ -173,7 +186,8 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
             * inputs["normalized_forward_velocity"]
             * upright_score
         ),
-        "upright": config.upright * upright_score,
+        "upright": config.upright * upright_score * upright_progress_gate,
+        "stagnation": -config.stagnation * stagnation_fraction,
         "height": -config.height * height_cost,
         "heading": -config.heading * heading_cost,
         "lateral": -lateral_cost,

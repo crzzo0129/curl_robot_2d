@@ -16,6 +16,7 @@ def zero_inputs():
         "overspeed": zero,
         "normalized_forward_velocity": zero,
         "upright_tilt": zero,
+        "stagnation_fraction": zero,
         "root_height_error": zero,
         "heading_error": zero,
         "lateral_velocity": zero,
@@ -106,6 +107,20 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         terms = reward_terms_walking_3d(np, config, inputs)
 
         self.assertAlmostEqual(float(terms["overspeed"]), -1.0)
+
+    def test_stagnation_removes_upright_reward_and_adds_a_penalty(self) -> None:
+        config = Walking3DRewardConfig(
+            upright=0.2,
+            stagnation=0.2,
+            upright_stagnation_gate=1.0,
+        )
+        inputs = zero_inputs()
+        inputs["stagnation_fraction"] = np.asarray(1.0)
+
+        terms = reward_terms_walking_3d(np, config, inputs)
+
+        self.assertAlmostEqual(float(terms["upright"]), 0.0)
+        self.assertAlmostEqual(float(terms["stagnation"]), -0.2)
 
     def test_touchdown_air_time_is_rewarded_without_phase_schedule(self) -> None:
         inputs = zero_inputs()
