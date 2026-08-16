@@ -13,7 +13,10 @@ import numpy as np
 
 from curl_robot_2d.parameters import FIXED_PARAMETERS
 from curl_robot_2d_mjx.cem_reference import load_cem_reference
-from curl_robot_2d_mjx.environment_3d import DEFAULT_3D_CEM_CONTROLLER
+from curl_robot_2d_mjx.environment_3d import (
+    DEFAULT_3D_CEM_CONTROLLER,
+    PUPPER_OPEN60_MODEL_PATH_3D,
+)
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 
 
@@ -171,8 +174,12 @@ def _run_cpu_case(args, *, name, physics_profile):
     duration = 0.02 * args.episode_length
     cpu_args = parse_cpu_args(
         [
+            "--xml",
+            str(PUPPER_OPEN60_MODEL_PATH_3D),
             "--controller",
             str(args.controller),
+            "--geometry",
+            "pupper60",
             "--duration",
             str(duration),
             "--control-dt",
