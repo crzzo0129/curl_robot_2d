@@ -171,6 +171,8 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             "bootstrap_on_timeout=True",
             "reset_root_xy_velocity_noise_m_s=0.0",
             "args.eval_terminate_low_progress_enabled",
+            'f"avg_ppo/step="',
+            'f"reward_scale={args.reward_scaling:g}',
         ):
             self.assertIn(token, source)
 
@@ -200,7 +202,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.terminate_upright_tilt, 1.22)
         self.assertEqual(args.terminate_nonfoot_force_min, 1.0)
         self.assertFalse(args.terminate_low_progress_enabled)
-        self.assertTrue(args.eval_terminate_low_progress_enabled)
+        self.assertFalse(args.eval_terminate_low_progress_enabled)
         self.assertEqual(args.terminate_low_progress_window, 0.50)
         self.assertEqual(args.terminate_low_progress_duration, 2.0)
         self.assertEqual(args.terminate_low_progress_command_ratio, 0.50)
@@ -209,7 +211,10 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.updates_per_batch, 5)
         self.assertEqual(args.learning_rate, 3e-4)
         self.assertEqual(args.adaptive_kl_max_lr, 3e-4)
+        self.assertEqual(args.reward_scaling, 0.02)
         self.assertEqual(args.init_noise_std, 0.5)
+        self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.10)
+        self.assertEqual(reward.yaw_rate_tracking, 0.75)
         self.assertEqual(reward.gait_contact, 0.5)
         self.assertEqual(reward.orientation, 1.0)
         self.assertEqual(reward.foot_clearance, 1.0)
@@ -217,6 +222,54 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.termination, 200.0)
         self.assertEqual(reward.upright, 0.0)
         self.assertEqual(reward.swing_clearance, 0.0)
+
+    def test_unitree_discovery_is_nominal_and_robust_compatible(self) -> None:
+        discovery = train_mjx_3d_walking_ppo.parse_args(
+            ["--recipe", "unitree_mjlab_velocity_discovery_v1"]
+        )
+        robust = train_mjx_3d_walking_ppo.parse_args(
+            ["--recipe", "unitree_mjlab_velocity_v1"]
+        )
+        reward = train_mjx_3d_walking_ppo._reward_config_from_args(
+            discovery
+        )
+
+        self.assertEqual(discovery.desired_speed_m_s, 0.10)
+        self.assertEqual(discovery.command_forward_min, 0.10)
+        self.assertEqual(discovery.command_forward_max, 0.10)
+        self.assertEqual(discovery.command_lateral_max, 0.0)
+        self.assertEqual(discovery.command_yaw_rate_max, 0.0)
+        self.assertTrue(discovery.no_observation_noise)
+        self.assertTrue(discovery.no_domain_randomization)
+        self.assertEqual(discovery.reset_joint_noise, 0.0)
+        self.assertEqual(discovery.reset_velocity_noise, 0.0)
+        self.assertEqual(discovery.reset_root_xy_velocity_noise, 0.0)
+        self.assertEqual(discovery.reset_root_yaw_rate_noise, 0.0)
+        self.assertFalse(discovery.terminate_low_progress_enabled)
+        self.assertFalse(discovery.eval_terminate_low_progress_enabled)
+        self.assertEqual(discovery.reward_scaling, 0.02)
+        self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.10)
+        self.assertEqual(reward.yaw_rate_tracking, 0.25)
+        self.assertEqual(reward.gait_contact, 0.5)
+        self.assertEqual(reward.foot_clearance, 0.0)
+        self.assertEqual(reward.termination, 200.0)
+
+        # The observation and policy contracts must remain identical so a
+        # full PPO checkpoint can continue into the robust recipe.
+        for name in (
+            "gait_phase_enabled",
+            "gait_cycle_time",
+            "gait_duty_factor",
+            "asymmetric_observations",
+            "normalize_observations",
+            "small_actor_mean_init",
+            "hidden_layers",
+            "critic_hidden_layers",
+            "action_scale_abduction",
+            "action_scale_hip",
+            "action_scale_knee",
+        ):
+            self.assertEqual(getattr(discovery, name), getattr(robust, name))
 
     def test_h200_uses_many_smaller_ppo_updates(self) -> None:
         preset = train_mjx_3d_walking_ppo.PRESETS_WALKING_3D["h200"]
@@ -428,6 +481,16 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(standing["completed"], 0.0)
         self.assertEqual(standing["meaningful_progress"], 0.0)
         self.assertGreater(walking["rank"], standing["rank"])
+        self.assertFalse(
+            train_mjx_3d_walking_ppo._checkpoint_is_selectable_walking_3d(
+                standing, None
+            )
+        )
+        self.assertTrue(
+            train_mjx_3d_walking_ppo._checkpoint_is_selectable_walking_3d(
+                walking, None
+            )
+        )
 
     def test_checkpoint_rank_never_trades_survival_for_contact_quality(self) -> None:
         stable = train_mjx_3d_walking_ppo._checkpoint_selection_walking_3d(

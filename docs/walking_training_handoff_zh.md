@@ -560,7 +560,7 @@ Critic 为74维：无噪声 actor 状态47，加机体线速度3、足高4、各
 
 ### 奖励和终止
 
-核心项与 Unitree velocity task 对齐：三维线速度跟踪、三轴角速度跟踪、投影重力姿态、全身角动量、对角接触节律、目标足高、支撑足滑移、软着陆、动作变化、关节加速度、软关节限位、零命令站立和失败终止。没有手写足端轨迹，也没有 walking joint-pose reward。当前路线 B 的训练命令收窄为 `vx∈[0.10, 0.30] m/s, vy=0, yaw_rate=0`，周期 eval 使用 `vx=0.20 m/s`。
+核心项与 Unitree velocity task 对齐：三维线速度跟踪、三轴角速度跟踪、投影重力姿态、全身角动量、对角接触节律、目标足高、支撑足滑移、软着陆、动作变化、关节加速度、软关节限位、零命令站立和失败终止。没有手写足端轨迹，也没有 walking joint-pose reward。robust 阶段训练 `vx∈[0.10, 0.30] m/s, vy=0, yaw_rate=0`，周期 eval 使用 `vx=0.20 m/s`；discovery 阶段先固定 `vx=0.10 m/s`。
 
 `gait_cycle_time=0.60 s`、`duty_factor=0.56`，所以单腿相位计划中的摆动窗为：
 
@@ -570,9 +570,24 @@ Critic 为74维：无噪声 actor 状态47，加机体线速度3、足高4、各
 
 正常成形步态的 touchdown air time 应大致落在 `0.20–0.30 s`；训练早期低于 `0.05 s` 通常还是挪动/抖腿，高于约 `0.35–0.40 s` 且四足平均接触数偏低则要检查跳跃或失稳。日志中的 `air_time` 现已改成“touchdown 事件的实际腾空时间（秒）”；旧日志的 `air_time=0.007` 是逐步平均的稀疏奖励分数，不是7毫秒。
 
-### 从零启动
+### 从零启动：先 discovery，再 robust
 
-47/74维网络与旧48维、50维 checkpoint 都不兼容，必须新开输出目录，不要传 `--restore-checkpoint`：
+47/74维网络与旧48维、50维 checkpoint 都不兼容。第一段必须新开输出目录，不传 `--restore-checkpoint`：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_discovery_v1 \
+  --steps 3000000 \
+  --num-evals 12 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir results/mjx_pupper_unitree_discovery_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_discovery_v1
+```
+
+discovery 与 robust 的 actor/critic、observation、动作尺度完全相同。discovery 只关闭 observation noise、domain randomization、reset noise 和 `foot_clearance`，固定 `vx=0.10 m/s`；phase 仍只提供时钟和接触计划。2–3M步内，10秒 eval 应至少达到 `velocity>0.05 m/s` 和 `distance>0.50 m`。若仍达不到，应停止并检查动作/动力学，不应继续烧满20M步。
+
+通过后从完整 PPO checkpoint 继续 robust 阶段；传 checkpoint 根目录时脚本会选择最新的编号子目录：
 
 ```bash
 python -m scripts.train_mjx_3d_walking_ppo \
@@ -580,9 +595,10 @@ python -m scripts.train_mjx_3d_walking_ppo \
   --recipe unitree_mjlab_velocity_v1 \
   --steps 20000000 \
   --num-evals 32 \
+  --restore-checkpoint results/mjx_pupper_unitree_discovery_v1/ppo_checkpoint \
   --save-ppo-checkpoints \
-  --ppo-checkpoint-dir results/mjx_pupper_unitree_mjlab_velocity_v1/ppo_checkpoint \
-  --out results/mjx_pupper_unitree_mjlab_velocity_v1
+  --ppo-checkpoint-dir results/mjx_pupper_unitree_robust_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_robust_v1
 ```
 
 训练前 smoke：
@@ -595,7 +611,7 @@ python -m scripts.mjx_3d_walking_smoke \
   --steps 8
 ```
 
-本地验证结果：非对称环境 actor/critic shape 为 `47/74`，reset 和 step 均成功 JIT；完整单元测试为290通过、1个既有跳过。
+非对称环境 actor/critic shape 为 `47/74`。两个新 recipe 的网络契约相同，因此可以续训；`params_best` 是部署参数，不是带 optimizer state 的 PPO 恢复点，续训应使用 `ppo_checkpoint`。
 
 ### eval 15–22 后的 shell-free 修订
 
@@ -627,10 +643,24 @@ python -m scripts.train_mjx_3d_walking_ppo \
 
 ### 站立退化、命令换挡和接触力诊断修订
 
-为了避免“站满10秒”被保存成 `params_best`，路线 B 的周期 eval 环境新增独立于 reward 的低进展终止：维护0.5秒前向位移窗口，要求位移至少达到 `min(0.05 m, 0.5 * vx_command * 0.5 s)`；窗口持续不达标2秒才失败。最低0.10 m/s命令对应0.025 m门槛，而不是误要求100%瞬时跟踪。第一段命令有0.5秒观察宽限，因此完全站立策略约在2.5秒终止，而不会在 eval 中活满10秒。
+低进展逻辑只保留为诊断：维护0.5秒前向位移窗口，最低进展为 `min(0.05 m, 0.5 * vx_command * 0.5 s)`，日志输出窗口位移、门槛和低进展占比。推荐路线的训练与周期 eval 都不因该指标提前终止，只允许物理失败截断，否则所有早期 eval 都会固定在约2.5秒结束，无法衡量完整10秒行为，且一次性 `-200` 会污染 reward 对比。
 
-训练环境默认关闭这个终止，只保留物理失败终止和完整10秒探索窗口。原因是从零策略在早期几乎都会低进展，如果统一在约2.5秒施加 `-200` 并重置，会让终止项支配 return，并切断发现步态所需的探索。可以用 `--terminate-low-progress` 显式做消融，但推荐配置只启用 `--eval-terminate-low-progress`。
+站立策略通过 checkpoint 后处理排除：`meaningful_progress=0` 的 eval 不会显示 `new_best`，也不会更新 `params_best`；`completed` 还必须满足实际位移和最低 tracking quality。`--terminate-low-progress` 与 `--eval-terminate-low-progress` 仅保留作显式消融开关，不是推荐配置。
 
 checkpoint 的字典序 rank 同时加入 `meaningful_progress`，且 `completed` 必须满足实际位移和最小 tracking quality，作为环境终止之外的第二道保险。命令重采样移动到 transition 末尾：当前动作始终按生成它时 observation 中的旧命令结算，新命令只进入下一 observation。`nonfoot_force_avg` 保留逐步均值，新增 `nonfoot_force_peak`；峰值通过逐步峰值增量累加，使 Brax 的 episode sum 正好还原每回合峰值，不再被 episode length 稀释。
 
-修订后本地完整回归为295通过、1个既有跳过；非对称 MJX smoke 通过。nominal stand 动态验证在第124控制步由 `failure_low_progress` 终止，即2.48秒，0.5秒窗口位移约0而门槛为0.05 m。
+低进展终止机制本身经过动态验证：显式启用时 nominal stand 在第124控制步以 `failure_low_progress` 终止；推荐配置将其关闭，使 eval 固定运行10秒或直到物理失败。
+
+### trainfree_v4 的 reward 量纲复盘与 discovery 修订
+
+云端 `reward_config.json` 证明 v4 基本照搬了 Unitree MjLab 的 reward 权重，但没有完整保留任务量纲和 reward-rate 语义。eval 命令为0.20 m/s、`velocity_tracking_sigma=0.10 m/s` 时，完全静止的线速度得分只有
+
+```text
+exp(-(0.20 / 0.10)^2) = exp(-4) = 0.0183
+```
+
+这项本身没有“奖励站立”的 bug。静止策略同时能拿到接近0.75的零 yaw-rate 跟踪，以及四足始终着地对 `duty_factor=0.56` 接触计划的平均部分匹配 `0.5 * 0.56 = 0.28`，所以失败前仍约有1.05/step的正项。旧 low-progress 终止在第124步固定扣200，折算为 `-200/124=-1.613/step`，正好解释日志中的总 reward 为负；负数不是另一个物理 bug，而是错误终止设计的直接结果。
+
+但 v4 也确实没有学会运动：确定性 action RMS 从0.134增至0.443，速度仍接近0，yaw error 和 clearance cost 持续恶化；后期 KL 约0.0007、policy loss 接近0，value loss 则为数百到近2000。Brax PPO 内部直接用 `data.reward * reward_scaling` 构造 value target；v4 的 `reward_scaling=1.0` 让一次终止仍为-200。Unitree MjLab 的 RewardManager 默认把全部 reward rate 乘环境 step dt，本任务控制周期也是0.02秒，因此两个 Unitree recipe 现统一使用 `reward_scaling=0.02`，使官方 `termination=200` 的有效 PPO 尺度为-4，而不是-200。
+
+新的 `unitree_mjlab_velocity_discovery_v1` 还处理了探索梯度问题：robust 阶段命令最高0.30 m/s，而 `sigma=0.10` 时从静止出发的跟踪梯度在高命令端几乎消失；discovery 固定0.10 m/s，此时静止得分为 `exp(-1)=0.368`，速度增至0.05 m/s时得分已为 `exp(-0.25)=0.779`，能提供明确、连续的前进方向。discovery 暂停 `foot_clearance`，避免首次试探性抬脚立即付出额外代价，但保留0.5权重的对角接触计划；没有增加 forward-progress 奖励、关节 reference 或 phase-conditioned joint pose。

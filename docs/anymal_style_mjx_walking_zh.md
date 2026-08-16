@@ -90,9 +90,22 @@ python -m scripts.train_mjx_3d_walking_ppo --preset 4090 --recipe anymal_v1 --ou
 
 ## 推荐路线 B：Unitree/MjLab 风格非对称训练
 
-`unitree_mjlab_velocity_v1` 是当前推荐的新训练 recipe。它使用47维 actor observation 和74维 privileged critic observation，加入0.60秒对角步态 phase、Unitree 风格速度/接触/足高/滑移/动作与关节正则，并启用 observation normalization。它不使用手写关节轨迹或 phase-conditioned joint pose。
+路线 B 现在分成同构的 discovery 和 robust 两段。两段都使用47维 actor observation、74维 privileged critic observation、0.60秒对角步态 phase 和 observation normalization；都不使用手写关节轨迹或 phase-conditioned joint pose。`unitree_mjlab_velocity_discovery_v1` 先在 nominal 模型上发现0.10 m/s前进运动，`unitree_mjlab_velocity_v1` 再恢复命令范围、噪声、域随机化和足高正则。
 
 本机器人前腿膝盖朝外，与 Unitree 前腿膝盖向后的机构不同。这里的 phase 只给步态时钟和期望接触组 `FL+RR / FR+RL`；actor 始终直接学习当前 MJCF 关节轴下的12维位置增量，不复制 Unitree 的 hip/knee 角度。
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_discovery_v1 \
+  --steps 3000000 \
+  --num-evals 12 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir results/mjx_pupper_unitree_discovery_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_discovery_v1
+```
+
+discovery 固定 `vx=0.10 m/s`，关闭 observation noise、domain randomization、reset noise 和 `foot_clearance`，但保留对角接触节律；phase 仍然只给时钟和接触计划，不生成关节角。前2–3M步的验收线是10秒 eval 中 `velocity>0.05 m/s` 且 `distance>0.50 m`。未达到就停止排查，不继续盲跑20M；达到后可用相同47/74维网络的完整 PPO checkpoint 续训 robust recipe。
 
 ```bash
 python -m scripts.train_mjx_3d_walking_ppo \
@@ -100,13 +113,14 @@ python -m scripts.train_mjx_3d_walking_ppo \
   --recipe unitree_mjlab_velocity_v1 \
   --steps 20000000 \
   --num-evals 32 \
+  --restore-checkpoint results/mjx_pupper_unitree_discovery_v1/ppo_checkpoint \
   --save-ppo-checkpoints \
-  --ppo-checkpoint-dir results/mjx_pupper_unitree_mjlab_velocity_v1/ppo_checkpoint \
-  --out results/mjx_pupper_unitree_mjlab_velocity_v1
+  --ppo-checkpoint-dir results/mjx_pupper_unitree_robust_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_robust_v1
 ```
 
-该网络与旧48/50维 checkpoint 不兼容，必须从零训练。`T=0.60 s`、`duty=0.56` 对应计划摆动窗0.264秒；新日志的 `air_time` 是 touchdown 事件的真实腾空秒数，而旧日志中的同名值实际是稀疏奖励均值。
+该网络与旧48/50维 checkpoint 不兼容，只有新的 discovery/robust 两个 recipe 可以直接续训。`T=0.60 s`、`duty=0.56` 对应计划摆动窗0.264秒；新日志的 `air_time` 是 touchdown 事件的真实腾空秒数，而旧日志中的同名值实际是稀疏奖励均值。
 
 首轮路线 B 暴露出两个适配问题：壳体的浅层接触会立即触发非法接触，且 `std=1.0/LR=1e-3` 在 Brax PPO 中把确定性动作均值推到接近饱和。当前版本已经让全部 `rolling_shell` 退出碰撞，保留内部结构代理；非法接触改为三维接触力模长超过1 N才累计，与 Unitree 判据一致。路线 B 现在使用 `std=0.5`、`LR∈[3e-5, 3e-4]` 和 `abduction/hip/knee=0.08/0.25/0.25 rad`。足高、软着陆和角动量也按本机尺度无量纲化。
 
-当前路线 B 暂时只训练 `vx∈[0.10, 0.30] m/s`，`vy=yaw_rate=0`，eval 使用0.20 m/s。周期 eval 环境维护0.5秒前向位移窗口；最低进展为 `min(0.05 m, 50% * vx_command * 0.5 s)`，连续2秒不达标才以 `failure_low_progress` 终止。训练环境默认关闭该终止，避免从零策略统一在约2.5秒承受 `-200` 并失去完整探索窗口；checkpoint rank 仍要求实际位移，因此站立策略不会成为 `params_best`。命令换挡发生在 transition 末尾，新命令只进入下一 observation。接触日志分别输出逐步均值 `nonfoot_force_avg` 和回合峰值 `nonfoot_force_peak`。不要恢复旧 checkpoint，建议输出到 `results/mjx_pupper_unitree_lowprogress_v3`。
+robust 路线训练 `vx∈[0.10, 0.30] m/s`，`vy=yaw_rate=0`，eval 使用0.20 m/s。两个阶段的 PPO reward multiplier 都为控制周期0.02；这与 Unitree MjLab 默认把 reward rate 乘环境 step dt 的语义一致，避免 `termination=200` 直接制造巨大的 critic target。训练和周期 eval 都只因物理失败提前终止，并固定评估最多10秒。0.5秒低进展窗口只作为诊断，不再截断 eval；最低进展仍显示为 `min(0.05 m, 50% * vx_command * 0.5 s)`。checkpoint rank 要求实际位移，`meaningful_progress=0` 的站立策略不会显示 `new_best` 或更新 `params_best`。命令换挡发生在 transition 末尾，新命令只进入下一 observation。接触日志分别输出逐步均值 `nonfoot_force_avg` 和回合峰值 `nonfoot_force_peak`。

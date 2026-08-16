@@ -302,6 +302,116 @@ WALKING_RECIPES_3D = {
             "early_termination_scale": 0.5,
         },
     },
+    "unitree_mjlab_velocity_discovery_v1": {
+        "description": (
+            "Route-B discovery: learn nominal 0.10 m/s forward locomotion "
+            "before enabling command diversity, observation noise, domain "
+            "randomization, or swing-foot clearance regularization."
+        ),
+        "args": {
+            "desired_speed_m_s": 0.10,
+            "command_forward_min": 0.10,
+            "command_forward_max": 0.10,
+            "command_lateral_max": 0.0,
+            "command_yaw_rate_max": 0.0,
+            "command_resample_time": 4.0,
+            "command_stop_probability": 0.0,
+            "no_observation_noise": True,
+            "no_domain_randomization": True,
+            "gait_phase_enabled": True,
+            "gait_cycle_time": 0.60,
+            "gait_duty_factor": 0.56,
+            "asymmetric_observations": True,
+            "normalize_observations": True,
+            "small_actor_mean_init": False,
+            "hidden_layers": [512, 256, 128],
+            "critic_hidden_layers": [512, 256, 128],
+            # The action is relative to this robot's stand keyframe.  Phase
+            # never maps to a joint target, so front-knee geometry is not
+            # borrowed from Unitree.
+            "action_scale_abduction": 0.08,
+            "action_scale_hip": 0.25,
+            "action_scale_knee": 0.25,
+            "reset_joint_noise": 0.0,
+            "reset_velocity_noise": 0.0,
+            "reset_root_xy_velocity_noise": 0.0,
+            "reset_root_yaw_rate_noise": 0.0,
+            "terminate_upright_tilt": 1.22,
+            "terminate_upright_tilt_duration": 0.02,
+            "terminate_airborne_duration": 0.25,
+            "terminate_nonfoot_force_min": 1.0,
+            "terminate_nonfoot_contact_duration": 0.02,
+            "terminate_self_contact_duration": 0.04,
+            "terminate_low_progress_enabled": False,
+            "eval_terminate_low_progress_enabled": False,
+            "terminate_low_progress_window": 0.50,
+            "terminate_low_progress_duration": 2.0,
+            "terminate_low_progress_command_ratio": 0.50,
+            "terminate_low_progress_cap": 0.05,
+            "updates_per_batch": 5,
+            "unroll_length": 24,
+            "learning_rate": 3e-4,
+            "adaptive_kl_min_lr": 3e-5,
+            "adaptive_kl_max_lr": 3e-4,
+            "entropy_cost": 0.01,
+            "discounting": 0.99,
+            # Unitree MjLab integrates reward rates by its 0.02 s control dt.
+            # Brax applies this equivalent multiplier inside the PPO loss.
+            "reward_scaling": 0.02,
+            "init_noise_std": 0.50,
+            "clipping_epsilon": 0.20,
+            "max_grad_norm": 1.0,
+            "desired_kl": 0.01,
+            "learning_rate_schedule": "ADAPTIVE_KL",
+        },
+        "reward": {
+            "velocity_tracking": 1.0,
+            "velocity_tracking_sigma_m_s": 0.10,
+            "velocity_tracking_vertical_weight": 2.0,
+            "velocity_tracking_upright_gate": 0.0,
+            "overspeed": 0.0,
+            "yaw_rate_tracking": 0.25,
+            "yaw_rate_tracking_sigma_rad_s": 0.50,
+            "yaw_rate_tracking_roll_pitch_weight": 0.05,
+            "forward_progress": 0.0,
+            "upright": 0.0,
+            "stagnation": 0.0,
+            "height": 0.0,
+            "heading": 0.0,
+            "lateral_velocity": 0.0,
+            "lateral_drift": 0.0,
+            "vertical_velocity": 0.0,
+            "angular_velocity": 0.05,
+            "angular_velocity_sigma_rad_s": 1.0,
+            "orientation": 1.0,
+            "angular_momentum": 0.025,
+            "foot_air_time": 0.0,
+            "gait_contact": 0.5,
+            "swing_clearance": 0.0,
+            # During discovery this term opposes the first tentative swing:
+            # it is restored in the robust continuation recipe below.
+            "foot_clearance": 0.0,
+            "foot_clearance_target_m": 0.025,
+            "foot_slip": 0.25,
+            "foot_slip_sigma_m_s": 1.0,
+            "soft_landing": 0.001,
+            "action_rate": 0.05,
+            "action_magnitude": 0.0,
+            "joint_velocity": 0.0,
+            "joint_acceleration": 2.5e-7,
+            "joint_limits": 10.0,
+            "stand_still": 1.0,
+            "torque": 0.0,
+            "nonfoot_contact": 0.0,
+            "nonfoot_depth": 0.0,
+            "self_contact": 0.0,
+            "self_contact_depth": 0.0,
+            "termination": 200.0,
+            "severe_extra_termination": 0.0,
+            "nonfinite_termination": 200.0,
+            "early_termination_scale": 0.0,
+        },
+    },
     "unitree_mjlab_velocity_v1": {
         "description": (
             "Route B: Unitree/MjLab-style phase-guided velocity locomotion "
@@ -341,7 +451,7 @@ WALKING_RECIPES_3D = {
             "terminate_nonfoot_contact_duration": 0.02,
             "terminate_self_contact_duration": 0.04,
             "terminate_low_progress_enabled": False,
-            "eval_terminate_low_progress_enabled": True,
+            "eval_terminate_low_progress_enabled": False,
             "terminate_low_progress_window": 0.50,
             "terminate_low_progress_duration": 2.0,
             "terminate_low_progress_command_ratio": 0.50,
@@ -353,7 +463,8 @@ WALKING_RECIPES_3D = {
             "adaptive_kl_max_lr": 3e-4,
             "entropy_cost": 0.01,
             "discounting": 0.99,
-            "reward_scaling": 1.0,
+            # Match MjLab's default reward-rate integration by control dt.
+            "reward_scaling": 0.02,
             "init_noise_std": 0.50,
             "clipping_epsilon": 0.20,
             "max_grad_norm": 1.0,
@@ -362,11 +473,11 @@ WALKING_RECIPES_3D = {
         },
         "reward": {
             "velocity_tracking": 1.0,
-            "velocity_tracking_sigma_m_s": 0.50,
+            "velocity_tracking_sigma_m_s": 0.10,
             "velocity_tracking_vertical_weight": 2.0,
             "velocity_tracking_upright_gate": 0.0,
             "overspeed": 0.0,
-            "yaw_rate_tracking": 1.0,
+            "yaw_rate_tracking": 0.75,
             "yaw_rate_tracking_sigma_rad_s": 0.50,
             "yaw_rate_tracking_roll_pitch_weight": 0.05,
             "forward_progress": 0.0,
@@ -708,6 +819,19 @@ def _checkpoint_selection_walking_3d(
     }
 
 
+def _checkpoint_is_selectable_walking_3d(selection, current_best_rank):
+    """Reject stationary evals before applying lexicographic ranking."""
+
+    return (
+        not selection["rejected"]
+        and selection["meaningful_progress"] > 0.0
+        and (
+            current_best_rank is None
+            or selection["rank"] > current_best_rank
+        )
+    )
+
+
 def _format_eval_report_walking_3d(
     eval_index,
     total_evals,
@@ -718,6 +842,7 @@ def _format_eval_report_walking_3d(
     control_dt,
     target_distance_m,
     desired_speed_m_s,
+    reward_scaling,
     selection,
     selected,
 ):
@@ -733,8 +858,11 @@ def _format_eval_report_walking_3d(
             f"physical_score={selection['score']:.4f}{marker}"
         ),
         (
-            f"  outcome reward={_metric(metrics, 'eval/episode_reward'):+.3f} "
-            f"avg/step={_metric(metrics, 'eval/avg_reward'):+.4f} "
+            f"  outcome reward_raw="
+            f"{_metric(metrics, 'eval/episode_reward'):+.3f} "
+            f"avg_raw/step={_metric(metrics, 'eval/avg_reward'):+.4f} "
+            f"avg_ppo/step="
+            f"{_metric(metrics, 'eval/avg_reward') * reward_scaling:+.4f} "
             f"length={_metric(metrics, 'eval/avg_episode_length'):.1f}/"
             f"{episode_length} "
             f"time={_metric(metrics, 'eval/avg_episode_length') * control_dt:.2f}s "
@@ -1500,12 +1628,9 @@ def main(argv=None) -> None:
             target_distance_m=target_distance_m,
             desired_speed_m_s=task.desired_speed_m_s,
         )
-        selected = (
-            not selection["rejected"]
-            and (
-                best["rank"] is None
-                or selection["rank"] > best["rank"]
-            )
+        selected = _checkpoint_is_selectable_walking_3d(
+            selection,
+            best["rank"],
         )
         if selected:
             best["score"] = selection["score"]
@@ -1525,6 +1650,7 @@ def main(argv=None) -> None:
                 control_dt=task.control_timestep,
                 target_distance_m=target_distance_m,
                 desired_speed_m_s=task.desired_speed_m_s,
+                reward_scaling=args.reward_scaling,
                 selection=selection,
                 selected=selected,
             ),
@@ -1616,7 +1742,8 @@ def main(argv=None) -> None:
         f"  noise observation={task.observation_noise_enabled} "
         f"domain_randomization={randomization_fn is not None}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
-        f"discount={args.discounting:g} seed={args.seed}\n"
+        f"discount={args.discounting:g} "
+        f"reward_scale={args.reward_scaling:g} seed={args.seed}\n"
         f"  ppo_clip={args.clipping_epsilon:g} "
         f"grad_norm={args.max_grad_norm:g} "
         f"desired_kl={args.desired_kl:g} "
@@ -1756,11 +1883,16 @@ def main(argv=None) -> None:
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     throughput = schedule["effective_steps"] / max(elapsed, 1.0e-9)
+    best_status = (
+        f"best_step={best['step']} score={best['score']:.4f}"
+        if best["step"] is not None
+        else "best_step=none score=none (params_best falls back to final)"
+    )
     print(
         "[training complete]\n"
         f"  elapsed={elapsed / 60.0:.1f}min "
         f"throughput={throughput:,.0f} steps/s\n"
-        f"  best_step={best['step']} score={best['score']:.4f}\n"
+        f"  {best_status}\n"
         f"  checkpoints best={args.out / 'params_best'} "
         f"final={args.out / 'params_final'}",
         flush=True,
