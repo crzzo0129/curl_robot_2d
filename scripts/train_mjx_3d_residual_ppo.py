@@ -356,6 +356,37 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "phase_locked_coupled_v8": {
+        "description": (
+            "Learn lower-variance differential corrections conservatively "
+            "after coupled v7 exposed directional PPO overshoot."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "explicit_phase_observation": True,
+            "learning_rate": 1e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.10,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
     "real_geometry_contact_v1": {
         "description": (
             "Keep the real-geometry 2-D CEM reference, learn symmetric "
@@ -559,6 +590,7 @@ PER_STEP_EVAL_METRICS_3D = (
     "root_y_m",
     "root_z_m",
     "lateral_drift_m",
+    "lateral_drift_abs_m",
     "lateral_velocity_m_s",
     "axis_tilt_rad",
     "axis_tilt_step_count",
@@ -663,7 +695,10 @@ def _checkpoint_selection_3d(
     failed_rate = metrics.get("eval/episode_failed", 1.0)
     nonfinite_rate = metrics.get("eval/episode_failure_nonfinite", 0.0)
     roll_total = metrics.get("eval/episode_roll_progress_rad", -math.inf)
-    lateral_drift = abs(metrics.get("eval/avg_lateral_drift_m", math.inf))
+    lateral_drift = metrics.get(
+        "eval/avg_lateral_drift_abs_m",
+        abs(metrics.get("eval/avg_lateral_drift_m", math.inf)),
+    )
     axis_tilt = metrics.get("eval/avg_axis_tilt_rad", math.inf)
     forbidden_depth = metrics.get("eval/avg_forbidden_penetration_m", math.inf)
     forbidden_contact = metrics.get("eval/avg_forbidden_contact_count", math.inf)
@@ -699,10 +734,10 @@ def _checkpoint_selection_3d(
         )
     elif objective == "balanced":
         score = (
-            0.25 * survival
-            + 0.45 * progress_quality
-            + 0.10 * nonfailure_quality
-            + 0.10 * lateral_quality
+            0.20 * survival
+            + 0.25 * progress_quality
+            + 0.30 * nonfailure_quality
+            + 0.15 * lateral_quality
             + 0.05 * tilt_quality
             + 0.05 * contact_quality
         )
@@ -1104,8 +1139,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "3-D training recipe. anchored_v1 reproduces the first run; "
             "phase_locked_v3 starts residual learning from the restored "
-            "phase-locked reference; phase_locked_coupled_v7 uses common "
-            "and differential residual channels with safer failure scoring."
+            "phase-locked reference; phase_locked_coupled_v8 uses lower-"
+            "variance common and differential residual learning."
         ),
     )
     parser.add_argument(

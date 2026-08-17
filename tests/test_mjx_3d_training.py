@@ -366,6 +366,84 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(args.explicit_phase_observation)
         self.assertEqual(reward.failure_progress_clawback, 4.0)
 
+    def test_phase_locked_coupled_v8_reduces_differential_update_variance(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_coupled_v8"]
+        )
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+
+        self.assertEqual(args.learning_rate, 1e-5)
+        self.assertEqual(args.entropy_cost, 2.5e-4)
+        self.assertEqual(args.initial_policy_std, 0.10)
+        self.assertEqual(args.residual_pair_differential_scale, 0.25)
+        self.assertEqual(args.selection_target_turns, 8.0)
+        self.assertEqual(reward.failure_progress_clawback, 4.0)
+
+    def test_checkpoint_selection_uses_mean_absolute_lateral_drift(
+        self,
+    ) -> None:
+        base = {
+            "eval/avg_episode_length": 500.0,
+            "eval/episode_failed": 0.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_roll_progress_rad": 8.0 * 2.0 * math.pi,
+            "eval/avg_lateral_drift_m": 0.0,
+            "eval/avg_axis_tilt_rad": 0.02,
+            "eval/avg_forbidden_penetration_m": 0.0,
+            "eval/avg_forbidden_contact_count": 0.0,
+        }
+        stable = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+            {**base, "eval/avg_lateral_drift_abs_m": 0.01},
+            episode_length=500,
+            target_turns=8.0,
+        )
+        canceling_drift = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+            {**base, "eval/avg_lateral_drift_abs_m": 0.05},
+            episode_length=500,
+            target_turns=8.0,
+        )
+
+        self.assertGreater(stable["score"], canceling_drift["score"])
+        self.assertEqual(canceling_drift["lateral_drift_m"], 0.05)
+
+    def test_balanced_selection_prefers_safer_policy_after_turn_target(
+        self,
+    ) -> None:
+        base = {
+            "eval/avg_episode_length": 493.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_roll_progress_rad": 8.3 * 2.0 * math.pi,
+            "eval/avg_lateral_drift_m": 0.0,
+            "eval/avg_axis_tilt_rad": 0.02,
+            "eval/avg_forbidden_penetration_m": 0.0,
+            "eval/avg_forbidden_contact_count": 0.0,
+        }
+        baseline = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+            {
+                **base,
+                "eval/episode_failed": 0.121,
+                "eval/avg_lateral_drift_abs_m": 0.043,
+            },
+            episode_length=500,
+            target_turns=8.0,
+            maximum_failure_rate=1.0,
+        )
+        safer = train_mjx_3d_residual_ppo._checkpoint_selection_3d(
+            {
+                **base,
+                "eval/episode_failed": 0.074,
+                "eval/avg_lateral_drift_abs_m": 0.034,
+            },
+            episode_length=500,
+            target_turns=8.0,
+            maximum_failure_rate=1.0,
+        )
+
+        self.assertGreater(safer["score"], baseline["score"])
+
     def test_reference_startup_boost_args_are_exposed(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             [

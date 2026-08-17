@@ -671,6 +671,7 @@ def make_brax_env_3d(
                 "root_y_m": zero,
                 "root_z_m": zero,
                 "lateral_drift_m": zero,
+                "lateral_drift_abs_m": zero,
                 "lateral_velocity_m_s": zero,
                 "axis_tilt_rad": zero,
                 "axis_tilt_step_count": zero,
@@ -1292,6 +1293,7 @@ def make_brax_env_3d(
                 "root_y_m": root_y,
                 "root_z_m": root_z,
                 "lateral_drift_m": lateral_drift,
+                "lateral_drift_abs_m": lateral_drift_abs,
                 "lateral_velocity_m_s": lateral_velocity,
                 "axis_tilt_rad": axis_tilt,
                 "axis_tilt_step_count": (

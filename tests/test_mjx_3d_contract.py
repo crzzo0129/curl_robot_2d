@@ -509,6 +509,7 @@ class MJX3DContractTest(unittest.TestCase):
             "failure_lateral_drift",
             "failure_lateral_positive",
             "failure_lateral_negative",
+            "lateral_drift_abs_m",
             "residual_common_rms",
             "residual_differential_rms",
             "failure_axis_tilt",
