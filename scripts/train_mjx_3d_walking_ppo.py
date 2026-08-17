@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from contextlib import contextmanager
 import inspect
 import json
@@ -23,6 +24,8 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_ACTION_GROUP_LABELS_3D,
     WALKING_ACTION_SATURATION_THRESHOLD_3D,
     WALKING_FOOT_LABELS_3D,
+    mirror_walking_action_3d,
+    mirror_walking_actor_observation_3d,
 )
 from curl_robot_2d_mjx.reward_walking_3d import (
     WALKING_REWARD_TERM_NAMES_3D,
@@ -66,6 +69,95 @@ def _running_statistics_update_scope(module, *, freeze):
         yield
     finally:
         module.update = original_update
+
+
+@contextmanager
+def _actor_mirror_consistency_loss_scope(
+    module,
+    *,
+    weight,
+    array_module,
+    stop_gradient,
+    asymmetric_observations,
+    gait_phase_enabled,
+):
+    """Temporarily add a one-sided Actor mirror-consistency PPO loss."""
+
+    if weight <= 0.0:
+        yield
+        return
+
+    original_compute_ppo_loss = module.compute_ppo_loss
+
+    def compute_ppo_loss_with_actor_mirror_consistency(
+        params,
+        normalizer_params,
+        data,
+        rng,
+        ppo_network,
+        **kwargs,
+    ):
+        base_loss, metrics = original_compute_ppo_loss(
+            params,
+            normalizer_params,
+            data,
+            rng,
+            ppo_network,
+            **kwargs,
+        )
+        observation = data.observation
+        if isinstance(observation, Mapping):
+            mirrored_observation = dict(observation)
+            mirrored_observation["state"] = mirror_walking_actor_observation_3d(
+                array_module,
+                observation["state"],
+                asymmetric_observation_enabled=asymmetric_observations,
+                gait_phase_enabled=gait_phase_enabled,
+            )
+        else:
+            mirrored_observation = mirror_walking_actor_observation_3d(
+                array_module,
+                observation,
+                asymmetric_observation_enabled=asymmetric_observations,
+                gait_phase_enabled=gait_phase_enabled,
+            )
+        policy_apply = ppo_network.policy_network.apply
+        action_distribution = ppo_network.parametric_action_distribution
+        canonical_logits = policy_apply(
+            normalizer_params, params.policy, observation
+        )
+        mirrored_logits = policy_apply(
+            normalizer_params, params.policy, mirrored_observation
+        )
+        canonical_action_target = stop_gradient(
+            action_distribution.mode(canonical_logits)
+        )
+        mirrored_action_in_canonical_order = mirror_walking_action_3d(
+            array_module, action_distribution.mode(mirrored_logits)
+        )
+        action_error = (
+            mirrored_action_in_canonical_order - canonical_action_target
+        )
+        consistency_loss = array_module.mean(array_module.square(action_error))
+        weighted_consistency_loss = weight * consistency_loss
+        total_loss = base_loss + weighted_consistency_loss
+        metrics = dict(metrics)
+        metrics["ppo_total_loss"] = metrics.get("total_loss", base_loss)
+        metrics["total_loss"] = total_loss
+        metrics["actor_mirror_consistency_loss"] = consistency_loss
+        metrics["actor_mirror_consistency_rms"] = array_module.sqrt(
+            consistency_loss
+        )
+        metrics["actor_mirror_consistency_weighted_loss"] = (
+            weighted_consistency_loss
+        )
+        return total_loss, metrics
+
+    module.compute_ppo_loss = compute_ppo_loss_with_actor_mirror_consistency
+    try:
+        yield
+    finally:
+        module.compute_ppo_loss = original_compute_ppo_loss
 
 
 PRESETS_WALKING_3D = {
@@ -1080,6 +1172,15 @@ def _format_eval_report_walking_3d(
             f"policy_loss={_metric(metrics, 'training/policy_loss'):+.4f} "
             f"value_loss={_metric(metrics, 'training/v_loss'):.4f}"
         )
+        if "training/actor_mirror_consistency_loss" in metrics:
+            lines.append(
+                "  mirror  "
+                f"loss={_metric(metrics, 'training/actor_mirror_consistency_loss'):.6f} "
+                f"rms="
+                f"{_metric(metrics, 'training/actor_mirror_consistency_rms'):.4f} "
+                f"weighted="
+                f"{_metric(metrics, 'training/actor_mirror_consistency_weighted_loss'):.6f}"
+            )
     return "\n".join(lines)
 
 
@@ -1873,6 +1974,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--symmetry-mirror-probability", type=float, default=0.5
     )
+    parser.add_argument(
+        "--actor-mirror-consistency-weight",
+        type=float,
+        default=0.0,
+        help=(
+            "add a canonical-anchored Actor mirror-consistency loss without "
+            "mirroring physical rollouts"
+        ),
+    )
     normalization_group = parser.add_mutually_exclusive_group()
     normalization_group.add_argument(
         "--normalize-observations",
@@ -2145,6 +2255,19 @@ def parse_args(argv=None):
             "--freeze-observation-normalizer requires --restore-checkpoint"
         )
     if (
+        not math.isfinite(args.actor_mirror_consistency_weight)
+        or args.actor_mirror_consistency_weight < 0.0
+    ):
+        parser.error("--actor-mirror-consistency-weight must be nonnegative")
+    if (
+        args.actor_mirror_consistency_weight > 0.0
+        and args.symmetry_augmentation_enabled
+    ):
+        parser.error(
+            "--actor-mirror-consistency-weight cannot be combined with "
+            "--symmetry-augmentation"
+        )
+    if (
         args.selection_target_distance is not None
         and args.selection_target_distance <= 0.0
     ):
@@ -2251,8 +2374,11 @@ def main(argv=None) -> None:
         mujoco_gl=args.mujoco_gl,
         verbose=False,
     )
+    import jax
+    import jax.numpy as jnp
     from brax.io import model as model_io
     from brax.training.acme import running_statistics
+    from brax.training.agents.ppo import losses as ppo_losses
     from brax.training.agents.ppo import train as ppo
 
     from curl_robot_2d_mjx.environment_walking_3d import (
@@ -2490,6 +2616,14 @@ def main(argv=None) -> None:
         "observation_normalizer_frozen": (
             args.freeze_observation_normalizer
         ),
+        "actor_mirror_consistency_weight": (
+            args.actor_mirror_consistency_weight
+        ),
+        "actor_mirror_consistency_anchor": (
+            "canonical_stop_gradient"
+            if args.actor_mirror_consistency_weight > 0.0
+            else None
+        ),
         "asymmetric_observations": args.asymmetric_observations,
         "observation_scaling": "fixed_task_scales",
         "bootstrap_on_timeout": True,
@@ -2554,6 +2688,10 @@ def main(argv=None) -> None:
         f"domain_randomization={randomization_fn is not None}\n"
         f"  symmetry_augmentation={task.symmetry_augmentation_enabled} "
         f"mirror_probability={task.symmetry_mirror_probability:g}\n"
+        f"  actor_mirror_consistency_weight="
+        f"{args.actor_mirror_consistency_weight:g} "
+        f"anchor="
+        f"{'canonical_stop_gradient' if args.actor_mirror_consistency_weight > 0.0 else 'none'}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} "
         f"reward_scale={args.reward_scaling:g} seed={args.seed}\n"
@@ -2625,6 +2763,13 @@ def main(argv=None) -> None:
     with _running_statistics_update_scope(
         running_statistics,
         freeze=args.freeze_observation_normalizer,
+    ), _actor_mirror_consistency_loss_scope(
+        ppo_losses,
+        weight=args.actor_mirror_consistency_weight,
+        array_module=jnp,
+        stop_gradient=jax.lax.stop_gradient,
+        asymmetric_observations=args.asymmetric_observations,
+        gait_phase_enabled=args.gait_phase_enabled,
     ):
         make_inference_fn, final_params, final_metrics = ppo.train(
             environment=train_env,

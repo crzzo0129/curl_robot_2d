@@ -171,9 +171,9 @@ WALKING_LEFT_RIGHT_LEG_PERMUTATION_3D = (1, 0, 3, 2)
 def mirror_walking_leg_values_3d(xp, values):
     """Swap FL/FR and RL/RR values without changing joint signs."""
 
-    values_by_leg = xp.reshape(values, (4, -1))
+    values_by_leg = xp.reshape(values, values.shape[:-1] + (4, -1))
     mirrored = values_by_leg[
-        xp.asarray(WALKING_LEFT_RIGHT_LEG_PERMUTATION_3D)
+        ..., xp.asarray(WALKING_LEFT_RIGHT_LEG_PERMUTATION_3D), :
     ]
     return xp.reshape(mirrored, values.shape)
 
@@ -212,6 +212,65 @@ def mirror_walking_action_3d(xp, action):
     """Convert walking actions between canonical and mirrored leg order."""
 
     return mirror_walking_leg_values_3d(xp, action)
+
+
+def mirror_walking_actor_observation_3d(
+    xp,
+    observation,
+    *,
+    asymmetric_observation_enabled,
+    gait_phase_enabled,
+):
+    """Reflect an Actor observation while preserving leading batch axes."""
+
+    if asymmetric_observation_enabled:
+        if (
+            observation.shape[-1]
+            != WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D
+        ):
+            raise ValueError(
+                "asymmetric walking Actor observation must have size "
+                f"{WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D}"
+            )
+        components = (
+            mirror_walking_angular_velocity_3d(xp, observation[..., 0:3]),
+            mirror_walking_projected_gravity_3d(xp, observation[..., 3:6]),
+            mirror_walking_command_3d(xp, observation[..., 6:9]),
+            mirror_walking_phase_features_3d(xp, observation[..., 9:11]),
+            mirror_walking_leg_values_3d(xp, observation[..., 11:23]),
+            mirror_walking_leg_values_3d(xp, observation[..., 23:35]),
+            mirror_walking_action_3d(xp, observation[..., 35:47]),
+        )
+        return xp.concatenate(components, axis=-1)
+
+    expected_size = (
+        WALKING_PHASE_OBSERVATION_SIZE_3D
+        if gait_phase_enabled
+        else WALKING_OBSERVATION_SIZE_3D
+    )
+    if observation.shape[-1] != expected_size:
+        raise ValueError(
+            f"walking Actor observation must have size {expected_size}"
+        )
+    components = (
+        mirror_walking_linear_velocity_3d(xp, observation[..., 0:3]),
+        mirror_walking_angular_velocity_3d(xp, observation[..., 3:6]),
+        mirror_walking_projected_gravity_3d(xp, observation[..., 6:9]),
+        mirror_walking_command_3d(xp, observation[..., 9:12]),
+        mirror_walking_leg_values_3d(xp, observation[..., 12:24]),
+        mirror_walking_leg_values_3d(xp, observation[..., 24:36]),
+        mirror_walking_action_3d(xp, observation[..., 36:48]),
+        *(
+            (
+                mirror_walking_phase_features_3d(
+                    xp, observation[..., 48:50]
+                ),
+            )
+            if gait_phase_enabled
+            else ()
+        ),
+    )
+    return xp.concatenate(components, axis=-1)
 
 
 def gait_phase_features_3d(xp, phase):

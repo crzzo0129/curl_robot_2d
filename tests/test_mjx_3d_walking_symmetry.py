@@ -1,4 +1,7 @@
+import io
+from contextlib import redirect_stderr
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -14,6 +17,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_LEFT_RIGHT_LEG_PERMUTATION_3D,
     gait_phase_features_3d,
     mirror_walking_action_3d,
+    mirror_walking_actor_observation_3d,
     mirror_walking_angular_velocity_3d,
     mirror_walking_command_3d,
     mirror_walking_leg_values_3d,
@@ -40,6 +44,13 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
         )
         np.testing.assert_array_equal(
             mirror_walking_leg_values_3d(np, mirrored), values
+        )
+
+        batched_values = np.arange(2 * 3 * 12).reshape(2, 3, 12)
+        batched_mirrored = mirror_walking_leg_values_3d(np, batched_values)
+        np.testing.assert_array_equal(
+            mirror_walking_leg_values_3d(np, batched_mirrored),
+            batched_values,
         )
 
     def test_action_mirror_is_an_involution_without_sign_changes(self) -> None:
@@ -90,6 +101,104 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
                 atol=1.0e-7,
             )
 
+    def test_actor_observation_mirror_is_a_batched_involution(self) -> None:
+        cases = (
+            (True, True, WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D),
+            (False, False, 48),
+            (False, True, 50),
+        )
+        for asymmetric, gait_phase, size in cases:
+            with self.subTest(
+                asymmetric=asymmetric, gait_phase=gait_phase
+            ):
+                observation = np.arange(2 * 3 * size, dtype=np.float32).reshape(
+                    2, 3, size
+                )
+                mirrored = mirror_walking_actor_observation_3d(
+                    np,
+                    observation,
+                    asymmetric_observation_enabled=asymmetric,
+                    gait_phase_enabled=gait_phase,
+                )
+                np.testing.assert_array_equal(
+                    mirror_walking_actor_observation_3d(
+                        np,
+                        mirrored,
+                        asymmetric_observation_enabled=asymmetric,
+                        gait_phase_enabled=gait_phase,
+                    ),
+                    observation,
+                )
+
+    def test_actor_mirror_consistency_scope_adds_expected_mse(self) -> None:
+        base_loss = np.asarray(2.0)
+
+        def original_compute_ppo_loss(
+            params,
+            normalizer_params,
+            data,
+            rng,
+            ppo_network,
+            **kwargs,
+        ):
+            del params, normalizer_params, data, rng, ppo_network, kwargs
+            return base_loss, {"total_loss": base_loss, "policy_loss": -0.1}
+
+        class LossModule:
+            compute_ppo_loss = staticmethod(original_compute_ppo_loss)
+
+        class PolicyNetwork:
+            @staticmethod
+            def apply(normalizer_params, policy_params, observation):
+                del normalizer_params, policy_params
+                shape = observation["state"].shape[:-1] + (12,)
+                mean = np.broadcast_to(np.arange(12, dtype=np.float32), shape)
+                return mean, np.ones(shape, dtype=np.float32)
+
+        class ActionDistribution:
+            @staticmethod
+            def mode(logits):
+                return logits[0]
+
+        module = LossModule()
+        original = module.compute_ppo_loss
+        observation = {
+            "state": np.zeros((2, 3, 47), dtype=np.float32),
+            "privileged_state": np.zeros((2, 3, 74), dtype=np.float32),
+        }
+        data = SimpleNamespace(observation=observation)
+        params = SimpleNamespace(policy="policy")
+        ppo_network = SimpleNamespace(
+            policy_network=PolicyNetwork(),
+            parametric_action_distribution=ActionDistribution(),
+        )
+
+        with train_mjx_3d_walking_ppo._actor_mirror_consistency_loss_scope(
+            module,
+            weight=0.25,
+            array_module=np,
+            stop_gradient=lambda value: value,
+            asymmetric_observations=True,
+            gait_phase_enabled=True,
+        ):
+            loss, metrics = module.compute_ppo_loss(
+                params, "normalizer", data, "rng", ppo_network
+            )
+            self.assertAlmostEqual(float(loss), 4.25)
+            self.assertAlmostEqual(
+                float(metrics["actor_mirror_consistency_loss"]), 9.0
+            )
+            self.assertAlmostEqual(
+                float(metrics["actor_mirror_consistency_rms"]), 3.0
+            )
+            self.assertAlmostEqual(
+                float(metrics["actor_mirror_consistency_weighted_loss"]),
+                2.25,
+            )
+            self.assertAlmostEqual(float(metrics["ppo_total_loss"]), 2.0)
+
+        self.assertIs(module.compute_ppo_loss, original)
+
     def test_config_and_cli_preserve_disabled_default(self) -> None:
         config = Walking3DConfig()
         args = train_mjx_3d_walking_ppo.parse_args([])
@@ -98,6 +207,7 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
         self.assertEqual(config.symmetry_mirror_probability, 0.5)
         self.assertFalse(args.symmetry_augmentation_enabled)
         self.assertEqual(args.symmetry_mirror_probability, 0.5)
+        self.assertEqual(args.actor_mirror_consistency_weight, 0.0)
 
         enabled = train_mjx_3d_walking_ppo.parse_args(
             [
@@ -108,6 +218,27 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
         )
         self.assertTrue(enabled.symmetry_augmentation_enabled)
         self.assertEqual(enabled.symmetry_mirror_probability, 0.25)
+
+        consistency = train_mjx_3d_walking_ppo.parse_args(
+            ["--actor-mirror-consistency-weight", "0.01"]
+        )
+        self.assertFalse(consistency.symmetry_augmentation_enabled)
+        self.assertEqual(consistency.actor_mirror_consistency_weight, 0.01)
+
+    def test_actor_consistency_rejects_invalid_or_episode_mirror_use(self) -> None:
+        invalid_argv = (
+            ["--actor-mirror-consistency-weight", "-0.01"],
+            ["--actor-mirror-consistency-weight", "nan"],
+            [
+                "--actor-mirror-consistency-weight",
+                "0.01",
+                "--symmetry-augmentation",
+            ],
+        )
+        for argv in invalid_argv:
+            with self.subTest(argv=argv), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    train_mjx_3d_walking_ppo.parse_args(argv)
 
     def test_config_rejects_invalid_mirror_probability(self) -> None:
         for probability in (-0.01, 1.01, float("nan")):

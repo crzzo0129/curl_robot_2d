@@ -819,3 +819,61 @@ python -m scripts.train_mjx_3d_walking_ppo \
 ```
 
 启动日志必须显示 `normalize=True normalizer_frozen=True`，且 `effective_steps=344,064`。如果eval 2速度仍低于0.07 m/s，则normalizer漂移不是唯一原因，应停止episode级镜像续训并改用显式actor镜像一致性损失。
+
+实际冻结实验在eval 2暂时保持 `0.085 m/s`，但eval 3和4继续降至 `0.042 m/s` 与 `0.020 m/s`；同时 `action_L-R` 仍约为-0.11至-0.12，最终heading从-0.108 rad恶化到-0.411 rad。冻结normalizer只能排除统计漂移，不能阻止当前episode级镜像续训发生策略坍塌。该实验应在eval 4停止，不使用任何step 0之后的checkpoint。
+
+## 23. Canonical锚定的Actor镜像一致性损失（2026-08-17）
+
+episode级镜像只让正常与镜像轨迹分别进入PPO，并不会逐样本强制二者的Actor输出满足镜像关系。当前训练入口新增 `--actor-mirror-consistency-weight`，物理rollout始终使用正常坐标；每个训练observation仅额外生成一次镜像Actor observation，计算：
+
+```text
+canonical_target = stop_gradient(mode(policy(o)))
+mirrored_back = mirror_action(mode(policy(mirror_observation(o))))
+L_mirror = mean((mirrored_back - canonical_target)^2)
+L_total = L_PPO + weight * L_mirror
+```
+
+正常分支使用stop-gradient作为锚点，避免一致性项直接把正常与镜像动作同时拉向中点。Critic只运行原始Brax PPO路径，privileged observation不镜像；reward、动作尺度、物理和采样分布都不变。该开关不能和 `--symmetry-augmentation` 同时使用。训练日志新增 `mirror loss/rms/weighted`；其中 `rms` 是同一状态及其镜像状态的动作均值不一致程度，不是同一时刻左右腿动作RMS之差。
+
+第一轮只在现有 `vx=0.09–0.11 m/s, vy=0, yaw_rate=0` 任务上以 `weight=0.01` 做短程验证，并继续冻结normalizer以保持单变量对照：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 300000 \
+  --num-evals 8 \
+  --desired-speed 0.10 \
+  --command-forward-min 0.09 \
+  --command-forward-max 0.11 \
+  --command-lateral-max 0 \
+  --command-yaw-rate-max 0 \
+  --reward-yaw-rate-tracking 1.0 \
+  --reward-yaw-rate-tracking-sigma-rad-s 0.15 \
+  --reward-yaw-rate-tracking-roll-pitch-weight 0 \
+  --reward-yaw-rate-tracking-progress-gate 1.0 \
+  --no-observation-noise \
+  --no-domain-randomization \
+  --updates-per-batch 1 \
+  --learning-rate 1e-5 \
+  --adaptive-kl-min-lr 2e-6 \
+  --adaptive-kl-max-lr 1e-5 \
+  --entropy-cost 0.001 \
+  --desired-kl 0.002 \
+  --clipping-epsilon 0.10 \
+  --max-grad-norm 0.5 \
+  --eval-forward-speeds 0.09 0.10 0.11 \
+  --eval-gait-phases 0.0 0.5 \
+  --restore-checkpoint \
+    results/mjx_pupper_unitree_straight_009_011_v1/ppo_checkpoint/000000294912 \
+  --freeze-observation-normalizer \
+  --no-symmetry-augmentation \
+  --actor-mirror-consistency-weight 0.01 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir \
+    results/mjx_pupper_unitree_straight_actor_mirror_loss_009_011_v1/ppo_checkpoint \
+  --out \
+    results/mjx_pupper_unitree_straight_actor_mirror_loss_009_011_v1
+```
+
+启动日志必须显示 `symmetry_augmentation=False`、`actor_mirror_consistency_weight=0.01 anchor=canonical_stop_gradient` 和 `normalizer_frozen=True`。eval 2速度低于0.07 m/s立即停止；速度保持时再观察 `mirror rms` 是否下降，以及独立正常/镜像坐标评估中的heading差和 `action_L-R` 是否同步收敛。不能只依据辅助loss下降判定成功。
