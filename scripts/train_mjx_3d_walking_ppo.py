@@ -18,6 +18,9 @@ from curl_robot_2d_mjx.config_walking_3d import (
     Walking3DConfig,
     walking_physics_profile_3d,
 )
+from curl_robot_2d_mjx.environment_walking_3d import (
+    WALKING_FOOT_LABELS_3D,
+)
 from curl_robot_2d_mjx.reward_walking_3d import (
     WALKING_REWARD_TERM_NAMES_3D,
     Walking3DRewardConfig,
@@ -535,6 +538,7 @@ PER_STEP_WALKING_METRICS_3D = (
     "lateral_velocity_m_s",
     "upright_tilt_rad",
     "heading_error_rad",
+    "yaw_rate_rad_s",
     "foot_contact_count",
     "foot_air_time_reward",
     "foot_air_time_mean_s",
@@ -571,7 +575,16 @@ PER_STEP_WALKING_METRICS_3D = (
     "low_progress_window_m",
     "low_progress_required_m",
     "low_progress_active",
-)
+) + tuple(
+    f"{prefix}_{label}{suffix}"
+    for prefix, suffix in (
+        ("foot_contact", ""),
+        ("foot_air_time", "_s"),
+        ("foot_slip", "_m_s"),
+        ("action_rms", ""),
+    )
+    for label in WALKING_FOOT_LABELS_3D
+) + ("action_rms_left_right_delta",)
 
 
 WALKING_FAILURE_METRICS_3D = (
@@ -716,6 +729,15 @@ def _checkpoint_selection_walking_3d(
     )
     upright_tilt = metrics.get("eval/avg_upright_tilt_rad", math.inf)
     lateral_drift = abs(metrics.get("eval/avg_lateral_drift_m", math.inf))
+    final_heading_change = abs(
+        metrics.get(
+            "eval/episode_heading_change_rad",
+            metrics.get("eval/avg_heading_error_rad", 0.0),
+        )
+    )
+    final_lateral_drift = abs(
+        metrics.get("eval/episode_lateral_progress_m", lateral_drift)
+    )
     nonfoot = metrics.get(
         "eval/avg_nonfoot_ground_contact_count", math.inf
     )
@@ -741,6 +763,11 @@ def _checkpoint_selection_walking_3d(
     tracking_quality = (
         0.75 * planar_tracking_quality + 0.25 * yaw_tracking_quality
     )
+    heading_quality = 1.0 - min(final_heading_change / 0.50, 1.0)
+    final_lateral_quality = 1.0 - min(
+        final_lateral_drift / 0.10, 1.0
+    )
+    direction_quality = 0.75 * heading_quality + 0.25 * final_lateral_quality
     nonfailure_quality = 1.0 - min(max(failed_rate, 0.0), 1.0)
     upright_quality = 1.0 - min(max(upright_tilt / 0.30, 0.0), 1.0)
     lateral_quality = 1.0 - min(max(lateral_drift / 0.05, 0.0), 1.0)
@@ -765,6 +792,7 @@ def _checkpoint_selection_walking_3d(
         upright_nonfailure_quality,
         nonfailure_quality,
         tracking_quality,
+        direction_quality,
         progress_quality,
         contact_quality,
         upright_quality,
@@ -779,6 +807,7 @@ def _checkpoint_selection_walking_3d(
         + 20.0 * upright_nonfailure_quality
         + 10.0 * nonfailure_quality
         + 5.0 * tracking_quality
+        + 2.0 * direction_quality
         + 3.0 * progress_quality
         + upright_quality
         + 0.5 * lateral_quality
@@ -792,6 +821,8 @@ def _checkpoint_selection_walking_3d(
         or not math.isfinite(yaw_tracking_error)
         or not math.isfinite(upright_tilt)
         or not math.isfinite(lateral_drift)
+        or not math.isfinite(final_heading_change)
+        or not math.isfinite(final_lateral_drift)
         or not math.isfinite(nonfoot)
         or not math.isfinite(self_contact)
         or not math.isfinite(upright_failure_rate)
@@ -812,6 +843,9 @@ def _checkpoint_selection_walking_3d(
         "planar_tracking_error_m_s": planar_tracking_error,
         "yaw_tracking_error_rad_s": yaw_tracking_error,
         "tracking_quality": tracking_quality,
+        "final_heading_change_rad": final_heading_change,
+        "final_lateral_drift_m": final_lateral_drift,
+        "direction_quality": direction_quality,
         "upright_failure_rate": upright_failure_rate,
         "upright_tilt_rad": upright_tilt,
         "lateral_drift_m": lateral_drift,
@@ -830,6 +864,28 @@ def _checkpoint_is_selectable_walking_3d(selection, current_best_rank):
             or selection["rank"] > current_best_rank
         )
     )
+
+
+def _per_foot_eval_stats(metrics, label):
+    contact_steps = _metric(metrics, f"eval/episode_foot_contact_{label}")
+    touchdown_count = _metric(
+        metrics, f"eval/episode_touchdown_count_{label}"
+    )
+    return {
+        "contact": _metric(metrics, f"eval/avg_foot_contact_{label}"),
+        "touchdown_air_time_s": (
+            _metric(
+                metrics,
+                f"eval/episode_touchdown_air_time_sum_{label}_s",
+            )
+            / max(touchdown_count, 1.0)
+        ),
+        "contact_slip_m_s": (
+            _metric(metrics, f"eval/episode_foot_slip_{label}_m_s")
+            / max(contact_steps, 1.0)
+        ),
+        "action_rms": _metric(metrics, f"eval/avg_action_rms_{label}"),
+    }
 
 
 def _format_eval_report_walking_3d(
@@ -851,6 +907,16 @@ def _format_eval_report_walking_3d(
     touchdown_air_time_s = (
         _metric(metrics, "eval/episode_touchdown_air_time_sum_s")
         / max(touchdown_count, 1.0)
+    )
+    foot_stats = {
+        label: _per_foot_eval_stats(metrics, label)
+        for label in WALKING_FOOT_LABELS_3D
+    }
+    left_contact = 0.5 * (
+        foot_stats["fl"]["contact"] + foot_stats["rl"]["contact"]
+    )
+    right_contact = 0.5 * (
+        foot_stats["fr"]["contact"] + foot_stats["rr"]["contact"]
     )
     lines = [
         (
@@ -896,6 +962,17 @@ def _format_eval_report_walking_3d(
             f"lateral={selection['lateral_drift_m']:.3f}m"
         ),
         (
+            f"  direction yaw_signed="
+            f"{_metric(metrics, 'eval/avg_yaw_rate_rad_s'):+.3f}rad/s "
+            f"heading_final="
+            f"{_metric(metrics, 'eval/episode_heading_change_rad'):+.3f}rad "
+            f"heading_peak="
+            f"{_metric(metrics, 'eval/episode_heading_abs_peak_increment_rad'):.3f}rad "
+            f"lateral_final="
+            f"{_metric(metrics, 'eval/episode_lateral_progress_m'):+.3f}m "
+            f"quality={selection['direction_quality']:.2f}"
+        ),
+        (
             f"  feet    contacts="
             f"{_metric(metrics, 'eval/avg_foot_contact_count'):.2f} "
             f"air_time={touchdown_air_time_s:.3f}s "
@@ -922,6 +999,21 @@ def _format_eval_report_walking_3d(
             f"{_metric(metrics, 'eval/avg_joint_velocity_rms_rad_s'):.3f} "
             f"limit={_metric(metrics, 'eval/avg_joint_limit_cost'):.3f} "
             f"torque={_metric(metrics, 'eval/avg_normalized_torque_rms'):.3f}"
+        ),
+        (
+            "  feet/by_leg "
+            + " | ".join(
+                f"{label.upper()} c={stats['contact']:.2f} "
+                f"air={stats['touchdown_air_time_s']:.3f}s "
+                f"slip={stats['contact_slip_m_s']:.3f} "
+                f"act={stats['action_rms']:.3f}"
+                for label, stats in foot_stats.items()
+            )
+        ),
+        (
+            f"  symmetry contact_L-R={left_contact - right_contact:+.3f} "
+            f"action_L-R="
+            f"{_metric(metrics, 'eval/avg_action_rms_left_right_delta'):+.3f}"
         ),
     ]
     reward_text = " ".join(
@@ -957,6 +1049,8 @@ def _evaluate_policy_walking_3d(
     seed,
     episode_length,
     output_dir,
+    command_forward_velocity_m_s=None,
+    initial_gait_phase=0.0,
 ):
     import jax
 
@@ -966,9 +1060,19 @@ def _evaluate_policy_walking_3d(
         policy = make_inference_fn(params)
     policy_step = jax.jit(policy)
     env_reset = jax.jit(env.reset)
+    env_reset_for_evaluation = jax.jit(env.reset_for_evaluation)
     env_step = jax.jit(env.step)
     rng = jax.random.PRNGKey(seed)
-    state = env_reset(rng)
+    if command_forward_velocity_m_s is None:
+        state = env_reset(rng)
+        commanded_speed = env.config.desired_speed_m_s
+    else:
+        commanded_speed = float(command_forward_velocity_m_s)
+        state = env_reset_for_evaluation(
+            rng,
+            np.asarray((commanded_speed, 0.0, 0.0), dtype=np.float32),
+            np.asarray(initial_gait_phase, dtype=np.float32),
+        )
     initial_x = _float(state.pipeline_state.qpos[0])
     initial_y = _float(state.pipeline_state.qpos[1])
     qpos_rows = []
@@ -978,8 +1082,28 @@ def _evaluate_policy_walking_3d(
     reward_totals = {
         name: 0.0 for name in WALKING_REWARD_TERM_NAMES_3D
     }
+    rollout_metric_names = (
+        "forward_velocity_m_s",
+        "lateral_velocity_m_s",
+        "yaw_rate_rad_s",
+        "yaw_rate_error_rad_s",
+        "heading_error_rad",
+        "lateral_drift_m",
+        "gait_phase",
+    ) + tuple(
+        f"{prefix}_{label}{suffix}"
+        for prefix, suffix in (
+            ("foot_contact", ""),
+            ("foot_air_time", "_s"),
+            ("foot_slip", "_m_s"),
+            ("action_rms", ""),
+        )
+        for label in WALKING_FOOT_LABELS_3D
+    )
+    rollout_metric_rows = {name: [] for name in rollout_metric_names}
     minimum_root_z = math.inf
     maximum_tilt = 0.0
+    maximum_abs_heading = 0.0
 
     for _ in range(episode_length):
         rng, action_key = jax.random.split(rng)
@@ -994,6 +1118,12 @@ def _evaluate_policy_walking_3d(
         maximum_tilt = max(
             maximum_tilt, _float(state.metrics["upright_tilt_rad"])
         )
+        maximum_abs_heading = max(
+            maximum_abs_heading,
+            abs(_float(state.metrics["heading_error_rad"])),
+        )
+        for name in rollout_metric_names:
+            rollout_metric_rows[name].append(_float(state.metrics[name]))
         for name, value in state.metrics.items():
             scalar = _float(value)
             if name.startswith("reward_") and name != "reward_total":
@@ -1009,7 +1139,22 @@ def _evaluate_policy_walking_3d(
     steps = len(reward_rows)
     final_x = _float(state.pipeline_state.qpos[0])
     final_y = _float(state.pipeline_state.qpos[1])
-    episode_only_metric_names = {"nonfoot_ground_peak_force_n"}
+    episode_only_metric_names = {
+        "nonfoot_ground_peak_force_n",
+        "heading_change_rad",
+        "heading_abs_peak_increment_rad",
+        "lateral_progress_m",
+        "touchdown_count",
+        "touchdown_air_time_sum_s",
+        *(
+            f"touchdown_count_{label}"
+            for label in WALKING_FOOT_LABELS_3D
+        ),
+        *(
+            f"touchdown_air_time_sum_{label}_s"
+            for label in WALKING_FOOT_LABELS_3D
+        ),
+    }
     averages = {
         name: value / max(steps, 1)
         for name, value in metric_totals.items()
@@ -1023,19 +1168,76 @@ def _evaluate_policy_walking_3d(
         name.removeprefix("failure_"): bool(metric_totals.get(name, 0.0))
         for name in WALKING_FAILURE_METRICS_3D
     }
+    failed = any(failures.values())
+    feet = {}
+    for label in WALKING_FOOT_LABELS_3D:
+        contact_steps = metric_totals.get(f"foot_contact_{label}", 0.0)
+        touchdown_count = metric_totals.get(
+            f"touchdown_count_{label}", 0.0
+        )
+        feet[label] = {
+            "contact_fraction": contact_steps / max(steps, 1),
+            "average_air_time_state_s": averages.get(
+                f"foot_air_time_{label}_s", 0.0
+            ),
+            "touchdown_count": touchdown_count,
+            "average_touchdown_air_time_s": (
+                metric_totals.get(
+                    f"touchdown_air_time_sum_{label}_s", 0.0
+                )
+                / max(touchdown_count, 1.0)
+            ),
+            "contact_conditioned_slip_m_s": (
+                metric_totals.get(f"foot_slip_{label}_m_s", 0.0)
+                / max(contact_steps, 1.0)
+            ),
+            "average_action_rms": averages.get(
+                f"action_rms_{label}", 0.0
+            ),
+        }
     summary = {
+        "command_forward_velocity_m_s": commanded_speed,
+        "initial_gait_phase": float(initial_gait_phase) % 1.0,
         "episode_steps": steps,
         "episode_duration_s": steps * env.config.control_timestep,
         "total_reward": float(sum(reward_rows)),
         "root_x_displacement_m": final_x - initial_x,
         "final_lateral_drift_m": final_y - initial_y,
+        "final_heading_error_rad": _float(
+            state.metrics["heading_error_rad"]
+        ),
+        "unwrapped_heading_change_rad": metric_totals.get(
+            "heading_change_rad", 0.0
+        ),
+        "maximum_abs_heading_error_rad": maximum_abs_heading,
+        "average_signed_yaw_rate_rad_s": averages.get(
+            "yaw_rate_rad_s", 0.0
+        ),
+        "average_abs_yaw_rate_error_rad_s": averages.get(
+            "yaw_rate_error_rad_s", 0.0
+        ),
         "average_forward_velocity_m_s": averages.get(
             "forward_velocity_m_s", 0.0
+        ),
+        "forward_velocity_error_m_s": (
+            averages.get("forward_velocity_m_s", 0.0) - commanded_speed
         ),
         "minimum_root_z_m": minimum_root_z,
         "maximum_upright_tilt_rad": maximum_tilt,
         "terminated": bool(_float(state.done) > 0.5),
+        "failed": failed,
+        "timed_out": steps >= episode_length and not failed,
         "failure_reasons": failures,
+        "feet": feet,
+        "control": {
+            "average_action_rms_by_leg": {
+                label: averages.get(f"action_rms_{label}", 0.0)
+                for label in WALKING_FOOT_LABELS_3D
+            },
+            "average_action_rms_left_right_delta": averages.get(
+                "action_rms_left_right_delta", 0.0
+            ),
+        },
         "reward_breakdown": {
             "terms": reward_totals,
             "per_step": {
@@ -1055,11 +1257,274 @@ def _evaluate_policy_walking_3d(
         qpos=np.asarray(qpos_rows),
         action=np.asarray(action_rows),
         reward=np.asarray(reward_rows),
+        command_forward_velocity_m_s=np.asarray(commanded_speed),
+        initial_gait_phase=np.asarray(float(initial_gait_phase) % 1.0),
+        **{
+            name: np.asarray(rows)
+            for name, rows in rollout_metric_rows.items()
+        },
     )
     (output_dir / "evaluation_summary.json").write_text(
         json.dumps(summary, indent=2) + "\n", encoding="utf-8"
     )
     return summary
+
+
+def _evaluation_case_token(value: float) -> str:
+    return f"{float(value):+.3f}".replace("+", "p").replace("-", "m").replace(
+        ".", "p"
+    )
+
+
+def _signed_bias_summary_walking_3d(values, *, deadband):
+    active = [value for value in values if abs(value) >= deadband]
+    positive = sum(value > 0.0 for value in active)
+    negative = sum(value < 0.0 for value in active)
+    dominant_count = max(positive, negative)
+    direction = "none"
+    if dominant_count:
+        direction = "positive" if positive >= negative else "negative"
+    return {
+        "direction": direction,
+        "active_case_count": len(active),
+        "consistency": dominant_count / max(len(active), 1),
+        "mean": float(np.mean(values)),
+        "maximum_absolute": max(abs(value) for value in values),
+    }
+
+
+def _diagnose_evaluation_grid_walking_3d(cases, phase_sensitivity):
+    heading = _signed_bias_summary_walking_3d(
+        [case["unwrapped_heading_change_rad"] for case in cases],
+        deadband=0.15,
+    )
+    signed_yaw = _signed_bias_summary_walking_3d(
+        [case["average_signed_yaw_rate_rad_s"] for case in cases],
+        deadband=0.02,
+    )
+    maximum_phase_heading_span = max(
+        (
+            abs(item["heading_change_span_rad"])
+            for item in phase_sensitivity
+        ),
+        default=0.0,
+    )
+    contact_deltas = []
+    action_deltas = []
+    for case in cases:
+        feet = case.get("feet", {})
+        if all(label in feet for label in WALKING_FOOT_LABELS_3D):
+            left_contact = 0.5 * (
+                feet["fl"]["contact_fraction"]
+                + feet["rl"]["contact_fraction"]
+            )
+            right_contact = 0.5 * (
+                feet["fr"]["contact_fraction"]
+                + feet["rr"]["contact_fraction"]
+            )
+            contact_deltas.append(left_contact - right_contact)
+        control = case.get("control", {})
+        action_delta = control.get("average_action_rms_left_right_delta")
+        if action_delta is not None:
+            action_deltas.append(float(action_delta))
+
+    maximum_contact_delta = max(
+        (abs(value) for value in contact_deltas), default=0.0
+    )
+    maximum_action_delta = max(
+        (abs(value) for value in action_deltas), default=0.0
+    )
+    flags = []
+    if heading["active_case_count"] and heading["consistency"] >= 0.75:
+        flags.append("systematic_direction_bias")
+    if maximum_phase_heading_span >= 0.15:
+        flags.append("initial_phase_sensitive")
+    if maximum_contact_delta >= 0.10:
+        flags.append("left_right_contact_imbalance")
+    if maximum_action_delta >= 0.10:
+        flags.append("left_right_action_imbalance")
+    if not flags:
+        flags.append("no_large_diagnostic_asymmetry")
+    return {
+        "observed_pattern_flags": flags,
+        "heading_change_bias": heading,
+        "signed_yaw_rate_bias": signed_yaw,
+        "maximum_phase_heading_span_rad": maximum_phase_heading_span,
+        "maximum_abs_left_right_contact_delta": maximum_contact_delta,
+        "maximum_abs_left_right_action_rms_delta": maximum_action_delta,
+        "thresholds": {
+            "heading_change_deadband_rad": 0.15,
+            "yaw_rate_deadband_rad_s": 0.02,
+            "systematic_sign_consistency": 0.75,
+            "phase_heading_span_rad": 0.15,
+            "left_right_contact_delta": 0.10,
+            "left_right_action_rms_delta": 0.10,
+        },
+    }
+
+
+def _summarize_evaluation_grid_walking_3d(cases):
+    if not cases:
+        raise ValueError("evaluation grid must contain at least one case")
+    speed_errors = [
+        abs(case["forward_velocity_error_m_s"]) for case in cases
+    ]
+    heading_changes = [
+        abs(case["unwrapped_heading_change_rad"]) for case in cases
+    ]
+    lateral_drifts = [abs(case["final_lateral_drift_m"]) for case in cases]
+    yaw_errors = [case["average_abs_yaw_rate_error_rad_s"] for case in cases]
+    phase_sensitivity = []
+    speeds = sorted({case["command_forward_velocity_m_s"] for case in cases})
+    for speed in speeds:
+        matching = [
+            case
+            for case in cases
+            if abs(case["command_forward_velocity_m_s"] - speed) <= 1.0e-9
+        ]
+        if len(matching) < 2:
+            continue
+        phase_sensitivity.append(
+            {
+                "command_forward_velocity_m_s": speed,
+                "velocity_span_m_s": max(
+                    case["average_forward_velocity_m_s"] for case in matching
+                )
+                - min(
+                    case["average_forward_velocity_m_s"] for case in matching
+                ),
+                "heading_change_span_rad": max(
+                    case["unwrapped_heading_change_rad"] for case in matching
+                )
+                - min(
+                    case["unwrapped_heading_change_rad"] for case in matching
+                ),
+                "lateral_drift_span_m": max(
+                    case["final_lateral_drift_m"] for case in matching
+                )
+                - min(case["final_lateral_drift_m"] for case in matching),
+            }
+        )
+    diagnosis = _diagnose_evaluation_grid_walking_3d(
+        cases, phase_sensitivity
+    )
+    return {
+        "case_count": len(cases),
+        "all_cases_full_length": all(case["timed_out"] for case in cases),
+        "failed_case_count": sum(bool(case["failed"]) for case in cases),
+        "mean_absolute_velocity_error_m_s": float(np.mean(speed_errors)),
+        "maximum_absolute_velocity_error_m_s": max(speed_errors),
+        "maximum_absolute_heading_change_rad": max(heading_changes),
+        "maximum_absolute_lateral_drift_m": max(lateral_drifts),
+        "maximum_average_abs_yaw_rate_error_rad_s": max(yaw_errors),
+        "phase_sensitivity": phase_sensitivity,
+        "diagnosis": diagnosis,
+        "cases": cases,
+    }
+
+
+def _format_evaluation_grid_walking_3d(label, grid):
+    diagnosis = grid["diagnosis"]
+    heading_bias = diagnosis["heading_change_bias"]
+    lines = [
+        (
+            f"[evaluation grid {label}] cases={grid['case_count']} "
+            f"failed={grid['failed_case_count']} "
+            f"full_length={grid['all_cases_full_length']} "
+            f"mean_speed_error="
+            f"{grid['mean_absolute_velocity_error_m_s']:.3f}m/s "
+            f"worst_heading="
+            f"{grid['maximum_absolute_heading_change_rad']:.3f}rad"
+        ),
+        (
+            "  diagnosis flags="
+            f"{','.join(diagnosis['observed_pattern_flags'])} "
+            f"heading_sign={heading_bias['direction']} "
+            f"consistency={heading_bias['consistency']:.2f} "
+            f"phase_span="
+            f"{diagnosis['maximum_phase_heading_span_rad']:.3f}rad "
+            f"contact_L-R_max="
+            f"{diagnosis['maximum_abs_left_right_contact_delta']:.3f} "
+            f"action_L-R_max="
+            f"{diagnosis['maximum_abs_left_right_action_rms_delta']:.3f}"
+        ),
+        (
+            "  command phase achieved error yaw_signed heading lateral "
+            "contacts air slip"
+        ),
+    ]
+    for case in grid["cases"]:
+        feet = case["feet"]
+        contacts = sum(
+            foot["contact_fraction"] for foot in feet.values()
+        )
+        touchdown_counts = sum(
+            foot["touchdown_count"] for foot in feet.values()
+        )
+        air_time = sum(
+            foot["average_touchdown_air_time_s"]
+            * foot["touchdown_count"]
+            for foot in feet.values()
+        ) / max(touchdown_counts, 1.0)
+        contact_steps = sum(
+            foot["contact_fraction"] * case["episode_steps"]
+            for foot in feet.values()
+        )
+        slip = sum(
+            foot["contact_conditioned_slip_m_s"]
+            * foot["contact_fraction"]
+            * case["episode_steps"]
+            for foot in feet.values()
+        ) / max(contact_steps, 1.0)
+        lines.append(
+            f"  {case['command_forward_velocity_m_s']:+.3f}  "
+            f"{case['initial_gait_phase']:.2f}  "
+            f"{case['average_forward_velocity_m_s']:+.3f}  "
+            f"{case['forward_velocity_error_m_s']:+.3f}  "
+            f"{case['average_signed_yaw_rate_rad_s']:+.3f}  "
+            f"{case['unwrapped_heading_change_rad']:+.3f}  "
+            f"{case['final_lateral_drift_m']:+.3f}  "
+            f"{contacts:.2f}  {air_time:.3f}  {slip:.3f}"
+        )
+    return "\n".join(lines)
+
+
+def _evaluate_policy_grid_walking_3d(
+    env,
+    make_inference_fn,
+    params,
+    *,
+    seed,
+    episode_length,
+    output_dir,
+    forward_speeds,
+    gait_phases,
+):
+    cases = []
+    for speed in forward_speeds:
+        for phase in gait_phases:
+            case_dir = output_dir / (
+                f"vx_{_evaluation_case_token(speed)}_"
+                f"phase_{_evaluation_case_token(phase)}"
+            )
+            cases.append(
+                _evaluate_policy_walking_3d(
+                    env,
+                    make_inference_fn,
+                    params,
+                    seed=seed,
+                    episode_length=episode_length,
+                    output_dir=case_dir,
+                    command_forward_velocity_m_s=speed,
+                    initial_gait_phase=phase,
+                )
+            )
+    grid = _summarize_evaluation_grid_walking_3d(cases)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "evaluation_grid_summary.json").write_text(
+        json.dumps(grid, indent=2) + "\n", encoding="utf-8"
+    )
+    return grid
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -1094,6 +1559,25 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--command-yaw-rate-max", type=float)
     parser.add_argument("--command-resample-time", type=float)
     parser.add_argument("--command-stop-probability", type=float)
+    parser.add_argument(
+        "--eval-forward-speeds",
+        type=float,
+        nargs="+",
+        help=(
+            "Fixed forward commands for the post-training evaluation grid. "
+            "Defaults to the unique training minimum, desired speed, and "
+            "training maximum."
+        ),
+    )
+    parser.add_argument(
+        "--eval-gait-phases",
+        type=float,
+        nargs="+",
+        help=(
+            "Normalized initial gait phases for the post-training grid. "
+            "Defaults to 0 and 0.5 when phase observations are enabled."
+        ),
+    )
     observation_noise_group = parser.add_mutually_exclusive_group()
     observation_noise_group.add_argument(
         "--no-observation-noise",
@@ -1346,6 +1830,37 @@ def _apply_recipe_defaults(args) -> None:
             setattr(args, name, value)
 
 
+def _unique_finite_values(values, *, modulo=None) -> tuple[float, ...]:
+    result = []
+    for raw_value in values:
+        value = float(raw_value)
+        if not math.isfinite(value):
+            raise ValueError("evaluation grid values must be finite")
+        if modulo is not None:
+            value %= modulo
+        if not any(abs(value - existing) <= 1.0e-9 for existing in result):
+            result.append(value)
+    return tuple(result)
+
+
+def _resolve_evaluation_grid(args) -> tuple[tuple[float, ...], tuple[float, ...]]:
+    speed_values = args.eval_forward_speeds
+    if speed_values is None:
+        speed_values = (
+            args.command_forward_min,
+            args.desired_speed_m_s,
+            args.command_forward_max,
+        )
+    phase_values = args.eval_gait_phases
+    if phase_values is None:
+        phase_values = (0.0, 0.5) if args.gait_phase_enabled else (0.0,)
+    speeds = _unique_finite_values(speed_values)
+    phases = _unique_finite_values(phase_values, modulo=1.0)
+    if not speeds or not phases:
+        raise ValueError("evaluation grid must contain a speed and a phase")
+    return speeds, phases
+
+
 def parse_args(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -1383,6 +1898,12 @@ def parse_args(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.command_forward_max < args.command_forward_min:
         parser.error("command forward range must be ordered")
+    try:
+        args.eval_forward_speeds, args.eval_gait_phases = (
+            _resolve_evaluation_grid(args)
+        )
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.adaptive_kl_min_lr > args.adaptive_kl_max_lr:
         parser.error("adaptive KL learning-rate range must be ordered")
     if not (
@@ -1703,6 +2224,10 @@ def main(argv=None) -> None:
         ),
         "runtime": runtime,
         "selection_target_distance_m": target_distance_m,
+        "evaluation_grid": {
+            "forward_speeds_m_s": list(args.eval_forward_speeds),
+            "initial_gait_phases": list(args.eval_gait_phases),
+        },
         "training_step_schedule": schedule,
         "restore_checkpoint": (
             str(args.restore_checkpoint)
@@ -1759,6 +2284,10 @@ def main(argv=None) -> None:
         f"normalize={args.normalize_observations} "
         f"asymmetric={args.asymmetric_observations} "
         f"bootstrap_timeout=true\n"
+        f"  final_eval_grid speeds="
+        f"{','.join(f'{value:g}' for value in args.eval_forward_speeds)} "
+        f"phases="
+        f"{','.join(f'{value:g}' for value in args.eval_gait_phases)}\n"
         f"  output={args.out.resolve()}",
         flush=True,
     )
@@ -1915,6 +2444,16 @@ def main(argv=None) -> None:
             episode_length=args.episode_length,
             output_dir=args.out / "evaluation_final",
         )
+        best_grid = _evaluate_policy_grid_walking_3d(
+            eval_env,
+            make_inference_fn,
+            best_params,
+            seed=args.seed + 30_000,
+            episode_length=args.episode_length,
+            output_dir=args.out / "evaluation_grid_best",
+            forward_speeds=args.eval_forward_speeds,
+            gait_phases=args.eval_gait_phases,
+        )
         comparison = {
             "selection": {
                 "best_step": best["step"],
@@ -1922,6 +2461,7 @@ def main(argv=None) -> None:
             },
             "best": best_eval,
             "final": final_eval,
+            "best_evaluation_grid": best_grid,
         }
         (args.out / "policy_comparison.json").write_text(
             json.dumps(comparison, indent=2) + "\n", encoding="utf-8"
@@ -1934,6 +2474,10 @@ def main(argv=None) -> None:
             f"  final distance={final_eval['root_x_displacement_m']:+.3f}m "
             f"time={final_eval['episode_duration_s']:.2f}s "
             f"tilt={final_eval['maximum_upright_tilt_rad']:.3f}rad",
+            flush=True,
+        )
+        print(
+            _format_evaluation_grid_walking_3d("best", best_grid),
             flush=True,
         )
 

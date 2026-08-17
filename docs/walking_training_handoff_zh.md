@@ -664,3 +664,42 @@ exp(-(0.20 / 0.10)^2) = exp(-4) = 0.0183
 但 v4 也确实没有学会运动：确定性 action RMS 从0.134增至0.443，速度仍接近0，yaw error 和 clearance cost 持续恶化；后期 KL 约0.0007、policy loss 接近0，value loss 则为数百到近2000。Brax PPO 内部直接用 `data.reward * reward_scaling` 构造 value target；v4 的 `reward_scaling=1.0` 让一次终止仍为-200。Unitree MjLab 的 RewardManager 默认把全部 reward rate 乘环境 step dt，本任务控制周期也是0.02秒，因此两个 Unitree recipe 现统一使用 `reward_scaling=0.02`，使官方 `termination=200` 的有效 PPO 尺度为-4，而不是-200。
 
 新的 `unitree_mjlab_velocity_discovery_v1` 还处理了探索梯度问题：robust 阶段命令最高0.30 m/s，而 `sigma=0.10` 时从静止出发的跟踪梯度在高命令端几乎消失；discovery 固定0.10 m/s，此时静止得分为 `exp(-1)=0.368`，速度增至0.05 m/s时得分已为 `exp(-0.25)=0.779`，能提供明确、连续的前进方向。discovery 暂停 `foot_clearance`，避免首次试探性抬脚立即付出额外代价，但保留0.5权重的对角接触计划；没有增加 forward-progress 奖励、关节 reference 或 phase-conditioned joint pose。
+
+## 18. 方向与分脚诊断、速度×phase独立评估（2026-08-17）
+
+固定0.10 m/s策略已经形成稳定步态，但渲染显示持续单向转弯。把 `yaw_rate_tracking` 从0.25提高到0.75的对照训练没有修好：`best_step=0`，后续 heading 和 lateral drift 反而恶化。因此不再继续盲调reward，先把聚合指标拆开。
+
+训练周期 eval 现新增：
+
+- `yaw_signed`：有符号机体yaw rate，区别持续单向转弯与左右振荡；
+- `heading_final`：逐步解包后的回合最终朝向变化；
+- `heading_peak`：回合最大绝对朝向变化，不被episode length稀释；
+- `lateral_final`：世界Y方向最终位移；
+- FL/FR/RL/RR各自的接触占比、touchdown air time、接触期slip和动作RMS；
+- `contact_L-R` 与 `action_L-R` 左右差值。
+
+这些量只增加诊断和checkpoint后处理，不进入reward。训练reset仍从phase 0开始；独立评估可以锁定命令，并从phase 0或0.5重置，命令不会在4秒时被重新采样。周期checkpoint rank在原有存活与命令跟踪之后新增direction quality，使用最终heading与最终lateral，而不是只看机身坐标系速度。
+
+每次训练结束会对 `params_best` 自动运行速度×起始phase网格。默认速度为去重后的训练最小值、`desired_speed`和训练最大值；phase任务默认测0与0.5。结果位于：
+
+```text
+evaluation_grid_best/evaluation_grid_summary.json
+evaluation_grid_best/vx_*/evaluation_summary.json
+evaluation_grid_best/vx_*/evaluation_rollout.npz
+```
+
+已有checkpoint不需要重训，可直接运行独立评估：
+
+```bash
+python -m scripts.evaluate_mjx_3d_walking_policy \
+  results/mjx_pupper_unitree_speed_008_015_v1/params_best \
+  --training-config \
+    results/mjx_pupper_unitree_speed_008_015_v1/training_config.json \
+  --speeds 0.08 0.10 0.15 \
+  --gait-phases 0.0 0.5 \
+  --out results/mjx_pupper_unitree_speed_008_015_v1/evaluation_grid_best
+```
+
+如果省略 `--training-config`，脚本会从checkpoint所在目录向上查找；省略速度和phase时，从训练配置自动推导。接受速度范围前，六个case都应走满10秒且无物理失败，并同时查看最坏速度误差、最坏heading、最坏lateral和phase sensitivity，不能再用单个0.10 m/s回放替代区间结论。
+
+网格摘要还会输出 `diagnosis.observed_pattern_flags`。它只标记可观测模式，不直接猜机械原因：`systematic_direction_bias` 表示多个case的heading持续同号，`initial_phase_sensitive` 表示同一速度仅改变起始phase就造成明显heading差，另外两项分别标记左右接触率和左右动作RMS不平衡。这样先区分“策略固有单向偏”“启动相位吸引域不同”和“左右腿使用不对称”，再决定是否检查模型、控制映射或继续训练。

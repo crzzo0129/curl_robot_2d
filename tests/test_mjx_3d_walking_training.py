@@ -3,7 +3,9 @@ from contextlib import redirect_stderr
 from pathlib import Path
 import unittest
 
+from curl_robot_2d_mjx.config_walking_3d import Walking3DConfig
 from curl_robot_2d_mjx.reward_walking_3d import Walking3DRewardConfig
+from scripts import evaluate_mjx_3d_walking_policy
 from scripts import train_mjx_3d_walking_ppo
 from scripts import train_mjx_3d_real_geometry_walking
 
@@ -48,6 +50,8 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(args.deterministic_eval)
         self.assertFalse(args.save_ppo_checkpoints)
         self.assertIsNone(args.ppo_checkpoint_dir)
+        self.assertEqual(args.eval_forward_speeds, (-0.10, 0.20, 0.35))
+        self.assertEqual(args.eval_gait_phases, (0.0,))
 
     def test_forward_stage1_recipe_is_an_exact_stand_curriculum(self) -> None:
         args = train_mjx_3d_walking_ppo.parse_args(
@@ -239,6 +243,8 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(discovery.command_forward_max, 0.10)
         self.assertEqual(discovery.command_lateral_max, 0.0)
         self.assertEqual(discovery.command_yaw_rate_max, 0.0)
+        self.assertEqual(discovery.eval_forward_speeds, (0.10,))
+        self.assertEqual(discovery.eval_gait_phases, (0.0, 0.5))
         self.assertTrue(discovery.no_observation_noise)
         self.assertTrue(discovery.no_domain_randomization)
         self.assertEqual(discovery.reset_joint_noise, 0.0)
@@ -343,6 +349,9 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             "eval/avg_episode_length": 100.0,
             "eval/episode_nonfoot_ground_max_force_n": 50.0,
             "eval/episode_nonfoot_ground_peak_force_n": 80.0,
+            "eval/episode_heading_change_rad": -0.30,
+            "eval/episode_lateral_progress_m": 0.08,
+            "eval/episode_foot_contact_fl": 60.0,
         }
 
         train_mjx_3d_walking_ppo._add_per_step_walking_metrics_3d(metrics)
@@ -354,6 +363,159 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertNotIn(
             "eval/avg_nonfoot_ground_peak_force_n", metrics
         )
+        self.assertNotIn("eval/avg_heading_change_rad", metrics)
+        self.assertNotIn("eval/avg_lateral_progress_m", metrics)
+        self.assertEqual(metrics["eval/avg_foot_contact_fl"], 0.60)
+
+    def test_checkpoint_selection_prefers_straighter_equal_tracking(self) -> None:
+        base = {
+            "eval/avg_episode_length": 500.0,
+            "eval/episode_failed": 0.0,
+            "eval/episode_failure_nonfinite": 0.0,
+            "eval/episode_failure_upright_tilt": 0.0,
+            "eval/episode_forward_progress_m": 1.0,
+            "eval/avg_forward_velocity_m_s": 0.10,
+            "eval/avg_planar_velocity_error_m_s": 0.02,
+            "eval/avg_yaw_rate_error_rad_s": 0.10,
+            "eval/avg_upright_tilt_rad": 0.02,
+            "eval/avg_lateral_drift_m": 0.02,
+            "eval/avg_nonfoot_ground_contact_count": 0.0,
+            "eval/avg_self_contact_count": 0.0,
+        }
+        straight = train_mjx_3d_walking_ppo._checkpoint_selection_walking_3d(
+            {
+                **base,
+                "eval/episode_heading_change_rad": 0.05,
+                "eval/episode_lateral_progress_m": 0.01,
+            },
+            500,
+            target_distance_m=1.0,
+            desired_speed_m_s=0.10,
+        )
+        curved = train_mjx_3d_walking_ppo._checkpoint_selection_walking_3d(
+            {
+                **base,
+                "eval/episode_heading_change_rad": -0.60,
+                "eval/episode_lateral_progress_m": 0.12,
+            },
+            500,
+            target_distance_m=1.0,
+            desired_speed_m_s=0.10,
+        )
+
+        self.assertGreater(straight["direction_quality"], curved["direction_quality"])
+        self.assertGreater(straight["rank"], curved["rank"])
+
+    def test_evaluation_grid_summary_exposes_worst_case_and_phase_span(self) -> None:
+        def case(speed, phase, achieved, heading, lateral, failed=False):
+            return {
+                "command_forward_velocity_m_s": speed,
+                "initial_gait_phase": phase,
+                "forward_velocity_error_m_s": achieved - speed,
+                "average_forward_velocity_m_s": achieved,
+                "unwrapped_heading_change_rad": heading,
+                "final_lateral_drift_m": lateral,
+                "average_signed_yaw_rate_rad_s": heading / 10.0,
+                "average_abs_yaw_rate_error_rad_s": abs(heading) / 10.0,
+                "failed": failed,
+                "timed_out": not failed,
+            }
+
+        grid = train_mjx_3d_walking_ppo._summarize_evaluation_grid_walking_3d(
+            (
+                case(0.08, 0.0, 0.07, -0.10, 0.01),
+                case(0.08, 0.5, 0.09, 0.20, -0.02),
+                case(0.15, 0.0, 0.12, -0.40, 0.05),
+                case(0.15, 0.5, 0.14, -0.20, 0.03),
+            )
+        )
+
+        self.assertEqual(grid["case_count"], 4)
+        self.assertEqual(grid["failed_case_count"], 0)
+        self.assertAlmostEqual(grid["maximum_absolute_velocity_error_m_s"], 0.03)
+        self.assertAlmostEqual(grid["maximum_absolute_heading_change_rad"], 0.40)
+        self.assertEqual(len(grid["phase_sensitivity"]), 2)
+        self.assertIn(
+            "initial_phase_sensitive",
+            grid["diagnosis"]["observed_pattern_flags"],
+        )
+
+    def test_grid_diagnosis_separates_systematic_bias_from_leg_asymmetry(self) -> None:
+        def case(phase, heading, contact_delta, action_delta):
+            left_contact = 0.55 + 0.5 * contact_delta
+            right_contact = 0.55 - 0.5 * contact_delta
+            return {
+                "command_forward_velocity_m_s": 0.10,
+                "initial_gait_phase": phase,
+                "forward_velocity_error_m_s": 0.0,
+                "average_forward_velocity_m_s": 0.10,
+                "unwrapped_heading_change_rad": heading,
+                "final_lateral_drift_m": 0.02,
+                "average_signed_yaw_rate_rad_s": heading / 10.0,
+                "average_abs_yaw_rate_error_rad_s": abs(heading) / 10.0,
+                "failed": False,
+                "timed_out": True,
+                "feet": {
+                    "fl": {"contact_fraction": left_contact},
+                    "fr": {"contact_fraction": right_contact},
+                    "rl": {"contact_fraction": left_contact},
+                    "rr": {"contact_fraction": right_contact},
+                },
+                "control": {
+                    "average_action_rms_left_right_delta": action_delta,
+                },
+            }
+
+        grid = train_mjx_3d_walking_ppo._summarize_evaluation_grid_walking_3d(
+            (
+                case(0.0, -0.40, 0.12, -0.11),
+                case(0.5, -0.35, 0.11, -0.12),
+            )
+        )
+
+        flags = grid["diagnosis"]["observed_pattern_flags"]
+        self.assertIn("systematic_direction_bias", flags)
+        self.assertIn("left_right_contact_imbalance", flags)
+        self.assertIn("left_right_action_imbalance", flags)
+        self.assertNotIn("initial_phase_sensitive", flags)
+
+    def test_standalone_walking_evaluator_is_import_safe(self) -> None:
+        args = evaluate_mjx_3d_walking_policy.parse_args(
+            [
+                "params_best",
+                "--speeds",
+                "0.08",
+                "0.10",
+                "0.15",
+                "--gait-phases",
+                "0",
+                "0.5",
+            ]
+        )
+
+        self.assertEqual(args.speeds, [0.08, 0.10, 0.15])
+        self.assertEqual(args.gait_phases, [0.0, 0.5])
+
+    def test_standalone_old_config_grid_uses_training_command_range(self) -> None:
+        evaluation_task = Walking3DConfig(
+            desired_speed_m_s=0.10,
+            command_forward_velocity_range_m_s=(0.10, 0.10),
+            gait_phase_enabled=True,
+        )
+        config = {
+            "task": {
+                "desired_speed_m_s": 0.10,
+                "command_forward_velocity_range_m_s": [0.08, 0.15],
+                "gait_phase_enabled": True,
+            }
+        }
+
+        speeds, phases = evaluate_mjx_3d_walking_policy._default_grid(
+            config, evaluation_task
+        )
+
+        self.assertEqual(speeds, (0.08, 0.10, 0.15))
+        self.assertEqual(phases, (0.0, 0.5))
 
     def test_checkpoint_selection_prefers_stable_commanded_walk(self) -> None:
         base = {

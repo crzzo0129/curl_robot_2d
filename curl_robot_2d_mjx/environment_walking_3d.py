@@ -161,6 +161,7 @@ def swing_clearance_reward_3d(
 
 
 TROT_PHASE_OFFSETS_3D = (0.0, 0.5, 0.5, 0.0)
+WALKING_FOOT_LABELS_3D = ("fl", "fr", "rl", "rr")
 
 
 def gait_phase_features_3d(xp, phase):
@@ -514,9 +515,13 @@ def make_brax_walking_env_3d(
                 "root_z_m": zero,
                 "root_height_error_m": zero,
                 "lateral_drift_m": zero,
+                "lateral_progress_m": zero,
                 "lateral_velocity_m_s": zero,
                 "upright_tilt_rad": zero,
                 "heading_error_rad": zero,
+                "heading_change_rad": zero,
+                "heading_abs_peak_increment_rad": zero,
+                "yaw_rate_rad_s": zero,
                 "foot_contact_count": zero,
                 "foot_air_time_reward": zero,
                 "foot_air_time_mean_s": zero,
@@ -572,6 +577,31 @@ def make_brax_walking_env_3d(
                 "failure_self_contact_depth": zero,
                 "failure_self_contact": zero,
                 "failure_low_progress": zero,
+                **{
+                    f"foot_contact_{label}": zero
+                    for label in WALKING_FOOT_LABELS_3D
+                },
+                **{
+                    f"foot_air_time_{label}_s": zero
+                    for label in WALKING_FOOT_LABELS_3D
+                },
+                **{
+                    f"touchdown_count_{label}": zero
+                    for label in WALKING_FOOT_LABELS_3D
+                },
+                **{
+                    f"touchdown_air_time_sum_{label}_s": zero
+                    for label in WALKING_FOOT_LABELS_3D
+                },
+                **{
+                    f"foot_slip_{label}_m_s": zero
+                    for label in WALKING_FOOT_LABELS_3D
+                },
+                **{
+                    f"action_rms_{label}": zero
+                    for label in WALKING_FOOT_LABELS_3D
+                },
+                "action_rms_left_right_delta": zero,
             }
 
         def _sanitize_observation(self, observation):
@@ -646,6 +676,10 @@ def make_brax_walking_env_3d(
             info = {
                 "initial_root_y": data.qpos[1],
                 "previous_root_x": data.qpos[0],
+                "previous_root_y": data.qpos[1],
+                "previous_heading_error": body["heading_error"],
+                "unwrapped_heading_error": body["heading_error"],
+                "heading_abs_peak_rad": jp.abs(body["heading_error"]),
                 "previous_foot_position": foot_position,
                 "previous_foot_position_local": foot_position_local,
                 "progress_position_history": jp.tile(
@@ -677,6 +711,7 @@ def make_brax_walking_env_3d(
                 ),
                 "step_count": jp.asarray(0, dtype=jp.int32),
                 "command": command,
+                "command_locked": jp.asarray(False),
                 "command_step_count": jp.asarray(0, dtype=jp.int32),
                 "time_out": jp.zeros((), dtype=jp.float32),
                 "rng": rng,
@@ -701,6 +736,45 @@ def make_brax_walking_env_3d(
                 info=info,
             )
 
+        def reset_for_evaluation(self, rng, command, gait_phase):
+            """Reset with a fixed command and caller-selected gait phase.
+
+            The override is represented in the initial observation and the
+            command remains locked for the whole rollout.  Training reset
+            behavior is unchanged.
+            """
+
+            state = self.reset(rng)
+            command = jp.asarray(command, dtype=state.info["command"].dtype)
+            gait_phase = jp.mod(
+                jp.asarray(gait_phase, dtype=state.info["gait_phase"].dtype),
+                1.0,
+            )
+            contacts = self._contact_metrics(state.pipeline_state)
+            body = self._body_metrics(state.pipeline_state)
+            info = {
+                **state.info,
+                "command": command,
+                "command_locked": jp.asarray(True),
+                "command_step_count": jp.asarray(0, dtype=jp.int32),
+                "gait_phase": gait_phase,
+            }
+            observation = self._observation(
+                state.pipeline_state,
+                contacts,
+                body,
+                initial_root_y=info["initial_root_y"],
+                policy_action=info["last_policy_action"],
+                command=command,
+                gait_phase=gait_phase,
+                foot_air_time=info["foot_air_time"],
+                noise_key=jax.random.fold_in(rng, 99),
+            )
+            return state.replace(
+                obs=self._sanitize_observation(observation),
+                info=info,
+            )
+
         def step(self, state, action):
             step_rng = jax.random.fold_in(
                 state.info["rng"], state.info["step_count"]
@@ -713,7 +787,9 @@ def make_brax_walking_env_3d(
             # A newly sampled command is exposed only in the next observation.
             command = state.info["command"]
             next_command_step_count = state.info["command_step_count"] + 1
-            resample_next_command = next_command_step_count >= command_steps
+            resample_next_command = (
+                ~state.info["command_locked"]
+            ) & (next_command_step_count >= command_steps)
             next_command = jax.lax.cond(
                 resample_next_command,
                 lambda key: self._sample_command(key),
@@ -909,8 +985,30 @@ def make_brax_walking_env_3d(
                 jp.square(body_angular_velocity[:2])
             )
             forward_progress = root_x - state.info["previous_root_x"]
+            lateral_progress = root_y - state.info["previous_root_y"]
             lateral_drift = root_y - state.info["initial_root_y"]
             root_height_error = root_z - task.nominal_root_height_m
+            heading_delta = jp.arctan2(
+                jp.sin(
+                    body["heading_error"]
+                    - state.info["previous_heading_error"]
+                ),
+                jp.cos(
+                    body["heading_error"]
+                    - state.info["previous_heading_error"]
+                ),
+            )
+            unwrapped_heading_error = (
+                state.info["unwrapped_heading_error"] + heading_delta
+            )
+            heading_abs_peak_rad = jp.maximum(
+                state.info["heading_abs_peak_rad"],
+                jp.abs(unwrapped_heading_error),
+            )
+            heading_abs_peak_increment_rad = (
+                heading_abs_peak_rad
+                - state.info["heading_abs_peak_rad"]
+            )
 
             foot_contact = contacts["foot_ground"] > 0.0
             gait_phase = state.info["gait_phase"]
@@ -983,6 +1081,11 @@ def make_brax_walking_env_3d(
                 )
                 / jp.maximum(jp.sum(foot_contact), 1).astype(jp.float32)
             )
+            foot_slip_speed = jp.where(
+                foot_contact,
+                jp.linalg.norm(foot_velocity_xy, axis=1),
+                0.0,
+            )
             air_time_at_touchdown = state.info["foot_air_time"] + control_dt
             touchdown = foot_contact & (~state.info["last_foot_contact"])
             soft_landing_cost = jp.mean(
@@ -1035,6 +1138,18 @@ def make_brax_walking_env_3d(
                 jp.square(policy_action - state.info["last_policy_action"])
             )
             action_magnitude_cost = jp.mean(jp.square(policy_action))
+            leg_action_rms = jp.sqrt(
+                jp.mean(
+                    jp.square(policy_action.reshape((4, 3))),
+                    axis=1,
+                )
+            )
+            action_rms_left_right_delta = 0.5 * (
+                leg_action_rms[0]
+                + leg_action_rms[2]
+                - leg_action_rms[1]
+                - leg_action_rms[3]
+            )
             joint_velocity_squared = jp.mean(jp.square(joint_velocity))
             lower_violation = jp.maximum(
                 self.soft_joint_low - joint_position, 0.0
@@ -1251,6 +1366,10 @@ def make_brax_walking_env_3d(
             info = {
                 **state.info,
                 "previous_root_x": root_x,
+                "previous_root_y": root_y,
+                "previous_heading_error": body["heading_error"],
+                "unwrapped_heading_error": unwrapped_heading_error,
+                "heading_abs_peak_rad": heading_abs_peak_rad,
                 "previous_foot_position": foot_position,
                 "previous_foot_position_local": foot_position_local,
                 "progress_position_history": progress_position_history,
@@ -1307,9 +1426,15 @@ def make_brax_walking_env_3d(
                 "root_z_m": root_z,
                 "root_height_error_m": root_height_error,
                 "lateral_drift_m": lateral_drift,
+                "lateral_progress_m": lateral_progress,
                 "lateral_velocity_m_s": lateral_velocity,
                 "upright_tilt_rad": body["upright_tilt"],
                 "heading_error_rad": body["heading_error"],
+                "heading_change_rad": heading_delta,
+                "heading_abs_peak_increment_rad": (
+                    heading_abs_peak_increment_rad
+                ),
+                "yaw_rate_rad_s": yaw_rate,
                 "foot_contact_count": contacts["foot_ground_count"],
                 "foot_air_time_reward": foot_air_time_reward,
                 "foot_air_time_mean_s": jp.mean(foot_air_time),
@@ -1320,6 +1445,39 @@ def make_brax_walking_env_3d(
                 "foot_clearance_cost": foot_clearance_cost,
                 "gait_phase": gait_phase,
                 "foot_slip_rms_m_s": jp.sqrt(foot_slip_velocity_squared),
+                **{
+                    f"foot_contact_{label}": foot_contact[index].astype(
+                        jp.float32
+                    )
+                    for index, label in enumerate(WALKING_FOOT_LABELS_3D)
+                },
+                **{
+                    f"foot_air_time_{label}_s": foot_air_time[index]
+                    for index, label in enumerate(WALKING_FOOT_LABELS_3D)
+                },
+                **{
+                    f"touchdown_count_{label}": touchdown[index].astype(
+                        jp.float32
+                    )
+                    for index, label in enumerate(WALKING_FOOT_LABELS_3D)
+                },
+                **{
+                    f"touchdown_air_time_sum_{label}_s": jp.where(
+                        touchdown[index], air_time_at_touchdown[index], 0.0
+                    )
+                    for index, label in enumerate(WALKING_FOOT_LABELS_3D)
+                },
+                **{
+                    f"foot_slip_{label}_m_s": foot_slip_speed[index]
+                    for index, label in enumerate(WALKING_FOOT_LABELS_3D)
+                },
+                **{
+                    f"action_rms_{label}": leg_action_rms[index]
+                    for index, label in enumerate(WALKING_FOOT_LABELS_3D)
+                },
+                "action_rms_left_right_delta": (
+                    action_rms_left_right_delta
+                ),
                 "nonfoot_ground_contact_count": contacts[
                     "nonfoot_ground_count"
                 ],
