@@ -163,6 +163,8 @@ def swing_clearance_reward_3d(
 
 TROT_PHASE_OFFSETS_3D = (0.0, 0.5, 0.5, 0.0)
 WALKING_FOOT_LABELS_3D = ("fl", "fr", "rl", "rr")
+WALKING_ACTION_GROUP_LABELS_3D = ("abduction", "hip", "knee")
+WALKING_ACTION_SATURATION_THRESHOLD_3D = 0.95
 
 
 def gait_phase_features_3d(xp, phase):
@@ -604,6 +606,14 @@ def make_brax_walking_env_3d(
                 **{
                     f"action_rms_{label}": zero
                     for label in WALKING_FOOT_LABELS_3D
+                },
+                **{
+                    f"action_rms_{label}": zero
+                    for label in WALKING_ACTION_GROUP_LABELS_3D
+                },
+                **{
+                    f"action_saturation_{label}": zero
+                    for label in WALKING_ACTION_GROUP_LABELS_3D
                 },
                 "action_rms_left_right_delta": zero,
             }
@@ -1142,11 +1152,22 @@ def make_brax_walking_env_3d(
                 jp.square(policy_action - state.info["last_policy_action"])
             )
             action_magnitude_cost = jp.mean(jp.square(policy_action))
+            action_by_leg = policy_action.reshape((4, 3))
             leg_action_rms = jp.sqrt(
                 jp.mean(
-                    jp.square(policy_action.reshape((4, 3))),
+                    jp.square(action_by_leg),
                     axis=1,
                 )
+            )
+            action_group_rms = jp.sqrt(
+                jp.mean(jp.square(action_by_leg), axis=0)
+            )
+            action_group_saturation = jp.mean(
+                (
+                    jp.abs(action_by_leg)
+                    >= WALKING_ACTION_SATURATION_THRESHOLD_3D
+                ).astype(jp.float32),
+                axis=0,
             )
             action_rms_left_right_delta = 0.5 * (
                 leg_action_rms[0]
@@ -1481,6 +1502,20 @@ def make_brax_walking_env_3d(
                 **{
                     f"action_rms_{label}": leg_action_rms[index]
                     for index, label in enumerate(WALKING_FOOT_LABELS_3D)
+                },
+                **{
+                    f"action_rms_{label}": action_group_rms[index]
+                    for index, label in enumerate(
+                        WALKING_ACTION_GROUP_LABELS_3D
+                    )
+                },
+                **{
+                    f"action_saturation_{label}": (
+                        action_group_saturation[index]
+                    )
+                    for index, label in enumerate(
+                        WALKING_ACTION_GROUP_LABELS_3D
+                    )
                 },
                 "action_rms_left_right_delta": (
                     action_rms_left_right_delta

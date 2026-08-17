@@ -709,3 +709,9 @@ python -m scripts.evaluate_mjx_3d_walking_policy \
 从 `mjx_pupper_unitree_speed_008_015_v1/ppo_checkpoint` 续训时，将 `yaw_rate_tracking=1.0`、`sigma=0.15 rad/s` 后，策略在eval 2一度达到 `0.087 m/s`、signed yaw `-0.009 rad/s`，随后退化为近似静止。日志给出了直接原因：近似静止的eval 4每步velocity tracking仅 `0.426`，但yaw tracking增至 `0.899`，foot-clearance代价又从行走时的 `-0.506` 降至 `-0.149`，所以总回报反而从 `1.311` 增至 `1.534`。
 
 奖励现新增 `yaw_rate_tracking_progress_gate`。当存在平面线速度命令时，yaw tracking乘以沿命令方向的归一化进度；完全静止时该项为0，达到命令速度时完整生效。无平面线速度命令时不门控，因此不会破坏将来的原地转向或站立命令。两个Unitree/MjLab recipe默认启用完整门控，命令行可显式传 `--reward-yaw-rate-tracking-progress-gate 1.0`。网络和observation契约不变，已有完整PPO checkpoint仍兼容。
+
+## 20. 分关节动作范围诊断（2026-08-17）
+
+为判断 `action_scale_abduction=0.08 rad` 是否真的限制横向控制，walking训练和独立评估新增abduction/hip/knee分组诊断，不修改reward、physics、observation或动作映射。周期eval输出每组归一化动作的RMS和 `|action| >= 0.95` 饱和比例；独立评估还从 `evaluation_rollout.npz` 的原始12维动作序列计算真正的绝对值P95和峰值，并写入每个case的 `control.normalized_action_by_joint_type`。
+
+速度×phase网格摘要输出每类关节在所有有效运动case中的最大RMS、P95、峰值和饱和比例。若P95至少为 `0.90`，或至少5%的动作达到 `|action| >= 0.95`，诊断标记 `<joint>_action_range_saturation`。只有出现 `abduction_action_range_saturation` 后，才考虑将动作尺度从 `0.08` 渐进扩大到 `0.09` 和 `0.10 rad`；否则保持现有范围。

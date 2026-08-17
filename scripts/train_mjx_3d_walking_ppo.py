@@ -19,6 +19,8 @@ from curl_robot_2d_mjx.config_walking_3d import (
     walking_physics_profile_3d,
 )
 from curl_robot_2d_mjx.environment_walking_3d import (
+    WALKING_ACTION_GROUP_LABELS_3D,
+    WALKING_ACTION_SATURATION_THRESHOLD_3D,
     WALKING_FOOT_LABELS_3D,
 )
 from curl_robot_2d_mjx.reward_walking_3d import (
@@ -40,6 +42,8 @@ from scripts.train_mjx_ppo import (
 
 WALKING_ACTOR_MEAN_INIT_SCALE = 1.0e-3
 WALKING_ACTOR_MEAN_CLIP_SCALE = 1.0
+WALKING_ACTION_P95_RANGE_LIMIT_THRESHOLD_3D = 0.90
+WALKING_ACTION_SATURATION_FRACTION_THRESHOLD_3D = 0.05
 
 
 PRESETS_WALKING_3D = {
@@ -586,6 +590,10 @@ PER_STEP_WALKING_METRICS_3D = (
         ("action_rms", ""),
     )
     for label in WALKING_FOOT_LABELS_3D
+) + tuple(
+    f"action_{metric}_{label}"
+    for metric in ("rms", "saturation")
+    for label in WALKING_ACTION_GROUP_LABELS_3D
 ) + ("action_rms_left_right_delta",)
 
 
@@ -1003,6 +1011,16 @@ def _format_eval_report_walking_3d(
             f"torque={_metric(metrics, 'eval/avg_normalized_torque_rms'):.3f}"
         ),
         (
+            "  action/by_joint "
+            + " | ".join(
+                f"{label} rms="
+                f"{_metric(metrics, f'eval/avg_action_rms_{label}'):.3f} "
+                f"sat="
+                f"{_metric(metrics, f'eval/avg_action_saturation_{label}'):.1%}"
+                for label in WALKING_ACTION_GROUP_LABELS_3D
+            )
+        ),
+        (
             "  feet/by_leg "
             + " | ".join(
                 f"{label.upper()} c={stats['contact']:.2f} "
@@ -1041,6 +1059,46 @@ def _format_eval_report_walking_3d(
             f"value_loss={_metric(metrics, 'training/v_loss'):.4f}"
         )
     return "\n".join(lines)
+
+
+def _action_group_diagnostics_walking_3d(action_rows):
+    actions = np.asarray(action_rows, dtype=np.float64)
+    if actions.size == 0:
+        return {
+            label: {
+                "rms": 0.0,
+                "p95_absolute": 0.0,
+                "peak_absolute": 0.0,
+                "saturation_fraction": 0.0,
+                "saturation_threshold": (
+                    WALKING_ACTION_SATURATION_THRESHOLD_3D
+                ),
+            }
+            for label in WALKING_ACTION_GROUP_LABELS_3D
+        }
+    if actions.shape[-1] != 12:
+        raise ValueError(
+            f"walking action rows must end in 12 values, got {actions.shape}"
+        )
+    applied_actions = np.clip(actions.reshape((-1, 4, 3)), -1.0, 1.0)
+    diagnostics = {}
+    for index, label in enumerate(WALKING_ACTION_GROUP_LABELS_3D):
+        values = applied_actions[:, :, index]
+        absolute = np.abs(values)
+        diagnostics[label] = {
+            "rms": float(np.sqrt(np.mean(np.square(values)))),
+            "p95_absolute": float(np.percentile(absolute, 95.0)),
+            "peak_absolute": float(np.max(absolute)),
+            "saturation_fraction": float(
+                np.mean(
+                    absolute >= WALKING_ACTION_SATURATION_THRESHOLD_3D
+                )
+            ),
+            "saturation_threshold": (
+                WALKING_ACTION_SATURATION_THRESHOLD_3D
+            ),
+        }
+    return diagnostics
 
 
 def _evaluate_policy_walking_3d(
@@ -1139,6 +1197,9 @@ def _evaluate_policy_walking_3d(
             break
 
     steps = len(reward_rows)
+    action_group_diagnostics = _action_group_diagnostics_walking_3d(
+        action_rows
+    )
     final_x = _float(state.pipeline_state.qpos[0])
     final_y = _float(state.pipeline_state.qpos[1])
     episode_only_metric_names = {
@@ -1232,6 +1293,7 @@ def _evaluate_policy_walking_3d(
         "failure_reasons": failures,
         "feet": feet,
         "control": {
+            "normalized_action_by_joint_type": action_group_diagnostics,
             "average_action_rms_by_leg": {
                 label: averages.get(f"action_rms_{label}", 0.0)
                 for label in WALKING_FOOT_LABELS_3D
@@ -1313,6 +1375,60 @@ def _case_is_locomoting_walking_3d(case):
     return directional_speed >= required_speed
 
 
+def _action_group_grid_diagnostics_walking_3d(cases):
+    result = {}
+    for label in WALKING_ACTION_GROUP_LABELS_3D:
+        values = []
+        for case in cases:
+            stats = (
+                case.get("control", {})
+                .get("normalized_action_by_joint_type", {})
+                .get(label)
+            )
+            if stats is not None:
+                values.append(stats)
+        limited_cases = [
+            stats
+            for stats in values
+            if (
+                float(stats.get("p95_absolute", 0.0))
+                >= WALKING_ACTION_P95_RANGE_LIMIT_THRESHOLD_3D
+                or float(stats.get("saturation_fraction", 0.0))
+                >= WALKING_ACTION_SATURATION_FRACTION_THRESHOLD_3D
+            )
+        ]
+        result[label] = {
+            "case_count": len(values),
+            "maximum_rms": max(
+                (float(stats.get("rms", 0.0)) for stats in values),
+                default=0.0,
+            ),
+            "maximum_p95_absolute": max(
+                (
+                    float(stats.get("p95_absolute", 0.0))
+                    for stats in values
+                ),
+                default=0.0,
+            ),
+            "maximum_peak_absolute": max(
+                (
+                    float(stats.get("peak_absolute", 0.0))
+                    for stats in values
+                ),
+                default=0.0,
+            ),
+            "maximum_saturation_fraction": max(
+                (
+                    float(stats.get("saturation_fraction", 0.0))
+                    for stats in values
+                ),
+                default=0.0,
+            ),
+            "range_limited_case_count": len(limited_cases),
+        }
+    return result
+
+
 def _diagnose_evaluation_grid_walking_3d(cases, _phase_sensitivity):
     locomoting_cases = [
         case for case in cases if _case_is_locomoting_walking_3d(case)
@@ -1384,6 +1500,9 @@ def _diagnose_evaluation_grid_walking_3d(cases, _phase_sensitivity):
     maximum_action_delta = max(
         (abs(value) for value in action_deltas), default=0.0
     )
+    action_range = _action_group_grid_diagnostics_walking_3d(
+        locomoting_cases
+    )
     flags = []
     if not locomoting_cases:
         flags.append("insufficient_locomoting_cases")
@@ -1395,6 +1514,9 @@ def _diagnose_evaluation_grid_walking_3d(cases, _phase_sensitivity):
         flags.append("left_right_contact_imbalance")
     if maximum_action_delta >= 0.10:
         flags.append("left_right_action_imbalance")
+    for label, stats in action_range.items():
+        if stats["range_limited_case_count"]:
+            flags.append(f"{label}_action_range_saturation")
     if not flags:
         flags.append("no_large_diagnostic_asymmetry")
     return {
@@ -1410,6 +1532,7 @@ def _diagnose_evaluation_grid_walking_3d(cases, _phase_sensitivity):
         "phase_locomotion_mismatch": phase_locomotion_mismatch,
         "maximum_abs_left_right_contact_delta": maximum_contact_delta,
         "maximum_abs_left_right_action_rms_delta": maximum_action_delta,
+        "normalized_action_range_by_joint_type": action_range,
         "thresholds": {
             "heading_change_deadband_rad": 0.15,
             "yaw_rate_deadband_rad_s": 0.02,
@@ -1417,6 +1540,12 @@ def _diagnose_evaluation_grid_walking_3d(cases, _phase_sensitivity):
             "phase_heading_span_rad": 0.15,
             "left_right_contact_delta": 0.10,
             "left_right_action_rms_delta": 0.10,
+            "action_p95_absolute": (
+                WALKING_ACTION_P95_RANGE_LIMIT_THRESHOLD_3D
+            ),
+            "action_saturation_fraction": (
+                WALKING_ACTION_SATURATION_FRACTION_THRESHOLD_3D
+            ),
         },
     }
 
@@ -1484,6 +1613,7 @@ def _summarize_evaluation_grid_walking_3d(cases):
 def _format_evaluation_grid_walking_3d(label, grid):
     diagnosis = grid["diagnosis"]
     heading_bias = diagnosis["heading_change_bias"]
+    action_range = diagnosis["normalized_action_range_by_joint_type"]
     lines = [
         (
             f"[evaluation grid {label}] cases={grid['case_count']} "
@@ -1507,6 +1637,16 @@ def _format_evaluation_grid_walking_3d(label, grid):
             f"{diagnosis['maximum_abs_left_right_contact_delta']:.3f} "
             f"action_L-R_max="
             f"{diagnosis['maximum_abs_left_right_action_rms_delta']:.3f}"
+        ),
+        (
+            "  action/range "
+            + " | ".join(
+                f"{joint} rms={stats['maximum_rms']:.3f} "
+                f"p95={stats['maximum_p95_absolute']:.3f} "
+                f"peak={stats['maximum_peak_absolute']:.3f} "
+                f"sat={stats['maximum_saturation_fraction']:.1%}"
+                for joint, stats in action_range.items()
+            )
         ),
         (
             "  command phase achieved error yaw_signed heading lateral "

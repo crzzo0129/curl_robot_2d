@@ -3,6 +3,8 @@ from contextlib import redirect_stderr
 from pathlib import Path
 import unittest
 
+import numpy as np
+
 from curl_robot_2d_mjx.config_walking_3d import Walking3DConfig
 from curl_robot_2d_mjx.reward_walking_3d import Walking3DRewardConfig
 from scripts import evaluate_mjx_3d_walking_policy
@@ -346,6 +348,27 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.upright, 0.8)
         self.assertEqual(reward.nonfoot_contact, 3.0)
 
+    def test_action_group_diagnostics_use_exact_rollout_distribution(self) -> None:
+        actions = np.zeros((20, 12), dtype=np.float32)
+        actions[:, 0::3] = 0.5
+        actions[:, 1::3] = -0.2
+        actions[:, 2::3] = 1.0
+
+        diagnostics = (
+            train_mjx_3d_walking_ppo._action_group_diagnostics_walking_3d(
+                actions
+            )
+        )
+
+        self.assertAlmostEqual(diagnostics["abduction"]["rms"], 0.5)
+        self.assertAlmostEqual(
+            diagnostics["abduction"]["p95_absolute"], 0.5
+        )
+        self.assertAlmostEqual(diagnostics["hip"]["peak_absolute"], 0.2)
+        self.assertAlmostEqual(
+            diagnostics["knee"]["saturation_fraction"], 1.0
+        )
+
     def test_contact_force_peak_is_not_divided_by_episode_length(self) -> None:
         metrics = {
             "eval/avg_episode_length": 100.0,
@@ -480,6 +503,58 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertIn("left_right_contact_imbalance", flags)
         self.assertIn("left_right_action_imbalance", flags)
         self.assertNotIn("initial_phase_sensitive", flags)
+
+    def test_grid_diagnosis_flags_abduction_action_range_saturation(self) -> None:
+        case = {
+            "command_forward_velocity_m_s": 0.10,
+            "initial_gait_phase": 0.0,
+            "forward_velocity_error_m_s": 0.0,
+            "average_forward_velocity_m_s": 0.10,
+            "unwrapped_heading_change_rad": 0.0,
+            "final_lateral_drift_m": 0.0,
+            "average_signed_yaw_rate_rad_s": 0.0,
+            "average_abs_yaw_rate_error_rad_s": 0.0,
+            "failed": False,
+            "timed_out": True,
+            "control": {
+                "normalized_action_by_joint_type": {
+                    "abduction": {
+                        "rms": 0.70,
+                        "p95_absolute": 0.95,
+                        "peak_absolute": 1.0,
+                        "saturation_fraction": 0.06,
+                    },
+                    "hip": {
+                        "rms": 0.40,
+                        "p95_absolute": 0.70,
+                        "peak_absolute": 0.80,
+                        "saturation_fraction": 0.0,
+                    },
+                    "knee": {
+                        "rms": 0.45,
+                        "p95_absolute": 0.75,
+                        "peak_absolute": 0.85,
+                        "saturation_fraction": 0.0,
+                    },
+                }
+            },
+        }
+
+        grid = train_mjx_3d_walking_ppo._summarize_evaluation_grid_walking_3d(
+            (case,)
+        )
+
+        diagnosis = grid["diagnosis"]
+        self.assertIn(
+            "abduction_action_range_saturation",
+            diagnosis["observed_pattern_flags"],
+        )
+        self.assertEqual(
+            diagnosis["normalized_action_range_by_joint_type"]["abduction"][
+                "range_limited_case_count"
+            ],
+            1,
+        )
 
     def test_grid_direction_diagnosis_ignores_stagnant_speed_cases(self) -> None:
         def case(speed, phase, achieved, heading):
