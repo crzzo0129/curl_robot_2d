@@ -29,6 +29,7 @@ from curl_robot_2d_mjx.environment_3d import (
     duplicate_planar_action_3d,
     pair_coupled_residual_action_3d,
     pair_coupled_reset_noise_3d,
+    mirror_rolling_observation_3d,
     phase_feedback_observation_3d,
     reference_startup_scale_3d,
     rolling_target_ctrl_3d,
@@ -276,6 +277,32 @@ class MJX3DContractTest(unittest.TestCase):
         np.testing.assert_allclose(
             noise,
             np.asarray((1.05, 2.10, 0.95, 1.90, 3.15, 4.20, 2.85, 3.80)),
+        )
+
+    def test_rolling_observation_mirror_is_involutive(self) -> None:
+        observation = np.arange(
+            OBSERVATION_SIZE_3D + PHASE_FEEDBACK_SIZE_3D,
+            dtype=np.float32,
+        )
+
+        mirrored = mirror_rolling_observation_3d(np, observation)
+        restored = mirror_rolling_observation_3d(np, mirrored)
+
+        np.testing.assert_allclose(restored, observation)
+        self.assertEqual(mirrored[1], -observation[1])
+        np.testing.assert_allclose(mirrored[14:22], observation[
+            [16, 17, 14, 15, 20, 21, 18, 19]
+        ])
+        np.testing.assert_allclose(mirrored[59:63], observation[59:63])
+
+    def test_rolling_observation_mirror_supports_base_observation(self) -> None:
+        observation = np.arange(OBSERVATION_SIZE_3D, dtype=np.float32)
+
+        mirrored = mirror_rolling_observation_3d(np, observation)
+
+        self.assertEqual(mirrored.shape, observation.shape)
+        np.testing.assert_allclose(
+            mirror_rolling_observation_3d(np, mirrored), observation
         )
 
     def test_axis_tilt_quaternion_is_normalized_and_keeps_zero_exact(self) -> None:

@@ -107,6 +107,51 @@ PLANAR_JOINT_HIGH = np.asarray(
 )
 
 
+def _rolling_observation_mirror_contract_3d():
+    width = OBSERVATION_SIZE_3D + PHASE_FEEDBACK_SIZE_3D
+    permutation = list(range(width))
+    signs = [1.0] * width
+
+    signs[1] = -1.0  # root y
+    signs[2:5] = (-1.0, 1.0, -1.0)  # torso local y axis
+    signs[5:8] = (1.0, -1.0, 1.0)  # torso local z axis
+    signs[8:11] = (1.0, -1.0, 1.0)  # root linear velocity
+    signs[11:14] = (-1.0, 1.0, -1.0)  # root angular velocity
+
+    pair_permutation = (2, 3, 0, 1, 6, 7, 4, 5)
+    for start in (14, 22, 30, 46):
+        permutation[start : start + ACTION_SIZE_3D] = tuple(
+            start + index for index in pair_permutation
+        )
+    return tuple(permutation), tuple(signs)
+
+
+(
+    ROLLING_OBSERVATION_MIRROR_PERMUTATION_3D,
+    ROLLING_OBSERVATION_MIRROR_SIGNS_3D,
+) = _rolling_observation_mirror_contract_3d()
+
+
+def mirror_rolling_observation_3d(xp, observation):
+    """Reflect a rolling observation across the global x-z plane."""
+
+    width = observation.shape[-1]
+    valid_widths = (
+        OBSERVATION_SIZE_3D,
+        OBSERVATION_SIZE_3D + PHASE_FEEDBACK_SIZE_3D,
+    )
+    if width not in valid_widths:
+        raise ValueError(
+            f"rolling observation width must be one of {valid_widths}, "
+            f"got {width}"
+        )
+    permutation = xp.asarray(
+        ROLLING_OBSERVATION_MIRROR_PERMUTATION_3D[:width]
+    )
+    signs = xp.asarray(ROLLING_OBSERVATION_MIRROR_SIGNS_3D[:width])
+    return xp.take(observation, permutation, axis=-1) * signs
+
+
 def geometry_parameters_3d(name: str):
     if name == "baseline":
         return FIXED_PARAMETERS

@@ -76,12 +76,13 @@ def _actor_mirror_consistency_loss_scope(
     module,
     *,
     weight,
+    anchor,
     array_module,
     stop_gradient,
     asymmetric_observations,
     gait_phase_enabled,
 ):
-    """Temporarily add a one-sided Actor mirror-consistency PPO loss."""
+    """Temporarily add an Actor mirror-consistency PPO loss."""
 
     if weight <= 0.0:
         yield
@@ -129,8 +130,11 @@ def _actor_mirror_consistency_loss_scope(
         mirrored_logits = policy_apply(
             normalizer_params, params.policy, mirrored_observation
         )
-        canonical_action_target = stop_gradient(
-            action_distribution.mode(canonical_logits)
+        canonical_action = action_distribution.mode(canonical_logits)
+        canonical_action_target = (
+            stop_gradient(canonical_action)
+            if anchor == "canonical_stop_gradient"
+            else canonical_action
         )
         mirrored_action_in_canonical_order = mirror_walking_action_3d(
             array_module, action_distribution.mode(mirrored_logits)
@@ -2007,8 +2011,17 @@ def _build_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.0,
         help=(
-            "add a canonical-anchored Actor mirror-consistency loss without "
-            "mirroring physical rollouts"
+            "add an Actor mirror-consistency loss without mirroring physical "
+            "rollouts"
+        ),
+    )
+    parser.add_argument(
+        "--actor-mirror-consistency-anchor",
+        choices=("canonical_stop_gradient", "symmetric"),
+        default="canonical_stop_gradient",
+        help=(
+            "choose whether mirror consistency updates only the mirrored "
+            "branch or both Actor branches"
         ),
     )
     normalization_group = parser.add_mutually_exclusive_group()
@@ -2666,7 +2679,7 @@ def main(argv=None) -> None:
             args.actor_mirror_consistency_weight
         ),
         "actor_mirror_consistency_anchor": (
-            "canonical_stop_gradient"
+            args.actor_mirror_consistency_anchor
             if args.actor_mirror_consistency_weight > 0.0
             else None
         ),
@@ -2737,7 +2750,7 @@ def main(argv=None) -> None:
         f"  actor_mirror_consistency_weight="
         f"{args.actor_mirror_consistency_weight:g} "
         f"anchor="
-        f"{'canonical_stop_gradient' if args.actor_mirror_consistency_weight > 0.0 else 'none'}\n"
+        f"{args.actor_mirror_consistency_anchor if args.actor_mirror_consistency_weight > 0.0 else 'none'}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} "
         f"reward_scale={args.reward_scaling:g} seed={args.seed}\n"
@@ -2814,6 +2827,7 @@ def main(argv=None) -> None:
     ), _actor_mirror_consistency_loss_scope(
         ppo_losses,
         weight=args.actor_mirror_consistency_weight,
+        anchor=args.actor_mirror_consistency_anchor,
         array_module=jnp,
         stop_gradient=jax.lax.stop_gradient,
         asymmetric_observations=args.asymmetric_observations,

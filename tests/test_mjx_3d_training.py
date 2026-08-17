@@ -382,6 +382,59 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.selection_target_turns, 8.0)
         self.assertEqual(reward.failure_progress_clawback, 4.0)
 
+    def test_phase_locked_equivariant_v9_enforces_reflection_symmetry(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_equivariant_v9"]
+        )
+
+        self.assertTrue(args.reflection_equivariant_policy)
+        self.assertEqual(args.learning_rate, 1e-5)
+        self.assertEqual(args.initial_policy_std, 0.10)
+        self.assertEqual(args.residual_pair_differential_scale, 0.25)
+
+    def test_reflection_policy_projection_has_even_common_and_odd_diff(
+        self,
+    ) -> None:
+        policy_parameters = np.arange(16, dtype=np.float32)
+        mirrored_parameters = np.arange(16, dtype=np.float32) + 20.0
+
+        projected = (
+            train_mjx_3d_residual_ppo
+            ._reflection_equivariant_policy_parameters_3d(
+                np, policy_parameters, mirrored_parameters
+            )
+        )
+        projected_from_mirror = (
+            train_mjx_3d_residual_ppo
+            ._reflection_equivariant_policy_parameters_3d(
+                np, mirrored_parameters, policy_parameters
+            )
+        )
+
+        np.testing.assert_allclose(
+            projected_from_mirror[:4], projected[:4]
+        )
+        np.testing.assert_allclose(
+            projected_from_mirror[4:8], -projected[4:8]
+        )
+        np.testing.assert_allclose(
+            projected_from_mirror[8:], projected[8:]
+        )
+
+    def test_evaluator_exposes_reflection_equivariant_policy(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "params_best",
+                "--out",
+                "eval_equivariant",
+                "--reflection-equivariant-policy",
+            ]
+        )
+
+        self.assertTrue(args.reflection_equivariant_policy)
+
     def test_checkpoint_selection_uses_mean_absolute_lateral_drift(
         self,
     ) -> None:

@@ -359,6 +359,12 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument(
+        "--reflection-equivariant-policy",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use the reflection-equivariant rolling policy projection.",
+    )
+    parser.add_argument(
         "--initial-policy-std",
         type=float,
         default=0.20,
@@ -524,6 +530,9 @@ def main(argv=None) -> None:
                 args.hidden_layers,
                 args.activation,
                 args.initial_policy_std,
+                reflection_equivariant=(
+                    args.reflection_equivariant_policy
+                ),
             )
             if args.zero_residual_policy_init
             else _network_factory(args.hidden_layers, args.activation)
@@ -825,6 +834,7 @@ def main(argv=None) -> None:
         f"  reference_ramp_start={task.reference_ramp_start_scale} "
         f"ramp_s={task.reference_ramp_duration_s:g}\n"
         f"  zero_residual_policy_init={args.zero_residual_policy_init} "
+        f"reflection_equivariant={args.reflection_equivariant_policy} "
         f"resume={args.resume} diagnostics={args.diagnostic_rollouts}",
         flush=True,
     )
@@ -845,6 +855,9 @@ def main(argv=None) -> None:
         "seed": args.seed,
         "environment_seed": environment_seed,
         "zero_residual_policy_init": args.zero_residual_policy_init,
+        "reflection_equivariant_policy": (
+            args.reflection_equivariant_policy
+        ),
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
         "initial_policy_std": args.initial_policy_std,
@@ -936,6 +949,9 @@ def main(argv=None) -> None:
         "seed": args.seed,
         "environment_seed": environment_seed,
         "zero_residual_policy_init": args.zero_residual_policy_init,
+        "reflection_equivariant_policy": (
+            args.reflection_equivariant_policy
+        ),
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
         "initial_policy_std": args.initial_policy_std,

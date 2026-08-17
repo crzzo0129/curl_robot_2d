@@ -29,6 +29,7 @@ from curl_robot_2d_mjx.environment_3d import (
     OBSERVATION_SIZE_3D,
     PHASE_FEEDBACK_SIZE_3D,
     cem_controller_path_3d,
+    mirror_rolling_observation_3d,
 )
 from curl_robot_2d_mjx.randomization_3d import (
     make_domain_randomization_fn_3d,
@@ -387,6 +388,38 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "phase_locked_equivariant_v9": {
+        "description": (
+            "Enforce reflection-even common residuals and reflection-odd "
+            "differential corrections while retaining conservative updates."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "explicit_phase_observation": True,
+            "reflection_equivariant_policy": True,
+            "learning_rate": 1e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.10,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
     "real_geometry_contact_v1": {
         "description": (
             "Keep the real-geometry 2-D CEM reference, learn symmetric "
@@ -500,6 +533,8 @@ def _zero_centered_residual_network_factory(
     hidden_layers,
     activation_name,
     initial_std,
+    *,
+    reflection_equivariant=False,
 ):
     """Build PPO networks whose initial residual policy is centered at zero."""
 
@@ -566,10 +601,29 @@ def _zero_centered_residual_network_factory(
         )
 
         def apply(processor_params, policy_params, observation):
-            observation = preprocess_observations_fn(
+            processed_observation = preprocess_observations_fn(
                 observation, processor_params
             )
-            return policy_module.apply(policy_params, observation)
+            policy_parameters = policy_module.apply(
+                policy_params, processed_observation
+            )
+            if not reflection_equivariant:
+                return policy_parameters
+            mirrored_observation = mirror_rolling_observation_3d(
+                jnp, observation
+            )
+            processed_mirrored_observation = preprocess_observations_fn(
+                mirrored_observation, processor_params
+            )
+            mirrored_policy_parameters = policy_module.apply(
+                policy_params, processed_mirrored_observation
+            )
+            return _reflection_equivariant_policy_parameters_3d(
+                jnp,
+                policy_parameters,
+                mirrored_policy_parameters,
+                action_size,
+            )
 
         policy_network = training_networks.FeedForwardNetwork(
             init=lambda key: policy_module.init(key, dummy_observation),
@@ -584,6 +638,37 @@ def _zero_centered_residual_network_factory(
         )
 
     return factory
+
+
+def _reflection_equivariant_policy_parameters_3d(
+    xp,
+    policy_parameters,
+    mirrored_policy_parameters,
+    action_size=8,
+):
+    """Project raw policy parameters onto the rolling reflection symmetry."""
+
+    if action_size % 2:
+        raise ValueError("rolling action_size must be even")
+    common_size = action_size // 2
+    location = policy_parameters[..., :action_size]
+    mirrored_location = mirrored_policy_parameters[..., :action_size]
+    common_location = 0.5 * (
+        location[..., :common_size]
+        + mirrored_location[..., :common_size]
+    )
+    differential_location = 0.5 * (
+        location[..., common_size:]
+        - mirrored_location[..., common_size:]
+    )
+    scale_parameters = 0.5 * (
+        policy_parameters[..., action_size:]
+        + mirrored_policy_parameters[..., action_size:]
+    )
+    return xp.concatenate(
+        (common_location, differential_location, scale_parameters),
+        axis=-1,
+    )
 
 PER_STEP_EVAL_METRICS_3D = (
     "root_x_m",
@@ -1139,8 +1224,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "3-D training recipe. anchored_v1 reproduces the first run; "
             "phase_locked_v3 starts residual learning from the restored "
-            "phase-locked reference; phase_locked_coupled_v8 uses lower-"
-            "variance common and differential residual learning."
+            "phase-locked reference; phase_locked_equivariant_v9 enforces "
+            "left/right reflection symmetry in residual learning."
         ),
     )
     parser.add_argument(
@@ -1240,6 +1325,15 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Initialize the residual policy with exactly zero deterministic "
             "action. The selected recipe supplies the default."
+        ),
+    )
+    parser.add_argument(
+        "--reflection-equivariant-policy",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Project common residual outputs to be reflection-even and "
+            "differential outputs to be reflection-odd."
         ),
     )
     parser.add_argument(
@@ -1350,6 +1444,8 @@ def parse_args(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
     _apply_recipe_defaults(args)
+    if args.reflection_equivariant_policy is None:
+        args.reflection_equivariant_policy = False
     if args.controller is None:
         args.controller = cem_controller_path_3d(args.geometry)
     if args.selection_objective is None:
@@ -1600,6 +1696,9 @@ def main(argv=None) -> None:
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
         "zero_residual_policy_init": args.zero_residual_policy_init,
+        "reflection_equivariant_policy": (
+            args.reflection_equivariant_policy
+        ),
         "initial_policy_std": args.initial_policy_std,
         "deterministic_eval": args.deterministic_eval,
         "seed": args.seed,
@@ -1657,8 +1756,8 @@ def main(argv=None) -> None:
                 "ranking"
                 if args.selection_objective == "contact"
                 else (
-                    "0.25 survival + 0.45 forward turns + 0.10 "
-                    "non-failure + 0.10 lateral stability + 0.05 axis "
+                    "0.20 survival + 0.25 forward turns + 0.30 "
+                    "non-failure + 0.15 lateral stability + 0.05 axis "
                     "stability + 0.05 forbidden-contact safety"
                 )
             ),
@@ -1667,8 +1766,10 @@ def main(argv=None) -> None:
             "lateral_full_score_m": 0.05,
             "axis_tilt_full_score_rad": 0.25,
             "forbidden_depth_limit_m": 0.001,
-            "maximum_failure_rate": MAX_CHECKPOINT_FAILURE_RATE,
-            "curriculum_selection_maximum_failure_rate": 1.0,
+            "ranking_maximum_failure_rate": 1.0,
+            "acceptance_maximum_failure_rate": (
+                MAX_CHECKPOINT_FAILURE_RATE
+            ),
             "reject_nonfinite": True,
         },
         "training_step_schedule": schedule,
@@ -1692,6 +1793,11 @@ def main(argv=None) -> None:
         f"zero-residual/std={args.initial_policy_std:g}"
         if args.zero_residual_policy_init
         else "brax-default"
+    )
+    policy_symmetry_text = (
+        "reflection-equivariant"
+        if args.reflection_equivariant_policy
+        else "unconstrained"
     )
     residual_pair_text = (
         "direct"
@@ -1749,6 +1855,7 @@ def main(argv=None) -> None:
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} seed={args.seed}\n"
         f"  policy_init={policy_init_text}\n"
+        f"  policy_symmetry={policy_symmetry_text}\n"
         f"  eval_policy={'deterministic' if args.deterministic_eval else 'stochastic'}\n"
         f"  reward roll={reward_config.roll_progress:g} "
         f"lat={reward_config.lateral_drift:g} "
@@ -1808,6 +1915,7 @@ def main(argv=None) -> None:
             args.hidden_layers,
             args.activation,
             args.initial_policy_std,
+            reflection_equivariant=args.reflection_equivariant_policy,
         )
         if args.zero_residual_policy_init
         else _network_factory(args.hidden_layers, args.activation)

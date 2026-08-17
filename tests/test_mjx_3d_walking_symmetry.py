@@ -176,6 +176,7 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
         with train_mjx_3d_walking_ppo._actor_mirror_consistency_loss_scope(
             module,
             weight=0.25,
+            anchor="canonical_stop_gradient",
             array_module=np,
             stop_gradient=lambda value: value,
             asymmetric_observations=True,
@@ -199,6 +200,27 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
 
         self.assertIs(module.compute_ppo_loss, original)
 
+        with train_mjx_3d_walking_ppo._actor_mirror_consistency_loss_scope(
+            module,
+            weight=0.25,
+            anchor="symmetric",
+            array_module=np,
+            stop_gradient=lambda value: self.fail(
+                "symmetric consistency must not stop either Actor branch"
+            ),
+            asymmetric_observations=True,
+            gait_phase_enabled=True,
+        ):
+            loss, metrics = module.compute_ppo_loss(
+                params, "normalizer", data, "rng", ppo_network
+            )
+            self.assertAlmostEqual(float(loss), 4.25)
+            self.assertAlmostEqual(
+                float(metrics["actor_mirror_consistency_loss"]), 9.0
+            )
+
+        self.assertIs(module.compute_ppo_loss, original)
+
     def test_config_and_cli_preserve_disabled_default(self) -> None:
         config = Walking3DConfig()
         args = train_mjx_3d_walking_ppo.parse_args([])
@@ -208,6 +230,10 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
         self.assertFalse(args.symmetry_augmentation_enabled)
         self.assertEqual(args.symmetry_mirror_probability, 0.5)
         self.assertEqual(args.actor_mirror_consistency_weight, 0.0)
+        self.assertEqual(
+            args.actor_mirror_consistency_anchor,
+            "canonical_stop_gradient",
+        )
 
         enabled = train_mjx_3d_walking_ppo.parse_args(
             [
@@ -220,10 +246,16 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
         self.assertEqual(enabled.symmetry_mirror_probability, 0.25)
 
         consistency = train_mjx_3d_walking_ppo.parse_args(
-            ["--actor-mirror-consistency-weight", "0.01"]
+            [
+                "--actor-mirror-consistency-weight",
+                "0.01",
+                "--actor-mirror-consistency-anchor",
+                "symmetric",
+            ]
         )
         self.assertFalse(consistency.symmetry_augmentation_enabled)
         self.assertEqual(consistency.actor_mirror_consistency_weight, 0.01)
+        self.assertEqual(consistency.actor_mirror_consistency_anchor, "symmetric")
 
     def test_actor_consistency_rejects_invalid_or_episode_mirror_use(self) -> None:
         invalid_argv = (

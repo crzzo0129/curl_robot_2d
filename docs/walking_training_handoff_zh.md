@@ -986,3 +986,54 @@ python -m scripts.train_mjx_3d_walking_ppo \
 启动日志必须显示 `init_std=0.5 fixed_std=0.1`，eval 2后的PPO行必须显示 `std=0.1000`。eval 2速度低于0.075 m/s立即停止；eval 3低于0.07 m/s也判定失败。只有确定性速度保持且reward、heading、接触和关节速度没有明显退化时，才继续讨论重新加入镜像一致性项。
 
 固定std是network apply层的训练配置，不会重写checkpoint中原来的learned-std参数。以后若从本实验产生的编号checkpoint再次续训，必须继续显式传 `--fixed-policy-std 0.10`；项目独立评估器会从 `training_config.json` 自动恢复该覆盖设置。
+
+## 26. 低探索下的双向Actor镜像一致性（2026-08-18）
+
+固定 `std=0.03`、不加任何对称约束的对照训练基本稳定：确定性速度从 `0.087` 变为 `0.086 m/s`，最终heading从 `-0.107` 变为 `-0.168 rad`，左右action差从 `-0.120` 变为 `-0.119`。这说明低探索已经把PPO更新限制在原步态附近，但它自身不会纠正左右偏置。
+
+在相同设置上加入旧的 `actor_mirror_consistency_weight=0.01` 后，结果与对照几乎逐项重合：eval 4速度 `0.086 m/s`、heading `-0.169 rad`、左右action差 `-0.119`。辅助项的mirror RMS只从eval 2的 `0.3061` 降到eval 4的 `0.2914`，没有转化为正常坐标轨迹改善。
+
+原因是旧模式采用 `canonical_stop_gradient`：正常坐标动作被当作固定教师，只直接把镜像状态输出拉向该教师。它适合在尽量不动原策略的前提下补齐镜像状态行为，但不能有效纠正正常轨迹本身。训练入口现新增 `--actor-mirror-consistency-anchor symmetric`，让同一个一致性误差同时对正常和镜像Actor前向路径产生梯度。下一轮只改变这一项，仍从原始 `294912` 开始：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 100000 \
+  --num-evals 4 \
+  --desired-speed 0.10 \
+  --command-forward-min 0.09 \
+  --command-forward-max 0.11 \
+  --command-lateral-max 0 \
+  --command-yaw-rate-max 0 \
+  --reward-yaw-rate-tracking 1.0 \
+  --reward-yaw-rate-tracking-sigma-rad-s 0.15 \
+  --reward-yaw-rate-tracking-roll-pitch-weight 0 \
+  --reward-yaw-rate-tracking-progress-gate 1.0 \
+  --no-observation-noise \
+  --no-domain-randomization \
+  --updates-per-batch 1 \
+  --learning-rate 1e-5 \
+  --adaptive-kl-min-lr 2e-6 \
+  --adaptive-kl-max-lr 1e-5 \
+  --entropy-cost 0.001 \
+  --desired-kl 0.002 \
+  --clipping-epsilon 0.10 \
+  --max-grad-norm 0.5 \
+  --eval-forward-speeds 0.09 0.10 0.11 \
+  --eval-gait-phases 0.0 0.5 \
+  --restore-checkpoint \
+    results/mjx_pupper_unitree_straight_009_011_v1/ppo_checkpoint/000000294912 \
+  --freeze-observation-normalizer \
+  --fixed-policy-std 0.03 \
+  --no-symmetry-augmentation \
+  --actor-mirror-consistency-weight 0.01 \
+  --actor-mirror-consistency-anchor symmetric \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir \
+    results/mjx_pupper_unitree_straight_fixed_std003_mirror001_symmetric_009_011_v1/ppo_checkpoint \
+  --out \
+    results/mjx_pupper_unitree_straight_fixed_std003_mirror001_symmetric_009_011_v1
+```
+
+启动日志必须显示 `fixed_std=0.03`、`actor_mirror_consistency_weight=0.01 anchor=symmetric`。本轮首先要求速度保持在约 `0.083 m/s` 以上；其次要求mirror RMS及 `action_L-R` 的绝对值相对上述单向实验明显下降。若只降低mirror RMS但heading和左右action差仍不改善，则策略等变性并不是当前物理偏航的充分条件，不应继续增大该辅助loss。
