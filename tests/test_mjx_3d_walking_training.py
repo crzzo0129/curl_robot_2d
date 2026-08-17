@@ -219,6 +219,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.init_noise_std, 0.5)
         self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.10)
         self.assertEqual(reward.yaw_rate_tracking, 0.75)
+        self.assertEqual(reward.yaw_rate_tracking_progress_gate, 1.0)
         self.assertEqual(reward.gait_contact, 0.5)
         self.assertEqual(reward.orientation, 1.0)
         self.assertEqual(reward.foot_clearance, 1.0)
@@ -256,6 +257,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(discovery.reward_scaling, 0.02)
         self.assertEqual(reward.velocity_tracking_sigma_m_s, 0.10)
         self.assertEqual(reward.yaw_rate_tracking, 0.25)
+        self.assertEqual(reward.yaw_rate_tracking_progress_gate, 1.0)
         self.assertEqual(reward.gait_contact, 0.5)
         self.assertEqual(reward.foot_clearance, 0.0)
         self.assertEqual(reward.termination, 200.0)
@@ -478,6 +480,49 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertIn("left_right_contact_imbalance", flags)
         self.assertIn("left_right_action_imbalance", flags)
         self.assertNotIn("initial_phase_sensitive", flags)
+
+    def test_grid_direction_diagnosis_ignores_stagnant_speed_cases(self) -> None:
+        def case(speed, phase, achieved, heading):
+            return {
+                "command_forward_velocity_m_s": speed,
+                "initial_gait_phase": phase,
+                "forward_velocity_error_m_s": achieved - speed,
+                "average_forward_velocity_m_s": achieved,
+                "unwrapped_heading_change_rad": heading,
+                "final_lateral_drift_m": 0.0,
+                "average_signed_yaw_rate_rad_s": heading / 10.0,
+                "average_abs_yaw_rate_error_rad_s": abs(heading) / 10.0,
+                "failed": False,
+                "timed_out": True,
+            }
+
+        grid = train_mjx_3d_walking_ppo._summarize_evaluation_grid_walking_3d(
+            (
+                case(0.08, 0.0, 0.015, 0.52),
+                case(0.08, 0.5, 0.011, 0.45),
+                case(0.10, 0.0, 0.104, -0.63),
+                case(0.10, 0.5, 0.105, -0.59),
+                case(0.15, 0.0, 0.014, 0.18),
+                case(0.15, 0.5, 0.008, -0.02),
+            )
+        )
+
+        diagnosis = grid["diagnosis"]
+        self.assertEqual(diagnosis["locomoting_case_count"], 2)
+        self.assertEqual(
+            diagnosis["heading_change_bias"]["direction"], "negative"
+        )
+        self.assertEqual(
+            diagnosis["heading_change_bias"]["consistency"], 1.0
+        )
+        self.assertIn(
+            "systematic_direction_bias",
+            diagnosis["observed_pattern_flags"],
+        )
+        self.assertNotIn(
+            "initial_phase_sensitive",
+            diagnosis["observed_pattern_flags"],
+        )
 
     def test_standalone_walking_evaluator_is_import_safe(self) -> None:
         args = evaluate_mjx_3d_walking_policy.parse_args(

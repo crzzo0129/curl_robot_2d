@@ -376,6 +376,7 @@ WALKING_RECIPES_3D = {
             "yaw_rate_tracking": 0.25,
             "yaw_rate_tracking_sigma_rad_s": 0.50,
             "yaw_rate_tracking_roll_pitch_weight": 0.05,
+            "yaw_rate_tracking_progress_gate": 1.0,
             "forward_progress": 0.0,
             "upright": 0.0,
             "stagnation": 0.0,
@@ -483,6 +484,7 @@ WALKING_RECIPES_3D = {
             "yaw_rate_tracking": 0.75,
             "yaw_rate_tracking_sigma_rad_s": 0.50,
             "yaw_rate_tracking_roll_pitch_weight": 0.05,
+            "yaw_rate_tracking_progress_gate": 1.0,
             "forward_progress": 0.0,
             "upright": 0.0,
             "stagnation": 0.0,
@@ -1277,6 +1279,14 @@ def _evaluation_case_token(value: float) -> str:
 
 
 def _signed_bias_summary_walking_3d(values, *, deadband):
+    if not values:
+        return {
+            "direction": "none",
+            "active_case_count": 0,
+            "consistency": 0.0,
+            "mean": 0.0,
+            "maximum_absolute": 0.0,
+        }
     active = [value for value in values if abs(value) >= deadband]
     positive = sum(value > 0.0 for value in active)
     negative = sum(value < 0.0 for value in active)
@@ -1293,25 +1303,65 @@ def _signed_bias_summary_walking_3d(values, *, deadband):
     }
 
 
-def _diagnose_evaluation_grid_walking_3d(cases, phase_sensitivity):
+def _case_is_locomoting_walking_3d(case):
+    command = float(case["command_forward_velocity_m_s"])
+    achieved = float(case["average_forward_velocity_m_s"])
+    if abs(command) < 1.0e-4:
+        return False
+    directional_speed = math.copysign(1.0, command) * achieved
+    required_speed = max(0.05, 0.5 * abs(command))
+    return directional_speed >= required_speed
+
+
+def _diagnose_evaluation_grid_walking_3d(cases, _phase_sensitivity):
+    locomoting_cases = [
+        case for case in cases if _case_is_locomoting_walking_3d(case)
+    ]
     heading = _signed_bias_summary_walking_3d(
-        [case["unwrapped_heading_change_rad"] for case in cases],
+        [
+            case["unwrapped_heading_change_rad"]
+            for case in locomoting_cases
+        ],
         deadband=0.15,
     )
     signed_yaw = _signed_bias_summary_walking_3d(
-        [case["average_signed_yaw_rate_rad_s"] for case in cases],
+        [
+            case["average_signed_yaw_rate_rad_s"]
+            for case in locomoting_cases
+        ],
         deadband=0.02,
     )
-    maximum_phase_heading_span = max(
-        (
-            abs(item["heading_change_span_rad"])
-            for item in phase_sensitivity
-        ),
-        default=0.0,
-    )
+    maximum_phase_heading_span = 0.0
+    phase_locomotion_mismatch = False
+    speeds = sorted({case["command_forward_velocity_m_s"] for case in cases})
+    for speed in speeds:
+        matching = [
+            case
+            for case in cases
+            if abs(case["command_forward_velocity_m_s"] - speed) <= 1.0e-9
+        ]
+        locomotion_flags = [
+            _case_is_locomoting_walking_3d(case) for case in matching
+        ]
+        if any(locomotion_flags) and not all(locomotion_flags):
+            phase_locomotion_mismatch = True
+        moving_at_speed = [
+            case
+            for case, is_moving in zip(matching, locomotion_flags)
+            if is_moving
+        ]
+        if len(moving_at_speed) >= 2:
+            heading_values = [
+                case["unwrapped_heading_change_rad"]
+                for case in moving_at_speed
+            ]
+            maximum_phase_heading_span = max(
+                maximum_phase_heading_span,
+                max(heading_values) - min(heading_values),
+            )
     contact_deltas = []
     action_deltas = []
-    for case in cases:
+    for case in locomoting_cases:
         feet = case.get("feet", {})
         if all(label in feet for label in WALKING_FOOT_LABELS_3D):
             left_contact = 0.5 * (
@@ -1335,9 +1385,11 @@ def _diagnose_evaluation_grid_walking_3d(cases, phase_sensitivity):
         (abs(value) for value in action_deltas), default=0.0
     )
     flags = []
-    if heading["active_case_count"] and heading["consistency"] >= 0.75:
+    if not locomoting_cases:
+        flags.append("insufficient_locomoting_cases")
+    elif heading["active_case_count"] and heading["consistency"] >= 0.75:
         flags.append("systematic_direction_bias")
-    if maximum_phase_heading_span >= 0.15:
+    if phase_locomotion_mismatch or maximum_phase_heading_span >= 0.15:
         flags.append("initial_phase_sensitive")
     if maximum_contact_delta >= 0.10:
         flags.append("left_right_contact_imbalance")
@@ -1347,9 +1399,15 @@ def _diagnose_evaluation_grid_walking_3d(cases, phase_sensitivity):
         flags.append("no_large_diagnostic_asymmetry")
     return {
         "observed_pattern_flags": flags,
+        "locomoting_case_count": len(locomoting_cases),
+        "nonlocomoting_case_count": len(cases) - len(locomoting_cases),
+        "locomotion_gate": (
+            "signed achieved speed >= max(0.05 m/s, 50% of command)"
+        ),
         "heading_change_bias": heading,
         "signed_yaw_rate_bias": signed_yaw,
         "maximum_phase_heading_span_rad": maximum_phase_heading_span,
+        "phase_locomotion_mismatch": phase_locomotion_mismatch,
         "maximum_abs_left_right_contact_delta": maximum_contact_delta,
         "maximum_abs_left_right_action_rms_delta": maximum_action_delta,
         "thresholds": {
@@ -1439,6 +1497,8 @@ def _format_evaluation_grid_walking_3d(label, grid):
         (
             "  diagnosis flags="
             f"{','.join(diagnosis['observed_pattern_flags'])} "
+            f"moving={diagnosis['locomoting_case_count']}/"
+            f"{grid['case_count']} "
             f"heading_sign={heading_bias['direction']} "
             f"consistency={heading_bias['consistency']:.2f} "
             f"phase_span="
@@ -1450,7 +1510,7 @@ def _format_evaluation_grid_walking_3d(label, grid):
         ),
         (
             "  command phase achieved error yaw_signed heading lateral "
-            "contacts air slip"
+            "contacts air slip contact_L-R action_L-R"
         ),
     ]
     for case in grid["cases"]:
@@ -1476,6 +1536,17 @@ def _format_evaluation_grid_walking_3d(label, grid):
             * case["episode_steps"]
             for foot in feet.values()
         ) / max(contact_steps, 1.0)
+        left_contact = 0.5 * (
+            feet["fl"]["contact_fraction"]
+            + feet["rl"]["contact_fraction"]
+        )
+        right_contact = 0.5 * (
+            feet["fr"]["contact_fraction"]
+            + feet["rr"]["contact_fraction"]
+        )
+        action_delta = case["control"][
+            "average_action_rms_left_right_delta"
+        ]
         lines.append(
             f"  {case['command_forward_velocity_m_s']:+.3f}  "
             f"{case['initial_gait_phase']:.2f}  "
@@ -1484,7 +1555,8 @@ def _format_evaluation_grid_walking_3d(label, grid):
             f"{case['average_signed_yaw_rate_rad_s']:+.3f}  "
             f"{case['unwrapped_heading_change_rad']:+.3f}  "
             f"{case['final_lateral_drift_m']:+.3f}  "
-            f"{contacts:.2f}  {air_time:.3f}  {slip:.3f}"
+            f"{contacts:.2f}  {air_time:.3f}  {slip:.3f}  "
+            f"{left_contact - right_contact:+.3f}  {action_delta:+.3f}"
         )
     return "\n".join(lines)
 

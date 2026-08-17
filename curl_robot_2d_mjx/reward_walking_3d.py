@@ -54,6 +54,7 @@ class Walking3DRewardConfig:
     yaw_rate_tracking: float = 0.75
     yaw_rate_tracking_sigma_rad_s: float = 0.35
     yaw_rate_tracking_roll_pitch_weight: float = 0.0
+    yaw_rate_tracking_progress_gate: float = 0.0
     forward_progress: float = 0.0
     upright: float = 0.50
     upright_sigma_rad: float = 0.30
@@ -146,6 +147,17 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
     yaw_rate_score = xp.exp(
         -yaw_error_squared / (config.yaw_rate_tracking_sigma_rad_s**2)
     )
+    yaw_progress_gate_strength = xp.clip(
+        xp.asarray(config.yaw_rate_tracking_progress_gate), 0.0, 1.0
+    )
+    yaw_progress_gate = xp.where(
+        inputs.get("linear_command_active", xp.asarray(0.0)) > 0.0,
+        1.0
+        - yaw_progress_gate_strength
+        + yaw_progress_gate_strength
+        * xp.clip(inputs["normalized_forward_velocity"], 0.0, 1.0),
+        xp.asarray(1.0),
+    )
     upright_score = xp.exp(
         -xp.square(inputs["upright_tilt"] / config.upright_sigma_rad)
     )
@@ -215,7 +227,9 @@ def reward_terms_walking_3d(xp, config: Walking3DRewardConfig, inputs):
             config.velocity_tracking * velocity_score * velocity_upright_gate
         ),
         "overspeed": -config.overspeed * overspeed_cost,
-        "yaw_rate_tracking": config.yaw_rate_tracking * yaw_rate_score,
+        "yaw_rate_tracking": (
+            config.yaw_rate_tracking * yaw_rate_score * yaw_progress_gate
+        ),
         "forward_progress": (
             config.forward_progress
             * inputs["normalized_forward_velocity"]

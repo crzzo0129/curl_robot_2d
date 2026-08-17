@@ -702,4 +702,10 @@ python -m scripts.evaluate_mjx_3d_walking_policy \
 
 如果省略 `--training-config`，脚本会从checkpoint所在目录向上查找；省略速度和phase时，从训练配置自动推导。接受速度范围前，六个case都应走满10秒且无物理失败，并同时查看最坏速度误差、最坏heading、最坏lateral和phase sensitivity，不能再用单个0.10 m/s回放替代区间结论。
 
-网格摘要还会输出 `diagnosis.observed_pattern_flags`。它只标记可观测模式，不直接猜机械原因：`systematic_direction_bias` 表示多个case的heading持续同号，`initial_phase_sensitive` 表示同一速度仅改变起始phase就造成明显heading差，另外两项分别标记左右接触率和左右动作RMS不平衡。这样先区分“策略固有单向偏”“启动相位吸引域不同”和“左右腿使用不对称”，再决定是否检查模型、控制映射或继续训练。
+网格摘要还会输出 `diagnosis.observed_pattern_flags`。方向和左右不平衡诊断只统计真正进入运动的case，即沿命令方向的实际速度至少达到 `max(0.05 m/s, 50% * |command|)`；未走起来的case仍计入速度跟踪失败，但不会用其原地晃动方向污染步态偏航结论。`systematic_direction_bias` 表示运动case的heading持续同号，`initial_phase_sensitive` 表示同一速度仅改变起始phase就造成“一个走、一个不走”或明显heading差，另外两项分别标记运动case的左右接触率和左右动作RMS不平衡。它只标记可观测模式，不直接猜机械原因。
+
+## 19. yaw收紧后的静止退化与进度门控（2026-08-17）
+
+从 `mjx_pupper_unitree_speed_008_015_v1/ppo_checkpoint` 续训时，将 `yaw_rate_tracking=1.0`、`sigma=0.15 rad/s` 后，策略在eval 2一度达到 `0.087 m/s`、signed yaw `-0.009 rad/s`，随后退化为近似静止。日志给出了直接原因：近似静止的eval 4每步velocity tracking仅 `0.426`，但yaw tracking增至 `0.899`，foot-clearance代价又从行走时的 `-0.506` 降至 `-0.149`，所以总回报反而从 `1.311` 增至 `1.534`。
+
+奖励现新增 `yaw_rate_tracking_progress_gate`。当存在平面线速度命令时，yaw tracking乘以沿命令方向的归一化进度；完全静止时该项为0，达到命令速度时完整生效。无平面线速度命令时不门控，因此不会破坏将来的原地转向或站立命令。两个Unitree/MjLab recipe默认启用完整门控，命令行可显式传 `--reward-yaw-rate-tracking-progress-gate 1.0`。网络和observation契约不变，已有完整PPO checkpoint仍兼容。

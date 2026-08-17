@@ -1289,6 +1289,9 @@ def make_brax_walking_env_3d(
                     "planar_velocity_error_norm": planar_velocity_error,
                     "overspeed": overspeed,
                     "yaw_rate_error": yaw_rate - command[2],
+                    "linear_command_active": (
+                        jp.linalg.norm(command[:2]) > 0.05
+                    ),
                     "normalized_forward_velocity": (
                         normalized_command_progress_3d(
                             jp, reward_planar_velocity, command

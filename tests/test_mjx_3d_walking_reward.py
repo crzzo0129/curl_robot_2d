@@ -15,6 +15,7 @@ def zero_inputs():
         "forward_velocity_error": zero,
         "overspeed": zero,
         "normalized_forward_velocity": zero,
+        "linear_command_active": zero,
         "upright_tilt": zero,
         "stagnation_fraction": zero,
         "root_height_error": zero,
@@ -133,6 +134,31 @@ class MJX3DWalkingRewardTest(unittest.TestCase):
         )
         self.assertAlmostEqual(
             float(terms["yaw_rate_tracking"]), np.exp(-0.2)
+        )
+
+    def test_yaw_tracking_can_be_gated_by_command_progress(self) -> None:
+        config = Walking3DRewardConfig(
+            yaw_rate_tracking=1.0,
+            yaw_rate_tracking_progress_gate=1.0,
+        )
+        inputs = zero_inputs()
+        inputs["linear_command_active"] = np.asarray(1.0)
+
+        stopped_terms = reward_terms_walking_3d(np, config, inputs)
+        self.assertAlmostEqual(
+            float(stopped_terms["yaw_rate_tracking"]), 0.0
+        )
+
+        inputs["normalized_forward_velocity"] = np.asarray(0.4)
+        moving_terms = reward_terms_walking_3d(np, config, inputs)
+        self.assertAlmostEqual(
+            float(moving_terms["yaw_rate_tracking"]), 0.4
+        )
+
+        inputs["linear_command_active"] = np.asarray(0.0)
+        yaw_only_terms = reward_terms_walking_3d(np, config, inputs)
+        self.assertAlmostEqual(
+            float(yaw_only_terms["yaw_rate_tracking"]), 1.0
         )
 
     def test_overspeed_is_a_bounded_penalty_without_upright_gating(self) -> None:
