@@ -76,6 +76,8 @@ class Walking3DConfig:
     observation_scale_joint_velocity: float = 0.05
     observation_scale_previous_action: float = 1.0
     asymmetric_observation_enabled: bool = False
+    symmetry_augmentation_enabled: bool = False
+    symmetry_mirror_probability: float = 0.5
     observation_scale_foot_height: float = 10.0
     observation_scale_foot_air_time: float = 1.0
     observation_scale_foot_contact: float = 1.0
@@ -224,6 +226,8 @@ def validate_walking_3d_config(config: Walking3DConfig) -> None:
     _validate_positive(config.command_resample_time_s, "command_resample_time_s")
     if not 0.0 <= config.command_deadband_probability <= 1.0:
         raise ValueError("command_deadband_probability must be in [0, 1]")
+    if not 0.0 <= config.symmetry_mirror_probability <= 1.0:
+        raise ValueError("symmetry_mirror_probability must be in [0, 1]")
     for value, name in (
         (config.reset_joint_noise_rad, "reset_joint_noise_rad"),
         (config.reset_velocity_noise, "reset_velocity_noise"),

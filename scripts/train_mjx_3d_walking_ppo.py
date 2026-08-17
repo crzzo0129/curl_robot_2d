@@ -1828,6 +1828,21 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
     )
     parser.set_defaults(asymmetric_observations=None)
+    symmetry_group = parser.add_mutually_exclusive_group()
+    symmetry_group.add_argument(
+        "--symmetry-augmentation",
+        dest="symmetry_augmentation_enabled",
+        action="store_true",
+    )
+    symmetry_group.add_argument(
+        "--no-symmetry-augmentation",
+        dest="symmetry_augmentation_enabled",
+        action="store_false",
+    )
+    parser.set_defaults(symmetry_augmentation_enabled=False)
+    parser.add_argument(
+        "--symmetry-mirror-probability", type=float, default=0.5
+    )
     normalization_group = parser.add_mutually_exclusive_group()
     normalization_group.add_argument(
         "--normalize-observations",
@@ -2231,6 +2246,10 @@ def main(argv=None) -> None:
             command_deadband_probability=args.command_stop_probability,
             observation_noise_enabled=not args.no_observation_noise,
             asymmetric_observation_enabled=args.asymmetric_observations,
+            symmetry_augmentation_enabled=(
+                args.symmetry_augmentation_enabled
+            ),
+            symmetry_mirror_probability=args.symmetry_mirror_probability,
             gait_phase_enabled=args.gait_phase_enabled,
             gait_cycle_time_s=args.gait_cycle_time,
             gait_duty_factor=args.gait_duty_factor,
@@ -2305,6 +2324,7 @@ def main(argv=None) -> None:
         command_yaw_rate_range_rad_s=(0.0, 0.0),
         command_deadband_probability=0.0,
         observation_noise_enabled=False,
+        symmetry_augmentation_enabled=False,
         reset_joint_noise_rad=0.0,
         reset_velocity_noise=0.0,
         reset_root_xy_velocity_noise_m_s=0.0,
@@ -2478,6 +2498,8 @@ def main(argv=None) -> None:
         f"root_yaw={task.reset_root_yaw_rate_noise_rad_s:g}rad/s\n"
         f"  noise observation={task.observation_noise_enabled} "
         f"domain_randomization={randomization_fn is not None}\n"
+        f"  symmetry_augmentation={task.symmetry_augmentation_enabled} "
+        f"mirror_probability={task.symmetry_mirror_probability:g}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "
         f"discount={args.discounting:g} "
         f"reward_scale={args.reward_scaling:g} seed={args.seed}\n"

@@ -715,3 +715,28 @@ python -m scripts.evaluate_mjx_3d_walking_policy \
 为判断 `action_scale_abduction=0.08 rad` 是否真的限制横向控制，walking训练和独立评估新增abduction/hip/knee分组诊断，不修改reward、physics、observation或动作映射。周期eval输出每组归一化动作的RMS和 `|action| >= 0.95` 饱和比例；独立评估还从 `evaluation_rollout.npz` 的原始12维动作序列计算真正的绝对值P95和峰值，并写入每个case的 `control.normalized_action_by_joint_type`。
 
 速度×phase网格摘要输出每类关节在所有有效运动case中的最大RMS、P95、峰值和饱和比例。若P95至少为 `0.90`，或至少5%的动作达到 `|action| >= 0.95`，诊断标记 `<joint>_action_range_saturation`。只有出现 `abduction_action_range_saturation` 后，才考虑将动作尺度从 `0.08` 渐进扩大到 `0.09` 和 `0.10 rad`；否则保持现有范围。
+
+## 21. 左右镜像增强（2026-08-17）
+
+walking环境现支持训练期episode级左右镜像。每次reset按 `symmetry_mirror_probability` 采样一次，并在整个episode内保持不变；默认关闭，必须显式传 `--symmetry-augmentation`。评估reset始终使用正常坐标，训练脚本构造的 `eval_task` 也会强制关闭增强，因此原有速度、heading、lateral和分脚诊断含义不变。
+
+镜像不是要求同一时刻左右腿动作相等。它要求策略满足等变关系：FL/FR、RL/RR交换，`vx`不变，`vy`和`yaw_rate`反号；角速度按轴向量规则变为 `[-wx, wy, -wz]`，projected gravity只反转Y分量。对角步态phase增加半周期，等价于sin/cos同时反号。当前模型左右关节轴已经物理镜像，因此关节位置、速度、上一动作和输出动作只交换腿索引，不额外变号。
+
+策略看到镜像观测后输出镜像动作，环境会先把动作还原成真实关节顺序，再计算目标位置、物理、reward和动作变化代价。内部上一动作保持真实顺序；非对称Actor-Critic模式下只有Actor观测被镜像，privileged critic观测保持正常坐标。动作仍为12维，非对称Actor/Critic仍为47/74维，已有网络checkpoint兼容。
+
+建议先从成熟直行checkpoint做短实验，不直接长续训：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --symmetry-augmentation \
+  --symmetry-mirror-probability 0.25 \
+  --restore-checkpoint \
+    results/mjx_pupper_unitree_straight_gate_009_011_v2/ppo_checkpoint \
+  --steps 1000000 \
+  --num-evals 8 \
+  --out results/mjx_pupper_unitree_straight_mirror_smoke_v1
+```
+
+先用0.25而不是0.5，是为了降低成熟策略首次接触镜像坐标时的分布跳变。确认step 0正常、两个连续eval仍保持有效行走后，再决定是否提高到0.5或延长训练。不要同时修改reward和action scale，否则无法判断左右偏差变化来自哪里。

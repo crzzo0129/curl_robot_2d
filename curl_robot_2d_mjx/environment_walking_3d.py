@@ -165,6 +165,53 @@ TROT_PHASE_OFFSETS_3D = (0.0, 0.5, 0.5, 0.0)
 WALKING_FOOT_LABELS_3D = ("fl", "fr", "rl", "rr")
 WALKING_ACTION_GROUP_LABELS_3D = ("abduction", "hip", "knee")
 WALKING_ACTION_SATURATION_THRESHOLD_3D = 0.95
+WALKING_LEFT_RIGHT_LEG_PERMUTATION_3D = (1, 0, 3, 2)
+
+
+def mirror_walking_leg_values_3d(xp, values):
+    """Swap FL/FR and RL/RR values without changing joint signs."""
+
+    values_by_leg = xp.reshape(values, (4, -1))
+    mirrored = values_by_leg[
+        xp.asarray(WALKING_LEFT_RIGHT_LEG_PERMUTATION_3D)
+    ]
+    return xp.reshape(mirrored, values.shape)
+
+
+def mirror_walking_linear_velocity_3d(xp, velocity):
+    """Reflect a body-frame polar vector across the sagittal plane."""
+
+    return velocity * xp.asarray((1.0, -1.0, 1.0))
+
+
+def mirror_walking_angular_velocity_3d(xp, velocity):
+    """Reflect a body-frame axial vector across the sagittal plane."""
+
+    return velocity * xp.asarray((-1.0, 1.0, -1.0))
+
+
+def mirror_walking_projected_gravity_3d(xp, gravity):
+    """Reflect torso-frame gravity across the sagittal plane."""
+
+    return gravity * xp.asarray((1.0, -1.0, 1.0))
+
+
+def mirror_walking_command_3d(xp, command):
+    """Keep forward speed and reverse lateral speed and yaw rate."""
+
+    return command * xp.asarray((1.0, -1.0, -1.0))
+
+
+def mirror_walking_phase_features_3d(xp, phase_features):
+    """Shift the diagonal-trot phase by half a cycle."""
+
+    return -phase_features
+
+
+def mirror_walking_action_3d(xp, action):
+    """Convert walking actions between canonical and mirrored leg order."""
+
+    return mirror_walking_leg_values_3d(xp, action)
 
 
 def gait_phase_features_3d(xp, phase):
@@ -631,6 +678,7 @@ def make_brax_walking_env_3d(
             joint_key, velocity_key, root_velocity_key, command_key = (
                 jax.random.split(rng, 4)
             )
+            mirror_key = jax.random.fold_in(rng, 10_001)
             joint_noise = jax.random.uniform(
                 joint_key,
                 shape=(WALKING_ACTION_SIZE_3D,),
@@ -660,6 +708,11 @@ def make_brax_walking_env_3d(
                 )
             )
             command = self._sample_command(command_key)
+            symmetry_mirrored = jp.asarray(
+                task.symmetry_augmentation_enabled
+            ) & jax.random.bernoulli(
+                mirror_key, p=task.symmetry_mirror_probability
+            )
             start_target = jp.clip(
                 self.nominal_ctrl + joint_noise,
                 self.joint_low,
@@ -727,6 +780,7 @@ def make_brax_walking_env_3d(
                 "command": command,
                 "command_locked": jp.asarray(False),
                 "command_step_count": jp.asarray(0, dtype=jp.int32),
+                "symmetry_mirrored": symmetry_mirrored,
                 "time_out": jp.zeros((), dtype=jp.float32),
                 "rng": rng,
             }
@@ -739,6 +793,7 @@ def make_brax_walking_env_3d(
                 command=command,
                 gait_phase=info["gait_phase"],
                 foot_air_time=info["foot_air_time"],
+                symmetry_mirrored=symmetry_mirrored,
                 noise_key=jax.random.fold_in(rng, 99),
             )
             return State(
@@ -772,6 +827,7 @@ def make_brax_walking_env_3d(
                 "command_locked": jp.asarray(True),
                 "command_step_count": jp.asarray(0, dtype=jp.int32),
                 "gait_phase": gait_phase,
+                "symmetry_mirrored": jp.asarray(False),
             }
             observation = self._observation(
                 state.pipeline_state,
@@ -782,6 +838,7 @@ def make_brax_walking_env_3d(
                 command=command,
                 gait_phase=gait_phase,
                 foot_air_time=info["foot_air_time"],
+                symmetry_mirrored=info["symmetry_mirrored"],
                 noise_key=jax.random.fold_in(rng, 99),
             )
             return state.replace(
@@ -814,11 +871,16 @@ def make_brax_walking_env_3d(
                 jp.linalg.norm(next_command[:2] - command[:2]) > 1.0e-6
             )
             action_finite = jp.all(jp.isfinite(action))
-            policy_action = jp.nan_to_num(
+            actor_policy_action = jp.nan_to_num(
                 jp.clip(action, -1.0, 1.0),
                 nan=0.0,
                 posinf=1.0,
                 neginf=-1.0,
+            )
+            policy_action = jp.where(
+                state.info["symmetry_mirrored"],
+                mirror_walking_action_3d(jp, actor_policy_action),
+                actor_policy_action,
             )
             control_dt = task.control_timestep
             target = jp.clip(
@@ -1611,6 +1673,7 @@ def make_brax_walking_env_3d(
                 command=next_command,
                 gait_phase=info["gait_phase"],
                 foot_air_time=foot_air_time,
+                symmetry_mirrored=state.info["symmetry_mirrored"],
                 noise_key=jax.random.fold_in(step_rng, 99),
             )
             metrics = {
@@ -1720,6 +1783,7 @@ def make_brax_walking_env_3d(
             command,
             gait_phase,
             foot_air_time,
+            symmetry_mirrored,
             noise_key,
         ):
             del body, initial_root_y
@@ -1738,10 +1802,47 @@ def make_brax_walking_env_3d(
                 )
             )
             phase_features = gait_phase_features_3d(jp, gait_phase)
+            mirrored_components = (
+                mirror_walking_linear_velocity_3d(jp, body_linear_velocity),
+                mirror_walking_angular_velocity_3d(jp, body_angular_velocity),
+                mirror_walking_projected_gravity_3d(jp, projected_gravity),
+                mirror_walking_command_3d(jp, command),
+                mirror_walking_phase_features_3d(jp, phase_features),
+                mirror_walking_leg_values_3d(
+                    jp, joint_position - self.nominal_ctrl
+                ),
+                mirror_walking_leg_values_3d(jp, joint_velocity),
+                mirror_walking_action_3d(jp, policy_action),
+            )
+            canonical_components = (
+                body_linear_velocity,
+                body_angular_velocity,
+                projected_gravity,
+                command,
+                phase_features,
+                joint_position - self.nominal_ctrl,
+                joint_velocity,
+                policy_action,
+            )
+            (
+                actor_body_linear_velocity,
+                actor_body_angular_velocity,
+                actor_projected_gravity,
+                actor_command,
+                actor_phase_features,
+                actor_joint_position,
+                actor_joint_velocity,
+                actor_policy_action,
+            ) = tuple(
+                jp.where(symmetry_mirrored, mirrored, canonical)
+                for mirrored, canonical in zip(
+                    mirrored_components, canonical_components
+                )
+            )
             if task.asymmetric_observation_enabled:
                 # Unitree/MjLab-style actor observation.  Phase is only a clock;
                 # it never maps to a joint pose or action reference.
-                physical_actor = jp.concatenate(
+                canonical_physical_actor = jp.concatenate(
                     (
                         body_angular_velocity,
                         projected_gravity,
@@ -1750,6 +1851,17 @@ def make_brax_walking_env_3d(
                         joint_position - self.nominal_ctrl,
                         joint_velocity,
                         policy_action,
+                    )
+                )
+                physical_actor = jp.concatenate(
+                    (
+                        actor_body_angular_velocity,
+                        actor_projected_gravity,
+                        actor_command,
+                        actor_phase_features,
+                        actor_joint_position,
+                        actor_joint_velocity,
+                        actor_policy_action,
                     )
                 )
                 actor_scale = jp.concatenate(
@@ -1783,7 +1895,7 @@ def make_brax_walking_env_3d(
                     )
                 )
             else:
-                physical_actor = jp.concatenate(
+                canonical_physical_actor = jp.concatenate(
                     (
                         body_linear_velocity,
                         body_angular_velocity,
@@ -1793,6 +1905,22 @@ def make_brax_walking_env_3d(
                         joint_velocity,
                         policy_action,
                         *((phase_features,) if task.gait_phase_enabled else ()),
+                    )
+                )
+                physical_actor = jp.concatenate(
+                    (
+                        actor_body_linear_velocity,
+                        actor_body_angular_velocity,
+                        actor_projected_gravity,
+                        actor_command,
+                        actor_joint_position,
+                        actor_joint_velocity,
+                        actor_policy_action,
+                        *(
+                            (actor_phase_features,)
+                            if task.gait_phase_enabled
+                            else ()
+                        ),
                     )
                 )
                 actor_scale = jp.concatenate(
@@ -1834,6 +1962,7 @@ def make_brax_walking_env_3d(
                     )
                 )
             clean_actor = physical_actor * actor_scale
+            clean_canonical_actor = canonical_physical_actor * actor_scale
             if task.observation_noise_enabled:
                 noise = jax.random.uniform(
                     noise_key,
@@ -1860,7 +1989,7 @@ def make_brax_walking_env_3d(
             ]
             privileged_observation = jp.concatenate(
                 (
-                    clean_actor,
+                    clean_canonical_actor,
                     body_linear_velocity
                     * task.observation_scale_linear_velocity,
                     foot_height * task.observation_scale_foot_height,
