@@ -15,6 +15,7 @@ from curl_robot_2d_mjx.config_walking_3d import (
 )
 from curl_robot_2d_mjx.environment_3d import (
     apply_physics_options_3d,
+    configure_pupper_shell_collisions_3d,
     geometry_parameters_3d,
     model_path_3d,
 )
@@ -329,6 +330,9 @@ def make_brax_walking_env_3d(
             self.model_path = model_path_3d(task.geometry)
             self.geometry_parameters = geometry_parameters_3d(task.geometry)
             self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
+            configure_pupper_shell_collisions_3d(
+                self.mj_model, enabled=False
+            )
             validate_walking_morphology_3d(
                 self.mj_model, self.geometry_parameters
             )

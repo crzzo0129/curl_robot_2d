@@ -37,7 +37,10 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     validate_walking_morphology_3d,
 )
 from curl_robot_2d_mjx.environment_3d import model_path_3d
-from curl_robot_2d_mjx.environment_3d import apply_physics_options_3d
+from curl_robot_2d_mjx.environment_3d import (
+    apply_physics_options_3d,
+    configure_pupper_shell_collisions_3d,
+)
 from scripts import mjx_3d_walking_smoke
 
 
@@ -304,6 +307,8 @@ class MJX3DWalkingContractTest(unittest.TestCase):
 
     def test_walking_shell_is_visual_only_but_proxies_still_collide(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(WALKING_MODEL_PATH_3D))
+        configure_pupper_shell_collisions_3d(model, enabled=True)
+        configure_pupper_shell_collisions_3d(model, enabled=False)
         shell_ids = [
             geom_id
             for geom_id in range(model.ngeom)

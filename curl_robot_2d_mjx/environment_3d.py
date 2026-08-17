@@ -133,6 +133,17 @@ def cem_controller_path_3d(name: str) -> Path:
         raise ValueError(f"unknown 3-D geometry: {name!r}") from exc
 
 
+def configure_pupper_shell_collisions_3d(model, *, enabled: bool) -> None:
+    """Switch the Pupper's generated rolling shell between physical and visual."""
+
+    contype, conaffinity = (4, 3) if enabled else (0, 0)
+    for geom_id in range(model.ngeom):
+        name = model.geom(geom_id).name or ""
+        if "_shell_" in name:
+            model.geom_contype[geom_id] = contype
+            model.geom_conaffinity[geom_id] = conaffinity
+
+
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -467,6 +478,10 @@ def make_brax_env_3d(
                 foot_diameter_m=2.0 * self.geometry_parameters.foot_radius,
             )
             self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
+            if task.geometry == "pupper_open60":
+                configure_pupper_shell_collisions_3d(
+                    self.mj_model, enabled=True
+                )
             validate_rolling_morphology_3d(self.mj_model, task.geometry)
             apply_physics_options_3d(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)

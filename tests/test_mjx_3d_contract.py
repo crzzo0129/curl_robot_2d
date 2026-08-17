@@ -34,6 +34,7 @@ from curl_robot_2d_mjx.environment_3d import (
     rolling_target_ctrl_3d,
     geometry_parameters_3d,
     cem_controller_path_3d,
+    configure_pupper_shell_collisions_3d,
     model_path_3d,
     validate_rolling_morphology_3d,
 )
@@ -223,6 +224,17 @@ class MJX3DContractTest(unittest.TestCase):
 
         validate_rolling_morphology_3d(model, "pupper_open60")
         self.assertEqual(model.nu, 12)
+
+        configure_pupper_shell_collisions_3d(model, enabled=True)
+        shell_ids = [
+            geom_id
+            for geom_id in range(model.ngeom)
+            if "_shell_" in (model.geom(geom_id).name or "")
+        ]
+        self.assertGreater(len(shell_ids), 0)
+        for geom_id in shell_ids:
+            self.assertEqual(int(model.geom_contype[geom_id]), 4)
+            self.assertEqual(int(model.geom_conaffinity[geom_id]), 3)
 
     def test_rolling_phase_integrates_signed_local_y_velocity(self) -> None:
         forward = advance_rolling_phase_3d(np, 0.2, 3.0, 0.01)
