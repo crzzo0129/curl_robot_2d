@@ -698,6 +698,23 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.evaluation_mode, "reference")
         self.assertIsNone(args.checkpoint)
 
+    def test_reference_eval_accepts_separate_environment_seed(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "--evaluation-mode",
+                "reference",
+                "--environment-seed",
+                "10000",
+                "--seed",
+                "0",
+                "--out",
+                "reference_eval",
+            ]
+        )
+
+        self.assertEqual(args.seed, 0)
+        self.assertEqual(args.environment_seed, 10000)
+
     def test_policy_batch_eval_still_requires_checkpoint(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             evaluate_mjx_3d_policy.parse_args(

@@ -309,6 +309,14 @@ def parse_args(argv=None):
     parser.add_argument("--chunk-size", type=int, default=512)
     parser.add_argument("--progress-every", type=int, default=100)
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument(
+        "--environment-seed",
+        type=int,
+        help=(
+            "Seed folded into every environment reset; defaults to --seed. "
+            "Nominal stage-0 training evaluation uses training seed + 10000."
+        ),
+    )
     parser.add_argument("--reset-joint-noise-rad", type=float, default=0.005)
     parser.add_argument("--reset-velocity-noise", type=float, default=0.005)
     parser.add_argument("--reset-pair-differential-scale", type=float)
@@ -503,7 +511,12 @@ def main(argv=None) -> None:
             else args.foot_gap_tracking_margin_mm / 1000.0
         ),
     )
-    env = make_brax_env_3d(task, cem_reference=reference, seed=args.seed)
+    environment_seed = (
+        args.seed if args.environment_seed is None else args.environment_seed
+    )
+    env = make_brax_env_3d(
+        task, cem_reference=reference, seed=environment_seed
+    )
     policy_batch = None
     if args.evaluation_mode == "policy":
         network_factory = (
@@ -791,7 +804,16 @@ def main(argv=None) -> None:
         f"  checkpoint={checkpoint_text}\n"
         f"  batch={args.batch_size} chunk={args.chunk_size} "
         f"episode={args.episode_length} "
-        f"geometry={task.geometry} physics={task.physics_profile} seed={args.seed}\n"
+        f"geometry={task.geometry} physics={task.physics_profile}\n"
+        f"  solver={task.solver_name} integrator={task.integrator_name} "
+        f"cone={task.cone_name} jacobian={task.jacobian_name} "
+        f"iterations={task.solver_iterations} "
+        f"ls_iterations={task.solver_ls_iterations}\n"
+        f"  physics_dt={task.physics_timestep:g}s "
+        f"action_repeat={task.action_repeat} "
+        f"control_dt={task.control_timestep:g}s\n"
+        f"  rollout_seed={args.seed} environment_seed={environment_seed}\n"
+        f"  controller={Path(reference.source).resolve()}\n"
         f"  geom_friction_scale={task.geom_friction_scale:g}\n"
         f"  body_mass_scale={task.body_mass_scale:g} "
         f"left={task.body_mass_left_scale:g} "
@@ -821,6 +843,7 @@ def main(argv=None) -> None:
         "chunk_size": args.chunk_size,
         "episode_length": args.episode_length,
         "seed": args.seed,
+        "environment_seed": environment_seed,
         "zero_residual_policy_init": args.zero_residual_policy_init,
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
@@ -910,6 +933,8 @@ def main(argv=None) -> None:
         "chunk_size": args.chunk_size,
         "progress_every": args.progress_every,
         "episode_length": args.episode_length,
+        "seed": args.seed,
+        "environment_seed": environment_seed,
         "zero_residual_policy_init": args.zero_residual_policy_init,
         "hidden_layers": args.hidden_layers,
         "activation": args.activation,
