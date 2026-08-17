@@ -301,6 +301,7 @@ def main(argv=None) -> None:
         small_actor_mean_init=(
             config.get("policy_mean_kernel_init") == "small_uniform"
         ),
+        fixed_policy_std=config.get("fixed_policy_std"),
     )
     networks = network_factory(
         env.observation_size,

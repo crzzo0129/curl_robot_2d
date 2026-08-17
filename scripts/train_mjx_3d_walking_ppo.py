@@ -751,6 +751,13 @@ def _reward_config_from_args(args) -> Walking3DRewardConfig:
     return replace(Walking3DRewardConfig(), **overrides)
 
 
+def _policy_logits_with_fixed_std(array_module, logits, fixed_std):
+    """Keep the Actor mean and replace its state-independent scale."""
+
+    mean, _ = logits
+    return mean, array_module.full_like(mean, fixed_std)
+
+
 def _walking_network_factory(
     hidden_layers,
     critic_hidden_layers,
@@ -759,10 +766,13 @@ def _walking_network_factory(
     *,
     asymmetric_observations,
     small_actor_mean_init,
+    fixed_policy_std=None,
 ):
     """Build an ETH-style actor with state-independent exploration noise."""
 
     import jax.nn as jnn
+    import jax.numpy as jnp
+    from brax.training import networks as training_networks
     from brax.training.agents.ppo import networks
 
     activation = {
@@ -796,7 +806,25 @@ def _walking_network_factory(
                     "scale": WALKING_ACTOR_MEAN_INIT_SCALE
                 },
             )
-        return networks.make_ppo_networks(*args, **network_kwargs)
+        ppo_network = networks.make_ppo_networks(*args, **network_kwargs)
+        if fixed_policy_std is None:
+            return ppo_network
+
+        base_policy_network = ppo_network.policy_network
+
+        def apply_with_fixed_std(processor_params, policy_params, observation):
+            logits = base_policy_network.apply(
+                processor_params, policy_params, observation
+            )
+            return _policy_logits_with_fixed_std(
+                jnp, logits, fixed_policy_std
+            )
+
+        policy_network = training_networks.FeedForwardNetwork(
+            init=base_policy_network.init,
+            apply=apply_with_fixed_std,
+        )
+        return ppo_network.replace(policy_network=policy_network)
 
     return factory
 
@@ -2110,6 +2138,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--discounting", type=float)
     parser.add_argument("--reward-scaling", type=float)
     parser.add_argument("--init-noise-std", type=float)
+    parser.add_argument(
+        "--fixed-policy-std",
+        type=float,
+        default=None,
+        help=(
+            "override the restored policy's exploration standard deviation "
+            "without changing its deterministic mean action"
+        ),
+    )
     parser.add_argument("--clipping-epsilon", type=float)
     parser.add_argument("--max-grad-norm", type=float)
     parser.add_argument("--desired-kl", type=float)
@@ -2254,6 +2291,14 @@ def parse_args(argv=None):
         parser.error(
             "--freeze-observation-normalizer requires --restore-checkpoint"
         )
+    if args.fixed_policy_std is not None:
+        if (
+            not math.isfinite(args.fixed_policy_std)
+            or args.fixed_policy_std <= 0.0
+        ):
+            parser.error("--fixed-policy-std must be positive")
+        if args.restore_checkpoint is None:
+            parser.error("--fixed-policy-std requires --restore-checkpoint")
     if (
         not math.isfinite(args.actor_mirror_consistency_weight)
         or args.actor_mirror_consistency_weight < 0.0
@@ -2612,6 +2657,7 @@ def main(argv=None) -> None:
         ),
         "policy_mean_clip_scale": WALKING_ACTOR_MEAN_CLIP_SCALE,
         "init_noise_std": args.init_noise_std,
+        "fixed_policy_std": args.fixed_policy_std,
         "observation_normalization": args.normalize_observations,
         "observation_normalizer_frozen": (
             args.freeze_observation_normalizer
@@ -2705,6 +2751,8 @@ def main(argv=None) -> None:
         f"mean_init_scale={WALKING_ACTOR_MEAN_INIT_SCALE:g} "
         f"mean_clip={WALKING_ACTOR_MEAN_CLIP_SCALE:g} "
         f"init_std={args.init_noise_std:g} "
+        f"fixed_std="
+        f"{args.fixed_policy_std if args.fixed_policy_std is not None else 'none'} "
         f"deterministic_eval={args.deterministic_eval}\n"
         f"  observation=fixed_task_scaling "
         f"normalize={args.normalize_observations} "
@@ -2804,6 +2852,7 @@ def main(argv=None) -> None:
                 args.init_noise_std,
                 asymmetric_observations=args.asymmetric_observations,
                 small_actor_mean_init=args.small_actor_mean_init,
+                fixed_policy_std=args.fixed_policy_std,
             ),
             seed=args.seed,
             progress_fn=progress_fn,

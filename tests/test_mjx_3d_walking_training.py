@@ -43,6 +43,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.reset_root_xy_velocity_noise, 0.15)
         self.assertEqual(args.reset_root_yaw_rate_noise, 0.20)
         self.assertEqual(args.init_noise_std, 0.30)
+        self.assertIsNone(args.fixed_policy_std)
         self.assertEqual(args.clipping_epsilon, 0.20)
         self.assertEqual(args.max_grad_norm, 1.0)
         self.assertEqual(args.desired_kl, 0.01)
@@ -131,6 +132,55 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(args.normalize_observations)
         self.assertTrue(args.freeze_observation_normalizer)
 
+    def test_restored_policy_std_can_be_fixed_explicitly(self) -> None:
+        args = train_mjx_3d_walking_ppo.parse_args(
+            [
+                "--recipe",
+                "unitree_mjlab_velocity_v1",
+                "--restore-checkpoint",
+                "ppo_checkpoint/000000294912",
+                "--fixed-policy-std",
+                "0.1",
+            ]
+        )
+
+        self.assertEqual(args.init_noise_std, 0.5)
+        self.assertEqual(args.fixed_policy_std, 0.1)
+
+    def test_fixed_policy_std_requires_positive_restored_value(self) -> None:
+        invalid_argv = (
+            ["--fixed-policy-std", "0.1"],
+            [
+                "--restore-checkpoint",
+                "ppo_checkpoint/000000294912",
+                "--fixed-policy-std",
+                "0",
+            ],
+            [
+                "--restore-checkpoint",
+                "ppo_checkpoint/000000294912",
+                "--fixed-policy-std",
+                "nan",
+            ],
+        )
+        for argv in invalid_argv:
+            with self.subTest(argv=argv), redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit):
+                    train_mjx_3d_walking_ppo.parse_args(argv)
+
+    def test_fixed_policy_std_preserves_actor_mean(self) -> None:
+        mean = np.arange(24, dtype=np.float32).reshape(2, 12)
+        learned_std = np.full_like(mean, 0.5)
+
+        fixed_mean, fixed_std = (
+            train_mjx_3d_walking_ppo._policy_logits_with_fixed_std(
+                np, (mean, learned_std), 0.1
+            )
+        )
+
+        self.assertIs(fixed_mean, mean)
+        np.testing.assert_array_equal(fixed_std, np.full_like(mean, 0.1))
+
     def test_normalizer_freeze_requires_a_normalized_restore(self) -> None:
         with redirect_stderr(io.StringIO()):
             with self.assertRaises(SystemExit):
@@ -218,11 +268,13 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
             'distribution_type="normal"',
             'noise_std_type="log"',
             'state_dependent_std=False',
+            "_policy_logits_with_fixed_std(",
             "mean_kernel_init_fn=jnn.initializers.uniform",
             '"scale": WALKING_ACTOR_MEAN_INIT_SCALE',
             "mean_clip_scale=WALKING_ACTOR_MEAN_CLIP_SCALE",
             'value_obs_key="privileged_state"',
             "deterministic_eval=args.deterministic_eval",
+            "fixed_policy_std=args.fixed_policy_std",
             "max_grad_norm=args.max_grad_norm",
             "learning_rate_schedule=args.learning_rate_schedule",
             "learning_rate_schedule_min_lr=args.adaptive_kl_min_lr",

@@ -611,7 +611,7 @@ python -m scripts.mjx_3d_walking_smoke \
   --steps 8
 ```
 
-非对称环境 actor/critic shape 为 `47/74`。两个新 recipe 的网络契约相同，因此可以续训；`params_best` 是部署参数，不是带 optimizer state 的 PPO 恢复点，续训应使用 `ppo_checkpoint`。
+非对称环境 actor/critic shape 为 `47/74`。两个新 recipe 的网络契约相同，因此可以续训；`params_best` 是部署参数，续训应使用带网络配置的编号 `ppo_checkpoint`。但当前Brax编号checkpoint也只保存normalizer、policy和value参数，不保存Adam optimizer state；`--restore-checkpoint` 会新建optimizer后再替换网络参数，因此它不等价于无中断续训。
 
 ### eval 15–22 后的 shell-free 修订
 
@@ -877,3 +877,112 @@ python -m scripts.train_mjx_3d_walking_ppo \
 ```
 
 启动日志必须显示 `symmetry_augmentation=False`、`actor_mirror_consistency_weight=0.01 anchor=canonical_stop_gradient` 和 `normalizer_frozen=True`。eval 2速度低于0.07 m/s立即停止；速度保持时再观察 `mirror rms` 是否下降，以及独立正常/镜像坐标评估中的heading差和 `action_L-R` 是否同步收敛。不能只依据辅助loss下降判定成功。
+
+实际结果同样失败。速度从step 0的0.087 m/s依次降为0.084、0.030、0.022，最终为0.016 m/s；`mirror rms` 在0.376至0.390之间波动，没有下降趋势。`action_L-R` 虽从-0.119缩小至-0.069，但同时 `contact_L-R` 从-0.081恶化至-0.218、平均接触足数从2.49增至3.02、关节速度从0.750降至0.531，说明所谓动作对称性改善只是有效步态消失。最终heading还反向漂移至+0.593 rad。`params_best` 仍是step 0，不能使用任何后续checkpoint。
+
+这次实验说明当前一致性项没有学到：`weight * L_mirror` 约为0.0014，与policy loss同量级，但 `mirror rms` 基本不动。更重要的是，在物理rollout完全不镜像时仍出现与前两次实验近似相同的eval 2至eval 3坍塌节奏，主要共同因素已经转向restore continuation本身。不过该实验仍包含一致性项，尚不能严格排除它是直接诱因。
+
+## 24. 纯restore continuation对照（2026-08-17）
+
+下一步先不修改代码、不增加任何对称性目标，只用相同checkpoint、reward、冻结normalizer和保守PPO参数运行三个更新间隔。`requested_steps=100,000` 对应 `effective_steps=147,456`，足以覆盖此前开始坍塌的eval 3：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 100000 \
+  --num-evals 4 \
+  --desired-speed 0.10 \
+  --command-forward-min 0.09 \
+  --command-forward-max 0.11 \
+  --command-lateral-max 0 \
+  --command-yaw-rate-max 0 \
+  --reward-yaw-rate-tracking 1.0 \
+  --reward-yaw-rate-tracking-sigma-rad-s 0.15 \
+  --reward-yaw-rate-tracking-roll-pitch-weight 0 \
+  --reward-yaw-rate-tracking-progress-gate 1.0 \
+  --no-observation-noise \
+  --no-domain-randomization \
+  --updates-per-batch 1 \
+  --learning-rate 1e-5 \
+  --adaptive-kl-min-lr 2e-6 \
+  --adaptive-kl-max-lr 1e-5 \
+  --entropy-cost 0.001 \
+  --desired-kl 0.002 \
+  --clipping-epsilon 0.10 \
+  --max-grad-norm 0.5 \
+  --eval-forward-speeds 0.09 0.10 0.11 \
+  --eval-gait-phases 0.0 0.5 \
+  --restore-checkpoint \
+    results/mjx_pupper_unitree_straight_009_011_v1/ppo_checkpoint/000000294912 \
+  --freeze-observation-normalizer \
+  --no-symmetry-augmentation \
+  --actor-mirror-consistency-weight 0 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir \
+    results/mjx_pupper_unitree_straight_restore_control_009_011_v1/ppo_checkpoint \
+  --out \
+    results/mjx_pupper_unitree_straight_restore_control_009_011_v1
+```
+
+若eval 3速度再次低于0.07 m/s，则可以确认坍塌不需要任何镜像机制触发，应暂停全部对称性实验，先解决Brax新optimizer状态下的continuation稳定性。若纯对照保持速度，则当前canonical锚定一致性项本身有问题，应撤回该loss设计，而不是增大权重。
+
+纯对照在eval 2保持0.084 m/s，但eval 3再次精确降至0.030 m/s；distance、heading、接触数、关节速度和policy loss也与带一致性项实验近乎相同。至此可以确认镜像rollout和Actor一致性loss都不是触发条件，一致性项在 `weight=0.01` 时对实际更新轨迹几乎没有影响。
+
+进一步追溯原始 `mjx_pupper_unitree_straight_009_011_v1` 日志发现，`000000294912` 正是eval 2的短暂峰值；在同一次未中断的 `ppo.train` 中，eval 3已经从0.087降至0.013 m/s。因此缺失Adam optimizer state虽然意味着restore不是真正续训，但不是这次坍塌的主要原因：原optimizer状态仍在时也发生了同样退化。该checkpoint只能作为确定性部署策略，不能假设它位于稳定的PPO局部最优点。
+
+当时训练日志中的探索标准差约为0.504，而所有好结果来自deterministic mean-action eval。训练rollout实际每步采样标准差约0.5的动作，随机策略与确定性均值策略之间可能存在很大性能差异；PPO优化的是前者，不是日志里展示的后者。下一步应先对冻结checkpoint做stochastic eval，不更新网络。如果随机eval本身已经不能走，则应降低并固定续训探索标准差；不能继续调reward、KL或镜像权重。
+
+## 25. 恢复后固定低探索标准差（2026-08-17）
+
+冻结checkpoint的stochastic eval确认 `std≈0.5` 时不能维持现有步态，而同一参数的deterministic mean-action eval仍为0.087 m/s。训练入口新增 `--fixed-policy-std`，它保留checkpoint中的Actor mean和参数树，只把policy network返回给PPO分布的scale替换为固定值：
+
+```text
+(mean, learned_std) -> (mean, full_like(mean, fixed_std))
+```
+
+这与 `--init-noise-std` 不同：后者只控制新网络初始化，restore后会被checkpoint中的std参数覆盖；前者在每次Actor前向时强制使用指定scale，因此训练日志的 `policy_dist_mean_std` 必须等于该值。第一轮使用0.10，只改变训练采样噪声，不启用任何镜像机制：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 100000 \
+  --num-evals 4 \
+  --desired-speed 0.10 \
+  --command-forward-min 0.09 \
+  --command-forward-max 0.11 \
+  --command-lateral-max 0 \
+  --command-yaw-rate-max 0 \
+  --reward-yaw-rate-tracking 1.0 \
+  --reward-yaw-rate-tracking-sigma-rad-s 0.15 \
+  --reward-yaw-rate-tracking-roll-pitch-weight 0 \
+  --reward-yaw-rate-tracking-progress-gate 1.0 \
+  --no-observation-noise \
+  --no-domain-randomization \
+  --updates-per-batch 1 \
+  --learning-rate 1e-5 \
+  --adaptive-kl-min-lr 2e-6 \
+  --adaptive-kl-max-lr 1e-5 \
+  --entropy-cost 0.001 \
+  --desired-kl 0.002 \
+  --clipping-epsilon 0.10 \
+  --max-grad-norm 0.5 \
+  --eval-forward-speeds 0.09 0.10 0.11 \
+  --eval-gait-phases 0.0 0.5 \
+  --restore-checkpoint \
+    results/mjx_pupper_unitree_straight_009_011_v1/ppo_checkpoint/000000294912 \
+  --freeze-observation-normalizer \
+  --fixed-policy-std 0.10 \
+  --no-symmetry-augmentation \
+  --actor-mirror-consistency-weight 0 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir \
+    results/mjx_pupper_unitree_straight_fixed_std010_009_011_v1/ppo_checkpoint \
+  --out \
+    results/mjx_pupper_unitree_straight_fixed_std010_009_011_v1
+```
+
+启动日志必须显示 `init_std=0.5 fixed_std=0.1`，eval 2后的PPO行必须显示 `std=0.1000`。eval 2速度低于0.075 m/s立即停止；eval 3低于0.07 m/s也判定失败。只有确定性速度保持且reward、heading、接触和关节速度没有明显退化时，才继续讨论重新加入镜像一致性项。
+
+固定std是network apply层的训练配置，不会重写checkpoint中原来的learned-std参数。以后若从本实验产生的编号checkpoint再次续训，必须继续显式传 `--fixed-policy-std 0.10`；项目独立评估器会从 `training_config.json` 自动恢复该覆盖设置。
