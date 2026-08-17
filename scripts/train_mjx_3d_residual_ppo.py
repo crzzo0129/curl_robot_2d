@@ -581,6 +581,8 @@ PER_STEP_EVAL_METRICS_3D = (
     "normalized_torque_rms",
     "reference_action_rms",
     "residual_action_rms",
+    "residual_common_rms",
+    "residual_differential_rms",
     "reference_weight",
     "residual_gain",
     "rolling_phase_rad",
@@ -838,6 +840,8 @@ def _format_eval_report_3d(
             f"torque={_metric(metrics, 'eval/avg_normalized_torque_rms'):.3f} "
             f"ref={_metric(metrics, 'eval/avg_reference_action_rms'):.3f} "
             f"residual={_metric(metrics, 'eval/avg_residual_action_rms'):.3f} "
+            f"common={_metric(metrics, 'eval/avg_residual_common_rms'):.3f} "
+            f"diff={_metric(metrics, 'eval/avg_residual_differential_rms'):.3f} "
             f"gain={_metric(metrics, 'eval/avg_residual_gain'):.3f}"
         ),
         (
@@ -896,6 +900,8 @@ def _format_eval_report_3d(
         f"low={_metric(metrics, 'eval/episode_failure_root_low'):.1%} "
         f"high={_metric(metrics, 'eval/episode_failure_root_high'):.1%} "
         f"lat={_metric(metrics, 'eval/episode_failure_lateral_drift'):.1%} "
+        f"lat+={_metric(metrics, 'eval/episode_failure_lateral_positive'):.1%} "
+        f"lat-={_metric(metrics, 'eval/episode_failure_lateral_negative'):.1%} "
         f"tilt={_metric(metrics, 'eval/episode_failure_axis_tilt'):.1%} "
         f"depth={_metric(metrics, 'eval/episode_failure_forbidden_depth'):.1%} "
         f"contact="
@@ -1888,11 +1894,9 @@ def main(argv=None) -> None:
                 clean,
                 args.episode_length,
                 target_turns=args.selection_target_turns,
-                maximum_failure_rate=(
-                    MAX_CHECKPOINT_FAILURE_RATE
-                    if args.curriculum == "none"
-                    else 1.0
-                ),
+                # Rank finite intermediate policies even before they meet the
+                # independent five-percent deployment acceptance threshold.
+                maximum_failure_rate=1.0,
                 objective=args.selection_objective,
             )
             if initial_evaluated["step"] is None:

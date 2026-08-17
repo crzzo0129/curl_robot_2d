@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import inspect
 import json
 import math
@@ -44,6 +45,27 @@ WALKING_ACTOR_MEAN_INIT_SCALE = 1.0e-3
 WALKING_ACTOR_MEAN_CLIP_SCALE = 1.0
 WALKING_ACTION_P95_RANGE_LIMIT_THRESHOLD_3D = 0.90
 WALKING_ACTION_SATURATION_FRACTION_THRESHOLD_3D = 0.05
+
+
+@contextmanager
+def _running_statistics_update_scope(module, *, freeze):
+    """Temporarily keep restored observation-normalizer statistics fixed."""
+
+    if not freeze:
+        yield
+        return
+
+    original_update = module.update
+
+    def keep_existing_statistics(state, batch, **kwargs):
+        del batch, kwargs
+        return state
+
+    module.update = keep_existing_statistics
+    try:
+        yield
+    finally:
+        module.update = original_update
 
 
 PRESETS_WALKING_3D = {
@@ -1863,6 +1885,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
     )
     parser.set_defaults(normalize_observations=None)
+    normalizer_update_group = parser.add_mutually_exclusive_group()
+    normalizer_update_group.add_argument(
+        "--freeze-observation-normalizer",
+        dest="freeze_observation_normalizer",
+        action="store_true",
+    )
+    normalizer_update_group.add_argument(
+        "--update-observation-normalizer",
+        dest="freeze_observation_normalizer",
+        action="store_false",
+    )
+    parser.set_defaults(freeze_observation_normalizer=False)
     actor_init_group = parser.add_mutually_exclusive_group()
     actor_init_group.add_argument(
         "--small-actor-mean-init",
@@ -2102,6 +2136,14 @@ def parse_args(argv=None):
     _apply_recipe_defaults(args)
     if args.ppo_checkpoint_dir is not None and not args.save_ppo_checkpoints:
         parser.error("--ppo-checkpoint-dir requires --save-ppo-checkpoints")
+    if args.freeze_observation_normalizer and not args.normalize_observations:
+        parser.error(
+            "--freeze-observation-normalizer requires observation normalization"
+        )
+    if args.freeze_observation_normalizer and args.restore_checkpoint is None:
+        parser.error(
+            "--freeze-observation-normalizer requires --restore-checkpoint"
+        )
     if (
         args.selection_target_distance is not None
         and args.selection_target_distance <= 0.0
@@ -2210,6 +2252,7 @@ def main(argv=None) -> None:
         verbose=False,
     )
     from brax.io import model as model_io
+    from brax.training.acme import running_statistics
     from brax.training.agents.ppo import train as ppo
 
     from curl_robot_2d_mjx.environment_walking_3d import (
@@ -2444,6 +2487,9 @@ def main(argv=None) -> None:
         "policy_mean_clip_scale": WALKING_ACTOR_MEAN_CLIP_SCALE,
         "init_noise_std": args.init_noise_std,
         "observation_normalization": args.normalize_observations,
+        "observation_normalizer_frozen": (
+            args.freeze_observation_normalizer
+        ),
         "asymmetric_observations": args.asymmetric_observations,
         "observation_scaling": "fixed_task_scales",
         "bootstrap_on_timeout": True,
@@ -2524,6 +2570,7 @@ def main(argv=None) -> None:
         f"deterministic_eval={args.deterministic_eval}\n"
         f"  observation=fixed_task_scaling "
         f"normalize={args.normalize_observations} "
+        f"normalizer_frozen={args.freeze_observation_normalizer} "
         f"asymmetric={args.asymmetric_observations} "
         f"bootstrap_timeout=true\n"
         f"  final_eval_grid speeds="
@@ -2575,45 +2622,49 @@ def main(argv=None) -> None:
         )
 
     start = time.perf_counter()
-    make_inference_fn, final_params, final_metrics = ppo.train(
-        environment=train_env,
-        eval_env=eval_env,
-        num_timesteps=values["steps"],
-        episode_length=args.episode_length,
-        action_repeat=1,
-        num_envs=values["envs"],
-        num_evals=values["num_evals"],
-        num_eval_envs=values["eval_envs"],
-        learning_rate=args.learning_rate,
-        entropy_cost=args.entropy_cost,
-        discounting=args.discounting,
-        reward_scaling=args.reward_scaling,
-        unroll_length=args.unroll_length,
-        batch_size=values["batch_size"],
-        num_minibatches=values["num_minibatches"],
-        num_updates_per_batch=args.updates_per_batch,
-        normalize_observations=args.normalize_observations,
-        bootstrap_on_timeout=True,
-        clipping_epsilon=args.clipping_epsilon,
-        max_grad_norm=args.max_grad_norm,
-        desired_kl=args.desired_kl,
-        learning_rate_schedule=args.learning_rate_schedule,
-        learning_rate_schedule_min_lr=args.adaptive_kl_min_lr,
-        learning_rate_schedule_max_lr=args.adaptive_kl_max_lr,
-        deterministic_eval=args.deterministic_eval,
-        network_factory=_walking_network_factory(
-            args.hidden_layers,
-            args.critic_hidden_layers,
-            args.activation,
-            args.init_noise_std,
-            asymmetric_observations=args.asymmetric_observations,
-            small_actor_mean_init=args.small_actor_mean_init,
-        ),
-        seed=args.seed,
-        progress_fn=progress_fn,
-        policy_params_fn=policy_params_fn,
-        **checkpoint_kwargs,
-    )
+    with _running_statistics_update_scope(
+        running_statistics,
+        freeze=args.freeze_observation_normalizer,
+    ):
+        make_inference_fn, final_params, final_metrics = ppo.train(
+            environment=train_env,
+            eval_env=eval_env,
+            num_timesteps=values["steps"],
+            episode_length=args.episode_length,
+            action_repeat=1,
+            num_envs=values["envs"],
+            num_evals=values["num_evals"],
+            num_eval_envs=values["eval_envs"],
+            learning_rate=args.learning_rate,
+            entropy_cost=args.entropy_cost,
+            discounting=args.discounting,
+            reward_scaling=args.reward_scaling,
+            unroll_length=args.unroll_length,
+            batch_size=values["batch_size"],
+            num_minibatches=values["num_minibatches"],
+            num_updates_per_batch=args.updates_per_batch,
+            normalize_observations=args.normalize_observations,
+            bootstrap_on_timeout=True,
+            clipping_epsilon=args.clipping_epsilon,
+            max_grad_norm=args.max_grad_norm,
+            desired_kl=args.desired_kl,
+            learning_rate_schedule=args.learning_rate_schedule,
+            learning_rate_schedule_min_lr=args.adaptive_kl_min_lr,
+            learning_rate_schedule_max_lr=args.adaptive_kl_max_lr,
+            deterministic_eval=args.deterministic_eval,
+            network_factory=_walking_network_factory(
+                args.hidden_layers,
+                args.critic_hidden_layers,
+                args.activation,
+                args.init_noise_std,
+                asymmetric_observations=args.asymmetric_observations,
+                small_actor_mean_init=args.small_actor_mean_init,
+            ),
+            seed=args.seed,
+            progress_fn=progress_fn,
+            policy_params_fn=policy_params_fn,
+            **checkpoint_kwargs,
+        )
     elapsed = time.perf_counter() - start
     best_params = best["params"] if best["params"] is not None else final_params
     model_io.save_params(args.out / "params_final", final_params)

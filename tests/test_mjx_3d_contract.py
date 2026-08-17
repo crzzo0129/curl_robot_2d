@@ -507,6 +507,10 @@ class MJX3DContractTest(unittest.TestCase):
         ).read_text(encoding="utf-8")
         for token in (
             "failure_lateral_drift",
+            "failure_lateral_positive",
+            "failure_lateral_negative",
+            "residual_common_rms",
+            "residual_differential_rms",
             "failure_axis_tilt",
             "failure_forbidden_depth",
             "failure_forbidden_contact",

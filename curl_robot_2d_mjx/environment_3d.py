@@ -693,6 +693,8 @@ def make_brax_env_3d(
                 "normalized_torque_rms": zero,
                 "reference_action_rms": zero,
                 "residual_action_rms": zero,
+                "residual_common_rms": zero,
+                "residual_differential_rms": zero,
                 "reference_weight": zero,
                 "residual_gain": zero,
                 "rolling_phase_rad": zero,
@@ -707,6 +709,8 @@ def make_brax_env_3d(
                 "failure_root_low": zero,
                 "failure_root_high": zero,
                 "failure_lateral_drift": zero,
+                "failure_lateral_positive": zero,
+                "failure_lateral_negative": zero,
                 "failure_axis_tilt": zero,
                 "failure_forbidden_depth": zero,
                 "failure_forbidden_contact": zero,
@@ -904,6 +908,14 @@ def make_brax_env_3d(
                 jp,
                 raw_policy_action,
                 task.residual_pair_differential_scale,
+            )
+            residual_left = policy_action[jp.asarray((0, 1, 4, 5))]
+            residual_right = policy_action[jp.asarray((2, 3, 6, 7))]
+            residual_common_rms = jp.sqrt(
+                jp.mean(jp.square(0.5 * (residual_left + residual_right)))
+            )
+            residual_differential_rms = jp.sqrt(
+                jp.mean(jp.square(0.5 * (residual_left - residual_right)))
             )
             control_dt = (
                 float(self.mj_model.opt.timestep) * task.action_repeat
@@ -1325,6 +1337,8 @@ def make_brax_env_3d(
                 "residual_action_rms": jp.sqrt(
                     jp.mean(jp.square(policy_action))
                 ),
+                "residual_common_rms": residual_common_rms,
+                "residual_differential_rms": residual_differential_rms,
                 "reference_weight": reference_weight_value,
                 "residual_gain": residual_gain_value,
                 "rolling_phase_rad": rolling_phase,
@@ -1344,6 +1358,16 @@ def make_brax_env_3d(
                 "failure_root_high": failure_root_high.astype(jp.float32),
                 "failure_lateral_drift": (
                     failure_lateral_drift.astype(jp.float32)
+                ),
+                "failure_lateral_positive": (
+                    (failure_lateral_drift & (lateral_drift > 0.0)).astype(
+                        jp.float32
+                    )
+                ),
+                "failure_lateral_negative": (
+                    (failure_lateral_drift & (lateral_drift < 0.0)).astype(
+                        jp.float32
+                    )
                 ),
                 "failure_axis_tilt": failure_axis_tilt.astype(jp.float32),
                 "failure_forbidden_depth": (

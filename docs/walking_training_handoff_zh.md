@@ -770,3 +770,52 @@ python -m scripts.evaluate_mjx_3d_walking_policy \
 ```
 
 正常和镜像结果分别写入 `normal/` 与 `mirrored/`，根目录的 `coordinate_comparison_summary.json` 给出镜像速度保持率，以及同一speed×phase case的速度、heading和lateral最大差异。如果策略已经镜像等变，两种坐标下的真实物理轨迹应接近相同，而不是heading符号相反。
+
+## 22. 镜像续训的normalizer漂移（2026-08-17）
+
+冻结策略对照显示镜像坐标下六个case全部行走，平均速度保持率为100.6%，动作和接触左右差值近似精确反号。因此镜像坐标本身不会破坏旧策略的步态，左右方向偏差主要位于策略内部。
+
+随后用50%镜像、`learning_rate=1e-5`、单次update和 `desired_kl=0.002` 续训，第一次更新后速度仍从0.087降到0.038 m/s，第二次降到0.018 m/s；最终best仍是step 0。此时KL只有0.0003至0.0007，不能用策略参数更新过大解释。当前Brax的adaptive-KL路径在SGD和KL计算之后才调用 `running_statistics.update`，所以日志KL不包含observation normalizer变化。恢复的normalizer由原正常坐标数据统计，50%镜像rollout会迅速改变左右关节和动作通道的均值、方差，成熟策略即使权重几乎不变也会收到不同的归一化输入。
+
+walking训练入口新增 `--freeze-observation-normalizer`：继续使用checkpoint中恢复的均值和方差做归一化，但训练期间不再更新它们。该开关只允许与已启用的observation normalization和 `--restore-checkpoint` 同时使用。验证实验使用真正较短的344,064个有效步：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 300000 \
+  --num-evals 8 \
+  --desired-speed 0.10 \
+  --command-forward-min 0.09 \
+  --command-forward-max 0.11 \
+  --command-lateral-max 0 \
+  --command-yaw-rate-max 0 \
+  --reward-yaw-rate-tracking 1.0 \
+  --reward-yaw-rate-tracking-sigma-rad-s 0.15 \
+  --reward-yaw-rate-tracking-roll-pitch-weight 0 \
+  --reward-yaw-rate-tracking-progress-gate 1.0 \
+  --no-observation-noise \
+  --no-domain-randomization \
+  --updates-per-batch 1 \
+  --learning-rate 1e-5 \
+  --adaptive-kl-min-lr 2e-6 \
+  --adaptive-kl-max-lr 1e-5 \
+  --entropy-cost 0.001 \
+  --desired-kl 0.002 \
+  --clipping-epsilon 0.10 \
+  --max-grad-norm 0.5 \
+  --eval-forward-speeds 0.09 0.10 0.11 \
+  --eval-gait-phases 0.0 0.5 \
+  --restore-checkpoint \
+    results/mjx_pupper_unitree_straight_009_011_v1/ppo_checkpoint/000000294912 \
+  --freeze-observation-normalizer \
+  --symmetry-augmentation \
+  --symmetry-mirror-probability 0.5 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir \
+    results/mjx_pupper_unitree_straight_mirror_frozen_norm_009_011_v1/ppo_checkpoint \
+  --out \
+    results/mjx_pupper_unitree_straight_mirror_frozen_norm_009_011_v1
+```
+
+启动日志必须显示 `normalize=True normalizer_frozen=True`，且 `effective_steps=344,064`。如果eval 2速度仍低于0.07 m/s，则normalizer漂移不是唯一原因，应停止episode级镜像续训并改用显式actor镜像一致性损失。

@@ -54,6 +54,7 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertIsNone(args.ppo_checkpoint_dir)
         self.assertEqual(args.eval_forward_speeds, (-0.10, 0.20, 0.35))
         self.assertEqual(args.eval_gait_phases, (0.0,))
+        self.assertFalse(args.freeze_observation_normalizer)
 
     def test_forward_stage1_recipe_is_an_exact_stand_curriculum(self) -> None:
         args = train_mjx_3d_walking_ppo.parse_args(
@@ -115,6 +116,59 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
         self.assertFalse(args.no_observation_noise)
         self.assertFalse(args.no_domain_randomization)
         self.assertEqual(args.reset_root_xy_velocity_noise, 0.02)
+
+    def test_restored_normalizer_can_be_frozen_explicitly(self) -> None:
+        args = train_mjx_3d_walking_ppo.parse_args(
+            [
+                "--recipe",
+                "unitree_mjlab_velocity_v1",
+                "--restore-checkpoint",
+                "ppo_checkpoint/000000294912",
+                "--freeze-observation-normalizer",
+            ]
+        )
+
+        self.assertTrue(args.normalize_observations)
+        self.assertTrue(args.freeze_observation_normalizer)
+
+    def test_normalizer_freeze_requires_a_normalized_restore(self) -> None:
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                train_mjx_3d_walking_ppo.parse_args(
+                    ["--freeze-observation-normalizer"]
+                )
+        with redirect_stderr(io.StringIO()):
+            with self.assertRaises(SystemExit):
+                train_mjx_3d_walking_ppo.parse_args(
+                    [
+                        "--recipe",
+                        "unitree_mjlab_velocity_v1",
+                        "--freeze-observation-normalizer",
+                    ]
+                )
+
+    def test_normalizer_freeze_scope_restores_update_function(self) -> None:
+        calls = []
+
+        def original_update(state, batch, **kwargs):
+            calls.append((state, batch, kwargs))
+            return "updated"
+
+        class RunningStatisticsModule:
+            update = staticmethod(original_update)
+
+        module = RunningStatisticsModule()
+        with train_mjx_3d_walking_ppo._running_statistics_update_scope(
+            module, freeze=True
+        ):
+            self.assertEqual(
+                module.update("restored", "new observations", axis="i"),
+                "restored",
+            )
+            self.assertEqual(calls, [])
+
+        self.assertEqual(module.update("old", "batch"), "updated")
+        self.assertEqual(calls, [("old", "batch", {})])
 
     def test_phase_bootstrap_recipe_enables_stage_a_scaffolding(self) -> None:
         args = train_mjx_3d_walking_ppo.parse_args(
