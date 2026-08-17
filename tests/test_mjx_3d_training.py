@@ -352,6 +352,20 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.failure_progress_clawback, 2.0)
         self.assertEqual(reward.lateral_drift, 6.0)
 
+    def test_phase_locked_coupled_v7_uses_validated_target_and_clawback(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_coupled_v7"]
+        )
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+
+        self.assertEqual(args.selection_target_turns, 8.0)
+        self.assertEqual(args.residual_pair_differential_scale, 0.25)
+        self.assertTrue(args.explicit_phase_observation)
+        self.assertEqual(reward.failure_progress_clawback, 4.0)
+
     def test_reference_startup_boost_args_are_exposed(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             [
@@ -635,12 +649,39 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
         self.assertTrue(
             train_mjx_3d_residual_ppo._best_and_final_share_checkpoint(
-                "final_fallback"
+                "final_unresolved_fallback"
             )
         )
         self.assertFalse(
             train_mjx_3d_residual_ppo._best_and_final_share_checkpoint(
                 "callback_step_51200"
+            )
+        )
+
+    def test_rejected_training_retains_initial_evaluated_params(self) -> None:
+        initial_params = object()
+        final_params = object()
+
+        resolved, source = train_mjx_3d_residual_ppo._resolve_best_params(
+            {
+                "step": None,
+                "params": None,
+                "params_step": None,
+            },
+            final_params,
+            [{"step": 0}, {"step": 76_800}],
+            initial_evaluated={
+                "step": 0,
+                "params": initial_params,
+                "params_step": 0,
+            },
+        )
+
+        self.assertIs(resolved, initial_params)
+        self.assertEqual(source, "initial_eval_step_0")
+        self.assertFalse(
+            train_mjx_3d_residual_ppo._best_and_final_share_checkpoint(
+                source
             )
         )
 

@@ -615,6 +615,67 @@ class MJX3DWalkingTrainingEntrypointTest(unittest.TestCase):
 
         self.assertEqual(args.speeds, [0.08, 0.10, 0.15])
         self.assertEqual(args.gait_phases, [0.0, 0.5])
+        self.assertEqual(args.coordinate_modes, ("normal",))
+
+    def test_standalone_evaluator_compares_normal_and_mirrored_coordinates(
+        self,
+    ) -> None:
+        args = evaluate_mjx_3d_walking_policy.parse_args(
+            [
+                "params_best",
+                "--coordinate-modes",
+                "normal",
+                "mirrored",
+            ]
+        )
+
+        def case(phase, speed, heading, lateral, reward):
+            return {
+                "command_forward_velocity_m_s": 0.10,
+                "initial_gait_phase": phase,
+                "average_forward_velocity_m_s": speed,
+                "unwrapped_heading_change_rad": heading,
+                "final_lateral_drift_m": lateral,
+                "total_reward": reward,
+                "failed": False,
+            }
+
+        normal = {
+            "diagnosis": {"locomoting_case_count": 2},
+            "cases": (
+                case(0.0, 0.10, -0.10, 0.04, 500.0),
+                case(0.5, 0.08, -0.05, 0.02, 480.0),
+            ),
+        }
+        mirrored = {
+            "diagnosis": {"locomoting_case_count": 1},
+            "cases": (
+                case(0.0, 0.05, 0.20, -0.02, 400.0),
+                case(0.5, 0.04, 0.05, 0.01, 390.0),
+            ),
+        }
+
+        comparison = (
+            evaluate_mjx_3d_walking_policy._summarize_coordinate_comparison(
+                normal, mirrored
+            )
+        )
+
+        self.assertEqual(args.coordinate_modes, ("normal", "mirrored"))
+        self.assertEqual(comparison["case_count"], 2)
+        self.assertEqual(comparison["normal_locomoting_case_count"], 2)
+        self.assertEqual(comparison["mirrored_locomoting_case_count"], 1)
+        self.assertAlmostEqual(
+            comparison["mean_mirrored_speed_retention_ratio"], 0.5
+        )
+        self.assertAlmostEqual(
+            comparison["maximum_absolute_forward_velocity_delta_m_s"],
+            0.05,
+        )
+        self.assertAlmostEqual(
+            comparison["maximum_absolute_heading_change_delta_rad"],
+            0.30,
+        )
 
     def test_standalone_old_config_grid_uses_training_command_range(self) -> None:
         evaluation_task = Walking3DConfig(

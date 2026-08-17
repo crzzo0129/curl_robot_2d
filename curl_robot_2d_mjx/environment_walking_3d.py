@@ -805,16 +805,24 @@ def make_brax_walking_env_3d(
                 info=info,
             )
 
-        def reset_for_evaluation(self, rng, command, gait_phase):
+        def reset_for_evaluation(
+            self,
+            rng,
+            command,
+            gait_phase,
+            symmetry_mirrored=False,
+        ):
             """Reset with a fixed command and caller-selected gait phase.
 
             The override is represented in the initial observation and the
-            command remains locked for the whole rollout.  Training reset
-            behavior is unchanged.
+            command remains locked for the whole rollout.  The optional mirror
+            flag supports frozen-policy equivariance diagnostics; ordinary
+            evaluation and training reset behavior are unchanged.
             """
 
             state = self.reset(rng)
             command = jp.asarray(command, dtype=state.info["command"].dtype)
+            symmetry_mirrored = jp.asarray(symmetry_mirrored, dtype=jp.bool_)
             gait_phase = jp.mod(
                 jp.asarray(gait_phase, dtype=state.info["gait_phase"].dtype),
                 1.0,
@@ -827,7 +835,7 @@ def make_brax_walking_env_3d(
                 "command_locked": jp.asarray(True),
                 "command_step_count": jp.asarray(0, dtype=jp.int32),
                 "gait_phase": gait_phase,
-                "symmetry_mirrored": jp.asarray(False),
+                "symmetry_mirrored": symmetry_mirrored,
             }
             observation = self._observation(
                 state.pipeline_state,

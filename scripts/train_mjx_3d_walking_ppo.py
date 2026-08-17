@@ -1111,6 +1111,7 @@ def _evaluate_policy_walking_3d(
     output_dir,
     command_forward_velocity_m_s=None,
     initial_gait_phase=0.0,
+    symmetry_mirrored=False,
 ):
     import jax
 
@@ -1132,6 +1133,7 @@ def _evaluate_policy_walking_3d(
             rng,
             np.asarray((commanded_speed, 0.0, 0.0), dtype=np.float32),
             np.asarray(initial_gait_phase, dtype=np.float32),
+            np.asarray(symmetry_mirrored, dtype=np.bool_),
         )
     initial_x = _float(state.pipeline_state.qpos[0])
     initial_y = _float(state.pipeline_state.qpos[1])
@@ -1259,6 +1261,7 @@ def _evaluate_policy_walking_3d(
             ),
         }
     summary = {
+        "coordinate_mode": "mirrored" if symmetry_mirrored else "normal",
         "command_forward_velocity_m_s": commanded_speed,
         "initial_gait_phase": float(initial_gait_phase) % 1.0,
         "episode_steps": steps,
@@ -1711,6 +1714,7 @@ def _evaluate_policy_grid_walking_3d(
     output_dir,
     forward_speeds,
     gait_phases,
+    symmetry_mirrored=False,
 ):
     cases = []
     for speed in forward_speeds:
@@ -1729,9 +1733,13 @@ def _evaluate_policy_grid_walking_3d(
                     output_dir=case_dir,
                     command_forward_velocity_m_s=speed,
                     initial_gait_phase=phase,
+                    symmetry_mirrored=symmetry_mirrored,
                 )
             )
     grid = _summarize_evaluation_grid_walking_3d(cases)
+    grid["coordinate_mode"] = (
+        "mirrored" if symmetry_mirrored else "normal"
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
     (output_dir / "evaluation_grid_summary.json").write_text(
         json.dumps(grid, indent=2) + "\n", encoding="utf-8"

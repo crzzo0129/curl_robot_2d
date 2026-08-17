@@ -325,6 +325,37 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "phase_locked_coupled_v7": {
+        "description": (
+            "Retain coupled residual exploration while making late failed "
+            "rolling less valuable than the validated reference baseline."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "explicit_phase_observation": True,
+            "learning_rate": 5e-5,
+            "entropy_cost": 1e-3,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.20,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
     "real_geometry_contact_v1": {
         "description": (
             "Keep the real-geometry 2-D CEM reference, learn symmetric "
@@ -705,7 +736,13 @@ def _checkpoint_selection_3d(
     }
 
 
-def _resolve_best_params(best, final_params, metric_history):
+def _resolve_best_params(
+    best,
+    final_params,
+    metric_history,
+    *,
+    initial_evaluated=None,
+):
     """Resolve an exact evaluated parameter set despite callback ordering."""
 
     last_eval_step = (
@@ -718,11 +755,24 @@ def _resolve_best_params(best, final_params, metric_history):
         and best.get("params_step") == best["step"]
     ):
         return best["params"], f"callback_step_{best['params_step']}"
-    return final_params, "final_fallback"
+    if initial_evaluated is not None and best["step"] is None:
+        if (
+            initial_evaluated.get("params") is not None
+            and initial_evaluated.get("params_step")
+            == initial_evaluated.get("step")
+        ):
+            return (
+                initial_evaluated["params"],
+                f"initial_eval_step_{initial_evaluated['step']}",
+            )
+    return final_params, "final_unresolved_fallback"
 
 
 def _best_and_final_share_checkpoint(best_params_source):
-    return best_params_source in {"final_eval", "final_fallback"}
+    return best_params_source in {
+        "final_eval",
+        "final_unresolved_fallback",
+    }
 
 
 def _format_eval_report_3d(
@@ -1048,8 +1098,8 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "3-D training recipe. anchored_v1 reproduces the first run; "
             "phase_locked_v3 starts residual learning from the restored "
-            "phase-locked reference; phase_locked_coupled_v6 uses common "
-            "and differential residual channels."
+            "phase-locked reference; phase_locked_coupled_v7 uses common "
+            "and differential residual channels with safer failure scoring."
         ),
     )
     parser.add_argument(
@@ -1663,6 +1713,7 @@ def main(argv=None) -> None:
         f"lat={reward_config.lateral_drift:g} "
         f"tilt={reward_config.axis_tilt:g} "
         f"collision_event={reward_config.foot_contact_event:g} "
+        f"clawback={reward_config.failure_progress_clawback:g} "
         f"termination={reward_config.termination:g}\n"
         f"  selection={args.selection_objective}: survival, turns, lateral, "
         "axis, contact safety "
@@ -1772,6 +1823,11 @@ def main(argv=None) -> None:
             "candidate_params": None,
             "selection": None,
         }
+        initial_evaluated = {
+            "step": None,
+            "params": None,
+            "params_step": None,
+        }
         reward_peak = {"reward": float("-inf"), "step": None}
         stage_metric_history = []
         domain = stage.domain_randomization
@@ -1802,6 +1858,9 @@ def main(argv=None) -> None:
             if best["step"] == global_step:
                 best["params"] = params_snapshot
                 best["params_step"] = global_step
+            if initial_evaluated["step"] == global_step:
+                initial_evaluated["params"] = params_snapshot
+                initial_evaluated["params_step"] = global_step
 
         def progress_fn(step, metrics):
             global_step = global_step_offset + int(step)
@@ -1836,6 +1895,11 @@ def main(argv=None) -> None:
                 ),
                 objective=args.selection_objective,
             )
+            if initial_evaluated["step"] is None:
+                initial_evaluated["step"] = global_step
+                if best["candidate_step"] == global_step:
+                    initial_evaluated["params"] = best["candidate_params"]
+                    initial_evaluated["params_step"] = global_step
             selected = (
                 not selection["rejected"]
                 and selection["score"] > best["score"]
@@ -1928,6 +1992,7 @@ def main(argv=None) -> None:
             best,
             stage_final_params,
             stage_metric_history,
+            initial_evaluated=initial_evaluated,
         )
         clean_stage_final_metrics = {
             name: _float(value)
@@ -1948,6 +2013,7 @@ def main(argv=None) -> None:
                     best["reward"] if math.isfinite(best["reward"]) else None
                 ),
                 "best_params_source": stage_best_source,
+                "retained_initial_eval_step": initial_evaluated["step"],
                 "best_failure_rate": (
                     best["selection"]["failure_rate"]
                     if best["selection"] is not None
@@ -2034,7 +2100,10 @@ def main(argv=None) -> None:
         f"step={best['step']} score={best['score']:.4f} "
         f"reward={best['reward']:+.3f}"
         if best["step"] is not None
-        else "final parameters (all eval points rejected)"
+        else (
+            "none (all eval points rejected; params_best retains "
+            f"initial eval step={initial_evaluated['step']})"
+        )
     )
     reward_peak_source = (
         f"step={reward_peak['step']} reward={reward_peak['reward']:+.3f}"

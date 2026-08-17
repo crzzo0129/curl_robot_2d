@@ -724,19 +724,49 @@ walking环境现支持训练期episode级左右镜像。每次reset按 `symmetry
 
 策略看到镜像观测后输出镜像动作，环境会先把动作还原成真实关节顺序，再计算目标位置、物理、reward和动作变化代价。内部上一动作保持真实顺序；非对称Actor-Critic模式下只有Actor观测被镜像，privileged critic观测保持正常坐标。动作仍为12维，非对称Actor/Critic仍为47/74维，已有网络checkpoint兼容。
 
-建议先从成熟直行checkpoint做短实验，不直接长续训：
+以下命令保留为失败实验记录，不要重复运行：
 
 ```bash
 python -m scripts.train_mjx_3d_walking_ppo \
   --preset h200 \
   --recipe unitree_mjlab_velocity_v1 \
+  --steps 3000000 \
+  --num-evals 16 \
+  --desired-speed 0.10 \
+  --command-forward-min 0.09 \
+  --command-forward-max 0.11 \
+  --command-lateral-max 0 \
+  --command-yaw-rate-max 0 \
+  --reward-yaw-rate-tracking 1.0 \
+  --reward-yaw-rate-tracking-sigma-rad-s 0.15 \
+  --reward-yaw-rate-tracking-roll-pitch-weight 0 \
+  --reward-yaw-rate-tracking-progress-gate 1.0 \
+  --no-observation-noise \
+  --no-domain-randomization \
+  --eval-forward-speeds 0.09 0.10 0.11 \
+  --eval-gait-phases 0.0 0.5 \
+  --restore-checkpoint \
+    results/mjx_pupper_unitree_straight_009_011_v1/ppo_checkpoint/000000294912 \
   --symmetry-augmentation \
   --symmetry-mirror-probability 0.25 \
-  --restore-checkpoint \
-    results/mjx_pupper_unitree_straight_gate_009_011_v2/ppo_checkpoint \
-  --steps 1000000 \
-  --num-evals 8 \
-  --out results/mjx_pupper_unitree_straight_mirror_smoke_v1
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir \
+    results/mjx_pupper_unitree_straight_mirror_009_011_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_straight_mirror_009_011_v1
 ```
 
-先用0.25而不是0.5，是为了降低成熟策略首次接触镜像坐标时的分布跳变。确认step 0正常、两个连续eval仍保持有效行走后，再决定是否提高到0.5或延长训练。不要同时修改reward和action scale，否则无法判断左右偏差变化来自哪里。
+该实验step 0正确恢复，速度为0.087 m/s；但eval 2和3连续降至0.029和0.030 m/s，physical score从1238.7降至约236。虽然 `action_L-R` 从-0.119缩小到-0.052，但这是以丢失有效行走为代价；`contact_L-R` 还从-0.081恶化到-0.142。`mirror_probability=0.25` 配合成熟策略和默认PPO学习率造成了过大的分布冲击，该路线判定失败。
+
+独立评估现支持冻结策略的正常/强制镜像坐标对照，不进行任何PPO更新。先运行：
+
+```bash
+python -m scripts.evaluate_mjx_3d_walking_policy \
+  results/mjx_pupper_unitree_straight_gate_009_011_v2/params_best \
+  --speeds 0.09 0.10 0.11 \
+  --gait-phases 0.0 0.5 \
+  --coordinate-modes normal mirrored \
+  --out \
+    results/mjx_pupper_unitree_straight_gate_009_011_v2/evaluation_coordinate_mirror
+```
+
+正常和镜像结果分别写入 `normal/` 与 `mirrored/`，根目录的 `coordinate_comparison_summary.json` 给出镜像速度保持率，以及同一speed×phase case的速度、heading和lateral最大差异。如果策略已经镜像等变，两种坐标下的真实物理轨迹应接近相同，而不是heading符号相反。

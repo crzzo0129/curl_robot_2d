@@ -19,6 +19,9 @@ from scripts.train_mjx_3d_walking_ppo import (
 )
 
 
+WALKING_EVALUATION_COORDINATE_MODES = ("normal", "mirrored")
+
+
 def _find_training_config(checkpoint: Path) -> Path:
     for directory in (checkpoint.parent, *checkpoint.parents):
         candidate = directory / "training_config.json"
@@ -63,6 +66,118 @@ def _default_grid(config, evaluation_task):
     )
 
 
+def _coordinate_case_key(case):
+    return (
+        float(case["command_forward_velocity_m_s"]),
+        float(case["initial_gait_phase"]),
+    )
+
+
+def _summarize_coordinate_comparison(normal_grid, mirrored_grid):
+    normal_cases = {
+        _coordinate_case_key(case): case for case in normal_grid["cases"]
+    }
+    mirrored_cases = {
+        _coordinate_case_key(case): case for case in mirrored_grid["cases"]
+    }
+    if normal_cases.keys() != mirrored_cases.keys():
+        raise ValueError("normal and mirrored grids must contain matching cases")
+
+    pairs = []
+    speed_retentions = []
+    for key in sorted(normal_cases):
+        normal = normal_cases[key]
+        mirrored = mirrored_cases[key]
+        command = key[0]
+        direction = 1.0 if command >= 0.0 else -1.0
+        normal_directional_speed = (
+            direction * float(normal["average_forward_velocity_m_s"])
+        )
+        mirrored_directional_speed = (
+            direction * float(mirrored["average_forward_velocity_m_s"])
+        )
+        speed_retention = None
+        if normal_directional_speed > 1.0e-6:
+            speed_retention = mirrored_directional_speed / normal_directional_speed
+            speed_retentions.append(speed_retention)
+        pairs.append(
+            {
+                "command_forward_velocity_m_s": command,
+                "initial_gait_phase": key[1],
+                "normal_forward_velocity_m_s": float(
+                    normal["average_forward_velocity_m_s"]
+                ),
+                "mirrored_forward_velocity_m_s": float(
+                    mirrored["average_forward_velocity_m_s"]
+                ),
+                "mirrored_speed_retention_ratio": speed_retention,
+                "forward_velocity_delta_m_s": float(
+                    mirrored["average_forward_velocity_m_s"]
+                    - normal["average_forward_velocity_m_s"]
+                ),
+                "heading_change_delta_rad": float(
+                    mirrored["unwrapped_heading_change_rad"]
+                    - normal["unwrapped_heading_change_rad"]
+                ),
+                "lateral_drift_delta_m": float(
+                    mirrored["final_lateral_drift_m"]
+                    - normal["final_lateral_drift_m"]
+                ),
+                "reward_delta": float(
+                    mirrored["total_reward"] - normal["total_reward"]
+                ),
+                "normal_failed": bool(normal["failed"]),
+                "mirrored_failed": bool(mirrored["failed"]),
+            }
+        )
+
+    return {
+        "case_count": len(pairs),
+        "normal_locomoting_case_count": normal_grid["diagnosis"][
+            "locomoting_case_count"
+        ],
+        "mirrored_locomoting_case_count": mirrored_grid["diagnosis"][
+            "locomoting_case_count"
+        ],
+        "mean_mirrored_speed_retention_ratio": (
+            sum(speed_retentions) / len(speed_retentions)
+            if speed_retentions
+            else None
+        ),
+        "maximum_absolute_forward_velocity_delta_m_s": max(
+            (abs(pair["forward_velocity_delta_m_s"]) for pair in pairs),
+            default=0.0,
+        ),
+        "maximum_absolute_heading_change_delta_rad": max(
+            (abs(pair["heading_change_delta_rad"]) for pair in pairs),
+            default=0.0,
+        ),
+        "maximum_absolute_lateral_drift_delta_m": max(
+            (abs(pair["lateral_drift_delta_m"]) for pair in pairs),
+            default=0.0,
+        ),
+        "pairwise_cases": pairs,
+    }
+
+
+def _format_coordinate_comparison(comparison):
+    retention = comparison["mean_mirrored_speed_retention_ratio"]
+    retention_text = "n/a" if retention is None else f"{retention:.1%}"
+    return (
+        "[coordinate comparison] "
+        f"cases={comparison['case_count']} "
+        f"moving_normal={comparison['normal_locomoting_case_count']} "
+        f"moving_mirrored={comparison['mirrored_locomoting_case_count']} "
+        f"speed_retention={retention_text} "
+        f"max_speed_delta="
+        f"{comparison['maximum_absolute_forward_velocity_delta_m_s']:.3f}m/s "
+        f"max_heading_delta="
+        f"{comparison['maximum_absolute_heading_change_delta_rad']:.3f}rad "
+        f"max_lateral_delta="
+        f"{comparison['maximum_absolute_lateral_drift_delta_m']:.3f}m"
+    )
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("checkpoint", type=Path)
@@ -70,6 +185,16 @@ def parse_args(argv=None):
     parser.add_argument("--out", type=Path)
     parser.add_argument("--speeds", type=float, nargs="+")
     parser.add_argument("--gait-phases", type=float, nargs="+")
+    parser.add_argument(
+        "--coordinate-modes",
+        nargs="+",
+        choices=WALKING_EVALUATION_COORDINATE_MODES,
+        default=("normal",),
+        help=(
+            "Actor coordinate systems to evaluate. Selecting both runs a "
+            "frozen-policy mirror-equivariance comparison."
+        ),
+    )
     parser.add_argument("--episode-length", type=int)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--memory-fraction", type=float, default=0.80)
@@ -84,6 +209,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--preallocate", action="store_true", default=False)
     args = parser.parse_args(argv)
+    args.coordinate_modes = tuple(dict.fromkeys(args.coordinate_modes))
     if args.episode_length is not None and args.episode_length < 1:
         parser.error("--episode-length must be positive")
     for values, name in (
@@ -117,6 +243,7 @@ def main(argv=None) -> None:
         command_yaw_rate_range_rad_s=(0.0, 0.0),
         command_deadband_probability=0.0,
         observation_noise_enabled=False,
+        symmetry_augmentation_enabled=False,
         reset_joint_noise_rad=0.0,
         reset_velocity_noise=0.0,
         reset_root_xy_velocity_noise_m_s=0.0,
@@ -192,21 +319,43 @@ def main(argv=None) -> None:
         f"  checkpoint={checkpoint}\n"
         f"  training_config={training_config_path}\n"
         f"  speeds={','.join(f'{value:g}' for value in speeds)} "
-        f"phases={','.join(f'{value:g}' for value in phases)}\n"
+        f"phases={','.join(f'{value:g}' for value in phases)} "
+        f"coordinates={','.join(args.coordinate_modes)}\n"
         f"  output={output_dir}",
         flush=True,
     )
-    grid = _evaluate_policy_grid_walking_3d(
-        env,
-        make_inference_fn,
-        params,
-        seed=args.seed,
-        episode_length=task.episode_length,
-        output_dir=output_dir,
-        forward_speeds=speeds,
-        gait_phases=phases,
-    )
-    print(_format_evaluation_grid_walking_3d("policy", grid), flush=True)
+    grids = {}
+    multiple_modes = len(args.coordinate_modes) > 1
+    for coordinate_mode in args.coordinate_modes:
+        mode_output_dir = (
+            output_dir / coordinate_mode if multiple_modes else output_dir
+        )
+        grid = _evaluate_policy_grid_walking_3d(
+            env,
+            make_inference_fn,
+            params,
+            seed=args.seed,
+            episode_length=task.episode_length,
+            output_dir=mode_output_dir,
+            forward_speeds=speeds,
+            gait_phases=phases,
+            symmetry_mirrored=coordinate_mode == "mirrored",
+        )
+        grids[coordinate_mode] = grid
+        print(
+            _format_evaluation_grid_walking_3d(coordinate_mode, grid),
+            flush=True,
+        )
+    if "normal" in grids and "mirrored" in grids:
+        comparison = _summarize_coordinate_comparison(
+            grids["normal"], grids["mirrored"]
+        )
+        output_dir.mkdir(parents=True, exist_ok=True)
+        (output_dir / "coordinate_comparison_summary.json").write_text(
+            json.dumps(comparison, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        print(_format_coordinate_comparison(comparison), flush=True)
 
 
 if __name__ == "__main__":

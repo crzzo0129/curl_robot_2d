@@ -162,6 +162,52 @@ class MJX3DRewardTest(unittest.TestCase):
             places=5,
         )
 
+    def test_late_lateral_failure_cannot_outrank_stable_roll(self) -> None:
+        config = Rolling3DRewardConfig(
+            roll_progress=8.0,
+            lateral_drift=6.0,
+            failure_progress_clawback=4.0,
+            termination=40.0,
+        )
+        progress_per_step = 8.6 * 2.0 * np.pi / 500.0
+
+        stable_inputs = zero_inputs()
+        stable_inputs["conservative_progress"] = np.asarray(
+            progress_per_step, dtype=np.float32
+        )
+        stable_inputs["lateral_drift_abs"] = np.asarray(
+            0.04, dtype=np.float32
+        )
+        stable_step_reward = sum(
+            reward_terms_3d(np, config, stable_inputs).values()
+        )
+        stable_return = 500.0 * float(stable_step_reward)
+
+        failed_inputs = dict(stable_inputs)
+        failed_inputs["lateral_drift_abs"] = np.asarray(
+            0.03, dtype=np.float32
+        )
+        failed_step_reward = sum(
+            reward_terms_3d(np, config, failed_inputs).values()
+        )
+        failure_inputs = dict(failed_inputs)
+        failure_inputs["failed"] = np.asarray(1.0, dtype=np.float32)
+        failure_inputs["roll_potential_positive"] = np.asarray(
+            7.7 * 2.0 * np.pi, dtype=np.float32
+        )
+        failure_inputs["remaining_fraction"] = np.asarray(
+            0.10, dtype=np.float32
+        )
+        terminal_adjustment = sum(
+            reward_terms_3d(np, config, failure_inputs).values()
+        ) - failed_step_reward
+        failed_return = (
+            450.0 * float(failed_step_reward)
+            + float(terminal_adjustment)
+        )
+
+        self.assertGreater(stable_return, failed_return)
+
 
 if __name__ == "__main__":
     unittest.main()

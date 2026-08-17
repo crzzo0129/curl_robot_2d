@@ -145,7 +145,10 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
             step_source.index("self.nominal_ctrl\n                + policy_action"),
         )
         self.assertIn("symmetry_augmentation_enabled=False", eval_source)
-        self.assertIn('"symmetry_mirrored": jp.asarray(False)', environment_source)
+        self.assertIn("symmetry_mirrored=False", environment_source)
+        self.assertIn(
+            '"symmetry_mirrored": symmetry_mirrored', environment_source
+        )
 
     def test_dimensions_are_unchanged(self) -> None:
         self.assertEqual(WALKING_ACTION_SIZE_3D, 12)
