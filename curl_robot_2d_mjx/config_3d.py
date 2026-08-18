@@ -63,6 +63,11 @@ class Rolling3DConfig:
     lateral_reflex_gain: float = 0.0
     lateral_reflex_position_gain: float = 2.0
     lateral_reflex_velocity_gain: float = 2.0
+    lateral_command_enabled: bool = False
+    lateral_command_max: float = 0.15
+    lateral_command_probability: float = 0.20
+    lateral_command_error_limit: float = 0.20
+    lateral_command_fixed: float | None = None
     explicit_phase_observation: bool = False
     disable_root_damping: bool = True
 
@@ -163,6 +168,25 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
             raise ValueError(f"{name} must be finite")
     if config.lateral_reflex_gain < 0.0:
         raise ValueError("lateral_reflex_gain must be nonnegative")
+    for value, name in (
+        (config.lateral_command_max, "lateral_command_max"),
+        (config.lateral_command_probability, "lateral_command_probability"),
+        (config.lateral_command_error_limit, "lateral_command_error_limit"),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+    if config.lateral_command_max < 0.0:
+        raise ValueError("lateral_command_max must be nonnegative")
+    if not 0.0 <= config.lateral_command_probability <= 1.0:
+        raise ValueError(
+            "lateral_command_probability must be in [0, 1]"
+        )
+    if config.lateral_command_error_limit <= 0.0:
+        raise ValueError("lateral_command_error_limit must be positive")
+    if config.lateral_command_fixed is not None and not math.isfinite(
+        config.lateral_command_fixed
+    ):
+        raise ValueError("lateral_command_fixed must be finite")
     if not isinstance(config.explicit_phase_observation, bool):
         raise ValueError("explicit_phase_observation must be boolean")
     if config.terminate_root_z_min is not None:

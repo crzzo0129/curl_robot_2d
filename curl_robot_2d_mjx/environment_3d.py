@@ -764,6 +764,34 @@ def make_brax_env_3d(
 
         def reset(self, rng):
             rng = jax.random.fold_in(rng, self.seed)
+            if task.lateral_command_fixed is not None:
+                lateral_velocity_command = jp.asarray(
+                    task.lateral_command_fixed, dtype=jp.float32
+                )
+            elif task.lateral_command_enabled:
+                command_key = jax.random.fold_in(rng, 777)
+                command_uniform = jax.random.uniform(
+                    command_key, shape=(), minval=0.0, maxval=1.0
+                )
+                command_active = (
+                    command_uniform < task.lateral_command_probability
+                )
+                magnitude_key = jax.random.fold_in(rng, 778)
+                sign_key = jax.random.fold_in(rng, 779)
+                command_magnitude = jax.random.uniform(
+                    magnitude_key,
+                    shape=(),
+                    minval=0.05,
+                    maxval=task.lateral_command_max,
+                )
+                command_sign = jax.random.bernoulli(sign_key, 0.5)
+                lateral_velocity_command = (
+                    command_active
+                    * command_magnitude
+                    * (2.0 * command_sign - 1.0)
+                )
+            else:
+                lateral_velocity_command = jp.zeros((), dtype=jp.float32)
             if task.reset_pair_differential_scale is None:
                 joint_key, velocity_key = jax.random.split(rng, 2)
                 tilt_key = jax.random.fold_in(rng, 1)
@@ -892,6 +920,7 @@ def make_brax_env_3d(
             info = {
                 "initial_root_x": data.qpos[0],
                 "initial_root_y": data.qpos[1],
+                "lateral_velocity_command": lateral_velocity_command,
                 "previous_root_x": data.qpos[0],
                 "cumulative_rotation": jp.zeros((), dtype=jp.float32),
                 "previous_roll_potential": jp.zeros(
@@ -969,9 +998,17 @@ def make_brax_env_3d(
                     - state.info["initial_root_y"]
                 )
                 lateral_velocity = state.pipeline_state.qvel[1]
+                lateral_velocity_command = state.info[
+                    "lateral_velocity_command"
+                ]
+                turning = jp.abs(lateral_velocity_command) > 1e-6
+                position_gain = jp.where(
+                    turning, 0.0, task.lateral_reflex_position_gain
+                )
+                velocity_error = lateral_velocity - lateral_velocity_command
                 reflex_d = jp.clip(
-                    task.lateral_reflex_position_gain * lateral_drift
-                    + task.lateral_reflex_velocity_gain * lateral_velocity,
+                    position_gain * lateral_drift
+                    + task.lateral_reflex_velocity_gain * velocity_error,
                     -1.0,
                     1.0,
                 )
@@ -1234,8 +1271,13 @@ def make_brax_env_3d(
                 >= self.forbidden_contact_termination_steps
             )
             failure_root_high = root_z > task.terminate_root_z_max
-            failure_lateral_drift = (
-                lateral_drift_abs > task.terminate_lateral_drift_m
+            lateral_velocity_error = jp.abs(
+                lateral_velocity - state.info["lateral_velocity_command"]
+            )
+            failure_lateral_drift = jp.where(
+                jp.abs(state.info["lateral_velocity_command"]) > 1e-6,
+                lateral_velocity_error > task.lateral_command_error_limit,
+                lateral_drift_abs > task.terminate_lateral_drift_m,
             )
             failure_forbidden_depth = (
                 contacts["forbidden_depth"]

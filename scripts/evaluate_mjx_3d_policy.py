@@ -340,6 +340,15 @@ def parse_args(argv=None):
     parser.add_argument("--lateral-reflex-position-gain", type=float, default=2.0)
     parser.add_argument("--lateral-reflex-velocity-gain", type=float, default=2.0)
     parser.add_argument(
+        "--lateral-command-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--lateral-command-max", type=float, default=0.15)
+    parser.add_argument("--lateral-command-probability", type=float, default=0.20)
+    parser.add_argument("--lateral-command-error-limit", type=float, default=0.20)
+    parser.add_argument("--lateral-command-fixed", type=float)
+    parser.add_argument(
         "--explicit-phase-observation",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -505,6 +514,11 @@ def main(argv=None) -> None:
             lateral_reflex_gain=args.lateral_reflex_gain,
             lateral_reflex_position_gain=args.lateral_reflex_position_gain,
             lateral_reflex_velocity_gain=args.lateral_reflex_velocity_gain,
+            lateral_command_enabled=args.lateral_command_enabled,
+            lateral_command_max=args.lateral_command_max,
+            lateral_command_probability=args.lateral_command_probability,
+            lateral_command_error_limit=args.lateral_command_error_limit,
+            lateral_command_fixed=args.lateral_command_fixed,
             explicit_phase_observation=args.explicit_phase_observation,
         ),
     )

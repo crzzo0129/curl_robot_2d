@@ -435,6 +435,23 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(args.reflection_equivariant_policy)
 
+    def test_evaluator_exposes_lateral_reflex_and_command(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "params_best",
+                "--out",
+                "eval_turn",
+                "--lateral-reflex-gain",
+                "0.25",
+                "--lateral-command-fixed",
+                "0.10",
+            ]
+        )
+
+        self.assertEqual(args.lateral_reflex_gain, 0.25)
+        self.assertEqual(args.lateral_command_fixed, 0.10)
+        self.assertFalse(args.lateral_command_enabled)
+
     def test_phase_locked_meanzero_v10_uses_mean_zero_regularizer(
         self,
     ) -> None:

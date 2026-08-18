@@ -112,6 +112,11 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.lateral_reflex_gain, 0.0)
         self.assertEqual(config.lateral_reflex_position_gain, 2.0)
         self.assertEqual(config.lateral_reflex_velocity_gain, 2.0)
+        self.assertFalse(config.lateral_command_enabled)
+        self.assertEqual(config.lateral_command_max, 0.15)
+        self.assertEqual(config.lateral_command_probability, 0.20)
+        self.assertEqual(config.lateral_command_error_limit, 0.20)
+        self.assertIsNone(config.lateral_command_fixed)
         self.assertEqual(config.reset_axis_tilt_noise_rad, 0.0)
         self.assertEqual(config.geom_friction_scale, 1.0)
         self.assertEqual(config.body_mass_scale, 1.0)
@@ -138,6 +143,9 @@ class MJX3DContractTest(unittest.TestCase):
             {"lateral_reflex_gain": -0.1},
             {"lateral_reflex_position_gain": float("nan")},
             {"lateral_reflex_velocity_gain": float("inf")},
+            {"lateral_command_probability": 1.1},
+            {"lateral_command_error_limit": 0.0},
+            {"lateral_command_fixed": float("nan")},
             {"reset_joint_noise_rad": -0.1},
             {"reset_velocity_noise": float("nan")},
             {"reset_pair_differential_scale": 1.1},
