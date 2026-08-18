@@ -963,6 +963,31 @@ def make_brax_env_3d(
             residual_differential_rms = jp.sqrt(
                 jp.mean(jp.square(0.5 * (residual_left - residual_right)))
             )
+            if task.lateral_reflex_gain != 0.0:
+                lateral_drift = (
+                    state.pipeline_state.qpos[1]
+                    - state.info["initial_root_y"]
+                )
+                lateral_velocity = state.pipeline_state.qvel[1]
+                reflex_d = jp.clip(
+                    task.lateral_reflex_position_gain * lateral_drift
+                    + task.lateral_reflex_velocity_gain * lateral_velocity,
+                    -1.0,
+                    1.0,
+                )
+                reflex_actuator = task.lateral_reflex_gain * jp.asarray(
+                    (
+                        reflex_d,
+                        0.0,
+                        -reflex_d,
+                        0.0,
+                        reflex_d,
+                        0.0,
+                        -reflex_d,
+                        0.0,
+                    )
+                )
+                policy_action = policy_action + reflex_actuator
             control_dt = (
                 float(self.mj_model.opt.timestep) * task.action_repeat
             )

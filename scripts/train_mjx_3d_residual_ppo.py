@@ -456,6 +456,40 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "phase_locked_reflex_v11": {
+        "description": (
+            "Fixed lateral-stability reflex on the differential channels with "
+            "a common-only residual policy for straight rolling."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.0,
+            "lateral_reflex_gain": 0.25,
+            "lateral_reflex_position_gain": 2.0,
+            "lateral_reflex_velocity_gain": 2.0,
+            "explicit_phase_observation": True,
+            "learning_rate": 1e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.10,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
     "real_geometry_contact_v1": {
         "description": (
             "Keep the real-geometry 2-D CEM reference, learn symmetric "
@@ -1413,6 +1447,25 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--residual-pair-differential-scale", type=float)
     parser.add_argument(
+        "--lateral-reflex-gain",
+        type=float,
+        help=(
+            "Fixed lateral-stability reflex differential authority. 0 "
+            "disables the reflex; 0.25 matches the validated reference "
+            "authority."
+        ),
+    )
+    parser.add_argument(
+        "--lateral-reflex-position-gain",
+        type=float,
+        help="Reflex position feedback k in d = k*y + kw*vy (per metre).",
+    )
+    parser.add_argument(
+        "--lateral-reflex-velocity-gain",
+        type=float,
+        help="Reflex velocity feedback kw in d = k*y + kw*vy (per m/s).",
+    )
+    parser.add_argument(
         "--explicit-phase-observation",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1560,6 +1613,14 @@ def parse_args(argv=None):
         args.reflection_equivariant_policy = False
     if args.differential_mean_zero_weight is None:
         args.differential_mean_zero_weight = 0.0
+    if args.lateral_reflex_gain is None:
+        args.lateral_reflex_gain = 0.0
+    if args.lateral_reflex_position_gain is None:
+        args.lateral_reflex_position_gain = 2.0
+    if args.lateral_reflex_velocity_gain is None:
+        args.lateral_reflex_velocity_gain = 2.0
+    if args.lateral_reflex_gain < 0.0:
+        parser.error("--lateral-reflex-gain must be nonnegative")
     if args.differential_mean_zero_weight < 0.0:
         parser.error("--differential-mean-zero-weight must be nonnegative")
     if (
@@ -1764,6 +1825,9 @@ def main(argv=None) -> None:
             residual_pair_differential_scale=(
                 args.residual_pair_differential_scale
             ),
+            lateral_reflex_gain=args.lateral_reflex_gain,
+            lateral_reflex_position_gain=args.lateral_reflex_position_gain,
+            lateral_reflex_velocity_gain=args.lateral_reflex_velocity_gain,
             explicit_phase_observation=bool(
                 args.explicit_phase_observation
             ),
@@ -1936,6 +2000,15 @@ def main(argv=None) -> None:
             f"{task.residual_pair_differential_scale:g}"
         )
     )
+    reflex_text = (
+        "disabled"
+        if task.lateral_reflex_gain == 0.0
+        else (
+            f"gain={task.lateral_reflex_gain:g} "
+            f"k={task.lateral_reflex_position_gain:g} "
+            f"kw={task.lateral_reflex_velocity_gain:g}"
+        )
+    )
     observation_size = OBSERVATION_SIZE_3D + (
         PHASE_FEEDBACK_SIZE_3D if task.explicit_phase_observation else 0
     )
@@ -1979,6 +2052,7 @@ def main(argv=None) -> None:
         f"startup_boost={task.reference_startup_boost:g} "
         f"startup_boost_duration={task.reference_startup_boost_duration_s:g}s\n"
         f"  residual_channels={residual_pair_text}\n"
+        f"  lateral_reflex={reflex_text}\n"
         f"  explicit_phase_obs={task.explicit_phase_observation} "
         f"obs_size={observation_size}\n"
         f"  lr={args.learning_rate:g} entropy={args.entropy_cost:g} "

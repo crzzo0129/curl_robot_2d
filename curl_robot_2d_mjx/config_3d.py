@@ -60,6 +60,9 @@ class Rolling3DConfig:
     reference_startup_boost: float = 0.0
     reference_startup_boost_duration_s: float = 0.25
     residual_pair_differential_scale: float | None = None
+    lateral_reflex_gain: float = 0.0
+    lateral_reflex_position_gain: float = 2.0
+    lateral_reflex_velocity_gain: float = 2.0
     explicit_phase_observation: bool = False
     disable_root_damping: bool = True
 
@@ -151,6 +154,15 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
             raise ValueError(
                 "residual_pair_differential_scale must be in [0, 1]"
             )
+    for value, name in (
+        (config.lateral_reflex_gain, "lateral_reflex_gain"),
+        (config.lateral_reflex_position_gain, "lateral_reflex_position_gain"),
+        (config.lateral_reflex_velocity_gain, "lateral_reflex_velocity_gain"),
+    ):
+        if not math.isfinite(value):
+            raise ValueError(f"{name} must be finite")
+    if config.lateral_reflex_gain < 0.0:
+        raise ValueError("lateral_reflex_gain must be nonnegative")
     if not isinstance(config.explicit_phase_observation, bool):
         raise ValueError("explicit_phase_observation must be boolean")
     if config.terminate_root_z_min is not None:

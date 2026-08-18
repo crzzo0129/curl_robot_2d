@@ -1108,3 +1108,100 @@ velocity < 0.02                         → 没发现步态（走第 2 步排查
 ```
 
 关键指标：`heading_final`（累计总转角，目标 ≈0）、`yaw_signed`（平均 yaw rate，目标 ≈0）、`action_L-R`（左右动作差，镜像增强应把它压到 ≈0）。
+
+## 28. heading观测证伪 + 全向课程与部署层闭环（2026-08-18）
+
+### 章节27方案已证伪
+
+章节27的"heading观测 + 从头训练走直"路线被实验否定：加镜像失败（步态未发现）、不加镜像也失败（eval 8 已差）、去掉 heading 后步态恢复（eval 4）。共同变量是 heading 观测本身，确认 **heading 观测破坏步态发现**。
+
+根因判断：heading 编码为 `(cos, sin)`，从头训练机器人长期站立，heading 长期 ≈ `(1, 0)`，std 接近 0。observation normalization 除以接近 0 的 std，把 heading 放大成极大数值，污染整个观测。projected_gravity 同样是姿态量却不受影响，因为它从开始就有 roll/pitch 抖动。
+
+### heading 观测改为可选开关（默认关闭）
+
+`heading_observation_enabled: bool = False` 已加入 `Walking3DConfig`；`environment_walking_3d.py` 的镜像函数、`_observation`、`observation_size` 按开关分支（关闭时回 47/74 维）；`train_mjx_3d_walking_ppo.py` 增加 `--heading-observation` / `--no-heading-observation`（默认关）。测试断言回 47/74，并保留 heading 开启时的镜像测试 case。
+
+### 走直四条 RL 内部路全部堵死
+
+| 尝试 | 结论 |
+|---|---|
+| 收紧 yaw reward（1.0/0.15）| 抓不到直流偏置（被步态震荡淹没），且需 progress gate 防静止钻空子 |
+| heading reward（0.5）| 无效（观测缺 heading，梯度无方向）|
+| 镜像增强 | 破坏步态发现（从头+续训都失败）|
+| heading 观测 | 破坏步态发现（normalization）|
+
+结论：**走直是闭环控制问题，不是 RL 前馈问题**。应交给部署层 heading-hold 闭环（gyro 积分 heading + PID，yaw_rate 命令=0 时保持朝向），RL 层专注全向速度跟踪。
+
+### discovery/consolidate 两阶段规律
+
+"中间出现步态、最后学习恶化"是 discovery 阶段（lr=3e-4）的正常现象：高 lr 快速探索偶然撞出步态（如 reproduce 的 eval 4 / best_step 884736），随后一次大更新（KL 跳升，如 eval 5 的 KL=0.0513）把脆弱步态冲掉。正确流程是两阶段：
+
+1. discovery（lr 3e-4）：快速探索，中间撞出步态 → 立即保存 best checkpoint
+2. consolidate（lr 2e-5 保守）：从 best 用低 lr 温和巩固，不再破坏步态
+
+### 方向转变：先全向，走直交给部署层
+
+最终目标是遥控全向行走。正确架构：
+
+```
+底层 RL：跟踪 body-frame [vx, vy, yaw_rate]   ← 全向训练
+部署层：heading-hold 闭环（gyro 积分 + PID）  ← 走直
+```
+
+全向训练的起点选 **294912**（`mjx_pupper_unitree_straight_009_011_v1`，0.09-0.11 范围 consolidate 后的精调步态，heading 漂移仅 -0.22 rad），而非 discovery 的 884736（heading 漂移 +0.87 rad 的半成品）。
+
+### 全向课程（三阶段）
+
+续训稳定性沿用已验证的手段：`--fixed-policy-std 0.03`、`--freeze-observation-normalizer`、保守 optimizer（lr 1e-5、updates 1、clip 0.10、desired_kl 0.002）。
+
+**阶段 1（学转向，vy 仍为 0）**：`--command-yaw-rate-max 0.15`
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_v1 \
+  --steps 500000 \
+  --num-evals 8 \
+  --desired-speed 0.10 \
+  --command-forward-min 0.09 \
+  --command-forward-max 0.11 \
+  --command-lateral-max 0 \
+  --command-yaw-rate-max 0.15 \
+  --reward-yaw-rate-tracking 1.0 \
+  --reward-yaw-rate-tracking-sigma-rad-s 0.15 \
+  --reward-yaw-rate-tracking-roll-pitch-weight 0 \
+  --reward-yaw-rate-tracking-progress-gate 1.0 \
+  --no-observation-noise \
+  --no-domain-randomization \
+  --updates-per-batch 1 \
+  --learning-rate 1e-5 \
+  --adaptive-kl-min-lr 2e-6 \
+  --adaptive-kl-max-lr 1e-5 \
+  --entropy-cost 0.001 \
+  --desired-kl 0.002 \
+  --clipping-epsilon 0.10 \
+  --max-grad-norm 0.5 \
+  --eval-forward-speeds 0.09 0.10 0.11 \
+  --eval-gait-phases 0.0 0.5 \
+  --restore-checkpoint \
+    results/mjx_pupper_unitree_straight_009_011_v1/ppo_checkpoint/000000294912 \
+  --freeze-observation-normalizer \
+  --fixed-policy-std 0.03 \
+  --no-symmetry-augmentation \
+  --actor-mirror-consistency-weight 0 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir \
+    results/mjx_pupper_unitree_yaw015_009_011_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_yaw015_009_011_v1
+```
+
+训练 eval 只评估直行（eval_task 的 yaw_rate 固定 0）。判断标准：
+- 直行保持：eval 速度 ≈0.087、heading_final 不恶化（转向训练不引入新直行偏置）
+- 转向学会（渲染确认）：`render_mjx_3d_walking_policy` 给非零 yaw_rate 命令，看是否真的转向
+- eval 2 速度 <0.07 → 立即停
+
+**阶段 2（yaw 放大 + 学侧移）**：从阶段 1 的 best 恢复，`--command-yaw-rate-max 0.30`、`--command-lateral-max 0.10`，其余不变。
+
+**阶段 3（全向）**：从阶段 2 的 best 恢复，`--command-yaw-rate-max 0.60`、`--command-lateral-max 0.15`，其余不变。
+
+每阶段从上一阶段 best 续训，验证通过（直行不退化 + 渲染确认新命令响应）再进下一阶段。

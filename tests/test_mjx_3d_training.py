@@ -447,6 +447,29 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.learning_rate, 1e-5)
         self.assertEqual(args.initial_policy_std, 0.10)
 
+    def test_phase_locked_reflex_v11_enables_lateral_reflex(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_reflex_v11"]
+        )
+
+        self.assertEqual(args.lateral_reflex_gain, 0.25)
+        self.assertEqual(args.lateral_reflex_position_gain, 2.0)
+        self.assertEqual(args.lateral_reflex_velocity_gain, 2.0)
+        self.assertEqual(args.residual_pair_differential_scale, 0.0)
+        self.assertEqual(args.learning_rate, 1e-5)
+        self.assertEqual(args.initial_policy_std, 0.10)
+
+    def test_lateral_reflex_defaults_to_disabled(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_coupled_v8"]
+        )
+
+        self.assertEqual(args.lateral_reflex_gain, 0.0)
+        self.assertEqual(args.lateral_reflex_position_gain, 2.0)
+        self.assertEqual(args.lateral_reflex_velocity_gain, 2.0)
+
     def test_mean_zero_weight_conflicts_with_reflection_equivariant(
         self,
     ) -> None:

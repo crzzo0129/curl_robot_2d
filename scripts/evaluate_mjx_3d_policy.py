@@ -336,6 +336,9 @@ def parse_args(argv=None):
         default=0.25,
     )
     parser.add_argument("--residual-pair-differential-scale", type=float, default=0.25)
+    parser.add_argument("--lateral-reflex-gain", type=float, default=0.0)
+    parser.add_argument("--lateral-reflex-position-gain", type=float, default=2.0)
+    parser.add_argument("--lateral-reflex-velocity-gain", type=float, default=2.0)
     parser.add_argument(
         "--explicit-phase-observation",
         action=argparse.BooleanOptionalAction,
@@ -499,6 +502,9 @@ def main(argv=None) -> None:
             residual_pair_differential_scale=(
                 args.residual_pair_differential_scale
             ),
+            lateral_reflex_gain=args.lateral_reflex_gain,
+            lateral_reflex_position_gain=args.lateral_reflex_position_gain,
+            lateral_reflex_velocity_gain=args.lateral_reflex_velocity_gain,
             explicit_phase_observation=args.explicit_phase_observation,
         ),
     )

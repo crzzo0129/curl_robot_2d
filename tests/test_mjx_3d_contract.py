@@ -109,6 +109,9 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.reference_startup_boost_duration_s, 0.25)
         self.assertIsNone(config.residual_pair_differential_scale)
         self.assertIsNone(config.reset_pair_differential_scale)
+        self.assertEqual(config.lateral_reflex_gain, 0.0)
+        self.assertEqual(config.lateral_reflex_position_gain, 2.0)
+        self.assertEqual(config.lateral_reflex_velocity_gain, 2.0)
         self.assertEqual(config.reset_axis_tilt_noise_rad, 0.0)
         self.assertEqual(config.geom_friction_scale, 1.0)
         self.assertEqual(config.body_mass_scale, 1.0)
@@ -132,6 +135,9 @@ class MJX3DContractTest(unittest.TestCase):
             {"reference_startup_boost": -0.1},
             {"reference_startup_boost_duration_s": 0.0},
             {"residual_pair_differential_scale": 1.1},
+            {"lateral_reflex_gain": -0.1},
+            {"lateral_reflex_position_gain": float("nan")},
+            {"lateral_reflex_velocity_gain": float("inf")},
             {"reset_joint_noise_rad": -0.1},
             {"reset_velocity_noise": float("nan")},
             {"reset_pair_differential_scale": 1.1},
