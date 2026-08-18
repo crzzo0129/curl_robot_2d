@@ -76,6 +76,7 @@ class Walking3DConfig:
     observation_scale_joint_velocity: float = 0.05
     observation_scale_previous_action: float = 1.0
     asymmetric_observation_enabled: bool = False
+    heading_observation_enabled: bool = False
     symmetry_augmentation_enabled: bool = False
     symmetry_mirror_probability: float = 0.5
     observation_scale_foot_height: float = 10.0

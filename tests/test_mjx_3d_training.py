@@ -435,6 +435,90 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(args.reflection_equivariant_policy)
 
+    def test_phase_locked_meanzero_v10_uses_mean_zero_regularizer(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_meanzero_v10"]
+        )
+
+        self.assertFalse(args.reflection_equivariant_policy)
+        self.assertEqual(args.differential_mean_zero_weight, 50.0)
+        self.assertEqual(args.learning_rate, 1e-5)
+        self.assertEqual(args.initial_policy_std, 0.10)
+
+    def test_mean_zero_weight_conflicts_with_reflection_equivariant(
+        self,
+    ) -> None:
+        with self.assertRaises(SystemExit):
+            train_mjx_3d_residual_ppo.parse_args(
+                [
+                    "--recipe",
+                    "phase_locked_equivariant_v9",
+                    "--differential-mean-zero-weight",
+                    "10.0",
+                ]
+            )
+
+    def test_differential_mean_zero_loss_scope_penalizes_batch_mean(
+        self,
+    ) -> None:
+        import types
+
+        mode = np.zeros((4, 8), dtype=np.float32)
+        mode[:, 4:] = np.asarray(
+            [[1.0, 2.0, 3.0, 4.0]] * 4, dtype=np.float32
+        )
+        logits = np.concatenate([mode, np.zeros_like(mode)], axis=-1)
+
+        class _Distribution:
+            def mode(self, value):
+                return value[..., :8]
+
+        class _PolicyNetwork:
+            def apply(self, normalizer_params, policy_params, observation):
+                return logits
+
+        class _PPONetwork:
+            policy_network = _PolicyNetwork()
+            parametric_action_distribution = _Distribution()
+
+        class _Data:
+            observation = np.zeros((4, 63), dtype=np.float32)
+
+        base_loss = 3.0
+        base_metrics = {"policy_loss": 0.5}
+
+        class _Module:
+            def compute_ppo_loss(
+                self, params, normalizer_params, data, rng, ppo_network, **kwargs
+            ):
+                return base_loss, dict(base_metrics)
+
+        module = _Module()
+        params = types.SimpleNamespace(policy=None)
+        data = _Data()
+        original = module.compute_ppo_loss
+
+        with train_mjx_3d_residual_ppo._differential_mean_zero_loss_scope(
+            module, weight=10.0, array_module=np
+        ):
+            total_loss, metrics = module.compute_ppo_loss(
+                params, None, data, None, _PPONetwork()
+            )
+
+        expected_mean_zero_loss = (1.0 + 4.0 + 9.0 + 16.0) / 4.0
+        self.assertAlmostEqual(
+            metrics["differential_mean_zero_loss"], expected_mean_zero_loss
+        )
+        self.assertAlmostEqual(
+            total_loss, base_loss + 10.0 * expected_mean_zero_loss
+        )
+        self.assertEqual(metrics["total_loss"], total_loss)
+        self.assertIs(
+            module.compute_ppo_loss.__func__, original.__func__
+        )
+
     def test_checkpoint_selection_uses_mean_absolute_lateral_drift(
         self,
     ) -> None:

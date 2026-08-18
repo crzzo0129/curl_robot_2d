@@ -231,17 +231,23 @@ def mirror_walking_actor_observation_3d(
     *,
     asymmetric_observation_enabled,
     gait_phase_enabled,
+    heading_observation_enabled,
 ):
     """Reflect an Actor observation while preserving leading batch axes."""
 
     if asymmetric_observation_enabled:
-        if (
-            observation.shape[-1]
-            != WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D
-        ):
+        expected_size = (
+            WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D
+            + (
+                WALKING_HEADING_OBSERVATION_SIZE_3D
+                if heading_observation_enabled
+                else 0
+            )
+        )
+        if observation.shape[-1] != expected_size:
             raise ValueError(
                 "asymmetric walking Actor observation must have size "
-                f"{WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D}"
+                f"{expected_size}"
             )
         components = (
             mirror_walking_angular_velocity_3d(xp, observation[..., 0:3]),
@@ -251,7 +257,15 @@ def mirror_walking_actor_observation_3d(
             mirror_walking_leg_values_3d(xp, observation[..., 11:23]),
             mirror_walking_leg_values_3d(xp, observation[..., 23:35]),
             mirror_walking_action_3d(xp, observation[..., 35:47]),
-            mirror_walking_heading_features_3d(xp, observation[..., 47:49]),
+            *(
+                (
+                    mirror_walking_heading_features_3d(
+                        xp, observation[..., 47:49]
+                    ),
+                )
+                if heading_observation_enabled
+                else ()
+            ),
         )
         return xp.concatenate(components, axis=-1)
 
@@ -313,8 +327,9 @@ WALKING_JOINT_NAMES_3D = tuple(
 WALKING_ACTION_SIZE_3D = 12
 WALKING_OBSERVATION_SIZE_3D = 48
 WALKING_PHASE_OBSERVATION_SIZE_3D = WALKING_OBSERVATION_SIZE_3D + 2
-WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D = 49
-WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D = 76
+WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D = 47
+WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D = 74
+WALKING_HEADING_OBSERVATION_SIZE_3D = 2
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -600,10 +615,19 @@ def make_brax_walking_env_3d(
                     raise ValueError(
                         "asymmetric Unitree-style observations require gait phase"
                     )
+                heading_extra = (
+                    WALKING_HEADING_OBSERVATION_SIZE_3D
+                    if task.heading_observation_enabled
+                    else 0
+                )
                 return {
-                    "state": WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D,
+                    "state": (
+                        WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D
+                        + heading_extra
+                    ),
                     "privileged_state": (
                         WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D
+                        + heading_extra
                     ),
                 }
             return (
@@ -1935,7 +1959,11 @@ def make_brax_walking_env_3d(
                         joint_position - self.nominal_ctrl,
                         joint_velocity,
                         policy_action,
-                        heading_features,
+                        *(
+                            (heading_features,)
+                            if task.heading_observation_enabled
+                            else ()
+                        ),
                     )
                 )
                 physical_actor = jp.concatenate(
@@ -1947,7 +1975,11 @@ def make_brax_walking_env_3d(
                         actor_joint_position,
                         actor_joint_velocity,
                         actor_policy_action,
-                        actor_heading_features,
+                        *(
+                            (actor_heading_features,)
+                            if task.heading_observation_enabled
+                            else ()
+                        ),
                     )
                 )
                 actor_scale = jp.concatenate(
@@ -1961,7 +1993,11 @@ def make_brax_walking_env_3d(
                         jp.full((12,), task.observation_scale_joint_position),
                         jp.full((12,), task.observation_scale_joint_velocity),
                         jp.full((12,), task.observation_scale_previous_action),
-                        jp.full((2,), 1.0),
+                        *(
+                            (jp.full((2,), 1.0),)
+                            if task.heading_observation_enabled
+                            else ()
+                        ),
                     )
                 )
                 noise_scale = task.observation_noise_level * jp.concatenate(
@@ -1979,7 +2015,11 @@ def make_brax_walking_env_3d(
                             (12,), task.observation_noise_joint_velocity_rad_s
                         ),
                         jp.zeros((12,)),
-                        jp.zeros((2,)),
+                        *(
+                            (jp.zeros((2,)),)
+                            if task.heading_observation_enabled
+                            else ()
+                        ),
                     )
                 )
             else:

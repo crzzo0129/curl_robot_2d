@@ -1037,3 +1037,74 @@ python -m scripts.train_mjx_3d_walking_ppo \
 ```
 
 启动日志必须显示 `fixed_std=0.03`、`actor_mirror_consistency_weight=0.01 anchor=symmetric`。本轮首先要求速度保持在约 `0.083 m/s` 以上；其次要求mirror RMS及 `action_L-R` 的绝对值相对上述单向实验明显下降。若只降低mirror RMS但heading和左右action差仍不改善，则策略等变性并不是当前物理偏航的充分条件，不应继续增大该辅助loss。
+
+## 27. 加heading观测 + 从头训练走直（2026-08-18）
+
+### 结论
+
+走不直的根因是**策略观测里没有绝对 heading**。已通过数据确认：`--reward-heading 0.5` 的曲线与无 heading 奖励的对照几乎逐项重合（heading_final 都在 `-0.23 rad` 附近恶化），说明不是权重不够，而是观测缺 heading 时 heading 奖励的梯度没有可操作方向。
+
+走不直本质是 yaw 直流偏置（`yaw_signed ≈ -0.022 rad/s`）。瞬时 `yaw_rate` 反馈抓不到它——`E[yaw_rate²] = b² + a²/2` 中步态震荡 `a≈0.12` 占 93%、直流 `b=-0.022` 只占 7%，收紧 sigma 只会更狠地惩罚震荡而非偏置。只有积分量 heading（`∫yaw_rate`）能滤掉震荡、放大直流。单帧 heading 是相对世界 x 轴的绝对朝向（reset 时 yaw=0），本身就是累计偏航，因此是唯一的直接反馈。
+
+### 代码改动
+
+`curl_robot_2d_mjx/environment_walking_3d.py`：
+
+- 新增 `mirror_walking_heading_features_3d`：heading 编码为 `(cos, sin)`，镜像时 cos 不变、sin 取反（yaw→-yaw）。
+- asymmetric actor 观测末尾追加 heading `(cos, sin)`（`body_x_axis[0], body_x_axis[1]`），维度 47→49；`actor_scale` 追加 `1.0`，`noise_scale` 追加 `0`（暂不加噪声）。
+- 常量 `WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D` 47→49、`WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D` 74→76。
+- 镜像函数与 `_observation` 的 asymmetric 分支同步追加 heading 分量；critic privileged 观测因 `clean_canonical_actor` 变 49 自动 74→76。
+- `tests/test_mjx_3d_walking_contract.py`、`tests/test_mjx_3d_walking_symmetry.py` 断言同步更新为 49/76。
+
+由于 `unitree_mjlab_velocity_discovery_v1` 与 `unitree_mjlab_velocity_v1` 均为 asymmetric 模式，换新代码后 heading 观测自动生效，无需额外参数。
+
+### 从头训练主推命令（第 0 步：不加镜像）
+
+复现"真正发现步态"的配置（`restore_checkpoint=null`、`discovery_v1`、默认 optimizer、固定 0.10 m/s），只多 heading 观测：
+
+```bash
+python -m scripts.train_mjx_3d_walking_ppo \
+  --preset h200 \
+  --recipe unitree_mjlab_velocity_discovery_v1 \
+  --steps 3000000 \
+  --num-evals 12 \
+  --eval-forward-speeds 0.10 \
+  --eval-gait-phases 0.0 0.5 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir \
+    results/mjx_pupper_unitree_heading_discovery_v1/ppo_checkpoint \
+  --out results/mjx_pupper_unitree_heading_discovery_v1
+```
+
+不 override 任何 recipe 默认值。此命令只比已知成功的发现步态配置多 2 维观测，几乎不可能因 heading 观测失败。
+
+### 降级链
+
+- **第 0 步（主推）**：上述命令，discovery_v1 + heading 观测，不加镜像。
+- **第 1 步（走直不够时）**：若发现步态（velocity≈0.087）但 heading 仍漂移，叠加镜像增强重跑：
+  ```bash
+  python -m scripts.train_mjx_3d_walking_ppo \
+    --preset h200 \
+    --recipe unitree_mjlab_velocity_discovery_v1 \
+    --steps 3000000 \
+    --num-evals 12 \
+    --symmetry-augmentation \
+    --symmetry-mirror-probability 0.5 \
+    --eval-forward-speeds 0.10 \
+    --eval-gait-phases 0.0 0.5 \
+    --save-ppo-checkpoints \
+    --ppo-checkpoint-dir \
+      results/mjx_pupper_unitree_heading_mirror_discovery_v1/ppo_checkpoint \
+    --out results/mjx_pupper_unitree_heading_mirror_discovery_v1
+  ```
+- **第 2 步（heading 观测真影响发现，概率很低）**：给 heading 观测加开关（如 `--no-heading-observation`）关掉，退回原始 discovery_v1。此时需改代码，暂未实现开关。
+
+### 判断标准
+
+```text
+velocity ≈ 0.087 且 heading_final ≈ 0   → 发现步态 + 走直，成功
+velocity ≈ 0.087 但 heading_final 漂移  → 发现步态但走不直（走第 1 步加镜像）
+velocity < 0.02                         → 没发现步态（走第 2 步排查）
+```
+
+关键指标：`heading_final`（累计总转角，目标 ≈0）、`yaw_signed`（平均 yaw rate，目标 ≈0）、`action_L-R`（左右动作差，镜像增强应把它压到 ≈0）。

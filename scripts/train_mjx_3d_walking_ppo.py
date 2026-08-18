@@ -81,6 +81,7 @@ def _actor_mirror_consistency_loss_scope(
     stop_gradient,
     asymmetric_observations,
     gait_phase_enabled,
+    heading_observation_enabled,
 ):
     """Temporarily add an Actor mirror-consistency PPO loss."""
 
@@ -114,6 +115,7 @@ def _actor_mirror_consistency_loss_scope(
                 observation["state"],
                 asymmetric_observation_enabled=asymmetric_observations,
                 gait_phase_enabled=gait_phase_enabled,
+                heading_observation_enabled=heading_observation_enabled,
             )
         else:
             mirrored_observation = mirror_walking_actor_observation_3d(
@@ -121,6 +123,7 @@ def _actor_mirror_consistency_loss_scope(
                 observation,
                 asymmetric_observation_enabled=asymmetric_observations,
                 gait_phase_enabled=gait_phase_enabled,
+                heading_observation_enabled=heading_observation_enabled,
             )
         policy_apply = ppo_network.policy_network.apply
         action_distribution = ppo_network.parametric_action_distribution
@@ -1991,6 +1994,18 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_false",
     )
     parser.set_defaults(asymmetric_observations=None)
+    heading_group = parser.add_mutually_exclusive_group()
+    heading_group.add_argument(
+        "--heading-observation",
+        dest="heading_observation_enabled",
+        action="store_true",
+    )
+    heading_group.add_argument(
+        "--no-heading-observation",
+        dest="heading_observation_enabled",
+        action="store_false",
+    )
+    parser.set_defaults(heading_observation_enabled=False)
     symmetry_group = parser.add_mutually_exclusive_group()
     symmetry_group.add_argument(
         "--symmetry-augmentation",
@@ -2481,6 +2496,7 @@ def main(argv=None) -> None:
             command_deadband_probability=args.command_stop_probability,
             observation_noise_enabled=not args.no_observation_noise,
             asymmetric_observation_enabled=args.asymmetric_observations,
+            heading_observation_enabled=args.heading_observation_enabled,
             symmetry_augmentation_enabled=(
                 args.symmetry_augmentation_enabled
             ),
@@ -2684,6 +2700,7 @@ def main(argv=None) -> None:
             else None
         ),
         "asymmetric_observations": args.asymmetric_observations,
+        "heading_observation_enabled": args.heading_observation_enabled,
         "observation_scaling": "fixed_task_scales",
         "bootstrap_on_timeout": True,
         "deterministic_eval": args.deterministic_eval,
@@ -2832,6 +2849,7 @@ def main(argv=None) -> None:
         stop_gradient=jax.lax.stop_gradient,
         asymmetric_observations=args.asymmetric_observations,
         gait_phase_enabled=args.gait_phase_enabled,
+        heading_observation_enabled=args.heading_observation_enabled,
     ):
         make_inference_fn, final_params, final_metrics = ppo.train(
             environment=train_env,

@@ -103,13 +103,22 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
 
     def test_actor_observation_mirror_is_a_batched_involution(self) -> None:
         cases = (
-            (True, True, WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D),
-            (False, False, 48),
-            (False, True, 50),
+            (True, True, False, WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D),
+            (
+                True,
+                True,
+                True,
+                WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D
+                + WALKING_HEADING_OBSERVATION_SIZE_3D,
+            ),
+            (False, False, False, 48),
+            (False, True, False, 50),
         )
-        for asymmetric, gait_phase, size in cases:
+        for asymmetric, gait_phase, heading, size in cases:
             with self.subTest(
-                asymmetric=asymmetric, gait_phase=gait_phase
+                asymmetric=asymmetric,
+                gait_phase=gait_phase,
+                heading=heading,
             ):
                 observation = np.arange(2 * 3 * size, dtype=np.float32).reshape(
                     2, 3, size
@@ -119,6 +128,7 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
                     observation,
                     asymmetric_observation_enabled=asymmetric,
                     gait_phase_enabled=gait_phase,
+                    heading_observation_enabled=heading,
                 )
                 np.testing.assert_array_equal(
                     mirror_walking_actor_observation_3d(
@@ -126,6 +136,7 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
                         mirrored,
                         asymmetric_observation_enabled=asymmetric,
                         gait_phase_enabled=gait_phase,
+                        heading_observation_enabled=heading,
                     ),
                     observation,
                 )

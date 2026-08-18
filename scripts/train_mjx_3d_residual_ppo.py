@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import inspect
 import json
 import math
@@ -420,6 +421,41 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "phase_locked_meanzero_v10": {
+        "description": (
+            "Drop the hard reflection projection and instead penalize the "
+            "batch-mean differential, so the residual policy can learn "
+            "reflection-odd lateral corrections without a constant left/right "
+            "bias."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "explicit_phase_observation": True,
+            "reflection_equivariant_policy": False,
+            "differential_mean_zero_weight": 50.0,
+            "learning_rate": 1e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.10,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
     "real_geometry_contact_v1": {
         "description": (
             "Keep the real-geometry 2-D CEM reference, learn symmetric "
@@ -669,6 +705,73 @@ def _reflection_equivariant_policy_parameters_3d(
         (common_location, differential_location, scale_parameters),
         axis=-1,
     )
+
+
+@contextmanager
+def _differential_mean_zero_loss_scope(module, *, weight, array_module):
+    """Temporarily add a mean-zero differential PPO loss.
+
+    The rolling residual action is ``[common(4), differential(4)]``. The
+    differential half maps left/right hip and knee in opposite directions, so
+    a constant differential bias steers the robot into lateral drift (the
+    v6-v8 failure). This scope penalizes the squared batch-mean of the
+    differential mode, which suppresses that constant bias while leaving
+    reflection-odd feedback such as ``differential = +k * lateral_y`` (whose
+    batch mean is zero) free to learn.
+    """
+
+    if weight <= 0.0:
+        yield
+        return
+
+    original_compute_ppo_loss = module.compute_ppo_loss
+
+    def compute_ppo_loss_with_differential_mean_zero(
+        params,
+        normalizer_params,
+        data,
+        rng,
+        ppo_network,
+        **kwargs,
+    ):
+        base_loss, metrics = original_compute_ppo_loss(
+            params,
+            normalizer_params,
+            data,
+            rng,
+            ppo_network,
+            **kwargs,
+        )
+        policy_apply = ppo_network.policy_network.apply
+        action_distribution = ppo_network.parametric_action_distribution
+        logits = policy_apply(
+            normalizer_params, params.policy, data.observation
+        )
+        mode = action_distribution.mode(logits)
+        action_size = mode.shape[-1]
+        differential_mode = mode[..., action_size // 2 :]
+        differential_mean = array_module.mean(differential_mode, axis=0)
+        mean_zero_loss = array_module.mean(
+            array_module.square(differential_mean)
+        )
+        weighted_loss = weight * mean_zero_loss
+        total_loss = base_loss + weighted_loss
+        metrics = dict(metrics)
+        metrics["ppo_total_loss"] = metrics.get("total_loss", base_loss)
+        metrics["total_loss"] = total_loss
+        metrics["differential_mean_zero_loss"] = mean_zero_loss
+        metrics["differential_mean_rms"] = array_module.sqrt(
+            array_module.mean(array_module.square(differential_mean))
+        )
+        metrics["differential_mean_zero_weighted_loss"] = weighted_loss
+        return total_loss, metrics
+
+    module.compute_ppo_loss = compute_ppo_loss_with_differential_mean_zero
+    try:
+        yield
+    finally:
+        module.compute_ppo_loss = original_compute_ppo_loss
+
 
 PER_STEP_EVAL_METRICS_3D = (
     "root_x_m",
@@ -1337,6 +1440,15 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--differential-mean-zero-weight",
+        type=float,
+        help=(
+            "Penalize the squared batch-mean differential mode, suppressing a "
+            "constant left/right bias while allowing reflection-odd lateral "
+            "feedback to learn."
+        ),
+    )
+    parser.add_argument(
         "--initial-policy-std",
         type=float,
         help="Initial pre-tanh policy standard deviation.",
@@ -1446,6 +1558,18 @@ def parse_args(argv=None):
     _apply_recipe_defaults(args)
     if args.reflection_equivariant_policy is None:
         args.reflection_equivariant_policy = False
+    if args.differential_mean_zero_weight is None:
+        args.differential_mean_zero_weight = 0.0
+    if args.differential_mean_zero_weight < 0.0:
+        parser.error("--differential-mean-zero-weight must be nonnegative")
+    if (
+        args.reflection_equivariant_policy
+        and args.differential_mean_zero_weight > 0.0
+    ):
+        parser.error(
+            "--reflection-equivariant-policy and "
+            "--differential-mean-zero-weight are mutually exclusive."
+        )
     if args.controller is None:
         args.controller = cem_controller_path_3d(args.geometry)
     if args.selection_objective is None:
@@ -1599,6 +1723,7 @@ def main(argv=None) -> None:
     )
     import jax
     from brax.io import model as model_io
+    from brax.training.agents.ppo import losses as ppo_losses
     from brax.training.agents.ppo import train as ppo
 
     from curl_robot_2d_mjx.environment_3d import make_brax_env_3d
@@ -1794,11 +1919,15 @@ def main(argv=None) -> None:
         if args.zero_residual_policy_init
         else "brax-default"
     )
-    policy_symmetry_text = (
-        "reflection-equivariant"
-        if args.reflection_equivariant_policy
-        else "unconstrained"
-    )
+    if args.reflection_equivariant_policy:
+        policy_symmetry_text = "reflection-equivariant"
+    elif args.differential_mean_zero_weight > 0.0:
+        policy_symmetry_text = (
+            f"mean-zero-differential/"
+            f"{args.differential_mean_zero_weight:g}"
+        )
+    else:
+        policy_symmetry_text = "unconstrained"
     residual_pair_text = (
         "direct"
         if task.residual_pair_differential_scale is None
@@ -2106,35 +2235,40 @@ def main(argv=None) -> None:
                 flush=True,
             )
 
-        (
-            make_inference_fn,
-            stage_final_params,
-            stage_final_metrics,
-        ) = ppo.train(
-            environment=train_env,
-            eval_env=eval_env,
-            num_timesteps=stage_schedule["requested_steps"],
-            episode_length=args.episode_length,
-            action_repeat=1,
-            num_envs=values["envs"],
-            num_evals=stage_item["num_evals"],
-            num_eval_envs=values["eval_envs"],
-            learning_rate=args.learning_rate,
-            entropy_cost=args.entropy_cost,
-            discounting=args.discounting,
-            reward_scaling=args.reward_scaling,
-            unroll_length=args.unroll_length,
-            batch_size=values["batch_size"],
-            num_minibatches=values["num_minibatches"],
-            num_updates_per_batch=args.updates_per_batch,
-            normalize_observations=True,
-            deterministic_eval=args.deterministic_eval,
-            network_factory=network_factory,
-            seed=args.seed + stage_index,
-            progress_fn=progress_fn,
-            policy_params_fn=policy_params_fn,
-            **train_kwargs,
-        )
+        with _differential_mean_zero_loss_scope(
+            ppo_losses,
+            weight=args.differential_mean_zero_weight,
+            array_module=jax.numpy,
+        ):
+            (
+                make_inference_fn,
+                stage_final_params,
+                stage_final_metrics,
+            ) = ppo.train(
+                environment=train_env,
+                eval_env=eval_env,
+                num_timesteps=stage_schedule["requested_steps"],
+                episode_length=args.episode_length,
+                action_repeat=1,
+                num_envs=values["envs"],
+                num_evals=stage_item["num_evals"],
+                num_eval_envs=values["eval_envs"],
+                learning_rate=args.learning_rate,
+                entropy_cost=args.entropy_cost,
+                discounting=args.discounting,
+                reward_scaling=args.reward_scaling,
+                unroll_length=args.unroll_length,
+                batch_size=values["batch_size"],
+                num_minibatches=values["num_minibatches"],
+                num_updates_per_batch=args.updates_per_batch,
+                normalize_observations=True,
+                deterministic_eval=args.deterministic_eval,
+                network_factory=network_factory,
+                seed=args.seed + stage_index,
+                progress_fn=progress_fn,
+                policy_params_fn=policy_params_fn,
+                **train_kwargs,
+            )
         stage_best_params, stage_best_source = _resolve_best_params(
             best,
             stage_final_params,
