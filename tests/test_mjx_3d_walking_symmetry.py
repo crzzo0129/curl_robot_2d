@@ -14,6 +14,7 @@ from curl_robot_2d_mjx.environment_walking_3d import (
     WALKING_ACTION_SIZE_3D,
     WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D,
     WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D,
+    WALKING_HEADING_OBSERVATION_SIZE_3D,
     WALKING_LEFT_RIGHT_LEG_PERMUTATION_3D,
     gait_phase_features_3d,
     mirror_walking_action_3d,
@@ -326,8 +327,9 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
 
     def test_dimensions_are_unchanged(self) -> None:
         self.assertEqual(WALKING_ACTION_SIZE_3D, 12)
-        self.assertEqual(WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D, 49)
-        self.assertEqual(WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D, 76)
+        self.assertEqual(WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D, 47)
+        self.assertEqual(WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D, 74)
+        self.assertEqual(WALKING_HEADING_OBSERVATION_SIZE_3D, 2)
 
 
 if __name__ == "__main__":
