@@ -315,8 +315,8 @@ class MJX3DWalkingSymmetryTest(unittest.TestCase):
 
     def test_dimensions_are_unchanged(self) -> None:
         self.assertEqual(WALKING_ACTION_SIZE_3D, 12)
-        self.assertEqual(WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D, 47)
-        self.assertEqual(WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D, 74)
+        self.assertEqual(WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D, 49)
+        self.assertEqual(WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D, 76)
 
 
 if __name__ == "__main__":

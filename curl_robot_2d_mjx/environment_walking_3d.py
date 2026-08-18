@@ -208,6 +208,17 @@ def mirror_walking_phase_features_3d(xp, phase_features):
     return -phase_features
 
 
+def mirror_walking_heading_features_3d(xp, heading_features):
+    """Reflect heading (cos, sin) across the sagittal plane.
+
+    Heading is encoded as (cos, sin) of the torso yaw angle.  A left/right
+    reflection maps yaw to -yaw, so the cosine is unchanged while the sine
+    flips sign.
+    """
+
+    return heading_features * xp.asarray((1.0, -1.0))
+
+
 def mirror_walking_action_3d(xp, action):
     """Convert walking actions between canonical and mirrored leg order."""
 
@@ -240,6 +251,7 @@ def mirror_walking_actor_observation_3d(
             mirror_walking_leg_values_3d(xp, observation[..., 11:23]),
             mirror_walking_leg_values_3d(xp, observation[..., 23:35]),
             mirror_walking_action_3d(xp, observation[..., 35:47]),
+            mirror_walking_heading_features_3d(xp, observation[..., 47:49]),
         )
         return xp.concatenate(components, axis=-1)
 
@@ -301,8 +313,8 @@ WALKING_JOINT_NAMES_3D = tuple(
 WALKING_ACTION_SIZE_3D = 12
 WALKING_OBSERVATION_SIZE_3D = 48
 WALKING_PHASE_OBSERVATION_SIZE_3D = WALKING_OBSERVATION_SIZE_3D + 2
-WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D = 47
-WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D = 74
+WALKING_ASYMMETRIC_ACTOR_OBSERVATION_SIZE_3D = 49
+WALKING_ASYMMETRIC_CRITIC_OBSERVATION_SIZE_3D = 76
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -1861,6 +1873,8 @@ def make_brax_walking_env_3d(
                 freejoint_body_velocity_3d(jp, rotation, data.qvel)
             )
             projected_gravity = rotation.T @ jp.asarray((0.0, 0.0, -1.0))
+            body_x_axis = rotation[:, 0]
+            heading_features = jp.stack((body_x_axis[0], body_x_axis[1]))
             command_scale = jp.asarray(
                 (
                     task.observation_scale_command_linear_velocity,
@@ -1880,6 +1894,7 @@ def make_brax_walking_env_3d(
                 ),
                 mirror_walking_leg_values_3d(jp, joint_velocity),
                 mirror_walking_action_3d(jp, policy_action),
+                mirror_walking_heading_features_3d(jp, heading_features),
             )
             canonical_components = (
                 body_linear_velocity,
@@ -1890,6 +1905,7 @@ def make_brax_walking_env_3d(
                 joint_position - self.nominal_ctrl,
                 joint_velocity,
                 policy_action,
+                heading_features,
             )
             (
                 actor_body_linear_velocity,
@@ -1900,6 +1916,7 @@ def make_brax_walking_env_3d(
                 actor_joint_position,
                 actor_joint_velocity,
                 actor_policy_action,
+                actor_heading_features,
             ) = tuple(
                 jp.where(symmetry_mirrored, mirrored, canonical)
                 for mirrored, canonical in zip(
@@ -1918,6 +1935,7 @@ def make_brax_walking_env_3d(
                         joint_position - self.nominal_ctrl,
                         joint_velocity,
                         policy_action,
+                        heading_features,
                     )
                 )
                 physical_actor = jp.concatenate(
@@ -1929,6 +1947,7 @@ def make_brax_walking_env_3d(
                         actor_joint_position,
                         actor_joint_velocity,
                         actor_policy_action,
+                        actor_heading_features,
                     )
                 )
                 actor_scale = jp.concatenate(
@@ -1942,6 +1961,7 @@ def make_brax_walking_env_3d(
                         jp.full((12,), task.observation_scale_joint_position),
                         jp.full((12,), task.observation_scale_joint_velocity),
                         jp.full((12,), task.observation_scale_previous_action),
+                        jp.full((2,), 1.0),
                     )
                 )
                 noise_scale = task.observation_noise_level * jp.concatenate(
@@ -1959,6 +1979,7 @@ def make_brax_walking_env_3d(
                             (12,), task.observation_noise_joint_velocity_rad_s
                         ),
                         jp.zeros((12,)),
+                        jp.zeros((2,)),
                     )
                 )
             else:
