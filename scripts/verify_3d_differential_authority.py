@@ -105,15 +105,15 @@ def parse_args(argv=None):
         nargs="+",
         default=[
             "zero",
-            "bias_p1_hip",
-            "bias_n1_hip",
-            "damp_y_hip_k2",
-            "damp_y_hip_k5",
-            "damp_y_hip_k10",
-            "damp_vy_hip_k5",
-            "damp_vy_hip_k10",
-            "damp_y_all_k5",
-            "pd_hip_y5_vy5",
+            "damp_y_p_k0p5",
+            "damp_y_p_k1",
+            "damp_y_p_k2",
+            "damp_y_p_k5",
+            "damp_vy_p_k1",
+            "damp_vy_p_k2",
+            "damp_vy_p_k5",
+            "pd_p_y2_vy1",
+            "pd_p_y2_vy2",
         ],
         help="case names to run (see CASE_SPECS)",
     )
@@ -141,6 +141,16 @@ def _case_specs():
         "damp_vy_hip_k10": dict(channels=hip, bias=0.0, gain_y=0.0, gain_vy=-10.0),
         "damp_y_all_k5": dict(channels=all_channels, bias=0.0, gain_y=-5.0, gain_vy=0.0),
         "pd_hip_y5_vy5": dict(channels=hip, bias=0.0, gain_y=-5.0, gain_vy=-5.0),
+        # Corrected sign: d = +k*y and d = +k*vy oppose the induced drift.
+        "damp_y_p_k0p5": dict(channels=hip, bias=0.0, gain_y=0.5, gain_vy=0.0),
+        "damp_y_p_k1": dict(channels=hip, bias=0.0, gain_y=1.0, gain_vy=0.0),
+        "damp_y_p_k2": dict(channels=hip, bias=0.0, gain_y=2.0, gain_vy=0.0),
+        "damp_y_p_k5": dict(channels=hip, bias=0.0, gain_y=5.0, gain_vy=0.0),
+        "damp_vy_p_k1": dict(channels=hip, bias=0.0, gain_y=0.0, gain_vy=1.0),
+        "damp_vy_p_k2": dict(channels=hip, bias=0.0, gain_y=0.0, gain_vy=2.0),
+        "damp_vy_p_k5": dict(channels=hip, bias=0.0, gain_y=0.0, gain_vy=5.0),
+        "pd_p_y2_vy1": dict(channels=hip, bias=0.0, gain_y=2.0, gain_vy=1.0),
+        "pd_p_y2_vy2": dict(channels=hip, bias=0.0, gain_y=2.0, gain_vy=2.0),
     }
 
 
