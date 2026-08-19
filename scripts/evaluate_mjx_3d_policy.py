@@ -413,13 +413,6 @@ def parse_args(argv=None):
         parser.error("checkpoint is required in policy evaluation mode")
     if args.evaluation_mode == "reference" and args.checkpoint is not None:
         parser.error("checkpoint must be omitted in reference evaluation mode")
-    if args.evaluation_mode == "reference" and (
-        args.diagnostic_rollouts > 0 or args.save_rollout
-    ):
-        parser.error(
-            "--diagnostic-rollouts and --save-rollout require policy "
-            "evaluation mode"
-        )
     if args.episode_length < 1 or args.batch_size < 1 or args.chunk_size < 1:
         parser.error("--episode-length, --batch-size and --chunk-size must be positive")
     if args.progress_every < 0:
@@ -1008,13 +1001,17 @@ def main(argv=None) -> None:
         diagnostic_policy, policy_traces, _ = run_rollouts(
             selected_keys,
             selected_seed_indices,
-            mode="policy",
+            mode=args.evaluation_mode,
             capture=True,
             label="diagnostic_policy",
         )
         diagnostic_reference = None
         reference_traces = None
-        if args.diagnostic_reference and args.diagnostic_rollouts > 0:
+        if (
+            args.diagnostic_reference
+            and args.diagnostic_rollouts > 0
+            and args.evaluation_mode == "policy"
+        ):
             print(
                 f"  replaying the same {len(selections)} reference-only rollouts",
                 flush=True,
