@@ -478,6 +478,20 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.learning_rate, 1e-5)
         self.assertEqual(args.initial_policy_std, 0.10)
 
+    def test_phase_locked_turn_v12_enables_command_and_differential(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_turn_v12"]
+        )
+
+        self.assertEqual(args.lateral_reflex_gain, 0.25)
+        self.assertTrue(args.lateral_command_enabled)
+        self.assertEqual(args.lateral_command_max, 0.15)
+        self.assertEqual(args.lateral_command_probability, 0.20)
+        self.assertEqual(args.residual_pair_differential_scale, 0.25)
+        self.assertEqual(args.learning_rate, 1e-5)
+
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             ["--recipe", "phase_locked_coupled_v8"]

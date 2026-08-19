@@ -75,7 +75,7 @@ CEM_CONTROLLER_PATHS_3D = {
 }
 DEFAULT_3D_CEM_CONTROLLER = PUPPER_OPEN60_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
-OBSERVATION_SIZE_3D = 59
+OBSERVATION_SIZE_3D = 60
 PHASE_FEEDBACK_SIZE_3D = 4
 PLANAR_ACTION_SCALES = np.asarray((0.8, 1.2, 0.8, 1.2), dtype=np.float64)
 PLANAR_COMPACT = np.asarray(
@@ -117,6 +117,7 @@ def _rolling_observation_mirror_contract_3d():
     signs[5:8] = (1.0, -1.0, 1.0)  # torso local z axis
     signs[8:11] = (1.0, -1.0, 1.0)  # root linear velocity
     signs[11:14] = (-1.0, 1.0, -1.0)  # root angular velocity
+    signs[59] = -1.0  # lateral velocity command
 
     pair_permutation = (2, 3, 0, 1, 6, 7, 4, 5)
     for start in (14, 22, 30, 46):
@@ -961,6 +962,7 @@ def make_brax_env_3d(
                 oscillator_phase=oscillator_phase,
                 rolling_phase=jp.zeros((), dtype=jp.float32),
                 action_ramp=jp.zeros((), dtype=jp.float32),
+                lateral_velocity_command=lateral_velocity_command,
             )
             return State(
                 data,
@@ -1500,6 +1502,9 @@ def make_brax_env_3d(
                 oscillator_phase=oscillator_phase,
                 rolling_phase=rolling_phase,
                 action_ramp=action_ramp,
+                lateral_velocity_command=state.info[
+                    "lateral_velocity_command"
+                ],
             )
             metrics = {
                 name: jp.nan_to_num(
@@ -1614,6 +1619,7 @@ def make_brax_env_3d(
             oscillator_phase,
             rolling_phase,
             action_ramp,
+            lateral_velocity_command,
         ):
             body_y_axis, body_z_axis = self._body_axes(data)
             root_position_features = jp.asarray([data.qpos[2], data.qpos[1]])
@@ -1660,6 +1666,7 @@ def make_brax_env_3d(
                             reference_settings.residual_gain,
                         )
                     ),
+                    jp.asarray((lateral_velocity_command,)),
                 )
             if task.explicit_phase_observation:
                 observation_parts += (

@@ -88,7 +88,7 @@ class MJX3DContractTest(unittest.TestCase):
         ):
             self.assertTrue(controller.exists())
         self.assertEqual(len(JOINT_NAMES_3D), ACTION_SIZE_3D)
-        self.assertEqual(OBSERVATION_SIZE_3D, 59)
+        self.assertEqual(OBSERVATION_SIZE_3D, 60)
 
     def test_3d_config_defaults_are_training_smoke_safe(self) -> None:
         config = Rolling3DConfig()
@@ -307,7 +307,8 @@ class MJX3DContractTest(unittest.TestCase):
         np.testing.assert_allclose(mirrored[14:22], observation[
             [16, 17, 14, 15, 20, 21, 18, 19]
         ])
-        np.testing.assert_allclose(mirrored[59:63], observation[59:63])
+        self.assertEqual(mirrored[59], -observation[59])
+        np.testing.assert_allclose(mirrored[60:64], observation[60:64])
 
     def test_rolling_observation_mirror_supports_base_observation(self) -> None:
         observation = np.arange(OBSERVATION_SIZE_3D, dtype=np.float32)

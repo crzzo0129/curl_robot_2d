@@ -490,6 +490,45 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "phase_locked_turn_v12": {
+        "description": (
+            "Fixed lateral reflex plus sampled turning commands, with the "
+            "differential residual re-enabled so the policy can refine "
+            "turning beyond the reflex envelope."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "lateral_reflex_gain": 0.25,
+            "lateral_reflex_position_gain": 2.0,
+            "lateral_reflex_velocity_gain": 2.0,
+            "lateral_command_enabled": True,
+            "lateral_command_max": 0.15,
+            "lateral_command_probability": 0.20,
+            "lateral_command_error_limit": 0.20,
+            "explicit_phase_observation": True,
+            "learning_rate": 1e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.10,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 4.0,
+            "lateral_drift": 6.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
     "real_geometry_contact_v1": {
         "description": (
             "Keep the real-geometry 2-D CEM reference, learn symmetric "
@@ -1466,6 +1505,30 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Reflex velocity feedback kw in d = k*y + kw*vy (per m/s).",
     )
     parser.add_argument(
+        "--lateral-command-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Sample a lateral velocity command at reset (turning). Defaults "
+            "from the selected recipe."
+        ),
+    )
+    parser.add_argument(
+        "--lateral-command-max",
+        type=float,
+        help="Maximum turning command magnitude (m/s).",
+    )
+    parser.add_argument(
+        "--lateral-command-probability",
+        type=float,
+        help="Probability a reset samples a non-zero turning command.",
+    )
+    parser.add_argument(
+        "--lateral-command-error-limit",
+        type=float,
+        help="Turning termination threshold on |vy - vy_cmd| (m/s).",
+    )
+    parser.add_argument(
         "--explicit-phase-observation",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1621,6 +1684,14 @@ def parse_args(argv=None):
         args.lateral_reflex_velocity_gain = 2.0
     if args.lateral_reflex_gain < 0.0:
         parser.error("--lateral-reflex-gain must be nonnegative")
+    if args.lateral_command_enabled is None:
+        args.lateral_command_enabled = False
+    if args.lateral_command_max is None:
+        args.lateral_command_max = 0.15
+    if args.lateral_command_probability is None:
+        args.lateral_command_probability = 0.20
+    if args.lateral_command_error_limit is None:
+        args.lateral_command_error_limit = 0.20
     if args.differential_mean_zero_weight < 0.0:
         parser.error("--differential-mean-zero-weight must be nonnegative")
     if (
@@ -1828,6 +1899,10 @@ def main(argv=None) -> None:
             lateral_reflex_gain=args.lateral_reflex_gain,
             lateral_reflex_position_gain=args.lateral_reflex_position_gain,
             lateral_reflex_velocity_gain=args.lateral_reflex_velocity_gain,
+            lateral_command_enabled=args.lateral_command_enabled,
+            lateral_command_max=args.lateral_command_max,
+            lateral_command_probability=args.lateral_command_probability,
+            lateral_command_error_limit=args.lateral_command_error_limit,
             explicit_phase_observation=bool(
                 args.explicit_phase_observation
             ),
