@@ -16,8 +16,8 @@ def zero_inputs():
         "conservative_progress": zero,
         "mismatch_progress": zero,
         "backward_progress": zero,
-        "lateral_velocity_squared": zero,
-        "lateral_drift_abs": zero,
+        "yaw_rate_squared": zero,
+        "lateral_yaw_abs": zero,
         "axis_tilt_squared": zero,
         "action_rate": zero,
         "residual_action_cost": zero,
@@ -175,7 +175,7 @@ class MJX3DRewardTest(unittest.TestCase):
         stable_inputs["conservative_progress"] = np.asarray(
             progress_per_step, dtype=np.float32
         )
-        stable_inputs["lateral_drift_abs"] = np.asarray(
+        stable_inputs["lateral_yaw_abs"] = np.asarray(
             0.04, dtype=np.float32
         )
         stable_step_reward = sum(
@@ -184,7 +184,7 @@ class MJX3DRewardTest(unittest.TestCase):
         stable_return = 500.0 * float(stable_step_reward)
 
         failed_inputs = dict(stable_inputs)
-        failed_inputs["lateral_drift_abs"] = np.asarray(
+        failed_inputs["lateral_yaw_abs"] = np.asarray(
             0.03, dtype=np.float32
         )
         failed_step_reward = sum(

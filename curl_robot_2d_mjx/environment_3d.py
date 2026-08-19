@@ -1201,6 +1201,10 @@ def make_brax_env_3d(
             lateral_drift = root_y - state.info["initial_root_y"]
             lateral_drift_abs = jp.abs(lateral_drift)
             lateral_velocity = data.qvel[1]
+            rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
+            body_x_axis = rotation[:, 0]
+            lateral_yaw = jp.arctan2(body_x_axis[1], body_x_axis[0])
+            yaw_rate = data.qvel[5]
 
             action_rate = jp.mean(
                 jp.square(effective_action - state.info["last_action"])
@@ -1315,8 +1319,8 @@ def make_brax_env_3d(
                     "conservative_progress": conservative_progress,
                     "mismatch_progress": mismatch_progress,
                     "backward_progress": backward_progress,
-                    "lateral_velocity_squared": jp.square(lateral_velocity),
-                    "lateral_drift_abs": lateral_drift_abs,
+                    "yaw_rate_squared": jp.square(yaw_rate),
+                    "lateral_yaw_abs": jp.abs(lateral_yaw),
                     "axis_tilt_squared": jp.square(axis_tilt),
                     "action_rate": action_rate,
                     "residual_action_cost": jp.mean(jp.square(policy_action)),

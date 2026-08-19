@@ -29,9 +29,9 @@ class Rolling3DRewardConfig:
     roll_mismatch: float = 0.8
     backward: float = 1.5
     lateral_velocity: float = 2.0
-    lateral_velocity_sigma_m_s: float = 0.10
+    lateral_velocity_sigma_rad_s: float = 0.30
     lateral_drift: float = 1.0
-    lateral_drift_sigma_m: float = 0.10
+    lateral_drift_sigma_rad: float = 0.10
     axis_tilt: float = 8.0
     action_rate: float = 0.03
     residual_action: float = 0.02
@@ -105,12 +105,12 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         "roll_mismatch": -config.roll_mismatch * inputs["mismatch_progress"],
         "backward": -config.backward * inputs["backward_progress"],
         "lateral_velocity": config.lateral_velocity * xp.exp(
-            -inputs["lateral_velocity_squared"]
-            / config.lateral_velocity_sigma_m_s**2
+            -inputs["yaw_rate_squared"]
+            / config.lateral_velocity_sigma_rad_s**2
         ),
         "lateral_drift": config.lateral_drift * xp.exp(
-            -xp.square(inputs["lateral_drift_abs"])
-            / config.lateral_drift_sigma_m**2
+            -xp.square(inputs["lateral_yaw_abs"])
+            / config.lateral_drift_sigma_rad**2
         ),
         "axis_tilt": -config.axis_tilt * inputs["axis_tilt_squared"],
         "action_rate": -config.action_rate * inputs["action_rate"],
