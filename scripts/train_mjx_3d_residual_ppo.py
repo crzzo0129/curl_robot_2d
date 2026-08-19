@@ -564,6 +564,40 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "learn_yaw_v14": {
+        "description": (
+            "No reflex. The policy learns lateral stabilization from a yaw "
+            "observation and exp-normalized lateral rewards."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "lateral_reflex_gain": 0.0,
+            "explicit_phase_observation": True,
+            "learning_rate": 1e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.10,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 1.0,
+            "lateral_velocity_sigma_m_s": 0.10,
+            "lateral_drift": 1.0,
+            "lateral_drift_sigma_m": 0.10,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
     "real_geometry_contact_v1": {
         "description": (
             "Keep the real-geometry 2-D CEM reference, learn symmetric "

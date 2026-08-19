@@ -1622,7 +1622,10 @@ def make_brax_env_3d(
             lateral_velocity_command,
         ):
             body_y_axis, body_z_axis = self._body_axes(data)
-            root_position_features = jp.asarray([data.qpos[2], data.qpos[1]])
+            rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
+            body_x_axis = rotation[:, 0]
+            yaw = jp.arctan2(body_x_axis[1], body_x_axis[0])
+            root_position_features = jp.asarray([data.qpos[2], yaw])
             root_linear_velocity = data.qvel[:3]
             root_angular_velocity = data.qvel[3:6]
             joint_position = data.qpos[self.joint_qpos_indices]

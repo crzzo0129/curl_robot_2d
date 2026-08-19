@@ -505,6 +505,20 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.learning_rate, 1e-5)
         self.assertEqual(args.initial_policy_std, 0.10)
 
+    def test_learn_yaw_v14_disables_reflex_and_uses_exp_lateral(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "learn_yaw_v14"]
+        )
+
+        self.assertEqual(args.lateral_reflex_gain, 0.0)
+        self.assertEqual(args.residual_pair_differential_scale, 0.25)
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+        self.assertEqual(reward.lateral_velocity, 1.0)
+        self.assertEqual(reward.lateral_velocity_sigma_m_s, 0.10)
+        self.assertEqual(reward.lateral_drift, 1.0)
+        self.assertEqual(reward.lateral_drift_sigma_m, 0.10)
+
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             ["--recipe", "phase_locked_coupled_v8"]
