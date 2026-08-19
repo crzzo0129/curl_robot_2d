@@ -492,6 +492,19 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.residual_pair_differential_scale, 0.25)
         self.assertEqual(args.learning_rate, 1e-5)
 
+    def test_robust_low_friction_v13_enables_reflex_and_differential(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "robust_low_friction_v13"]
+        )
+
+        self.assertEqual(args.lateral_reflex_gain, 0.25)
+        self.assertFalse(args.lateral_command_enabled)
+        self.assertEqual(args.residual_pair_differential_scale, 0.25)
+        self.assertEqual(args.learning_rate, 1e-5)
+        self.assertEqual(args.initial_policy_std, 0.10)
+
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             ["--recipe", "phase_locked_coupled_v8"]

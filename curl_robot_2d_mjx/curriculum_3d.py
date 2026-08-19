@@ -15,6 +15,7 @@ CURRICULUM_NAMES_3D = (
     "reset_v1",
     "reset_v2",
     "friction_v1",
+    "friction_low_v1",
     "mass_v1",
     "robustness_v1",
 )
@@ -174,6 +175,43 @@ FRICTION_V1_STAGES_3D = (
     ),
 )
 
+FRICTION_LOW_V1_STAGES_3D = (
+    Rolling3DCurriculumStage(
+        name="friction_low_090",
+        weight=0.30,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.030,
+        domain_randomization=Rolling3DDomainRandomization(
+            geom_friction_scale=(0.90, 1.10),
+        ),
+    ),
+    Rolling3DCurriculumStage(
+        name="friction_low_080",
+        weight=0.40,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.030,
+        domain_randomization=Rolling3DDomainRandomization(
+            geom_friction_scale=(0.80, 1.10),
+        ),
+    ),
+    Rolling3DCurriculumStage(
+        name="friction_low_070",
+        weight=0.30,
+        reset_joint_noise_rad=0.015,
+        reset_velocity_noise=0.030,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.030,
+        domain_randomization=Rolling3DDomainRandomization(
+            geom_friction_scale=(0.70, 1.10),
+        ),
+    ),
+)
+
+
 MASS_V1_STAGES_3D = (
     Rolling3DCurriculumStage(
         name="mass_02",
@@ -235,6 +273,7 @@ CURRICULUM_STAGE_NAMES_3D = tuple(
         *RESET_STAGES_3D,
         *RESET_V2_STAGES_3D,
         *FRICTION_V1_STAGES_3D,
+        *FRICTION_LOW_V1_STAGES_3D,
         *MASS_V1_STAGES_3D,
         *PHYSICS_STAGES_3D,
     )
@@ -256,6 +295,8 @@ def curriculum_stages_3d(
         stages = RESET_V2_STAGES_3D
     elif name == "friction_v1":
         stages = FRICTION_V1_STAGES_3D
+    elif name == "friction_low_v1":
+        stages = FRICTION_LOW_V1_STAGES_3D
     elif name == "mass_v1":
         stages = MASS_V1_STAGES_3D
     elif name == "robustness_v1":

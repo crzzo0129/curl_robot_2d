@@ -400,6 +400,27 @@ class MJX3DContractTest(unittest.TestCase):
                 stage.domain_randomization.actuator_gain_scale, (1.0, 1.0)
             )
 
+    def test_friction_low_v1_expands_low_friction_only(self) -> None:
+        stages = curriculum_stages_3d("friction_low_v1")
+
+        self.assertEqual(
+            [stage.name for stage in stages],
+            ["friction_low_090", "friction_low_080", "friction_low_070"],
+        )
+        self.assertEqual(
+            [
+                stage.domain_randomization.geom_friction_scale
+                for stage in stages
+            ],
+            [(0.90, 1.10), (0.80, 1.10), (0.70, 1.10)],
+        )
+        self.assertAlmostEqual(sum(stage.weight for stage in stages), 1.0)
+        for stage in stages:
+            self.assertEqual(stage.reset_joint_noise_rad, 0.015)
+            self.assertEqual(stage.reset_velocity_noise, 0.030)
+            self.assertEqual(stage.reset_pair_differential_scale, 0.25)
+            self.assertEqual(stage.reset_axis_tilt_noise_rad, 0.030)
+
     def test_mass_v1_retains_friction_and_only_expands_mass_inertia(
         self,
     ) -> None:

@@ -29,6 +29,8 @@ from math import cos, sin
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
 import jax
 import jax.numpy as jp
@@ -43,7 +45,7 @@ from brax.training.agents.ppo import train as ppo
 from brax.training.agents.ppo import networks as ppo_networks
 
 # ============================================================ file layout
-SRC_XML = os.path.expanduser("~/robot/curl_robot_3d.xml")
+SRC_XML = "assets/curl_robot_3d_pupper_r127p5_open60_width120.xml"
 RUN_XML = os.path.expanduser("~/robot/curl_robot_3d_run.xml")
 SAVE = "walk3d_policy.bin"
 VID_DIR = "walk3d_videos"
