@@ -515,9 +515,9 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
         self.assertEqual(reward.lateral_velocity, 1.0)
-        self.assertEqual(reward.lateral_velocity_sigma_rad_s, 0.30)
+        self.assertEqual(reward.lateral_velocity_sigma_rad_s, 0.01)
         self.assertEqual(reward.lateral_drift, 1.0)
-        self.assertEqual(reward.lateral_drift_sigma_rad, 0.10)
+        self.assertEqual(reward.lateral_drift_sigma_rad, 0.02)
 
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
