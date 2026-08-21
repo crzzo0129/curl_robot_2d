@@ -371,6 +371,24 @@ class MJX3DContractTest(unittest.TestCase):
             0.80,
         )
 
+    def test_nominal_reset_v3_ends_with_true_independent_joint_noise(
+        self,
+    ) -> None:
+        stages = curriculum_stages_3d("nominal_reset_v3")
+
+        self.assertEqual(
+            [stage.reset_pair_differential_scale for stage in stages[:-1]],
+            [0.0, 0.0, 0.0, 0.10, 0.25],
+        )
+        self.assertTrue(stages[-1].reset_independent)
+        self.assertAlmostEqual(sum(stage.weight for stage in stages), 1.0)
+        base = Rolling3DConfig(reset_pair_differential_scale=0.0)
+        final_task = stages[-1].task_config(base)
+        self.assertIsNone(final_task.reset_pair_differential_scale)
+        self.assertEqual(final_task.reset_joint_noise_rad, 0.005)
+        self.assertEqual(final_task.reset_velocity_noise, 0.005)
+        self.assertEqual(final_task.reset_axis_tilt_noise_rad, 0.0)
+
     def test_friction_v1_holds_reset_v2_target_and_only_expands_friction(
         self,
     ) -> None:

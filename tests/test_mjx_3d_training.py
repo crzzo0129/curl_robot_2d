@@ -199,6 +199,34 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
         self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 6)
 
+    def test_nominal_reset_v3_allocates_progressive_independent_noise(
+        self,
+    ) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--curriculum", "nominal_reset_v3"]
+        )
+        values = train_mjx_3d_residual_ppo.PRESETS["smoke"].copy()
+
+        plan = train_mjx_3d_residual_ppo._curriculum_training_plan(
+            args, values
+        )
+
+        self.assertEqual(
+            [item["stage"].name for item in plan],
+            [
+                "reset3_clean_symmetric",
+                "reset3_low_symmetric",
+                "reset3_nominal_symmetric",
+                "reset3_differential_010",
+                "reset3_differential_025",
+                "reset3_independent",
+            ],
+        )
+        self.assertTrue(
+            all(item["schedule"]["effective_steps"] > 0 for item in plan)
+        )
+        self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 6)
+
     def test_friction_v1_allocates_three_progressive_stages(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             ["--curriculum", "friction_v1"]

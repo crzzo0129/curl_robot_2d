@@ -1485,7 +1485,9 @@ def _build_parser() -> argparse.ArgumentParser:
         help=(
             "Robustness curriculum. reset_v1 preserves the original reset "
             "schedule; reset_v2 resolves the measured axis-tilt failure "
-            "cliff; friction_v1 warm-starts from an accepted reset_v2 "
+            "cliff; nominal_reset_v3 gradually introduces the nominal "
+            "eight-joint independent reset noise; friction_v1 warm-starts "
+            "from an accepted reset_v2 "
             "checkpoint and expands only global geom friction; mass_v1 "
             "continues from friction_v1 and expands coupled per-body mass "
             "and inertia while retaining friction randomization; "

@@ -14,6 +14,7 @@ CURRICULUM_NAMES_3D = (
     "none",
     "reset_v1",
     "reset_v2",
+    "nominal_reset_v3",
     "friction_v1",
     "friction_low_v1",
     "mass_v1",
@@ -28,6 +29,7 @@ class Rolling3DCurriculumStage:
     reset_joint_noise_rad: float | None = None
     reset_velocity_noise: float | None = None
     reset_pair_differential_scale: float | None = None
+    reset_independent: bool = False
     reset_axis_tilt_noise_rad: float | None = None
     domain_randomization: Rolling3DDomainRandomization = (
         Rolling3DDomainRandomization()
@@ -50,6 +52,8 @@ class Rolling3DCurriculumStage:
             )
             if value is not None
         }
+        if self.reset_independent:
+            overrides["reset_pair_differential_scale"] = None
         return replace(base, **overrides)
 
 
@@ -136,6 +140,58 @@ RESET_V2_STAGES_3D = (
         reset_velocity_noise=0.030,
         reset_pair_differential_scale=0.25,
         reset_axis_tilt_noise_rad=0.030,
+    ),
+)
+
+
+NOMINAL_RESET_V3_STAGES_3D = (
+    Rolling3DCurriculumStage(
+        name="reset3_clean_symmetric",
+        weight=0.05,
+        reset_joint_noise_rad=0.0,
+        reset_velocity_noise=0.0,
+        reset_pair_differential_scale=0.0,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset3_low_symmetric",
+        weight=0.10,
+        reset_joint_noise_rad=0.001,
+        reset_velocity_noise=0.001,
+        reset_pair_differential_scale=0.0,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset3_nominal_symmetric",
+        weight=0.15,
+        reset_joint_noise_rad=0.005,
+        reset_velocity_noise=0.005,
+        reset_pair_differential_scale=0.0,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset3_differential_010",
+        weight=0.20,
+        reset_joint_noise_rad=0.005,
+        reset_velocity_noise=0.005,
+        reset_pair_differential_scale=0.10,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset3_differential_025",
+        weight=0.20,
+        reset_joint_noise_rad=0.005,
+        reset_velocity_noise=0.005,
+        reset_pair_differential_scale=0.25,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset3_independent",
+        weight=0.30,
+        reset_joint_noise_rad=0.005,
+        reset_velocity_noise=0.005,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
     ),
 )
 
@@ -272,6 +328,7 @@ CURRICULUM_STAGE_NAMES_3D = tuple(
     for stage in (
         *RESET_STAGES_3D,
         *RESET_V2_STAGES_3D,
+        *NOMINAL_RESET_V3_STAGES_3D,
         *FRICTION_V1_STAGES_3D,
         *FRICTION_LOW_V1_STAGES_3D,
         *MASS_V1_STAGES_3D,
@@ -293,6 +350,8 @@ def curriculum_stages_3d(
         stages = RESET_STAGES_3D
     elif name == "reset_v2":
         stages = RESET_V2_STAGES_3D
+    elif name == "nominal_reset_v3":
+        stages = NOMINAL_RESET_V3_STAGES_3D
     elif name == "friction_v1":
         stages = FRICTION_V1_STAGES_3D
     elif name == "friction_low_v1":
