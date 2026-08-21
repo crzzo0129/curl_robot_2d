@@ -28,7 +28,10 @@ from curl_robot_2d_mjx.config_3d import (
     Rolling3DConfig,
     physics_profile_3d,
 )
-from curl_robot_2d_mjx.environment_3d import apply_physics_options_3d
+from curl_robot_2d_mjx.environment_3d import (
+    apply_physics_options_3d,
+    configure_pupper_shell_collisions_3d,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -375,6 +378,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         args.foot_gap_tracking_margin_mm,
     )
     model = mujoco.MjModel.from_xml_path(str(args.xml.resolve()))
+    if args.geometry == "pupper60":
+        configure_pupper_shell_collisions_3d(model, enabled=True)
     task = physics_profile_3d(args.physics_profile, Rolling3DConfig())
     apply_physics_options_3d(model, task)
     data = mujoco.MjData(model)

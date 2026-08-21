@@ -134,7 +134,11 @@ def _curriculum_training_plan(args, values):
     weights = [stage.weight for stage in stages]
     requested_quanta = math.ceil(values["steps"] / rollout_quantum)
     stage_quanta = _allocate_weighted_counts(requested_quanta, weights)
-    stage_evals = _allocate_weighted_counts(values["num_evals"], weights)
+    # Brax uses the first evaluation at stage step zero.  Each stage therefore
+    # needs a second evaluation to measure the policy after that stage trains.
+    stage_evals = _allocate_weighted_counts(
+        values["num_evals"], weights, minimum=2
+    )
     plan = []
     for stage, quanta, num_evals in zip(
         stages, stage_quanta, stage_evals, strict=True
@@ -1108,6 +1112,7 @@ def _resolve_best_params(
     final_params,
     metric_history,
     *,
+    final_step,
     initial_evaluated=None,
 ):
     """Resolve an exact evaluated parameter set despite callback ordering."""
@@ -1115,13 +1120,27 @@ def _resolve_best_params(
     last_eval_step = (
         int(metric_history[-1]["step"]) if metric_history else None
     )
-    if best["step"] is not None and best["step"] == last_eval_step:
+    if (
+        best["step"] is not None
+        and best["step"] == last_eval_step
+        and last_eval_step == int(final_step)
+    ):
         return final_params, "final_eval"
     if (
         best["params"] is not None
         and best.get("params_step") == best["step"]
     ):
         return best["params"], f"callback_step_{best['params_step']}"
+    if initial_evaluated is not None and best["step"] is not None:
+        if (
+            initial_evaluated.get("step") == best["step"]
+            and initial_evaluated.get("params") is not None
+            and initial_evaluated.get("params_step") == best["step"]
+        ):
+            return (
+                initial_evaluated["params"],
+                f"initial_eval_step_{best['step']}",
+            )
     if initial_evaluated is not None and best["step"] is None:
         if (
             initial_evaluated.get("params") is not None
@@ -2493,6 +2512,9 @@ def main(argv=None) -> None:
             best,
             stage_final_params,
             stage_metric_history,
+            final_step=(
+                global_step_offset + stage_schedule["effective_steps"]
+            ),
             initial_evaluated=initial_evaluated,
         )
         clean_stage_final_metrics = {

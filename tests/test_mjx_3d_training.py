@@ -215,7 +215,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(
             [item["stage"].name for item in plan],
             [
-                "reset3_clean_symmetric",
+                "reset3_tiny_symmetric",
                 "reset3_low_symmetric",
                 "reset3_nominal_symmetric",
                 "reset3_differential_010",
@@ -226,7 +226,10 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(
             all(item["schedule"]["effective_steps"] > 0 for item in plan)
         )
-        self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 6)
+        self.assertEqual(plan[0]["stage"].reset_joint_noise_rad, 0.0005)
+        self.assertEqual(plan[0]["stage"].reset_velocity_noise, 0.0005)
+        self.assertTrue(all(item["num_evals"] >= 2 for item in plan))
+        self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 12)
 
     def test_friction_v1_allocates_three_progressive_stages(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
@@ -945,6 +948,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
             },
             final_params,
             [{"step": 51_200}, {"step": 76_800}],
+            final_step=76_800,
         )
 
         self.assertIs(resolved, final_params)
@@ -961,6 +965,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
             },
             object(),
             [{"step": 51_200}, {"step": 76_800}],
+            final_step=76_800,
         )
 
         self.assertIs(resolved, callback_params)
@@ -995,6 +1000,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
             },
             final_params,
             [{"step": 0}, {"step": 76_800}],
+            final_step=76_800,
             initial_evaluated={
                 "step": 0,
                 "params": initial_params,
@@ -1009,6 +1015,24 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
                 source
             )
         )
+
+    def test_step_zero_eval_is_not_mislabeled_as_final_params(self) -> None:
+        initial_params = object()
+        final_params = object()
+
+        resolved, source = train_mjx_3d_residual_ppo._resolve_best_params(
+            {
+                "step": 0,
+                "params": initial_params,
+                "params_step": 0,
+            },
+            final_params,
+            [{"step": 0}],
+            final_step=76_800,
+        )
+
+        self.assertIs(resolved, initial_params)
+        self.assertEqual(source, "callback_step_0")
 
     def test_periodic_checkpoint_directory_requires_checkpoint_flag(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

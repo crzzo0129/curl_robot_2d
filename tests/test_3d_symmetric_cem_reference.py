@@ -194,6 +194,15 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
         )
         self.assertEqual(len(mapped), 8)
 
+    def test_pupper_cpu_reference_enables_rolling_shell_collisions(self) -> None:
+        source = Path(bridge.__file__).read_text(encoding="utf-8")
+
+        self.assertIn('if args.geometry == "pupper60":', source)
+        self.assertIn(
+            "configure_pupper_shell_collisions_3d(model, enabled=True)",
+            source,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

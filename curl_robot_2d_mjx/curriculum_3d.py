@@ -146,10 +146,10 @@ RESET_V2_STAGES_3D = (
 
 NOMINAL_RESET_V3_STAGES_3D = (
     Rolling3DCurriculumStage(
-        name="reset3_clean_symmetric",
+        name="reset3_tiny_symmetric",
         weight=0.05,
-        reset_joint_noise_rad=0.0,
-        reset_velocity_noise=0.0,
+        reset_joint_noise_rad=0.0005,
+        reset_velocity_noise=0.0005,
         reset_pair_differential_scale=0.0,
         reset_axis_tilt_noise_rad=0.0,
     ),
