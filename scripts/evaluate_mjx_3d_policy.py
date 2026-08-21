@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import math
 from pathlib import Path
@@ -275,6 +275,21 @@ def parse_args(argv=None):
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float)
     parser.add_argument("--physics-profile", default="cg20")
     parser.add_argument(
+        "--physics-timestep-ms",
+        type=float,
+        help="Override the selected profile physics timestep in milliseconds.",
+    )
+    parser.add_argument(
+        "--action-repeat",
+        type=int,
+        help="Override the selected profile action repeat.",
+    )
+    parser.add_argument(
+        "--cone",
+        choices=("elliptic", "pyramidal"),
+        help="Override the selected profile contact cone.",
+    )
+    parser.add_argument(
         "--geom-friction-scale",
         type=float,
         default=1.0,
@@ -417,6 +432,13 @@ def parse_args(argv=None):
         parser.error("--episode-length, --batch-size and --chunk-size must be positive")
     if args.progress_every < 0:
         parser.error("--progress-every must be nonnegative")
+    if args.physics_timestep_ms is not None and (
+        not math.isfinite(args.physics_timestep_ms)
+        or args.physics_timestep_ms <= 0.0
+    ):
+        parser.error("--physics-timestep-ms must be finite and positive")
+    if args.action_repeat is not None and args.action_repeat < 1:
+        parser.error("--action-repeat must be positive")
     if args.diagnostic_rollouts < 0:
         parser.error("--diagnostic-rollouts must be nonnegative")
     if not 0 <= args.rollout_index < args.batch_size:
@@ -459,6 +481,17 @@ def parse_args(argv=None):
         if value is not None and (not math.isfinite(value) or value < 0.0):
             parser.error(f"{name} must be finite and nonnegative")
     return args
+
+
+def _apply_physics_overrides(task: Rolling3DConfig, args) -> Rolling3DConfig:
+    overrides = {}
+    if args.physics_timestep_ms is not None:
+        overrides["physics_timestep"] = args.physics_timestep_ms * 1e-3
+    if args.action_repeat is not None:
+        overrides["action_repeat"] = args.action_repeat
+    if args.cone is not None:
+        overrides["cone_name"] = args.cone
+    return replace(task, **overrides) if overrides else task
 
 
 def main(argv=None) -> None:
@@ -515,6 +548,7 @@ def main(argv=None) -> None:
             explicit_phase_observation=args.explicit_phase_observation,
         ),
     )
+    task = _apply_physics_overrides(task, args)
     reference = load_cem_reference(
         args.controller,
         reference_weight=args.reference_weight,
@@ -901,6 +935,7 @@ def main(argv=None) -> None:
     start = time.perf_counter()
     chunk_results: list[dict[str, np.ndarray]] = []
     chunk_wall_total = 0.0
+    chunk_wall_times = []
     chunk_count = math.ceil(args.batch_size / args.chunk_size)
     for chunk_id, chunk_start in enumerate(
         range(0, args.batch_size, args.chunk_size), start=1
@@ -934,6 +969,7 @@ def main(argv=None) -> None:
             )
         chunk_results.append(chunk_arrays)
         chunk_wall_total += chunk_wall
+        chunk_wall_times.append(chunk_wall)
         print(
             f"    chunk_done wall={chunk_wall:.1f}s "
             f"turns_median={np.median(chunk_arrays['conservative_turns']):.3f} "
@@ -953,6 +989,7 @@ def main(argv=None) -> None:
         "checkpoint": str(args.checkpoint) if args.checkpoint else None,
         "wall_time_s": time.perf_counter() - start,
         "chunk_wall_time_s": chunk_wall_total,
+        "chunk_wall_times_s": chunk_wall_times,
         "task": asdict(task),
         "controller": str(reference.source),
         "batch_size": args.batch_size,

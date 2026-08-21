@@ -14,6 +14,7 @@ from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
 from scripts import (
     evaluate_mjx_3d_policy,
     render_mjx_3d_policy,
+    sweep_mjx_3d_physics,
     train_mjx_3d_real_geometry_nominal,
     train_mjx_3d_residual_ppo,
 )
@@ -1049,6 +1050,52 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertFalse(args.resume)
         self.assertEqual(args.diagnostic_rollouts, 0)
         self.assertTrue(args.diagnostic_reference)
+
+    def test_evaluator_applies_explicit_physics_overrides(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "--evaluation-mode",
+                "reference",
+                "--out",
+                "eval_physics_override",
+                "--physics-timestep-ms",
+                "4",
+                "--action-repeat",
+                "5",
+                "--cone",
+                "pyramidal",
+            ]
+        )
+
+        task = evaluate_mjx_3d_policy._apply_physics_overrides(
+            train_mjx_3d_residual_ppo.physics_profile_3d("cg20"), args
+        )
+
+        self.assertEqual(task.physics_timestep, 0.004)
+        self.assertEqual(task.action_repeat, 5)
+        self.assertEqual(task.control_timestep, 0.02)
+        self.assertEqual(task.cone_name, "pyramidal")
+
+    def test_physics_sweep_preserves_twenty_ms_control_timestep(self) -> None:
+        args = sweep_mjx_3d_physics.parse_args(["--dry-run"])
+
+        self.assertEqual(args.timesteps_ms, [1.0, 2.0, 4.0])
+        self.assertEqual(args.cones, ["elliptic", "pyramidal"])
+        self.assertEqual(
+            [
+                sweep_mjx_3d_physics._action_repeat(
+                    args.control_timestep_ms, timestep
+                )
+                for timestep in args.timesteps_ms
+            ],
+            [20, 10, 5],
+        )
+
+    def test_physics_sweep_rejects_nondividing_timestep(self) -> None:
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            sweep_mjx_3d_physics.parse_args(
+                ["--timesteps-ms", "3", "--dry-run"]
+            )
 
     def test_reference_only_batch_eval_does_not_require_checkpoint(self) -> None:
         args = evaluate_mjx_3d_policy.parse_args(
