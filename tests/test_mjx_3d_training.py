@@ -349,8 +349,10 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(args.zero_residual_policy_init)
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertEqual(reward.roll_progress, 8.0)
-        self.assertEqual(reward.lateral_velocity, 4.0)
-        self.assertEqual(reward.lateral_drift, 6.0)
+        self.assertEqual(reward.lateral_velocity, 2.0)
+        self.assertEqual(reward.lateral_drift, 3.0)
+        self.assertEqual(reward.yaw_rate, 2.0)
+        self.assertEqual(reward.yaw, 3.0)
         self.assertEqual(reward.failure_progress_clawback, 8.0)
         self.assertEqual(reward.termination, 40.0)
         self.assertEqual(reward.severe_extra_termination, 40.0)
@@ -365,7 +367,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(args.zero_residual_policy_init)
         self.assertEqual(reward.roll_progress, 8.0)
         self.assertEqual(reward.failure_progress_clawback, 2.0)
-        self.assertEqual(reward.lateral_drift, 6.0)
+        self.assertEqual(reward.lateral_drift, 3.0)
+        self.assertEqual(reward.yaw, 3.0)
         self.assertEqual(reward.termination, 40.0)
         self.assertEqual(reward.severe_extra_termination, 40.0)
 
@@ -383,7 +386,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertEqual(args.initial_policy_std, 0.20)
         self.assertEqual(reward.failure_progress_clawback, 2.0)
-        self.assertEqual(reward.lateral_drift, 6.0)
+        self.assertEqual(reward.lateral_drift, 3.0)
+        self.assertEqual(reward.yaw, 3.0)
 
     def test_phase_locked_coupled_v7_uses_validated_target_and_clawback(
         self,
@@ -538,7 +542,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.learning_rate, 1e-5)
         self.assertEqual(args.initial_policy_std, 0.10)
 
-    def test_learn_yaw_v14_disables_reflex_and_uses_exp_lateral(self) -> None:
+    def test_learn_yaw_v14_uses_four_lateral_stability_signals(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             ["--recipe", "learn_yaw_v14"]
         )
@@ -547,10 +551,14 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.residual_pair_differential_scale, 0.25)
 
         reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
-        self.assertEqual(reward.lateral_velocity, 1.0)
-        self.assertEqual(reward.lateral_velocity_sigma_rad_s, 0.01)
-        self.assertEqual(reward.lateral_drift, 1.0)
-        self.assertEqual(reward.lateral_drift_sigma_rad, 0.02)
+        self.assertEqual(reward.lateral_velocity, 0.5)
+        self.assertEqual(reward.lateral_velocity_sigma_m_s, 0.20)
+        self.assertEqual(reward.lateral_drift, 0.5)
+        self.assertEqual(reward.lateral_drift_sigma_m, 0.10)
+        self.assertEqual(reward.yaw_rate, 0.5)
+        self.assertEqual(reward.yaw_rate_sigma_rad_s, 0.30)
+        self.assertEqual(reward.yaw, 0.5)
+        self.assertEqual(reward.yaw_sigma_rad, 0.10)
 
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(

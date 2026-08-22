@@ -32,6 +32,7 @@ from curl_robot_2d_mjx.environment_3d import (
     mirror_rolling_observation_3d,
     phase_feedback_observation_3d,
     reference_startup_scale_3d,
+    rolling_axis_heading_3d,
     rolling_target_ctrl_3d,
     geometry_parameters_3d,
     cem_controller_path_3d,
@@ -88,7 +89,7 @@ class MJX3DContractTest(unittest.TestCase):
         ):
             self.assertTrue(controller.exists())
         self.assertEqual(len(JOINT_NAMES_3D), ACTION_SIZE_3D)
-        self.assertEqual(OBSERVATION_SIZE_3D, 60)
+        self.assertEqual(OBSERVATION_SIZE_3D, 61)
 
     def test_3d_config_defaults_are_training_smoke_safe(self) -> None:
         config = Rolling3DConfig()
@@ -305,11 +306,12 @@ class MJX3DContractTest(unittest.TestCase):
 
         np.testing.assert_allclose(restored, observation)
         self.assertEqual(mirrored[1], -observation[1])
-        np.testing.assert_allclose(mirrored[14:22], observation[
-            [16, 17, 14, 15, 20, 21, 18, 19]
+        self.assertEqual(mirrored[2], -observation[2])
+        np.testing.assert_allclose(mirrored[15:23], observation[
+            [17, 18, 15, 16, 21, 22, 19, 20]
         ])
-        self.assertEqual(mirrored[59], -observation[59])
-        np.testing.assert_allclose(mirrored[60:64], observation[60:64])
+        self.assertEqual(mirrored[60], -observation[60])
+        np.testing.assert_allclose(mirrored[61:65], observation[61:65])
 
     def test_rolling_observation_mirror_supports_base_observation(self) -> None:
         observation = np.arange(OBSERVATION_SIZE_3D, dtype=np.float32)
@@ -329,6 +331,28 @@ class MJX3DContractTest(unittest.TestCase):
 
         np.testing.assert_allclose(zero, identity)
         self.assertAlmostEqual(float(np.linalg.norm(tilted)), 1.0)
+
+    def test_rolling_axis_heading_is_invariant_to_roll_phase(self) -> None:
+        yaw = 0.2
+        rotation_z = np.asarray(
+            (
+                (np.cos(yaw), -np.sin(yaw), 0.0),
+                (np.sin(yaw), np.cos(yaw), 0.0),
+                (0.0, 0.0, 1.0),
+            )
+        )
+        for roll_phase in np.linspace(0.0, 2.0 * np.pi, 9):
+            rotation_y = np.asarray(
+                (
+                    (np.cos(roll_phase), 0.0, np.sin(roll_phase)),
+                    (0.0, 1.0, 0.0),
+                    (-np.sin(roll_phase), 0.0, np.cos(roll_phase)),
+                )
+            )
+            body_y_axis = (rotation_z @ rotation_y)[:, 1]
+            self.assertAlmostEqual(
+                float(rolling_axis_heading_3d(np, body_y_axis)), yaw
+            )
 
     def test_reset_curriculum_precedes_physics_randomization(self) -> None:
         reset_stages = curriculum_stages_3d("reset_v1")

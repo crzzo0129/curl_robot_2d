@@ -16,8 +16,10 @@ def zero_inputs():
         "conservative_progress": zero,
         "mismatch_progress": zero,
         "backward_progress": zero,
-        "yaw_rate_squared": zero,
-        "lateral_yaw_abs": zero,
+        "lateral_velocity": zero,
+        "lateral_drift": zero,
+        "yaw_rate": zero,
+        "yaw": zero,
         "axis_tilt_squared": zero,
         "action_rate": zero,
         "residual_action_cost": zero,
@@ -67,6 +69,41 @@ class MJX3DRewardTest(unittest.TestCase):
         self.assertAlmostEqual(float(terms["roll_progress"]), 0.6)
         self.assertAlmostEqual(float(terms["axis_tilt"]), -0.08)
         self.assertAlmostEqual(float(terms["collision"]), 0.0)
+
+    def test_lateral_and_yaw_rewards_use_four_independent_signals(self) -> None:
+        config = Rolling3DRewardConfig(
+            lateral_velocity=1.0,
+            lateral_velocity_sigma_m_s=0.2,
+            lateral_drift=1.0,
+            lateral_drift_sigma_m=0.1,
+            yaw_rate=1.0,
+            yaw_rate_sigma_rad_s=0.3,
+            yaw=1.0,
+            yaw_sigma_rad=0.1,
+        )
+        cases = (
+            ("lateral_velocity", "lateral_velocity", 0.2),
+            ("lateral_drift", "lateral_drift", 0.1),
+            ("yaw_rate", "yaw_rate", 0.3),
+            ("yaw", "yaw", 0.1),
+        )
+
+        baseline = reward_terms_3d(np, config, zero_inputs())
+        for input_name, term_name, sigma in cases:
+            with self.subTest(input_name=input_name):
+                inputs = zero_inputs()
+                inputs[input_name] = np.asarray(sigma, dtype=np.float32)
+                terms = reward_terms_3d(np, config, inputs)
+                self.assertAlmostEqual(
+                    float(terms[term_name]), np.exp(-1.0), places=6
+                )
+                for other_term in {
+                    "lateral_velocity",
+                    "lateral_drift",
+                    "yaw_rate",
+                    "yaw",
+                } - {term_name}:
+                    self.assertEqual(terms[other_term], baseline[other_term])
 
     def test_same_side_foot_contact_penalty_matches_design(self) -> None:
         config = Rolling3DRewardConfig(
@@ -175,7 +212,7 @@ class MJX3DRewardTest(unittest.TestCase):
         stable_inputs["conservative_progress"] = np.asarray(
             progress_per_step, dtype=np.float32
         )
-        stable_inputs["lateral_yaw_abs"] = np.asarray(
+        stable_inputs["lateral_drift"] = np.asarray(
             0.04, dtype=np.float32
         )
         stable_step_reward = sum(
@@ -184,7 +221,7 @@ class MJX3DRewardTest(unittest.TestCase):
         stable_return = 500.0 * float(stable_step_reward)
 
         failed_inputs = dict(stable_inputs)
-        failed_inputs["lateral_yaw_abs"] = np.asarray(
+        failed_inputs["lateral_drift"] = np.asarray(
             0.03, dtype=np.float32
         )
         failed_step_reward = sum(

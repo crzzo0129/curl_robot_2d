@@ -75,7 +75,7 @@ CEM_CONTROLLER_PATHS_3D = {
 }
 DEFAULT_3D_CEM_CONTROLLER = PUPPER_OPEN60_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
-OBSERVATION_SIZE_3D = 60
+OBSERVATION_SIZE_3D = 61
 PHASE_FEEDBACK_SIZE_3D = 4
 PLANAR_ACTION_SCALES = np.asarray((0.8, 1.2, 0.8, 1.2), dtype=np.float64)
 PLANAR_COMPACT = np.asarray(
@@ -112,15 +112,16 @@ def _rolling_observation_mirror_contract_3d():
     permutation = list(range(width))
     signs = [1.0] * width
 
-    signs[1] = -1.0  # root y
-    signs[2:5] = (-1.0, 1.0, -1.0)  # torso local y axis
-    signs[5:8] = (1.0, -1.0, 1.0)  # torso local z axis
-    signs[8:11] = (1.0, -1.0, 1.0)  # root linear velocity
-    signs[11:14] = (-1.0, 1.0, -1.0)  # root angular velocity
-    signs[59] = -1.0  # lateral velocity command
+    signs[1] = -1.0  # cross-track error
+    signs[2] = -1.0  # rolling-axis heading
+    signs[3:6] = (-1.0, 1.0, -1.0)  # torso local y axis
+    signs[6:9] = (1.0, -1.0, 1.0)  # torso local z axis
+    signs[9:12] = (1.0, -1.0, 1.0)  # root linear velocity
+    signs[12:15] = (-1.0, 1.0, -1.0)  # root angular velocity
+    signs[60] = -1.0  # lateral velocity command
 
     pair_permutation = (2, 3, 0, 1, 6, 7, 4, 5)
-    for start in (14, 22, 30, 46):
+    for start in (15, 23, 31, 47):
         permutation[start : start + ACTION_SIZE_3D] = tuple(
             start + index for index in pair_permutation
         )
@@ -272,6 +273,12 @@ def duplicate_planar_action_3d(xp, planar_action):
             rear_knee,
         )
     )
+
+
+def rolling_axis_heading_3d(xp, body_y_axis):
+    """Return heading from the roll-invariant horizontal rolling axis."""
+
+    return xp.arctan2(-body_y_axis[..., 0], body_y_axis[..., 1])
 
 
 def pair_coupled_residual_action_3d(
@@ -977,6 +984,7 @@ def make_brax_env_3d(
                 oscillator_phase=oscillator_phase,
                 rolling_phase=jp.zeros((), dtype=jp.float32),
                 action_ramp=jp.zeros((), dtype=jp.float32),
+                lateral_drift=jp.zeros((), dtype=jp.float32),
                 lateral_velocity_command=lateral_velocity_command,
             )
             return State(
@@ -1216,9 +1224,8 @@ def make_brax_env_3d(
             lateral_drift = root_y - state.info["initial_root_y"]
             lateral_drift_abs = jp.abs(lateral_drift)
             lateral_velocity = data.qvel[1]
-            rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
-            body_x_axis = rotation[:, 0]
-            lateral_yaw = jp.arctan2(body_x_axis[1], body_x_axis[0])
+            body_y_axis, _ = self._body_axes(data)
+            lateral_yaw = rolling_axis_heading_3d(jp, body_y_axis)
             yaw_rate = data.qvel[5]
 
             action_rate = jp.mean(
@@ -1334,8 +1341,10 @@ def make_brax_env_3d(
                     "conservative_progress": conservative_progress,
                     "mismatch_progress": mismatch_progress,
                     "backward_progress": backward_progress,
-                    "yaw_rate_squared": jp.square(yaw_rate),
-                    "lateral_yaw_abs": jp.abs(lateral_yaw),
+                    "lateral_velocity": lateral_velocity,
+                    "lateral_drift": lateral_drift,
+                    "yaw_rate": yaw_rate,
+                    "yaw": lateral_yaw,
                     "axis_tilt_squared": jp.square(axis_tilt),
                     "action_rate": action_rate,
                     "residual_action_cost": jp.mean(jp.square(policy_action)),
@@ -1521,6 +1530,7 @@ def make_brax_env_3d(
                 oscillator_phase=oscillator_phase,
                 rolling_phase=rolling_phase,
                 action_ramp=action_ramp,
+                lateral_drift=lateral_drift,
                 lateral_velocity_command=state.info[
                     "lateral_velocity_command"
                 ],
@@ -1638,13 +1648,14 @@ def make_brax_env_3d(
             oscillator_phase,
             rolling_phase,
             action_ramp,
+            lateral_drift,
             lateral_velocity_command,
         ):
             body_y_axis, body_z_axis = self._body_axes(data)
-            rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
-            body_x_axis = rotation[:, 0]
-            yaw = jp.arctan2(body_x_axis[1], body_x_axis[0])
-            root_position_features = jp.asarray([data.qpos[2], yaw])
+            yaw = rolling_axis_heading_3d(jp, body_y_axis)
+            root_position_features = jp.asarray(
+                [data.qpos[2], lateral_drift, yaw]
+            )
             root_linear_velocity = data.qvel[:3]
             root_angular_velocity = data.qvel[3:6]
             joint_position = data.qpos[self.joint_qpos_indices]
