@@ -2,17 +2,112 @@
 
 ## 当前结论
 
-不要一次加入 reset、摩擦、质量和执行器误差。当前已通过的 `reset_v2` 负责初始状态鲁棒性；下一步使用独立的 `friction_v1`，从 `reset_v2/params_best` 热启动，只扩大摩擦系数范围。这样失败率变化可以归因于摩擦，而不是混杂的模型变化。
+Reference 已经提供名义滚动能力。当前 residual PPO 的目标不是重新学习滚动，而是在八个关节受到真实独立初态扰动后恢复 reference 轨道，并在不需要恢复时保持 residual 接近零。
 
-训练入口提供四个显式课程：
+当前推荐的新实验组合是：
 
-- `reset_v1`：旧版 reset 课程，用于复现；
-- `reset_v2`：固定 joint/qvel/differential 扰动，逐步增加 axis tilt；
-- `friction_v1`：保持 `reset_v2` 最终 reset 难度，只逐步扩大摩擦随机化；
-- `mass_v1`：从通过验收的 `friction_v1` 继续，在保留摩擦随机化的同时逐步加入每个 body 的质量/惯量随机化；
-- `robustness_v1`：旧版 `reset_v1 + friction + dynamics`，保留兼容，不用于当前 checkpoint 的续训。
+- `--recipe robust_recovery_v15`：使用有界 Huber 状态代价、误差下降恢复奖励和更强的 residual reference 锚定；
+- `--curriculum independent_reset_v4`：从第一阶段开始八个活动关节始终独立采样，只增加 q/qdot 噪声幅度；
+- `--physics-profile cg20`：训练与 reference 验证使用相同求解器。
+
+旧 `reset_v1/reset_v2/nominal_reset_v3` 和旧 recipe 全部保留用于复现实验，但不再作为当前独立关节鲁棒性实验的推荐入口。摩擦、质量、执行器和 root 扰动暂不与 v4 同时加入；只有 v4 在目标独立噪声上通过验收后，才逐项扩展。
 
 默认仍为 `--curriculum none`。
+
+## `independent_reset_v4`
+
+v4 不再使用 `symmetric -> differential -> independent` 的相关结构 curriculum。六个阶段均令 `reset_pair_differential_scale=None`，即八个活动关节的位置与速度分别独立均匀采样。课程只改变幅度，最终阶段 100% 等于当前目标独立噪声分布。各阶段在代码中显式固定 `reset_root_velocity_noise=0` 和 `reset_axis_tilt_noise_rad=0`，不会继承基础配置中的非零值。
+
+| stage | 训练权重 | joint q noise | joint qdot noise | 结构 | root velocity | axis tilt |
+|---|---:|---:|---:|---|---:|---:|
+| `reset4_independent_0005` | 0.05 | 0.0005 rad | 0.0005 | independent | 0 | 0 |
+| `reset4_independent_0010` | 0.10 | 0.001 rad | 0.001 | independent | 0 | 0 |
+| `reset4_independent_0020` | 0.15 | 0.002 rad | 0.002 | independent | 0 | 0 |
+| `reset4_independent_0030` | 0.20 | 0.003 rad | 0.003 | independent | 0 | 0 |
+| `reset4_independent_0040` | 0.20 | 0.004 rad | 0.004 | independent | 0 | 0 |
+| `reset4_independent_0050` | 0.30 | 0.005 rad | 0.005 | independent | 0 | 0 |
+
+阶段间仍传递当前阶段 `params_best`，不是 `params_final`。每个阶段至少包含 step 0 和训练后的 eval；正式实验应增加 eval 数和 eval batch，不能用 8 个样本的 12.5% 跳变判断鲁棒性。
+
+## `robust_recovery_v15` reward
+
+旧正高斯稳定奖励在 v15 中全部置零。定义归一化有界 Huber：
+
+```text
+z = abs(error) / sigma
+Huber(z) = 0.5*z^2                 z <= 1
+           z - 0.5                 z > 1
+bounded_huber = min(Huber(z), 1)
+```
+
+综合稳定性代价为：
+
+```text
+E = 0.25 * Huber(vy / 0.20 m/s)
+  + 1.00 * Huber((y-y0) / 0.10 m)
+  + 0.25 * Huber(yaw_rate / 0.30 rad/s)
+  + 0.50 * Huber(yaw / 0.10 rad)
+```
+
+每一步新增：
+
+```text
+state_cost = -E
+recovery = 4.0 * clip(E_previous - E, -0.25, 0.25)
+residual_anchor = -0.05 * mean(residual_action^2)
+```
+
+因此误差下降得到正 recovery，误差扩大得到负 recovery，保持偏移仍持续承担 state cost。`roll_progress`、`roll_mismatch`、碰撞、failure progress clawback 和 termination 保留。训练日志会分别输出四个负 `*_cost` reward、标为 `delta` 的已加权 recovery reward，以及正值 `stability_error_cost` metric。
+
+## 当前训练命令
+
+先从零运行 smoke，不恢复旧 PPO 参数：
+
+```bash
+python -m scripts.train_mjx_3d_residual_ppo \
+  --preset smoke \
+  --recipe robust_recovery_v15 \
+  --geometry pupper_open60 \
+  --controller results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json \
+  --physics-profile cg20 \
+  --curriculum independent_reset_v4 \
+  --episode-length 500 \
+  --num-evals 24 \
+  --eval-envs 64 \
+  --reset-root-velocity-noise 0 \
+  --reset-axis-tilt-noise-rad 0 \
+  --seed 0 \
+  --mujoco-gl disable \
+  --memory-fraction 0.50 \
+  --out results/independent_reset_v4_recovery_v15_cg20_smoke
+```
+
+smoke 确认 reward 符号、恢复项和六阶段 checkpoint 都正确后，再运行 H200：
+
+```bash
+python -m scripts.train_mjx_3d_residual_ppo \
+  --preset h200 \
+  --recipe robust_recovery_v15 \
+  --geometry pupper_open60 \
+  --controller results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json \
+  --physics-profile cg20 \
+  --curriculum independent_reset_v4 \
+  --episode-length 500 \
+  --num-evals 30 \
+  --eval-envs 256 \
+  --reset-root-velocity-noise 0 \
+  --reset-axis-tilt-noise-rad 0 \
+  --seed 0 \
+  --mujoco-gl disable \
+  --memory-fraction 0.80 \
+  --out results/independent_reset_v4_recovery_v15_cg20_h200_seed0
+```
+
+最终验收以 `reset4_independent_0050` 的 paired evaluation 为主，同时单独跑 zero-noise reference retention。训练通过后才建立 root velocity curriculum；root x/y 的物理平移在无限平地上不构成有效扰动，定位误差应作为 observation noise 单独处理。
+
+## 旧 `reset_v2 -> friction_v1` 实验记录
+
+以下内容保留旧实验的含义与复现命令，不代表当前 v15/v4 的直接续训路径。
 
 ## `reset_v2 -> friction_v1` 的边界
 

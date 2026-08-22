@@ -13,6 +13,11 @@ REWARD_3D_TERM_NAMES = (
     "lateral_drift",
     "yaw_rate",
     "yaw",
+    "lateral_velocity_cost",
+    "lateral_drift_cost",
+    "yaw_rate_cost",
+    "yaw_cost",
+    "recovery",
     "axis_tilt",
     "action_rate",
     "residual_action",
@@ -38,6 +43,13 @@ class Rolling3DRewardConfig:
     yaw_rate_sigma_rad_s: float = 0.30
     yaw: float = 0.5
     yaw_sigma_rad: float = 0.10
+    lateral_velocity_cost: float = 0.0
+    lateral_drift_cost: float = 0.0
+    yaw_rate_cost: float = 0.0
+    yaw_cost: float = 0.0
+    stability_huber_clip: float = 1.0
+    recovery: float = 0.0
+    recovery_clip: float = 0.25
     axis_tilt: float = 8.0
     action_rate: float = 0.03
     residual_action: float = 0.02
@@ -63,6 +75,50 @@ class Rolling3DRewardConfig:
 
 def conservative_rolling_potential(xp, cumulative_rotation, cumulative_translation):
     return xp.minimum(cumulative_rotation, cumulative_translation)
+
+
+def bounded_huber_cost_3d(xp, value, scale, clip):
+    normalized = xp.abs(value) / max(float(scale), 1.0e-6)
+    quadratic = xp.minimum(normalized, 1.0)
+    cost = 0.5 * xp.square(quadratic) + normalized - quadratic
+    return xp.minimum(cost, clip)
+
+
+def stability_error_cost_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
+    return {
+        "lateral_velocity_cost": config.lateral_velocity_cost
+        * bounded_huber_cost_3d(
+            xp,
+            inputs["lateral_velocity"],
+            config.lateral_velocity_sigma_m_s,
+            config.stability_huber_clip,
+        ),
+        "lateral_drift_cost": config.lateral_drift_cost
+        * bounded_huber_cost_3d(
+            xp,
+            inputs["lateral_drift"],
+            config.lateral_drift_sigma_m,
+            config.stability_huber_clip,
+        ),
+        "yaw_rate_cost": config.yaw_rate_cost
+        * bounded_huber_cost_3d(
+            xp,
+            inputs["yaw_rate"],
+            config.yaw_rate_sigma_rad_s,
+            config.stability_huber_clip,
+        ),
+        "yaw_cost": config.yaw_cost
+        * bounded_huber_cost_3d(
+            xp,
+            inputs["yaw"],
+            config.yaw_sigma_rad,
+            config.stability_huber_clip,
+        ),
+    }
+
+
+def stability_error_cost_3d(xp, config: Rolling3DRewardConfig, inputs):
+    return sum(stability_error_cost_terms_3d(xp, config, inputs).values())
 
 
 def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
@@ -106,6 +162,13 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         config.nonfinite_termination,
         severe_penalty,
     )
+    stability_cost_terms = stability_error_cost_terms_3d(xp, config, inputs)
+    stability_cost = sum(stability_cost_terms.values())
+    recovery_delta = xp.clip(
+        inputs["previous_stability_cost"] - stability_cost,
+        -config.recovery_clip,
+        config.recovery_clip,
+    )
     return {
         "roll_progress": config.roll_progress * clipped_progress,
         "roll_mismatch": -config.roll_mismatch * inputs["mismatch_progress"],
@@ -125,6 +188,11 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         "yaw": config.yaw * xp.exp(
             -xp.square(inputs["yaw"]) / config.yaw_sigma_rad**2
         ),
+        **{
+            name: -value
+            for name, value in stability_cost_terms.items()
+        },
+        "recovery": config.recovery * recovery_delta,
         "axis_tilt": -config.axis_tilt * inputs["axis_tilt_squared"],
         "action_rate": -config.action_rate * inputs["action_rate"],
         "residual_action": (

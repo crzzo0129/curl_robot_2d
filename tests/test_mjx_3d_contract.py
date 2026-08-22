@@ -415,6 +415,42 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(final_task.reset_root_velocity_noise, 0.0)
         self.assertEqual(final_task.reset_axis_tilt_noise_rad, 0.0)
 
+    def test_independent_reset_v4_preserves_target_noise_structure(self) -> None:
+        stages = curriculum_stages_3d("independent_reset_v4")
+
+        self.assertEqual(
+            [stage.reset_joint_noise_rad for stage in stages],
+            [0.0005, 0.001, 0.002, 0.003, 0.004, 0.005],
+        )
+        self.assertEqual(
+            [stage.reset_velocity_noise for stage in stages],
+            [0.0005, 0.001, 0.002, 0.003, 0.004, 0.005],
+        )
+        self.assertTrue(all(stage.reset_independent for stage in stages))
+        self.assertTrue(
+            all(stage.reset_root_velocity_noise == 0.0 for stage in stages)
+        )
+        self.assertTrue(
+            all(stage.reset_axis_tilt_noise_rad == 0.0 for stage in stages)
+        )
+        self.assertAlmostEqual(sum(stage.weight for stage in stages), 1.0)
+        base = Rolling3DConfig(
+            reset_root_velocity_noise=0.1,
+            reset_pair_differential_scale=0.0,
+        )
+        self.assertTrue(
+            all(
+                stage.task_config(base).reset_pair_differential_scale is None
+                for stage in stages
+            )
+        )
+        self.assertTrue(
+            all(
+                stage.task_config(base).reset_root_velocity_noise == 0.0
+                for stage in stages
+            )
+        )
+
     def test_friction_v1_holds_reset_v2_target_and_only_expands_friction(
         self,
     ) -> None:
@@ -617,6 +653,8 @@ class MJX3DContractTest(unittest.TestCase):
             "failure_lateral_positive",
             "failure_lateral_negative",
             "lateral_drift_abs_m",
+            "stability_error_cost",
+            'state.info["previous_stability_cost"]',
             "residual_common_rms",
             "residual_differential_rms",
             "failure_axis_tilt",

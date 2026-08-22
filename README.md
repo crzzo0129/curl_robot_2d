@@ -125,3 +125,10 @@ python -m unittest discover -s tests -v
 停止相位控制；随后验证二维蜷缩/展开链路并粗略寻找双模态可行的 COM 区域。
 选定具有鲁棒裕度且可制造的结构后，将二维滚动机制迁移到完整三维四足模型，
 与行走策略和高层状态机组合，最终验证完整的 `walk → roll → walk`。
+
+当前三维滚动鲁棒性实验使用 `robust_recovery_v15` reward 和
+`independent_reset_v4` curriculum：CEM reference 保留名义滚动，residual PPO
+只学习八关节独立 q/qdot 扰动后的恢复。课程从始至终保持独立噪声结构，最终
+达到 `q/qdot=0.005` 的目标分布；root velocity 和 axis tilt 在本轮保持为零。
+设计、reward 公式、smoke/H200 命令和验收方法
+见 [`docs/3d_robustness_curriculum_zh.md`](docs/3d_robustness_curriculum_zh.md)。

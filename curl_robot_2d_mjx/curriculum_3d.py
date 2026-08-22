@@ -15,6 +15,7 @@ CURRICULUM_NAMES_3D = (
     "reset_v1",
     "reset_v2",
     "nominal_reset_v3",
+    "independent_reset_v4",
     "friction_v1",
     "friction_low_v1",
     "mass_v1",
@@ -200,6 +201,63 @@ NOMINAL_RESET_V3_STAGES_3D = (
     ),
 )
 
+INDEPENDENT_RESET_V4_STAGES_3D = (
+    Rolling3DCurriculumStage(
+        name="reset4_independent_0005",
+        weight=0.05,
+        reset_joint_noise_rad=0.0005,
+        reset_velocity_noise=0.0005,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset4_independent_0010",
+        weight=0.10,
+        reset_joint_noise_rad=0.001,
+        reset_velocity_noise=0.001,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset4_independent_0020",
+        weight=0.15,
+        reset_joint_noise_rad=0.002,
+        reset_velocity_noise=0.002,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset4_independent_0030",
+        weight=0.20,
+        reset_joint_noise_rad=0.003,
+        reset_velocity_noise=0.003,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset4_independent_0040",
+        weight=0.20,
+        reset_joint_noise_rad=0.004,
+        reset_velocity_noise=0.004,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+    Rolling3DCurriculumStage(
+        name="reset4_independent_0050",
+        weight=0.30,
+        reset_joint_noise_rad=0.005,
+        reset_velocity_noise=0.005,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+    ),
+)
+
 FRICTION_V1_STAGES_3D = (
     Rolling3DCurriculumStage(
         name="friction_02",
@@ -334,6 +392,7 @@ CURRICULUM_STAGE_NAMES_3D = tuple(
         *RESET_STAGES_3D,
         *RESET_V2_STAGES_3D,
         *NOMINAL_RESET_V3_STAGES_3D,
+        *INDEPENDENT_RESET_V4_STAGES_3D,
         *FRICTION_V1_STAGES_3D,
         *FRICTION_LOW_V1_STAGES_3D,
         *MASS_V1_STAGES_3D,
@@ -357,6 +416,8 @@ def curriculum_stages_3d(
         stages = RESET_V2_STAGES_3D
     elif name == "nominal_reset_v3":
         stages = NOMINAL_RESET_V3_STAGES_3D
+    elif name == "independent_reset_v4":
+        stages = INDEPENDENT_RESET_V4_STAGES_3D
     elif name == "friction_v1":
         stages = FRICTION_V1_STAGES_3D
     elif name == "friction_low_v1":

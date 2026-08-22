@@ -30,6 +30,7 @@ from curl_robot_2d_mjx.reward_3d import (
     Rolling3DRewardConfig,
     conservative_rolling_potential,
     reward_terms_3d,
+    stability_error_cost_3d,
 )
 
 
@@ -726,6 +727,7 @@ def make_brax_env_3d(
                 "lateral_drift_m": zero,
                 "lateral_drift_abs_m": zero,
                 "lateral_velocity_m_s": zero,
+                "stability_error_cost": zero,
                 "axis_tilt_rad": zero,
                 "axis_tilt_step_count": zero,
                 "root_low_active": zero,
@@ -940,6 +942,17 @@ def make_brax_env_3d(
             data = mjx.forward(self.mjx_model, data)
             contacts = self._contact_metrics(data)
             axis_tilt = self._rolling_axis_tilt(data)
+            body_y_axis, _ = self._body_axes(data)
+            initial_stability_cost = stability_error_cost_3d(
+                jp,
+                reward_settings,
+                {
+                    "lateral_velocity": data.qvel[1],
+                    "lateral_drift": jp.zeros((), dtype=jp.float32),
+                    "yaw_rate": data.qvel[5],
+                    "yaw": rolling_axis_heading_3d(jp, body_y_axis),
+                },
+            )
             info = {
                 "initial_root_x": data.qpos[0],
                 "initial_root_y": data.qpos[1],
@@ -952,6 +965,7 @@ def make_brax_env_3d(
                 "previous_mismatch_potential": jp.zeros(
                     (), dtype=jp.float32
                 ),
+                "previous_stability_cost": initial_stability_cost,
                 "last_action": cem_action,
                 "last_policy_action": jp.zeros(
                     (ACTION_SIZE_3D,), dtype=jp.float32
@@ -1227,6 +1241,16 @@ def make_brax_env_3d(
             body_y_axis, _ = self._body_axes(data)
             lateral_yaw = rolling_axis_heading_3d(jp, body_y_axis)
             yaw_rate = data.qvel[5]
+            stability_cost = stability_error_cost_3d(
+                jp,
+                reward_settings,
+                {
+                    "lateral_velocity": lateral_velocity,
+                    "lateral_drift": lateral_drift,
+                    "yaw_rate": yaw_rate,
+                    "yaw": lateral_yaw,
+                },
+            )
 
             action_rate = jp.mean(
                 jp.square(effective_action - state.info["last_action"])
@@ -1345,6 +1369,9 @@ def make_brax_env_3d(
                     "lateral_drift": lateral_drift,
                     "yaw_rate": yaw_rate,
                     "yaw": lateral_yaw,
+                    "previous_stability_cost": state.info[
+                        "previous_stability_cost"
+                    ],
                     "axis_tilt_squared": jp.square(axis_tilt),
                     "action_rate": action_rate,
                     "residual_action_cost": jp.mean(jp.square(policy_action)),
@@ -1408,6 +1435,7 @@ def make_brax_env_3d(
                 "cumulative_rotation": cumulative_rotation,
                 "previous_roll_potential": roll_potential,
                 "previous_mismatch_potential": mismatch_potential,
+                "previous_stability_cost": stability_cost,
                 "last_action": effective_action,
                 "last_policy_action": policy_action,
                 "last_reference_action": next_reference_action,
@@ -1437,6 +1465,7 @@ def make_brax_env_3d(
                 "lateral_drift_m": lateral_drift,
                 "lateral_drift_abs_m": lateral_drift_abs,
                 "lateral_velocity_m_s": lateral_velocity,
+                "stability_error_cost": stability_cost,
                 "axis_tilt_rad": axis_tilt,
                 "axis_tilt_step_count": (
                     axis_tilt_step_count.astype(jp.float32)

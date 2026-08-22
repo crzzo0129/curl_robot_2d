@@ -624,6 +624,47 @@ RECIPES_3D = {
             "severe_extra_termination": 40.0,
         },
     },
+    "robust_recovery_v15": {
+        "description": (
+            "Preserve the CEM reference while learning recovery from bounded "
+            "Huber stability costs and error-reduction potential shaping."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "lateral_reflex_gain": 0.0,
+            "explicit_phase_observation": True,
+            "learning_rate": 1e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.10,
+        },
+        "reward": {
+            "roll_progress": 8.0,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 0.0,
+            "lateral_drift": 0.0,
+            "yaw_rate": 0.0,
+            "yaw": 0.0,
+            "lateral_velocity_cost": 0.25,
+            "lateral_drift_cost": 1.0,
+            "yaw_rate_cost": 0.25,
+            "yaw_cost": 0.5,
+            "stability_huber_clip": 1.0,
+            "recovery": 4.0,
+            "recovery_clip": 0.25,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.05,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
     "real_geometry_contact_v1": {
         "description": (
             "Keep the real-geometry 2-D CEM reference, learn symmetric "
@@ -952,6 +993,7 @@ PER_STEP_EVAL_METRICS_3D = (
     "lateral_drift_m",
     "lateral_drift_abs_m",
     "lateral_velocity_m_s",
+    "stability_error_cost",
     "axis_tilt_rad",
     "axis_tilt_step_count",
     "root_low_active",
@@ -1230,6 +1272,8 @@ def _format_eval_report_3d(
             f"mean_y={_metric(metrics, 'eval/avg_root_y_m'):+.3f}m "
             f"mean_z={_metric(metrics, 'eval/avg_root_z_m'):.3f}m "
             f"mean_lateral={selection['lateral_drift_m']:.3f}m "
+            f"stability_cost="
+            f"{_metric(metrics, 'eval/avg_stability_error_cost'):.3f} "
             f"mean_axis_tilt={selection['axis_tilt_rad']:.3f}rad"
         ),
         (
@@ -1279,6 +1323,16 @@ def _format_eval_report_3d(
                 ("yaw_rate", "yaw_rate"),
                 ("yaw", "yaw"),
                 ("tilt", "axis_tilt"),
+            ),
+        ),
+        (
+            "recovery",
+            (
+                ("vy_cost", "lateral_velocity_cost"),
+                ("y_cost", "lateral_drift_cost"),
+                ("wz_cost", "yaw_rate_cost"),
+                ("yaw_cost", "yaw_cost"),
+                ("delta", "recovery"),
             ),
         ),
         (
@@ -1517,7 +1571,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "3-D training recipe. anchored_v1 reproduces the first run; "
             "phase_locked_v3 starts residual learning from the restored "
             "phase-locked reference; phase_locked_equivariant_v9 enforces "
-            "left/right reflection symmetry in residual learning."
+            "left/right reflection symmetry in residual learning; "
+            "robust_recovery_v15 learns recovery from independent reset "
+            "noise while preserving the CEM reference."
         ),
     )
     parser.add_argument(
@@ -1533,7 +1589,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "Robustness curriculum. reset_v1 preserves the original reset "
             "schedule; reset_v2 resolves the measured axis-tilt failure "
             "cliff; nominal_reset_v3 gradually introduces the nominal "
-            "eight-joint independent reset noise; friction_v1 warm-starts "
+            "eight-joint independent reset noise through paired stages; "
+            "independent_reset_v4 keeps all eight joints independent while "
+            "ramping only q/qdot noise magnitude; friction_v1 warm-starts "
             "from an accepted reset_v2 "
             "checkpoint and expands only global geom friction; mass_v1 "
             "continues from friction_v1 and expands coupled per-body mass "
@@ -2257,7 +2315,10 @@ def main(argv=None) -> None:
         f"  policy_symmetry={policy_symmetry_text}\n"
         f"  eval_policy={'deterministic' if args.deterministic_eval else 'stochastic'}\n"
         f"  reward roll={reward_config.roll_progress:g} "
-        f"lat={reward_config.lateral_drift:g} "
+        f"lat_cost={reward_config.lateral_drift_cost:g} "
+        f"yaw_cost={reward_config.yaw_cost:g} "
+        f"recovery={reward_config.recovery:g} "
+        f"residual={reward_config.residual_action:g} "
         f"tilt={reward_config.axis_tilt:g} "
         f"collision_event={reward_config.foot_contact_event:g} "
         f"clawback={reward_config.failure_progress_clawback:g} "

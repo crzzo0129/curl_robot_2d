@@ -5,8 +5,10 @@ import numpy as np
 from curl_robot_2d_mjx.reward_3d import (
     REWARD_3D_TERM_NAMES,
     Rolling3DRewardConfig,
+    bounded_huber_cost_3d,
     conservative_rolling_potential,
     reward_terms_3d,
+    stability_error_cost_3d,
 )
 
 
@@ -20,6 +22,7 @@ def zero_inputs():
         "lateral_drift": zero,
         "yaw_rate": zero,
         "yaw": zero,
+        "previous_stability_cost": zero,
         "axis_tilt_squared": zero,
         "action_rate": zero,
         "residual_action_cost": zero,
@@ -104,6 +107,69 @@ class MJX3DRewardTest(unittest.TestCase):
                     "yaw",
                 } - {term_name}:
                     self.assertEqual(terms[other_term], baseline[other_term])
+
+    def test_bounded_huber_cost_is_quadratic_linear_and_capped(self) -> None:
+        self.assertAlmostEqual(
+            float(bounded_huber_cost_3d(np, 0.5, 1.0, 1.0)), 0.125
+        )
+        self.assertAlmostEqual(
+            float(bounded_huber_cost_3d(np, 1.0, 1.0, 1.0)), 0.5
+        )
+        self.assertAlmostEqual(
+            float(bounded_huber_cost_3d(np, 1.5, 1.0, 2.0)), 1.0
+        )
+        self.assertAlmostEqual(
+            float(bounded_huber_cost_3d(np, 3.0, 1.0, 1.0)), 1.0
+        )
+
+    def test_robust_stability_costs_use_four_independent_signals(self) -> None:
+        config = Rolling3DRewardConfig(
+            lateral_velocity=0.0,
+            lateral_drift=0.0,
+            yaw_rate=0.0,
+            yaw=0.0,
+            lateral_velocity_cost=1.0,
+            lateral_drift_cost=1.0,
+            yaw_rate_cost=1.0,
+            yaw_cost=1.0,
+        )
+        cases = (
+            ("lateral_velocity", "lateral_velocity_cost", 0.20),
+            ("lateral_drift", "lateral_drift_cost", 0.10),
+            ("yaw_rate", "yaw_rate_cost", 0.30),
+            ("yaw", "yaw_cost", 0.10),
+        )
+
+        for input_name, term_name, sigma in cases:
+            with self.subTest(input_name=input_name):
+                inputs = zero_inputs()
+                inputs[input_name] = np.asarray(sigma, dtype=np.float32)
+                terms = reward_terms_3d(np, config, inputs)
+                self.assertAlmostEqual(float(terms[term_name]), -0.5)
+                self.assertAlmostEqual(
+                    float(stability_error_cost_3d(np, config, inputs)), 0.5
+                )
+
+    def test_recovery_rewards_error_reduction_and_penalizes_growth(self) -> None:
+        config = Rolling3DRewardConfig(
+            lateral_velocity=0.0,
+            lateral_drift=0.0,
+            yaw_rate=0.0,
+            yaw=0.0,
+            lateral_drift_cost=1.0,
+            recovery=4.0,
+            recovery_clip=0.25,
+        )
+        inputs = zero_inputs()
+        inputs["lateral_drift"] = np.asarray(0.10, dtype=np.float32)
+
+        inputs["previous_stability_cost"] = np.asarray(0.75, dtype=np.float32)
+        improving = reward_terms_3d(np, config, inputs)
+        self.assertAlmostEqual(float(improving["recovery"]), 1.0)
+
+        inputs["previous_stability_cost"] = np.asarray(0.25, dtype=np.float32)
+        worsening = reward_terms_3d(np, config, inputs)
+        self.assertAlmostEqual(float(worsening["recovery"]), -1.0)
 
     def test_same_side_foot_contact_penalty_matches_design(self) -> None:
         config = Rolling3DRewardConfig(

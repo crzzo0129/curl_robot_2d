@@ -232,6 +232,40 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertTrue(all(item["num_evals"] >= 2 for item in plan))
         self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 12)
 
+    def test_independent_reset_v4_ramps_only_independent_noise(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--curriculum", "independent_reset_v4"]
+        )
+        values = train_mjx_3d_residual_ppo.PRESETS["smoke"].copy()
+
+        plan = train_mjx_3d_residual_ppo._curriculum_training_plan(
+            args, values
+        )
+
+        self.assertEqual(
+            [item["stage"].name for item in plan],
+            [
+                "reset4_independent_0005",
+                "reset4_independent_0010",
+                "reset4_independent_0020",
+                "reset4_independent_0030",
+                "reset4_independent_0040",
+                "reset4_independent_0050",
+            ],
+        )
+        self.assertEqual(
+            [item["stage"].reset_joint_noise_rad for item in plan],
+            [0.0005, 0.001, 0.002, 0.003, 0.004, 0.005],
+        )
+        self.assertTrue(all(item["stage"].reset_independent for item in plan))
+        self.assertTrue(
+            all(
+                item["stage"].reset_root_velocity_noise == 0.0
+                for item in plan
+            )
+        )
+        self.assertTrue(all(item["num_evals"] >= 2 for item in plan))
+
     def test_friction_v1_allocates_three_progressive_stages(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             ["--curriculum", "friction_v1"]
@@ -559,6 +593,28 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.yaw_rate_sigma_rad_s, 0.30)
         self.assertEqual(reward.yaw, 0.5)
         self.assertEqual(reward.yaw_sigma_rad, 0.10)
+
+    def test_robust_recovery_v15_uses_cost_and_recovery_reward(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "robust_recovery_v15"]
+        )
+
+        self.assertEqual(args.lateral_reflex_gain, 0.0)
+        self.assertEqual(args.residual_pair_differential_scale, 0.25)
+        self.assertTrue(args.zero_residual_policy_init)
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+        self.assertEqual(reward.lateral_velocity, 0.0)
+        self.assertEqual(reward.lateral_drift, 0.0)
+        self.assertEqual(reward.yaw_rate, 0.0)
+        self.assertEqual(reward.yaw, 0.0)
+        self.assertEqual(reward.lateral_velocity_cost, 0.25)
+        self.assertEqual(reward.lateral_drift_cost, 1.0)
+        self.assertEqual(reward.yaw_rate_cost, 0.25)
+        self.assertEqual(reward.yaw_cost, 0.5)
+        self.assertEqual(reward.recovery, 4.0)
+        self.assertEqual(reward.recovery_clip, 0.25)
+        self.assertEqual(reward.residual_action, 0.05)
 
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
