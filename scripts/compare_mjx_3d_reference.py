@@ -366,6 +366,7 @@ def _run_mjx_case(
         "reset": reset_name,
         "reset_joint_noise_rad": task.reset_joint_noise_rad,
         "reset_velocity_noise": task.reset_velocity_noise,
+        "reset_root_velocity_noise": task.reset_root_velocity_noise,
         "batch_size": batch_size,
         "environment_seed": environment_seed,
         "rollout_seed": rollout_seed,
@@ -424,7 +425,8 @@ def _print_case(result) -> None:
     if "reset_joint_noise_rad" in result:
         noise_detail = (
             f" q_noise={result['reset_joint_noise_rad']:.4g}"
-            f" v_noise={result['reset_velocity_noise']:.4g}"
+            f" joint_v_noise={result['reset_velocity_noise']:.4g}"
+            f" root_v_noise={result['reset_root_velocity_noise']:.4g}"
         )
     print(
         f"[{result['name']}] backend={result['backend']} "

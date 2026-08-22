@@ -148,6 +148,7 @@ class MJX3DContractTest(unittest.TestCase):
             {"lateral_command_fixed": float("nan")},
             {"reset_joint_noise_rad": -0.1},
             {"reset_velocity_noise": float("nan")},
+            {"reset_root_velocity_noise": -0.1},
             {"reset_pair_differential_scale": 1.1},
             {"reset_axis_tilt_noise_rad": -0.1},
             {"geom_friction_scale": 0.0},
@@ -387,6 +388,7 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertIsNone(final_task.reset_pair_differential_scale)
         self.assertEqual(final_task.reset_joint_noise_rad, 0.005)
         self.assertEqual(final_task.reset_velocity_noise, 0.005)
+        self.assertEqual(final_task.reset_root_velocity_noise, 0.0)
         self.assertEqual(final_task.reset_axis_tilt_noise_rad, 0.0)
 
     def test_friction_v1_holds_reset_v2_target_and_only_expands_friction(
@@ -604,6 +606,7 @@ class MJX3DContractTest(unittest.TestCase):
             "jp.nan_to_num",
             "advance_oscillator",
             'state.info["rolling_phase"]',
+            "task.reset_root_velocity_noise",
         ):
             self.assertIn(token, source)
 

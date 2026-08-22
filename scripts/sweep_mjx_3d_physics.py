@@ -88,6 +88,9 @@ def parse_args(argv=None):
         "--reset-velocity-noise", type=_nonnegative_float, default=0.005
     )
     parser.add_argument(
+        "--reset-root-velocity-noise", type=_nonnegative_float, default=0.0
+    )
+    parser.add_argument(
         "--reset-pair-differential-scale", type=float, default=None
     )
     parser.add_argument(
@@ -156,6 +159,8 @@ def _evaluation_command(args, *, timestep_ms, cone, case_dir) -> list[str]:
         str(args.reset_joint_noise_rad),
         "--reset-velocity-noise",
         str(args.reset_velocity_noise),
+        "--reset-root-velocity-noise",
+        str(args.reset_root_velocity_noise),
         "--reset-axis-tilt-noise-rad",
         str(args.reset_axis_tilt_noise_rad),
         "--reference-ramp-start-scale",

@@ -228,6 +228,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
         self.assertEqual(plan[0]["stage"].reset_joint_noise_rad, 0.0005)
         self.assertEqual(plan[0]["stage"].reset_velocity_noise, 0.0005)
+        self.assertEqual(args.reset_root_velocity_noise, 0.0)
         self.assertTrue(all(item["num_evals"] >= 2 for item in plan))
         self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 12)
 
@@ -741,6 +742,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
                 "0.015",
                 "--reset-velocity-noise",
                 "0.03",
+                "--reset-root-velocity-noise",
+                "0.01",
                 "--reset-pair-differential-scale",
                 "0.25",
                 "--reset-axis-tilt-noise-rad",
@@ -758,6 +761,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertEqual(args.reset_joint_noise_rad, 0.015)
         self.assertEqual(args.reset_velocity_noise, 0.03)
+        self.assertEqual(args.reset_root_velocity_noise, 0.01)
         self.assertEqual(args.reset_pair_differential_scale, 0.25)
         self.assertEqual(args.reset_axis_tilt_noise_rad, 0.03)
         self.assertEqual(args.geom_friction_scale, 0.90)
@@ -1065,6 +1069,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertEqual(args.reset_joint_noise_rad, 0.005)
         self.assertEqual(args.reset_velocity_noise, 0.005)
+        self.assertEqual(args.reset_root_velocity_noise, 0.0)
         self.assertEqual(args.reference_ramp_start_scale, 0.0)
         self.assertEqual(args.reference_ramp_duration_s, 0.25)
         self.assertEqual(args.reference_startup_boost, 0.0)
@@ -1074,6 +1079,12 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertFalse(args.resume)
         self.assertEqual(args.diagnostic_rollouts, 0)
         self.assertTrue(args.diagnostic_reference)
+
+    def test_physics_sweep_keeps_root_velocity_noise_disabled(self) -> None:
+        args = sweep_mjx_3d_physics.parse_args([])
+
+        self.assertEqual(args.reset_velocity_noise, 0.005)
+        self.assertEqual(args.reset_root_velocity_noise, 0.0)
 
     def test_evaluator_applies_explicit_physics_overrides(self) -> None:
         args = evaluate_mjx_3d_policy.parse_args(

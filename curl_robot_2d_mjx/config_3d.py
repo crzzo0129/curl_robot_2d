@@ -51,6 +51,7 @@ class Rolling3DConfig:
     startup_action_ramp_s: float = 0.25
     reset_joint_noise_rad: float = 0.005
     reset_velocity_noise: float = 0.005
+    reset_root_velocity_noise: float = 0.0
     reset_pair_differential_scale: float | None = None
     reset_axis_tilt_noise_rad: float = 0.0
     reference_phase_rate_scale: float = 1.0
@@ -111,6 +112,7 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
     for value, name in (
         (config.reset_joint_noise_rad, "reset_joint_noise_rad"),
         (config.reset_velocity_noise, "reset_velocity_noise"),
+        (config.reset_root_velocity_noise, "reset_root_velocity_noise"),
         (config.reset_axis_tilt_noise_rad, "reset_axis_tilt_noise_rad"),
     ):
         if not math.isfinite(value) or value < 0.0:

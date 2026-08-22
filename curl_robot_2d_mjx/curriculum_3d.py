@@ -28,6 +28,7 @@ class Rolling3DCurriculumStage:
     weight: float
     reset_joint_noise_rad: float | None = None
     reset_velocity_noise: float | None = None
+    reset_root_velocity_noise: float | None = None
     reset_pair_differential_scale: float | None = None
     reset_independent: bool = False
     reset_axis_tilt_noise_rad: float | None = None
@@ -41,6 +42,10 @@ class Rolling3DCurriculumStage:
             for name, value in (
                 ("reset_joint_noise_rad", self.reset_joint_noise_rad),
                 ("reset_velocity_noise", self.reset_velocity_noise),
+                (
+                    "reset_root_velocity_noise",
+                    self.reset_root_velocity_noise,
+                ),
                 (
                     "reset_pair_differential_scale",
                     self.reset_pair_differential_scale,

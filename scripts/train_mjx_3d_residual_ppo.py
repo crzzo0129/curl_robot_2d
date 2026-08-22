@@ -1527,6 +1527,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--reset-joint-noise-rad", type=float, default=0.005)
     parser.add_argument("--reset-velocity-noise", type=float, default=0.005)
+    parser.add_argument("--reset-root-velocity-noise", type=float, default=0.0)
     parser.add_argument("--reset-pair-differential-scale", type=float)
     parser.add_argument(
         "--reset-axis-tilt-noise-rad", type=float, default=0.0
@@ -1858,6 +1859,7 @@ def parse_args(argv=None):
     for value, name in (
         (args.reset_joint_noise_rad, "--reset-joint-noise-rad"),
         (args.reset_velocity_noise, "--reset-velocity-noise"),
+        (args.reset_root_velocity_noise, "--reset-root-velocity-noise"),
         (args.reset_axis_tilt_noise_rad, "--reset-axis-tilt-noise-rad"),
     ):
         if not math.isfinite(value) or value < 0.0:
@@ -1971,6 +1973,7 @@ def main(argv=None) -> None:
             episode_length=args.episode_length,
             reset_joint_noise_rad=args.reset_joint_noise_rad,
             reset_velocity_noise=args.reset_velocity_noise,
+            reset_root_velocity_noise=args.reset_root_velocity_noise,
             reset_pair_differential_scale=(
                 args.reset_pair_differential_scale
             ),
@@ -2355,7 +2358,8 @@ def main(argv=None) -> None:
             f"evals={stage_item['num_evals']} "
             f"global_start={global_step_offset:,}\n"
             f"  reset joint={stage_task.reset_joint_noise_rad:g}rad "
-            f"velocity={stage_task.reset_velocity_noise:g} "
+            f"joint_velocity={stage_task.reset_velocity_noise:g} "
+            f"root_velocity={stage_task.reset_root_velocity_noise:g} "
             f"differential={stage_task.reset_pair_differential_scale} "
             f"tilt={stage_task.reset_axis_tilt_noise_rad:g}rad\n"
             f"  randomization friction={domain.geom_friction_scale} "

@@ -334,6 +334,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--reset-joint-noise-rad", type=float, default=0.005)
     parser.add_argument("--reset-velocity-noise", type=float, default=0.005)
+    parser.add_argument("--reset-root-velocity-noise", type=float, default=0.0)
     parser.add_argument("--reset-pair-differential-scale", type=float)
     parser.add_argument(
         "--reset-axis-tilt-noise-rad", type=float, default=0.0
@@ -443,12 +444,14 @@ def parse_args(argv=None):
         parser.error("--diagnostic-rollouts must be nonnegative")
     if not 0 <= args.rollout_index < args.batch_size:
         parser.error("--rollout-index must be in [0, batch-size)")
-    if (
-        args.reset_joint_noise_rad < 0.0
-        or args.reset_velocity_noise < 0.0
-        or args.reset_axis_tilt_noise_rad < 0.0
+    for value in (
+        args.reset_joint_noise_rad,
+        args.reset_velocity_noise,
+        args.reset_root_velocity_noise,
+        args.reset_axis_tilt_noise_rad,
     ):
-        parser.error("--reset-* noise values must be nonnegative")
+        if not math.isfinite(value) or value < 0.0:
+            parser.error("--reset-* noise values must be finite and nonnegative")
     if (
         not math.isfinite(args.geom_friction_scale)
         or args.geom_friction_scale <= 0.0
@@ -522,6 +525,7 @@ def main(argv=None) -> None:
             body_mass_right_scale=args.body_mass_right_scale,
             reset_joint_noise_rad=args.reset_joint_noise_rad,
             reset_velocity_noise=args.reset_velocity_noise,
+            reset_root_velocity_noise=args.reset_root_velocity_noise,
             reset_pair_differential_scale=(
                 args.reset_pair_differential_scale
             ),
@@ -875,7 +879,8 @@ def main(argv=None) -> None:
         f"left={task.body_mass_left_scale:g} "
         f"right={task.body_mass_right_scale:g}\n"
         f"  reset_noise q={task.reset_joint_noise_rad:g} "
-        f"v={task.reset_velocity_noise:g} "
+        f"joint_v={task.reset_velocity_noise:g} "
+        f"root_v={task.reset_root_velocity_noise:g} "
         f"differential={task.reset_pair_differential_scale} "
         f"tilt={task.reset_axis_tilt_noise_rad:g}rad\n"
         f"  reference_ramp_start={task.reference_ramp_start_scale} "

@@ -794,7 +794,9 @@ def make_brax_env_3d(
             else:
                 lateral_velocity_command = jp.zeros((), dtype=jp.float32)
             if task.reset_pair_differential_scale is None:
-                joint_key, velocity_key = jax.random.split(rng, 2)
+                joint_key, velocity_key, root_velocity_key = jax.random.split(
+                    rng, 3
+                )
                 tilt_key = jax.random.fold_in(rng, 1)
                 joint_noise = jax.random.uniform(
                     joint_key,
@@ -807,6 +809,17 @@ def make_brax_env_3d(
                     shape=(self.mj_model.nv,),
                     minval=-task.reset_velocity_noise,
                     maxval=task.reset_velocity_noise,
+                )
+                root_velocity_noise = jp.zeros((6,), dtype=jp.float32)
+                if task.reset_root_velocity_noise > 0.0:
+                    root_velocity_noise = jax.random.uniform(
+                        root_velocity_key,
+                        shape=(6,),
+                        minval=-task.reset_root_velocity_noise,
+                        maxval=task.reset_root_velocity_noise,
+                    )
+                velocity_noise = velocity_noise.at[:6].set(
+                    root_velocity_noise
                 )
                 velocity_noise = velocity_noise.at[
                     self.locked_joint_dof_indices
@@ -838,12 +851,14 @@ def make_brax_env_3d(
                     joint_differential_noise,
                     task.reset_pair_differential_scale,
                 )
-                root_velocity_noise = jax.random.uniform(
-                    root_velocity_key,
-                    shape=(6,),
-                    minval=-task.reset_velocity_noise,
-                    maxval=task.reset_velocity_noise,
-                )
+                root_velocity_noise = jp.zeros((6,), dtype=jp.float32)
+                if task.reset_root_velocity_noise > 0.0:
+                    root_velocity_noise = jax.random.uniform(
+                        root_velocity_key,
+                        shape=(6,),
+                        minval=-task.reset_root_velocity_noise,
+                        maxval=task.reset_root_velocity_noise,
+                    )
                 joint_velocity_common_noise = jax.random.uniform(
                     joint_velocity_common_key,
                     shape=(ACTION_SIZE_3D // 2,),
