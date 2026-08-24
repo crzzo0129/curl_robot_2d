@@ -277,7 +277,10 @@ def configure_floor_contact_friction_3d(
             raise ValueError(
                 "floor contact peers do not share one nominal contact model"
             )
-    if np.any(model.geom_adhesion[peer_ids]) or model.geom_adhesion[floor_geom_id]:
+    geom_adhesion = getattr(model, "geom_adhesion", None)
+    if geom_adhesion is not None and (
+        np.any(geom_adhesion[peer_ids]) or geom_adhesion[floor_geom_id]
+    ):
         raise ValueError("floor friction override does not support adhesion")
 
     # Higher priority makes low floor-friction scales effective.  Writing the

@@ -2,6 +2,7 @@ import io
 import math
 from contextlib import redirect_stderr
 from pathlib import Path
+from types import SimpleNamespace
 import unittest
 
 import numpy as np
@@ -9,6 +10,7 @@ import numpy as np
 from curl_robot_2d_mjx.environment_3d import (
     DEFAULT_3D_CEM_CONTROLLER,
     REAL_3D_CEM_CONTROLLER,
+    configure_floor_contact_friction_3d,
 )
 from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
 from scripts import (
@@ -21,6 +23,41 @@ from scripts import (
 
 
 class MJX3DTrainingEntrypointTest(unittest.TestCase):
+    def test_floor_friction_override_supports_pre_adhesion_mujoco_models(
+        self,
+    ) -> None:
+        model = SimpleNamespace(
+            ngeom=2,
+            npair=0,
+            geom_contype=np.asarray((1, 2)),
+            geom_conaffinity=np.asarray((1, 7)),
+            geom_bodyid=np.asarray((0, 1)),
+            geom_priority=np.asarray((0, 0)),
+            geom_condim=np.asarray((3, 3)),
+            geom_solmix=np.asarray((1.0, 1.0)),
+            geom_solref=np.asarray(((0.01, 1.0), (0.003, 1.0))),
+            geom_solimp=np.asarray(
+                (
+                    (0.9, 0.95, 0.001, 0.5, 2.0),
+                    (0.95, 0.99, 0.001, 0.5, 2.0),
+                )
+            ),
+            geom_friction=np.asarray(
+                ((0.8, 0.02, 0.01), (0.8, 0.02, 0.01))
+            ),
+        )
+
+        configure_floor_contact_friction_3d(
+            model, floor_geom_id=0, friction_scale=0.90
+        )
+
+        np.testing.assert_allclose(
+            model.geom_friction,
+            np.asarray(((0.72, 0.018, 0.009), (0.8, 0.02, 0.01))),
+        )
+        np.testing.assert_allclose(model.geom_solref[0], (0.0065, 1.0))
+        self.assertEqual(model.geom_priority[0], 1)
+
     def test_cg20_physics_profile_is_selectable(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(
             ["--physics-profile", "cg20"]
