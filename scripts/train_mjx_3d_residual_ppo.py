@@ -1591,7 +1591,9 @@ def _build_parser() -> argparse.ArgumentParser:
             "cliff; nominal_reset_v3 gradually introduces the nominal "
             "eight-joint independent reset noise through paired stages; "
             "independent_reset_v4 keeps all eight joints independent while "
-            "ramping only q/qdot noise magnitude; friction_v1 warm-starts "
+            "ramping only q/qdot noise magnitude; floor_friction_v2 "
+            "continues from the accepted independent_reset_v4 checkpoint "
+            "and expands only floor-contact friction; friction_v1 warm-starts "
             "from an accepted reset_v2 "
             "checkpoint and expands only global geom friction; mass_v1 "
             "continues from friction_v1 and expands coupled per-body mass "
@@ -2420,7 +2422,8 @@ def main(argv=None) -> None:
             seed=args.seed + 10_000 + 100 * stage_index,
         )
         randomization_fn = make_domain_randomization_fn_3d(
-            stage.domain_randomization
+            stage.domain_randomization,
+            floor_geom_id=train_env.floor_geom_id,
         )
         best = {
             "score": float("-inf"),
@@ -2451,7 +2454,8 @@ def main(argv=None) -> None:
             f"root_velocity={stage_task.reset_root_velocity_noise:g} "
             f"differential={stage_task.reset_pair_differential_scale} "
             f"tilt={stage_task.reset_axis_tilt_noise_rad:g}rad\n"
-            f"  randomization friction={domain.geom_friction_scale} "
+            f"  randomization global_friction={domain.geom_friction_scale} "
+            f"floor_friction={domain.floor_friction_scale} "
             f"mass={domain.body_mass_scale} "
             f"actuator_gain={domain.actuator_gain_scale}",
             flush=True,

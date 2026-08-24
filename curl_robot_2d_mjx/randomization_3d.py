@@ -11,6 +11,7 @@ class Rolling3DDomainRandomization:
     """Multiplicative ranges sampled once for each parallel MJX model."""
 
     geom_friction_scale: tuple[float, float] = (1.0, 1.0)
+    floor_friction_scale: tuple[float, float] = (1.0, 1.0)
     body_mass_scale: tuple[float, float] = (1.0, 1.0)
     actuator_gain_scale: tuple[float, float] = (1.0, 1.0)
 
@@ -20,6 +21,7 @@ class Rolling3DDomainRandomization:
             limits != (1.0, 1.0)
             for limits in (
                 self.geom_friction_scale,
+                self.floor_friction_scale,
                 self.body_mass_scale,
                 self.actuator_gain_scale,
             )
@@ -31,6 +33,7 @@ def validate_domain_randomization_3d(
 ) -> None:
     for limits, name in (
         (settings.geom_friction_scale, "geom_friction_scale"),
+        (settings.floor_friction_scale, "floor_friction_scale"),
         (settings.body_mass_scale, "body_mass_scale"),
         (settings.actuator_gain_scale, "actuator_gain_scale"),
     ):
@@ -50,12 +53,21 @@ def validate_domain_randomization_3d(
 
 def make_domain_randomization_fn_3d(
     settings: Rolling3DDomainRandomization,
+    *,
+    floor_geom_id: int | None = None,
 ):
     """Build the callback expected by Brax PPO's randomization wrapper."""
 
     validate_domain_randomization_3d(settings)
     if not settings.enabled:
         return None
+    floor_randomization_enabled = (
+        settings.floor_friction_scale != (1.0, 1.0)
+    )
+    if floor_randomization_enabled and floor_geom_id is None:
+        raise ValueError(
+            "floor_geom_id is required when floor friction randomization is enabled"
+        )
 
     import jax
 
@@ -70,6 +82,16 @@ def make_domain_randomization_fn_3d(
                 maxval=settings.geom_friction_scale[1],
             )
             geom_friction = model.geom_friction * friction_scale
+            if floor_randomization_enabled:
+                floor_scale = jax.random.uniform(
+                    jax.random.fold_in(key, 0xF100),
+                    shape=(),
+                    minval=settings.floor_friction_scale[0],
+                    maxval=settings.floor_friction_scale[1],
+                )
+                geom_friction = geom_friction.at[floor_geom_id].multiply(
+                    floor_scale
+                )
 
             mass_scale = jax.random.uniform(
                 mass_key,

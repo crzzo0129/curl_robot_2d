@@ -299,6 +299,15 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument(
+        "--floor-friction-scale",
+        type=float,
+        help=(
+            "Fixed multiplier applied only to floor-contact friction. "
+            "Passing 1.0 enables the same contact construction used by "
+            "floor_friction_v2 for a paired nominal endpoint."
+        ),
+    )
+    parser.add_argument(
         "--body-mass-scale",
         type=float,
         default=1.0,
@@ -457,6 +466,11 @@ def parse_args(argv=None):
         or args.geom_friction_scale <= 0.0
     ):
         parser.error("--geom-friction-scale must be finite and positive")
+    if args.floor_friction_scale is not None and (
+        not math.isfinite(args.floor_friction_scale)
+        or args.floor_friction_scale <= 0.0
+    ):
+        parser.error("--floor-friction-scale must be finite and positive")
     for value, name in (
         (args.body_mass_scale, "--body-mass-scale"),
         (args.body_mass_left_scale, "--body-mass-left-scale"),
@@ -520,6 +534,14 @@ def main(argv=None) -> None:
             geometry=args.geometry,
             episode_length=args.episode_length,
             geom_friction_scale=args.geom_friction_scale,
+            floor_friction_scale=(
+                args.floor_friction_scale
+                if args.floor_friction_scale is not None
+                else 1.0
+            ),
+            floor_contact_friction_override=(
+                args.floor_friction_scale is not None
+            ),
             body_mass_scale=args.body_mass_scale,
             body_mass_left_scale=args.body_mass_left_scale,
             body_mass_right_scale=args.body_mass_right_scale,
@@ -874,7 +896,9 @@ def main(argv=None) -> None:
         f"control_dt={task.control_timestep:g}s\n"
         f"  rollout_seed={args.seed} environment_seed={environment_seed}\n"
         f"  controller={Path(reference.source).resolve()}\n"
-        f"  geom_friction_scale={task.geom_friction_scale:g}\n"
+        f"  geom_friction_scale={task.geom_friction_scale:g} "
+        f"floor_friction_scale={task.floor_friction_scale:g} "
+        f"floor_override={task.floor_contact_friction_override}\n"
         f"  body_mass_scale={task.body_mass_scale:g} "
         f"left={task.body_mass_left_scale:g} "
         f"right={task.body_mass_right_scale:g}\n"

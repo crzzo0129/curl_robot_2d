@@ -7,10 +7,11 @@ Reference 已经提供名义滚动能力。当前 residual PPO 的目标不是�
 当前推荐的新实验组合是：
 
 - `--recipe robust_recovery_v15`：使用有界 Huber 状态代价、误差下降恢复奖励和更强的 residual reference 锚定；
-- `--curriculum independent_reset_v4`：从第一阶段开始八个活动关节始终独立采样，只增加 q/qdot 噪声幅度；
+- 已完成的 reset 基线使用 `--curriculum independent_reset_v4`：从第一阶段开始八个活动关节始终独立采样，只增加 q/qdot 噪声幅度；
+- 当前下一阶段使用 `--curriculum floor_friction_v2`：从已通过的 v4 `params_best` 热启动，保持目标独立 reset 不变，只扩展地面接触摩擦；
 - `--physics-profile cg20`：训练与 reference 验证使用相同求解器。
 
-旧 `reset_v1/reset_v2/nominal_reset_v3` 和旧 recipe 全部保留用于复现实验，但不再作为当前独立关节鲁棒性实验的推荐入口。摩擦、质量、执行器和 root 扰动暂不与 v4 同时加入；只有 v4 在目标独立噪声上通过验收后，才逐项扩展。
+旧 `reset_v1/reset_v2/nominal_reset_v3` 和旧 recipe 全部保留用于复现实验，但不再作为当前独立关节鲁棒性实验的推荐入口。`friction_v1` 也保留原来的全局 geom 摩擦语义。质量、执行器和 root 扰动仍不与当前摩擦实验同时加入。
 
 默认仍为 `--curriculum none`。
 
@@ -104,6 +105,97 @@ python -m scripts.train_mjx_3d_residual_ppo \
 ```
 
 最终验收以 `reset4_independent_0050` 的 paired evaluation 为主，同时单独跑 zero-noise reference retention。训练通过后才建立 root velocity curriculum；root x/y 的物理平移在无限平地上不构成有效扰动，定位误差应作为 observation noise 单独处理。
+
+## `floor_friction_v2`
+
+`independent_reset_v4 + robust_recovery_v15` 已在新 environment seed 的目标关节噪声和零关节噪声上达到 100% 成功率，因此摩擦阶段不重新爬 reset curriculum。三个阶段都固定：
+
+- 八关节 q/qdot 独立均匀噪声均为 `0.005`；
+- root velocity 为 0，axis tilt 为 0；
+- mass/inertia、actuator gain、reference、reward、termination 和 observation 不变；
+- 全局 `geom_friction_scale=(1, 1)`，只采样 floor 接触摩擦。
+
+| stage | 训练权重 | floor friction scale | joint q/qdot | reset 结构 | root/tilt |
+|---|---:|---:|---:|---|---:|
+| `floor_friction_02` | 0.20 | U(0.98, 1.02) | 0.005 / 0.005 | independent | 0 / 0 |
+| `floor_friction_05` | 0.30 | U(0.95, 1.05) | 0.005 / 0.005 | independent | 0 / 0 |
+| `floor_friction_10` | 0.50 | U(0.90, 1.10) | 0.005 / 0.005 | independent | 0 / 0 |
+
+### 为什么不能直接缩放 floor geom
+
+MuJoCo 对同优先级的动态 geom 接触逐项取两侧摩擦系数的最大值。名义 floor 和机器人壳体都为 `0.8 0.02 0.01`；若只把 floor 乘 0.90，接触仍会取壳体的名义值，低摩擦端不会生效。
+
+v2 在启用 floor override 时，先按当前 `priority/solmix` 计算原 floor 与所有可接触机器人 geom 的等效 `condim/solref/solimp/friction`，再把等效值写到高优先级 floor。这样 `--floor-friction-scale 1.0` 产生与旧动态混合相同的名义接触参数，而 0.90/1.10 真正只改变 floor 接触；其他 geom 数组及机器人自接触摩擦保持不变。若模型以后出现显式 floor pair、adhesion 或互不相同的 floor 接触模型，代码会直接拒绝运行，避免静默改变物理含义。
+
+### 训练前固定端点
+
+先用已验收基线在相同 256 个 reset 上跑三个端点，得到训练前 paired baseline。三次只修改 scale、label，其他参数完全相同：
+
+```bash
+eval_floor () {
+  scale="$1"
+  label="$2"
+  python -m scripts.evaluate_mjx_3d_policy \
+    results/independent_reset_v4_recovery_v15_cg20_h200_seed0/params_best \
+    --evaluation-mode policy \
+    --geometry pupper_open60 \
+    --controller results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json \
+    --physics-profile cg20 \
+    --floor-friction-scale "$scale" \
+    --episode-length 500 --batch-size 256 --chunk-size 64 \
+    --seed 0 --environment-seed 50000 \
+    --reset-joint-noise-rad 0.005 --reset-velocity-noise 0.005 \
+    --reset-root-velocity-noise 0 --reset-axis-tilt-noise-rad 0 \
+    --reference-weight 1.0 --minimum-residual-gain 0.15 \
+    --phase-rate-scale 1.0 --reference-action-scale 1.0 \
+    --reference-ramp-start-scale 0.0 --reference-ramp-duration-s 0.25 \
+    --residual-pair-differential-scale 0.25 \
+    --explicit-phase-observation --zero-residual-policy-init \
+    --initial-policy-std 0.10 --mujoco-gl disable --memory-fraction 0.50 \
+    --out "results/floor_friction_v2_pretest_${label}_seed50000"
+}
+eval_floor 0.90 090
+eval_floor 1.00 100
+eval_floor 1.10 110
+```
+
+### smoke 与正式训练
+
+smoke 使用 12 个总 eval 点，按当前整数分配规则为 3/4/5；三个阶段都会包含 step 0 和训练后评估：
+
+```bash
+python -m scripts.train_mjx_3d_residual_ppo \
+  --preset smoke \
+  --recipe robust_recovery_v15 \
+  --geometry pupper_open60 \
+  --controller results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json \
+  --physics-profile cg20 \
+  --curriculum floor_friction_v2 \
+  --restore-params results/independent_reset_v4_recovery_v15_cg20_h200_seed0/params_best \
+  --episode-length 500 --num-evals 12 --eval-envs 64 \
+  --reset-root-velocity-noise 0 --reset-axis-tilt-noise-rad 0 \
+  --seed 0 --mujoco-gl disable --memory-fraction 0.50 \
+  --out results/floor_friction_v2_recovery_v15_cg20_smoke_seed0
+```
+
+smoke 的三阶段编译、日志和 checkpoint 正常后，再运行 H200。30 个总 eval 点在每阶段先保留 step 0 和训练后两个点，再按权重分配剩余点，当前精确结果为 7/9/14，而不是每个阶段只有一次训练后观察：
+
+```bash
+python -m scripts.train_mjx_3d_residual_ppo \
+  --preset h200 \
+  --recipe robust_recovery_v15 \
+  --geometry pupper_open60 \
+  --controller results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json \
+  --physics-profile cg20 \
+  --curriculum floor_friction_v2 \
+  --restore-params results/independent_reset_v4_recovery_v15_cg20_h200_seed0/params_best \
+  --episode-length 500 --num-evals 30 --eval-envs 256 \
+  --reset-root-velocity-noise 0 --reset-axis-tilt-noise-rad 0 \
+  --seed 0 --mujoco-gl disable --memory-fraction 0.80 \
+  --out results/floor_friction_v2_recovery_v15_cg20_h200_seed0
+```
+
+训练后把上面 `eval_floor` 函数里的 checkpoint 换成新目录的 `params_best`，environment seed 仍保持 50000，并输出到独立 posttest 目录。0.90、1.00、1.10 各自成功率达到 95% 即通过；同时要求 nominal 圈数无明显回退，且 forbidden contact/depth、nonfinite、root-height 和 axis-tilt 类失败为 0。必须使用 `params_best`，不要用 `params_final`。
 
 ## 旧 `reset_v2 -> friction_v1` 实验记录
 

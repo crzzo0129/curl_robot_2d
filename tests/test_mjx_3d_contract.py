@@ -120,6 +120,8 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertIsNone(config.lateral_command_fixed)
         self.assertEqual(config.reset_axis_tilt_noise_rad, 0.0)
         self.assertEqual(config.geom_friction_scale, 1.0)
+        self.assertEqual(config.floor_friction_scale, 1.0)
+        self.assertFalse(config.floor_contact_friction_override)
         self.assertEqual(config.body_mass_scale, 1.0)
         self.assertEqual(config.body_mass_left_scale, 1.0)
         self.assertEqual(config.body_mass_right_scale, 1.0)
@@ -153,6 +155,8 @@ class MJX3DContractTest(unittest.TestCase):
             {"reset_pair_differential_scale": 1.1},
             {"reset_axis_tilt_noise_rad": -0.1},
             {"geom_friction_scale": 0.0},
+            {"floor_friction_scale": 0.0},
+            {"floor_contact_friction_override": 1},
             {"body_mass_scale": 0.0},
             {"body_mass_left_scale": float("nan")},
             {"body_mass_right_scale": -1.0},
@@ -469,6 +473,10 @@ class MJX3DContractTest(unittest.TestCase):
         )
         self.assertAlmostEqual(sum(stage.weight for stage in stages), 1.0)
         for stage in stages:
+            self.assertEqual(
+                stage.domain_randomization.floor_friction_scale,
+                (1.0, 1.0),
+            )
             self.assertEqual(stage.reset_joint_noise_rad, 0.015)
             self.assertEqual(stage.reset_velocity_noise, 0.030)
             self.assertEqual(stage.reset_pair_differential_scale, 0.25)
@@ -478,6 +486,49 @@ class MJX3DContractTest(unittest.TestCase):
             )
             self.assertEqual(
                 stage.domain_randomization.actuator_gain_scale, (1.0, 1.0)
+            )
+
+    def test_floor_friction_v2_keeps_accepted_independent_reset_target(
+        self,
+    ) -> None:
+        stages = curriculum_stages_3d("floor_friction_v2")
+
+        self.assertEqual(
+            [stage.name for stage in stages],
+            ["floor_friction_02", "floor_friction_05", "floor_friction_10"],
+        )
+        self.assertEqual([stage.weight for stage in stages], [0.20, 0.30, 0.50])
+        self.assertEqual(
+            [
+                stage.domain_randomization.floor_friction_scale
+                for stage in stages
+            ],
+            [(0.98, 1.02), (0.95, 1.05), (0.90, 1.10)],
+        )
+        base = Rolling3DConfig(
+            reset_root_velocity_noise=0.1,
+            reset_pair_differential_scale=0.25,
+        )
+        for stage in stages:
+            task = stage.task_config(base)
+            self.assertEqual(stage.reset_joint_noise_rad, 0.005)
+            self.assertEqual(stage.reset_velocity_noise, 0.005)
+            self.assertTrue(stage.reset_independent)
+            self.assertEqual(task.reset_root_velocity_noise, 0.0)
+            self.assertIsNone(task.reset_pair_differential_scale)
+            self.assertEqual(task.reset_axis_tilt_noise_rad, 0.0)
+            self.assertTrue(task.floor_contact_friction_override)
+            self.assertEqual(
+                stage.domain_randomization.geom_friction_scale,
+                (1.0, 1.0),
+            )
+            self.assertEqual(
+                stage.domain_randomization.body_mass_scale,
+                (1.0, 1.0),
+            )
+            self.assertEqual(
+                stage.domain_randomization.actuator_gain_scale,
+                (1.0, 1.0),
             )
 
     def test_friction_low_v1_expands_low_friction_only(self) -> None:
@@ -536,6 +587,7 @@ class MJX3DContractTest(unittest.TestCase):
         validate_domain_randomization_3d(
             Rolling3DDomainRandomization(
                 geom_friction_scale=(0.9, 1.1),
+                floor_friction_scale=(0.9, 1.1),
                 body_mass_scale=(0.95, 1.05),
                 actuator_gain_scale=(0.95, 1.05),
             )
@@ -544,6 +596,12 @@ class MJX3DContractTest(unittest.TestCase):
             validate_domain_randomization_3d(
                 Rolling3DDomainRandomization(
                     geom_friction_scale=(1.1, 0.9)
+                )
+            )
+        with self.assertRaises(ValueError):
+            validate_domain_randomization_3d(
+                Rolling3DDomainRandomization(
+                    floor_friction_scale=(1.1, 0.9)
                 )
             )
 
@@ -590,6 +648,43 @@ class MJX3DContractTest(unittest.TestCase):
         )
 
         np.testing.assert_allclose(model.geom_friction, original * 0.90)
+
+    def test_3d_physics_options_scale_only_effective_floor_friction(
+        self,
+    ) -> None:
+        model = mujoco.MjModel.from_xml_path(str(MODEL_PATH_3D))
+        original_friction = model.geom_friction.copy()
+        floor_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, "floor"
+        )
+
+        apply_physics_options_3d(
+            model,
+            Rolling3DConfig(
+                floor_friction_scale=0.90,
+                floor_contact_friction_override=True,
+            ),
+        )
+
+        nonfloor = np.arange(model.ngeom) != floor_id
+        np.testing.assert_allclose(
+            model.geom_friction[nonfloor], original_friction[nonfloor]
+        )
+        np.testing.assert_allclose(
+            model.geom_friction[floor_id],
+            original_friction[floor_id] * 0.90,
+        )
+        self.assertGreater(
+            model.geom_priority[floor_id],
+            np.max(model.geom_priority[nonfloor]),
+        )
+        np.testing.assert_allclose(
+            model.geom_solref[floor_id], np.asarray((0.0065, 1.0))
+        )
+        np.testing.assert_allclose(
+            model.geom_solimp[floor_id],
+            np.asarray((0.925, 0.97, 0.001, 0.5, 2.0)),
+        )
 
     def test_3d_physics_options_scale_mass_and_inertia_by_body_side(
         self,

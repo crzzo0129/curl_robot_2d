@@ -33,6 +33,8 @@ class Rolling3DConfig:
     cone_name: str = "elliptic"
     jacobian_name: str = "dense"
     geom_friction_scale: float = 1.0
+    floor_friction_scale: float = 1.0
+    floor_contact_friction_override: bool = False
     body_mass_scale: float = 1.0
     body_mass_left_scale: float = 1.0
     body_mass_right_scale: float = 1.0
@@ -103,6 +105,7 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("action_repeat and episode_length must be positive")
     for value, name in (
         (config.geom_friction_scale, "geom_friction_scale"),
+        (config.floor_friction_scale, "floor_friction_scale"),
         (config.body_mass_scale, "body_mass_scale"),
         (config.body_mass_left_scale, "body_mass_left_scale"),
         (config.body_mass_right_scale, "body_mass_right_scale"),
@@ -191,6 +194,8 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("lateral_command_fixed must be finite")
     if not isinstance(config.explicit_phase_observation, bool):
         raise ValueError("explicit_phase_observation must be boolean")
+    if not isinstance(config.floor_contact_friction_override, bool):
+        raise ValueError("floor_contact_friction_override must be boolean")
     if config.terminate_root_z_min is not None:
         if (
             not math.isfinite(config.terminate_root_z_min)

@@ -192,6 +192,103 @@ def configure_pupper_shell_collisions_3d(model, *, enabled: bool) -> None:
             model.geom_conaffinity[geom_id] = conaffinity
 
 
+def configure_floor_contact_friction_3d(
+    model,
+    *,
+    floor_geom_id: int,
+    friction_scale: float,
+) -> None:
+    """Make floor friction authoritative without changing nominal contacts."""
+
+    floor_contype = int(model.geom_contype[floor_geom_id])
+    floor_conaffinity = int(model.geom_conaffinity[floor_geom_id])
+    floor_body_id = int(model.geom_bodyid[floor_geom_id])
+    peer_ids = []
+    for geom_id in range(model.ngeom):
+        if geom_id == floor_geom_id:
+            continue
+        if int(model.geom_bodyid[geom_id]) == floor_body_id:
+            continue
+        peer_contype = int(model.geom_contype[geom_id])
+        peer_conaffinity = int(model.geom_conaffinity[geom_id])
+        if (
+            floor_contype & peer_conaffinity
+            or peer_contype & floor_conaffinity
+        ):
+            peer_ids.append(geom_id)
+    if not peer_ids:
+        raise ValueError("floor has no dynamically generated contact peers")
+
+    for pair_id in range(model.npair):
+        if floor_geom_id in (
+            int(model.pair_geom1[pair_id]),
+            int(model.pair_geom2[pair_id]),
+        ):
+            raise ValueError(
+                "floor friction override does not support explicit floor pairs"
+            )
+
+    floor_priority = int(model.geom_priority[floor_geom_id])
+    floor_solmix = float(model.geom_solmix[floor_geom_id])
+    floor_solref = model.geom_solref[floor_geom_id].copy()
+    floor_solimp = model.geom_solimp[floor_geom_id].copy()
+    floor_friction = model.geom_friction[floor_geom_id].copy()
+    effective = []
+    for geom_id in peer_ids:
+        peer_priority = int(model.geom_priority[geom_id])
+        peer_solmix = float(model.geom_solmix[geom_id])
+        peer_solref = model.geom_solref[geom_id]
+        if peer_priority != floor_priority:
+            raise ValueError(
+                "floor friction override requires equal nominal geom priorities"
+            )
+        if min(floor_solmix, peer_solmix) <= 0.0:
+            raise ValueError(
+                "floor friction override requires positive nominal solmix"
+            )
+        if min(float(floor_solref[0]), float(peer_solref[0])) <= 0.0:
+            raise ValueError(
+                "floor friction override requires standard positive solref"
+            )
+        mix = floor_solmix / (floor_solmix + peer_solmix)
+        effective.append(
+            (
+                max(
+                    int(model.geom_condim[floor_geom_id]),
+                    int(model.geom_condim[geom_id]),
+                ),
+                mix * floor_solref + (1.0 - mix) * peer_solref,
+                mix * floor_solimp
+                + (1.0 - mix) * model.geom_solimp[geom_id],
+                np.maximum(floor_friction, model.geom_friction[geom_id]),
+            )
+        )
+
+    condim, solref, solimp, friction = effective[0]
+    for peer_condim, peer_solref, peer_solimp, peer_friction in effective[1:]:
+        if (
+            peer_condim != condim
+            or not np.allclose(peer_solref, solref, rtol=0.0, atol=1.0e-12)
+            or not np.allclose(peer_solimp, solimp, rtol=0.0, atol=1.0e-12)
+            or not np.allclose(
+                peer_friction, friction, rtol=0.0, atol=1.0e-12
+            )
+        ):
+            raise ValueError(
+                "floor contact peers do not share one nominal contact model"
+            )
+    if np.any(model.geom_adhesion[peer_ids]) or model.geom_adhesion[floor_geom_id]:
+        raise ValueError("floor friction override does not support adhesion")
+
+    # Higher priority makes low floor-friction scales effective.  Writing the
+    # old mixed parameters back to floor keeps scale=1 nominally equivalent.
+    model.geom_priority[floor_geom_id] = floor_priority + 1
+    model.geom_condim[floor_geom_id] = condim
+    model.geom_solref[floor_geom_id] = solref
+    model.geom_solimp[floor_geom_id] = solimp
+    model.geom_friction[floor_geom_id] = friction * friction_scale
+
+
 FOOT_GEOM_NAMES_3D = (
     "front_left_foot_proxy",
     "front_right_foot_proxy",
@@ -459,6 +556,20 @@ def apply_physics_options_3d(model, task: Rolling3DConfig) -> None:
     model.opt.iterations = task.solver_iterations
     model.opt.ls_iterations = task.solver_ls_iterations
     model.geom_friction[:] *= task.geom_friction_scale
+    if (
+        task.floor_contact_friction_override
+        or task.floor_friction_scale != 1.0
+    ):
+        floor_geom_id = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_GEOM, "floor"
+        )
+        if floor_geom_id < 0:
+            raise ValueError("missing MuJoCo geom: floor")
+        configure_floor_contact_friction_3d(
+            model,
+            floor_geom_id=int(floor_geom_id),
+            friction_scale=task.floor_friction_scale,
+        )
     for body_id in range(1, model.nbody):
         body_name = mujoco.mj_id2name(
             model, mujoco.mjtObj.mjOBJ_BODY, body_id
