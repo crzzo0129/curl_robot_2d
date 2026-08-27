@@ -45,10 +45,12 @@ from brax.training.agents.ppo import train as ppo
 from brax.training.agents.ppo import networks as ppo_networks
 
 # ============================================================ file layout
-SRC_XML = (
-    "C:/Users/12481/Desktop/OH-WorkSpace/robot_description/"
-    "curl_robot_2d/assets/curl_robot_3d_pupper_r127p5_open60_width120.xml"
-)
+# Resolve from this file so the same checkout works on Windows and Linux,
+# regardless of the directory from which ``python -m`` is launched.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_XML = os.path.normpath(os.path.join(
+    SCRIPT_DIR, "..", "assets",
+    "curl_robot_3d_pupper_r127p5_open60_width120.xml"))
 RUN_XML = os.path.expanduser("~/robot/curl_robot_3d_run.xml")
 SAVE = "walk3d_policy.bin"
 VID_DIR = "walk3d_videos"

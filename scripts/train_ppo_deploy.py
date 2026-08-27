@@ -41,6 +41,14 @@ import time
 import functools
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.setdefault("MUJOCO_GL", "egl")
+os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
+
+# Make ``python -m scripts.train_ppo_deploy`` and direct script execution use
+# the same sibling-module resolution on both Windows and Linux.
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+if SCRIPT_DIR not in _sys.path:
+    _sys.path.insert(0, SCRIPT_DIR)
 
 import jax
 import jax.numpy as jp
@@ -90,6 +98,7 @@ SINGLE_OBS = 36
 HISTORY = 20                 # matches Stanford's shipped policy
 OBS_SIZE = SINGLE_OBS * HISTORY
 GRAVITY_Z_IDX = 5            # kGravityZIndx
+DESIRED_Z_IDX = 9            # desired-world-z occupies [9:12]
 
 # desired_world_z_in_body_frame_ defaults to (0, 0, 1) in the header and only
 # changes when something publishes /cmd_pose.  Held constant here; the three
@@ -106,6 +115,20 @@ ACTION_FILTER = 0.0
 # kp from gainprm="5 0 0", kd from biasprm="0 -5 -0.1", both in the XML.
 SERVO_KP = 5.0
 SERVO_KD = 0.1
+
+# ======================================================= gait shaping
+# Contact slip alone misses a swing foot skimming just above the contact
+# threshold, so use both contact slip and a smooth near-ground scuff cost.
+SLIP_W = 0.25
+SCUFF_W = 0.25
+SCUFF_HEIGHT = 0.012          # exponential decay length above the floor (m)
+CLEARANCE_W = 0.05
+CLEARANCE_TARGET = 0.020      # desired swing-foot bottom clearance (m)
+
+# Straight-line trot symmetry.  The gate below disables these terms for
+# lateral motion and turning so they do not remove steering authority.
+DIAG_ACTION_W = 0.03
+DIAG_CONTACT_W = 0.05
 
 # ============================================================ PPO config
 NUM_TIMESTEPS = 300_000_000  # more than walk3d: no velocity input, so the
@@ -145,7 +168,7 @@ class DeployEnv(PipelineEnv):
         mj = w3.load_mj()
         self._mj = mj
         self._nom_h = w3.stand_height(mj)
-        self._init_z = self._nom_h + 0.005
+        self._init_z = w3.NOMINAL_H + 0.0005
 
         self._foot_site = np.array([
             mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_SITE, f"{leg}_foot_site")
@@ -202,22 +225,22 @@ class DeployEnv(PipelineEnv):
 
     # -------------------------------------------------------------- reset
     def reset(self, rng):
-        rng, k_pose, k_yaw, k_z, k_cmd, k_obs = jax.random.split(rng, 6)
+        rng, k_cmd, k_obs = jax.random.split(rng, 3)
 
-        yaw = jax.random.uniform(k_yaw, (), minval=-jp.pi, maxval=jp.pi)
-        quat = jp.array([jp.cos(yaw / 2), 0.0, 0.0, jp.sin(yaw / 2)])
-        z = self._init_z + jax.random.uniform(k_z, (), minval=0.0, maxval=0.02)
-        joints = jp.clip(
-            DEFAULT_POSE + jax.random.uniform(
-                k_pose, (12,), minval=-0.05, maxval=0.05), CTRL_LO, CTRL_HI)
+        # A deterministic, contact-consistent reset avoids teaching the policy
+        # to compensate for a 5--25 mm drop and independently perturbed legs.
+        quat = jp.array([1.0, 0.0, 0.0, 0.0])
+        z = self._init_z
+        joints = DEFAULT_POSE
         qpos = jp.concatenate([jp.array([0.0, 0.0, z]), quat, joints])
         ps = self.pipeline_init(qpos, jp.zeros(self.sys.nv))
 
-        # on_activate fills the buffer with zeros and sets only the gravity z
-        # of every frame to -1.  Starting training from the same stale buffer
-        # means the policy has seen the transient the robot really begins with.
-        hist = jp.zeros(OBS_SIZE).at[
-            GRAVITY_Z_IDX + SINGLE_OBS * jp.arange(HISTORY)].set(-1.0)
+        # Match neural_controller::on_activate: stationary gravity is -z and
+        # the resting desired-world-z command is +z in every stale frame.
+        idx = SINGLE_OBS * jp.arange(HISTORY)
+        hist = (jp.zeros(OBS_SIZE)
+                .at[GRAVITY_Z_IDX + idx].set(-1.0)
+                .at[DESIRED_Z_IDX + 2 + idx].set(1.0))
 
         info = {
             "rng": rng,
@@ -230,8 +253,9 @@ class DeployEnv(PipelineEnv):
         }
         info["hist"] = self._push(hist, self._frame(ps, info))
         metrics = {k: jp.zeros(()) for k in
-                   ("track_lin", "track_ang", "air", "vx", "vy", "wz",
-                    "height", "cmd_vx", "cmd_wz")}
+                   ("track_lin", "track_ang", "air", "slip", "scuff",
+                    "clearance", "diag_action", "diag_contact",
+                    "vx", "vy", "wz", "height", "cmd_vx", "cmd_wz")}
         return State(ps, self._noise(info["hist"], k_obs), jp.zeros(()),
                      jp.zeros(()), metrics, info)
 
@@ -262,14 +286,17 @@ class DeployEnv(PipelineEnv):
         foot_pos, foot_vel = self._feet(ps)
         contact = (foot_pos[:, 2] - FOOT_R) < 1e-3
         contact_filt = contact | info["last_contact"]
+        foot_clearance = jp.maximum(foot_pos[:, 2] - FOOT_R, 0.0)
+        foot_vxy2 = jp.sum(jp.square(foot_vel[:, :2]), axis=1)
+        swing = (~contact_filt).astype(jp.float32)
         first_contact = (info["air_time"] > 0.0) & contact_filt
         r_air = AIR_TIME_W * jp.sum(
             (info["air_time"] - AIR_TIME_TARGET) * first_contact) * moving
         air_time = (info["air_time"] + self.dt) * ~contact_filt
 
-        # Reward stack unchanged from walk3d -- only the observation and the
-        # network differ, so a regression here would be indistinguishable from
-        # the effect of removing the velocity input.
+        # Core locomotion rewards follow walk3d; deploy adds the gait-shaping
+        # penalties below to reduce foot drag and improve straight-line trot
+        # symmetry without constraining turning commands.
         r_lin = TRACK_LIN_W * jp.exp(
             -jp.sum(jp.square(cmd[:2] - lin_b[:2])) / TRACK_SIGMA)
         r_ang = TRACK_ANG_W * jp.exp(
@@ -282,8 +309,31 @@ class DeployEnv(PipelineEnv):
         p_torque = TORQUE_W * jp.sum(jp.square(ps.qfrc_actuator[6:]))
         p_jvel = JVEL_W * jp.sum(jp.square(ps.qd[6:]))
         p_rate = RATE_W * jp.sum(jp.square(action - info["last_act"]))
-        p_slip = SLIP_W * jp.sum(
-            jp.sum(jp.square(foot_vel[:, :2]), axis=1) * contact)
+        p_slip = SLIP_W * jp.sum(foot_vxy2 * contact)
+
+        # Penalise fast swing-foot motion close to the floor, including the
+        # visually obvious skimming that lies just outside the contact mask.
+        near_ground = jp.exp(-foot_clearance / SCUFF_HEIGHT)
+        p_scuff = SCUFF_W * jp.sum(
+            foot_vxy2 * swing * near_ground) * moving
+        clearance_error = jp.maximum(
+            CLEARANCE_TARGET - foot_clearance, 0.0) / CLEARANCE_TARGET
+        p_clearance = CLEARANCE_W * jp.sum(
+            jp.square(clearance_error) * swing) * moving
+
+        # LEGS order is FL, FR, RL, RR.  A trot pairs FL<->RR and FR<->RL.
+        # Only impose this symmetry for straight commands.
+        leg_action = action.reshape((4, 3))
+        straight = ((jp.abs(cmd[1]) < 0.05)
+                    & (jp.abs(cmd[2]) < 0.15)
+                    & moving).astype(jp.float32)
+        p_diag_action = DIAG_ACTION_W * straight * (
+            jp.sum(jp.square(leg_action[0] - leg_action[3]))
+            + jp.sum(jp.square(leg_action[1] - leg_action[2])))
+        contact_f = contact.astype(jp.float32)
+        p_diag_contact = DIAG_CONTACT_W * straight * (
+            jp.square(contact_f[0] - contact_f[3])
+            + jp.square(contact_f[1] - contact_f[2]))
         p_stand = STAND_W * (1.0 - moving) * jp.sum(
             jp.abs(ps.q[7:] - DEFAULT_POSE))
 
@@ -292,7 +342,9 @@ class DeployEnv(PipelineEnv):
 
         reward = (ALIVE_W + r_lin + r_ang + r_air
                   - p_orient - p_linz - p_angxy - p_height
-                  - p_torque - p_jvel - p_rate - p_slip - p_stand
+                  - p_torque - p_jvel - p_rate
+                  - p_slip - p_scuff - p_clearance
+                  - p_diag_action - p_diag_contact - p_stand
                   - TERM_W * done)
         reward = jp.clip(reward, -5.0, 10.0)
 
@@ -309,6 +361,10 @@ class DeployEnv(PipelineEnv):
         metrics = dict(state.metrics)
         metrics.update({
             "track_lin": r_lin, "track_ang": r_ang, "air": r_air,
+            "slip": p_slip, "scuff": p_scuff,
+            "clearance": p_clearance,
+            "diag_action": p_diag_action,
+            "diag_contact": p_diag_contact,
             "vx": lin_b[0], "vy": lin_b[1], "wz": ang_b[2],
             "height": ps.q[2], "cmd_vx": cmd[0], "cmd_wz": cmd[2],
         })
@@ -483,8 +539,9 @@ def probe():
     stale = h0[SINGLE_OBS:]
     print(f"\nstartup buffer: {int((stale == 0).sum())} zeros, "
           f"gravity-z slots = "
-          f"{set(np.round(stale[GRAVITY_Z_IDX::SINGLE_OBS], 3).tolist())}"
-          f"   (on_activate writes exactly this)")
+          f"{set(np.round(stale[GRAVITY_Z_IDX::SINGLE_OBS], 3).tolist())}, "
+          f"desired-z slots = "
+          f"{set(np.round(stale[DESIRED_Z_IDX + 2::SINGLE_OBS], 3).tolist())}")
     print("=" * 72)
 
 
@@ -499,6 +556,9 @@ def main():
     print(f"  obs {OBS_SIZE} = {HISTORY} x {SINGLE_OBS}, controller layout")
     print(f"  activation {ACTIVATION_NAME}, no action filter")
     print(f"  hidden {POLICY_HIDDEN}")
+    print(f"  gait shaping slip={SLIP_W} scuff={SCUFF_W} "
+          f"clearance={CLEARANCE_W} diag_action={DIAG_ACTION_W} "
+          f"diag_contact={DIAG_CONTACT_W}")
     print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, {NUM_EVALS} evals")
     print(f"  writing to {SAVE}, {CKPT_DIR}/, {VID_DIR}/")
     print("=" * 72, flush=True)
@@ -520,6 +580,10 @@ def main():
               flush=True)
         print(f"    track_lin {g('track_lin')}  track_ang {g('track_ang')}",
               flush=True)
+        print(f"    slip {g('slip')}  scuff {g('scuff')}  "
+              f"clearance {g('clearance')}  "
+              f"diag_action {g('diag_action')}  "
+              f"diag_contact {g('diag_contact')}", flush=True)
         print(f"    took {_hms(took)}  |  elapsed "
               f"{_hms(time.time() - ticker.run_t0)}  |  ETA {ticker.eta()}",
               flush=True)
