@@ -41,12 +41,12 @@
             <default class="single_hip_joint">
               <joint damping="0.01"
                      armature="0.0016"
-                     range="-1.757546558 1.907644873"/>
+                     range="-2.268928028 1.396263402"/>
             </default>
             <default class="single_knee_joint">
               <joint damping="0.01"
                      armature="0.0016"
-                     range="0.1623156204 2.129301687"/>
+                     range="0.1745329252 2.129301687"/>
             </default>
             <default class="single_servo">
               <general forcelimited="true"
@@ -58,7 +58,7 @@
             </default>
             <default class="rolling_shell">
               <geom type="capsule" size="0.003"
-                    contype="0" conaffinity="0"
+                    contype="4" conaffinity="3"
                     solref="0.003 1" solimp="0.95 0.99 0.001"
                     group="1" rgba="0.55 0.78 0.95 0.88"/>
             </default>
@@ -507,37 +507,37 @@
                      ctrlrange="-0.5235987756 3.665191429"/>
             <general name="front_left_hip_servo" joint="front_left_hip"
                      class="single_servo"
-                     ctrlrange="-1.757546558 1.907644873"/>
+                     ctrlrange="-2.268928028 1.396263402"/>
             <general name="front_left_knee_servo" joint="front_left_knee"
                      class="single_servo"
-                     ctrlrange="0.1623156204 2.129301687"/>
+                     ctrlrange="0.1745329252 2.129301687"/>
             <general name="front_right_hip_abduction_servo" joint="front_right_hip_abduction"
                      class="single_servo"
                      ctrlrange="-0.5235987756 3.665191429"/>
             <general name="front_right_hip_servo" joint="front_right_hip"
                      class="single_servo"
-                     ctrlrange="-1.757546558 1.907644873"/>
+                     ctrlrange="-2.268928028 1.396263402"/>
             <general name="front_right_knee_servo" joint="front_right_knee"
                      class="single_servo"
-                     ctrlrange="0.1623156204 2.129301687"/>
+                     ctrlrange="0.1745329252 2.129301687"/>
             <general name="rear_left_hip_abduction_servo" joint="rear_left_hip_abduction"
                      class="single_servo"
                      ctrlrange="-0.5235987756 3.665191429"/>
             <general name="rear_left_hip_servo" joint="rear_left_hip"
                      class="single_servo"
-                     ctrlrange="-1.757546558 1.907644873"/>
+                     ctrlrange="-2.268928028 1.396263402"/>
             <general name="rear_left_knee_servo" joint="rear_left_knee"
                      class="single_servo"
-                     ctrlrange="0.1623156204 2.129301687"/>
+                     ctrlrange="0.1745329252 2.129301687"/>
             <general name="rear_right_hip_abduction_servo" joint="rear_right_hip_abduction"
                      class="single_servo"
                      ctrlrange="-0.5235987756 3.665191429"/>
             <general name="rear_right_hip_servo" joint="rear_right_hip"
                      class="single_servo"
-                     ctrlrange="-1.757546558 1.907644873"/>
+                     ctrlrange="-2.268928028 1.396263402"/>
             <general name="rear_right_knee_servo" joint="rear_right_knee"
                      class="single_servo"
-                     ctrlrange="0.1623156204 2.129301687"/>
+                     ctrlrange="0.1745329252 2.129301687"/>
           </actuator>
 
           <sensor>

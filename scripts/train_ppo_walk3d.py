@@ -45,7 +45,10 @@ from brax.training.agents.ppo import train as ppo
 from brax.training.agents.ppo import networks as ppo_networks
 
 # ============================================================ file layout
-SRC_XML = "assets/curl_robot_3d_pupper_r127p5_open60_width120.xml"
+SRC_XML = (
+    "C:/Users/12481/Desktop/OH-WorkSpace/robot_description/"
+    "curl_robot_2d/assets/curl_robot_3d_pupper_r127p5_open60_width120.xml"
+)
 RUN_XML = os.path.expanduser("~/robot/curl_robot_3d_run.xml")
 SAVE = "walk3d_policy.bin"
 VID_DIR = "walk3d_videos"
