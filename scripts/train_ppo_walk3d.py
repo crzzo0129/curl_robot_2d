@@ -56,9 +56,9 @@ SRC_XML = os.path.normpath(os.path.join(
     SCRIPT_DIR, "..", "assets",
     "rollingquad_description_2", "mjcf", "rollingquad.xml"))
 RUN_XML = os.path.expanduser("~/robot/rollingquad_2_walk3d.xml")
-SAVE = "rollingquad_2_walk3d_fine_policy.bin"
-VID_DIR = "rollingquad_2_walk3d_fine_videos"
-CKPT_DIR = "rollingquad_2_walk3d_fine_checkpoints"
+SAVE = "rollingquad_2_walk3d_fine_lift_policy.bin"
+VID_DIR = "rollingquad_2_walk3d_fine_lift_videos"
+CKPT_DIR = "rollingquad_2_walk3d_fine_lift_checkpoints"
 
 # ============================================================== geometry
 # Measurements used only by diagnostics and reward normalization.  Reset
@@ -84,7 +84,7 @@ JOINT_NAMES = tuple(
 
 # The values match the rollingquad_2 `stand` keyframe in canonical policy
 # order.  Limits are the common safe intersection of the four URDF legs.
-DEFAULT_POSE = jp.array([0.0, 0.6, 1.0] * 4)
+DEFAULT_POSE = jp.array([0.0, 0.70, 1.15] * 4)
 CTRL_LO = jp.array([-0.5236, -1.745329252, 0.1745329252] * 4)
 CTRL_HI = jp.array([3.66519, 1.902408885, 2.094395102] * 4)
 
@@ -96,7 +96,7 @@ ACTION_SCALE = jp.array([0.17, 0.50, 0.50] * 4)
 
 # Root heights are mesh-ground clearances computed for the corrected CAD
 # model, rather than planar-link approximations that ignore its inclined axes.
-NOMINAL_H = 0.1712243631                  # rollingquad_2 stand keyframe
+NOMINAL_H = 0.1642125372                  # crouched stand, 1 mm CAD clearance
 FULL_H = 0.1934653619                     # rollingquad_2 open keyframe
 
 # =============================================================== physics
@@ -141,6 +141,11 @@ TORQUE_W = 0.0002
 JVEL_W = 0.0002            # not in barkour; cheap insurance against shivering
 RATE_W = 0.01               # action rate
 SLIP_W = 0.10
+CLEARANCE_W = 0.04
+CLEARANCE_TARGET = 0.020
+FOOT_LIFT_W = 0.08
+FOOT_LIFT_SIGMA = 0.0075
+FOOT_LIFT_SPEED = 0.20
 STAND_W = 0.5               # penalise drifting from the pose on a zero command
 TERM_W = 1.0
 
@@ -584,8 +589,10 @@ class Walk3DEnv(PipelineEnv):
 
     def __init__(self):
         mj = load_mj()
-        self._nom_h = stand_height(mj)
-        self._init_z = self._nom_h + 0.005          # spawn just clear of the floor
+        # Reward/keyframe/export all share one nominal height.  The reset-only
+        # clearance is separate and must never redefine the reward target.
+        self._nom_h = NOMINAL_H
+        self._init_z = NOMINAL_H + 0.005
         joint_qpos, joint_dof = joint_state_indices(mj)
         self._joint_qpos = jp.asarray(joint_qpos)
         self._joint_dof = jp.asarray(joint_dof)
@@ -677,8 +684,8 @@ class Walk3DEnv(PipelineEnv):
             "step": jp.int32(0),
         }
         metrics = {k: jp.zeros(()) for k in
-                   ("track_lin", "track_ang", "air", "vx", "vy", "wz",
-                    "height", "cmd_vx", "cmd_wz")}
+                   ("track_lin", "track_ang", "air", "clearance", "lift",
+                    "vx", "vy", "wz", "height", "cmd_vx", "cmd_wz")}
         obs = self._obs(ps, info, k_obs)
         return State(ps, obs, jp.zeros(()), jp.zeros(()), metrics, info)
 
@@ -719,6 +726,9 @@ class Walk3DEnv(PipelineEnv):
         foot_pos, foot_vel = self._feet(ps)
         contact = (foot_pos[:, 2] - FOOT_R) < 1e-3
         contact_filt = contact | info["last_contact"]
+        swing = (~contact_filt).astype(jp.float32)
+        foot_clearance = jp.maximum(foot_pos[:, 2] - FOOT_R, 0.0)
+        foot_vxy2 = jp.sum(jp.square(foot_vel[:, :2]), axis=1)
         first_contact = (info["air_time"] > 0.0) & contact_filt
         r_air = AIR_TIME_W * jp.sum(
             (info["air_time"] - AIR_TIME_TARGET) * first_contact) * moving
@@ -738,17 +748,27 @@ class Walk3DEnv(PipelineEnv):
         p_torque = TORQUE_W * jp.sum(jp.square(tau))
         p_jvel = JVEL_W * jp.sum(jp.square(ps.qd[6:]))
         p_rate = RATE_W * jp.sum(jp.square(action - info["last_act"]))
-        p_slip = SLIP_W * jp.sum(
-            jp.sum(jp.square(foot_vel[:, :2]), axis=1) * contact)
+        p_slip = SLIP_W * jp.sum(foot_vxy2 * contact)
+        clearance_error = jp.maximum(
+            CLEARANCE_TARGET - foot_clearance, 0.0) / CLEARANCE_TARGET
+        p_clearance = CLEARANCE_W * jp.sum(
+            jp.square(clearance_error) * swing) * moving
+        lift_quality = jp.exp(-jp.square(
+            (foot_clearance - CLEARANCE_TARGET) / FOOT_LIFT_SIGMA))
+        swing_motion = jp.clip(
+            jp.sqrt(foot_vxy2) / FOOT_LIFT_SPEED, 0.0, 1.0)
+        r_lift = FOOT_LIFT_W * jp.minimum(
+            jp.sum(lift_quality * swing_motion * swing), 2.0) * moving
         p_stand = STAND_W * (1.0 - moving) * jp.sum(
             jp.abs(ps.q[self._joint_qpos] - DEFAULT_POSE))
 
         bad = jp.isnan(ps.q).any() | jp.isnan(ps.qd).any()
         done = ((ps.q[2] < Z_MIN) | (up[2] < UP_MIN) | bad).astype(jp.float32)
 
-        reward = (ALIVE_W + r_lin + r_ang + r_air
+        reward = (ALIVE_W + r_lin + r_ang + r_air + r_lift
                   - p_orient - p_linz - p_angxy - p_height
-                  - p_torque - p_jvel - p_rate - p_slip - p_stand
+                  - p_torque - p_jvel - p_rate - p_slip - p_clearance
+                  - p_stand
                   - TERM_W * done)
         reward = jp.clip(reward, -5.0, 10.0)
 
@@ -771,6 +791,7 @@ class Walk3DEnv(PipelineEnv):
         metrics = dict(state.metrics)
         metrics.update({
             "track_lin": r_lin, "track_ang": r_ang, "air": r_air,
+            "clearance": p_clearance, "lift": r_lift,
             "vx": lin_b[0], "vy": lin_b[1], "wz": ang_b[2],
             "height": ps.q[2], "cmd_vx": cmd[0], "cmd_wz": cmd[2],
         })
@@ -917,7 +938,7 @@ def probe():
     print(f"\ntorque    forcerange {mj.actuator_forcerange[0]} N·m per motor "
           f"(one motor per joint on this model)")
     static = mj.body_mass.sum() * 9.81 / 4.0
-    lever = L_THIGH * sin(0.6)
+    lever = L_THIGH * sin(0.70)
     print(f"          static load per leg {static:.2f} N, hip lever "
           f"{lever * 1000:.1f} mm -> {static * lever:.3f} N·m holding torque")
 
@@ -990,9 +1011,9 @@ def enable_dr():
     OBS_NOISE = 1.0
     PUSH_EVERY = 2.5
     LATENCY_PROB = 0.15
-    SAVE = "rollingquad_2_walk3d_fine_policy_dr.bin"
-    VID_DIR = "rollingquad_2_walk3d_fine_videos_dr"
-    CKPT_DIR = "rollingquad_2_walk3d_fine_checkpoints_dr"
+    SAVE = "rollingquad_2_walk3d_fine_lift_policy_dr.bin"
+    VID_DIR = "rollingquad_2_walk3d_fine_lift_videos_dr"
+    CKPT_DIR = "rollingquad_2_walk3d_fine_lift_checkpoints_dr"
     NUM_TIMESTEPS = 300_000_000
 
 
@@ -1012,6 +1033,8 @@ def main():
           f"walking proxies {'ON' if WALK_COLLISION_PROXIES else 'off'}")
     print(f"  stance height {env._nom_h:.4f} m   "
           f"commands vx{CMD_VX} vy{CMD_VY} yaw{CMD_WZ}")
+    print(f"  gait shaping clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
+          f"lift={FOOT_LIFT_W}@{CLEARANCE_TARGET:.3f}m")
     print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, "
           f"{NUM_EVALS} evals -> a video every "
           f"{NUM_TIMESTEPS // NUM_EVALS:,} steps")
@@ -1035,10 +1058,13 @@ def main():
         n = metrics.get("eval/avg_episode_length", float("nan"))
         tl = metrics.get("eval/episode_track_lin", float("nan"))
         ta = metrics.get("eval/episode_track_ang", float("nan"))
+        clearance = metrics.get("eval/episode_clearance", float("nan"))
+        lift = metrics.get("eval/episode_lift", float("nan"))
         pct = 100.0 * step / max(NUM_TIMESTEPS, 1)
         print(f"[{ticker.done}/{NUM_EVALS}] step {step:>13,} ({pct:4.1f}%)  "
               f"reward {r}  ep_len {n}", flush=True)
         print(f"    track_lin {tl}  track_ang {ta}", flush=True)
+        print(f"    clearance {clearance}  lift {lift}", flush=True)
         print(f"    took {_hms(took)}  |  elapsed "
               f"{_hms(time.time() - ticker.run_t0)}  |  ETA {ticker.eta()}",
               flush=True)

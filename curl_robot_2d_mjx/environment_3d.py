@@ -653,6 +653,8 @@ def make_brax_env_3d(
                 torso_length_m=self.geometry_parameters.torso_length,
                 link_length_m=self.geometry_parameters.edge_length,
                 foot_diameter_m=2.0 * self.geometry_parameters.foot_radius,
+                upper_link_length_m=self.geometry_parameters.upper_length,
+                lower_link_length_m=self.geometry_parameters.lower_length,
             )
             self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
             if task.geometry == "pupper_open60":

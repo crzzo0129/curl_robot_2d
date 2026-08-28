@@ -3,13 +3,81 @@ import unittest
 
 import numpy as np
 
-from curl_robot_2d.parameters import FIXED_PARAMETERS
-from curl_robot_2d_mjx.cem_reference import load_cem_reference
+from curl_robot_2d.parameters import (
+    FIXED_PARAMETERS,
+    PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+)
+from curl_robot_2d_mjx.cem_reference import (
+    CEMReferenceGeometry,
+    load_cem_reference,
+    reference_action,
+)
+from curl_robot_2d_mjx.environment_3d import (
+    PLANAR_ACTION_SCALES,
+    duplicate_planar_action_3d,
+)
 from scripts import evaluate_3d_symmetric_cem_reference as bridge
 from scripts import view_3d_cem_reference as viewer
 
 
 class SymmetricCEM3DBridgeTest(unittest.TestCase):
+    def test_mjx_pupper_targets_match_cpu_reference_for_all_phases(self) -> None:
+        import mujoco
+
+        parameters = PUPPER_ORIGINAL_SHELL_60_PARAMETERS
+        config = load_cem_reference(bridge.DEFAULT_CONTROLLER_PATH)
+        geometry = CEMReferenceGeometry(
+            torso_length_m=parameters.torso_length,
+            link_length_m=parameters.edge_length,
+            foot_diameter_m=2.0 * parameters.foot_radius,
+            upper_link_length_m=parameters.upper_length,
+            lower_link_length_m=parameters.lower_length,
+        )
+        model = mujoco.MjModel.from_xml_path(str(bridge.DEFAULT_XML_PATH))
+        joint_ids = [model.joint(name).id for name in bridge.JOINT_NAMES_3D]
+        actuator_ids = [
+            model.actuator(f"{name}_servo").id
+            for name in bridge.JOINT_NAMES_3D
+        ]
+        compact_ctrl = model.key_ctrl[model.key("compact").id][actuator_ids]
+        joint_low = np.asarray([model.jnt_range[joint_id, 0] for joint_id in joint_ids])
+        joint_high = np.asarray([model.jnt_range[joint_id, 1] for joint_id in joint_ids])
+        action_scales = np.asarray((0.8, 1.2) * 4)
+        bridge.activate_planar_geometry(parameters)
+        try:
+            for phase in np.linspace(0.0, 2.0 * np.pi, 101):
+                normalized = reference_action(
+                    np,
+                    phase,
+                    config,
+                    compact_ctrl=bridge.PLANAR_COMPACT,
+                    action_scales=PLANAR_ACTION_SCALES,
+                    joint_low=bridge.PLANAR_JOINT_LOW,
+                    joint_high=bridge.PLANAR_JOINT_HIGH,
+                    geometry=geometry,
+                )
+                mjx_target = np.clip(
+                    compact_ctrl
+                    + duplicate_planar_action_3d(np, normalized)
+                    * action_scales,
+                    joint_low,
+                    joint_high,
+                )
+                cpu_target = np.clip(
+                    bridge.map_planar_to_curl_3d_targets(
+                        bridge.planar_cem_target(phase, config)
+                    ),
+                    joint_low,
+                    joint_high,
+                )
+                np.testing.assert_allclose(
+                    mjx_target,
+                    cpu_target,
+                    atol=1.0e-10,
+                )
+        finally:
+            bridge.activate_planar_geometry(FIXED_PARAMETERS)
+
     def test_headless_gif_uses_explicit_torso_tracking_camera(self) -> None:
         source = Path(viewer.__file__).read_text(encoding="utf-8")
         self.assertIn("render_camera.type = mujoco.mjtCamera.mjCAMERA_TRACKING", source)

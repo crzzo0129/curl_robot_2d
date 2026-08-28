@@ -81,10 +81,10 @@ from train_ppo_walk3d import (
 
 w3.RUN_XML = os.path.expanduser("~/robot/rollingquad_2_deploy.xml")
 
-SAVE = "rollingquad_2_deploy_fine_policy.bin"
-VID_DIR = "rollingquad_2_deploy_fine_videos"
-CKPT_DIR = "rollingquad_2_deploy_fine_checkpoints"
-JSON_OUT = "rollingquad_2_deploy_fine_policy.json"
+SAVE = "rollingquad_2_deploy_fine_lift_policy.bin"
+VID_DIR = "rollingquad_2_deploy_fine_lift_videos"
+CKPT_DIR = "rollingquad_2_deploy_fine_lift_checkpoints"
+JSON_OUT = "rollingquad_2_deploy_fine_lift_policy.json"
 
 # ==================================================== controller contract
 # neural_controller.hpp:67-76.  Do not reorder; the C++ writes these indices
@@ -123,8 +123,11 @@ SERVO_KD = 0.1
 SLIP_W = 0.25
 SCUFF_W = 0.15
 SCUFF_HEIGHT = 0.008          # only suppress motion very close to floor (m)
-CLEARANCE_W = 0.02
-CLEARANCE_TARGET = 0.012      # modest swing-foot bottom clearance (m)
+CLEARANCE_W = 0.04
+CLEARANCE_TARGET = 0.020      # swing-foot bottom clearance target (m)
+FOOT_LIFT_W = 0.08
+FOOT_LIFT_SIGMA = 0.0075      # reward band around target height (m)
+FOOT_LIFT_SPEED = 0.20        # full reward above this horizontal speed (m/s)
 
 # Straight-line trot symmetry.  The gate below disables these terms for
 # lateral motion and turning so they do not remove steering authority.
@@ -168,7 +171,7 @@ class DeployEnv(PipelineEnv):
     def __init__(self):
         mj = w3.load_mj()
         self._mj = mj
-        self._nom_h = w3.stand_height(mj)
+        self._nom_h = w3.NOMINAL_H
         self._init_z = w3.NOMINAL_H + 0.0005
         joint_qpos, joint_dof = w3.joint_state_indices(mj)
         self._joint_qpos = jp.asarray(joint_qpos)
@@ -262,7 +265,7 @@ class DeployEnv(PipelineEnv):
         info["hist"] = self._push(hist, self._frame(ps, info))
         metrics = {k: jp.zeros(()) for k in
                    ("track_lin", "track_ang", "air", "slip", "scuff",
-                    "clearance", "diag_action", "diag_contact",
+                    "clearance", "lift", "diag_action", "diag_contact",
                     "vx", "vy", "wz", "height", "cmd_vx", "cmd_wz")}
         return State(ps, self._noise(info["hist"], k_obs), jp.zeros(()),
                      jp.zeros(()), metrics, info)
@@ -329,6 +332,16 @@ class DeployEnv(PipelineEnv):
         p_clearance = CLEARANCE_W * jp.sum(
             jp.square(clearance_error) * swing) * moving
 
+        # Reward a moving swing foot near the target height.  The bell-shaped
+        # target discourages both dragging and excessive high-stepping.  Cap
+        # the sum at two feet so a four-leg jump cannot earn extra lift reward.
+        lift_quality = jp.exp(-jp.square(
+            (foot_clearance - CLEARANCE_TARGET) / FOOT_LIFT_SIGMA))
+        swing_motion = jp.clip(
+            jp.sqrt(foot_vxy2) / FOOT_LIFT_SPEED, 0.0, 1.0)
+        r_lift = FOOT_LIFT_W * jp.minimum(
+            jp.sum(lift_quality * swing_motion * swing), 2.0) * moving
+
         # LEGS order is FL, FR, RL, RR.  A trot pairs FL<->RR and FR<->RL.
         # Only impose this symmetry for straight commands.
         leg_action = action.reshape((4, 3))
@@ -348,7 +361,7 @@ class DeployEnv(PipelineEnv):
         bad = jp.isnan(ps.q).any() | jp.isnan(ps.qd).any()
         done = ((ps.q[2] < Z_MIN) | (up[2] < UP_MIN) | bad).astype(jp.float32)
 
-        reward = (ALIVE_W + r_lin + r_ang + r_air
+        reward = (ALIVE_W + r_lin + r_ang + r_air + r_lift
                   - p_orient - p_linz - p_angxy - p_height
                   - p_torque - p_jvel - p_rate
                   - p_slip - p_scuff - p_clearance
@@ -370,7 +383,7 @@ class DeployEnv(PipelineEnv):
         metrics.update({
             "track_lin": r_lin, "track_ang": r_ang, "air": r_air,
             "slip": p_slip, "scuff": p_scuff,
-            "clearance": p_clearance,
+            "clearance": p_clearance, "lift": r_lift,
             "diag_action": p_diag_action,
             "diag_contact": p_diag_contact,
             "vx": lin_b[0], "vy": lin_b[1], "wz": ang_b[2],
@@ -479,7 +492,7 @@ def make_video(policy_path=None, seconds=None, out=None):
 def write_config(path=None):
     """The metadata block export_rtneural.py embeds and the Pi reads back."""
     import json
-    path = path or "rollingquad_2_deploy_fine_config.json"
+    path = path or "rollingquad_2_deploy_fine_lift_config.json"
     cfg = {
         "use_imu": True,
         "control_orientation": False,
@@ -575,6 +588,7 @@ def main():
     print(f"  hidden {POLICY_HIDDEN}")
     print(f"  gait shaping slip={SLIP_W} scuff={SCUFF_W} "
           f"clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
+          f"lift={FOOT_LIFT_W}@{CLEARANCE_TARGET:.3f}m "
           f"diag_action={DIAG_ACTION_W} "
           f"diag_contact={DIAG_CONTACT_W}")
     print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, {NUM_EVALS} evals")
@@ -599,7 +613,7 @@ def main():
         print(f"    track_lin {g('track_lin')}  track_ang {g('track_ang')}",
               flush=True)
         print(f"    slip {g('slip')}  scuff {g('scuff')}  "
-              f"clearance {g('clearance')}  "
+              f"clearance {g('clearance')}  lift {g('lift')}  "
               f"diag_action {g('diag_action')}  "
               f"diag_contact {g('diag_contact')}", flush=True)
         print(f"    took {_hms(took)}  |  elapsed "
@@ -672,10 +686,10 @@ if __name__ == "__main__":
         argv = _sys.argv[1:]
         if "dr" in argv:
             w3.enable_dr()          # sets w3.OBS_NOISE / PUSH_* / DOMAIN_*
-            SAVE = "rollingquad_2_deploy_fine_policy_dr.bin"
-            VID_DIR = "rollingquad_2_deploy_fine_videos_dr"
-            CKPT_DIR = "rollingquad_2_deploy_fine_checkpoints_dr"
-            JSON_OUT = "rollingquad_2_deploy_fine_policy_dr.json"
+            SAVE = "rollingquad_2_deploy_fine_lift_policy_dr.bin"
+            VID_DIR = "rollingquad_2_deploy_fine_lift_videos_dr"
+            CKPT_DIR = "rollingquad_2_deploy_fine_lift_checkpoints_dr"
+            JSON_OUT = "rollingquad_2_deploy_fine_lift_policy_dr.json"
             argv.remove("dr")
         cmd = argv[0] if argv else "train"
         if cmd == "probe":

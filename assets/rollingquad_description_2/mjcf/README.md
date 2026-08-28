@@ -51,14 +51,17 @@ Following `curl_robot_3d_pupper_r127p5_open60_width120.xml`, every servo uses
 the corresponding URDF joint limits. Latency, gearbox friction and electrical
 limits still need to be identified separately before a final sim-to-real run.
 
-The `open`, `stand`, `stand_previous`, `park` and `compact` keyframes are ported
-from that reference XML. Their joint values are remapped from the reference
-order `(abduction, hip, knee)` into this URDF's kinematic order
-`(hip, abduction, knee)`. Root heights are recomputed against the exported STL
-geometry so that the lowest mesh point has about 1 mm of floor clearance; this
-notably changes the stale `park` height from the reference model. The original
-`open` pose sets every joint to zero; this places the knee below the URDF lower
-limit, so `extended` is also provided as a limit-valid reset pose.
+The `open`, `stand_previous`, `park` and `compact` keyframes are ported from
+the reference XML. Their joint values are remapped from the reference order
+`(abduction, hip, knee)` into this URDF's kinematic order
+`(hip, abduction, knee)`. The active walking `stand` is a mildly crouched
+`(abduction, hip, knee) = (0, 0.70, 1.15)` pose with a root height of
+`0.1642125372 m`; this leaves about 1 mm of CAD floor clearance and provides
+extension travel for swing-foot lift. Root heights are recomputed against the
+exported STL geometry; this notably changes the stale `park` height from the
+reference model. The original `open` pose sets every joint to zero; this places
+the knee below the URDF lower limit, so `extended` is also provided as a
+limit-valid reset pose.
 
 Robot mesh geoms collide with the floor but not with one another. This avoids
 expensive and often unwanted self-contact while retaining the exported outer

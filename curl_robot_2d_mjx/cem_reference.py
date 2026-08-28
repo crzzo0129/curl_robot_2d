@@ -36,6 +36,8 @@ class CEMReferenceGeometry:
     torso_length_m: float = 0.15
     link_length_m: float = 0.15
     foot_diameter_m: float = 0.0399
+    upper_link_length_m: float | None = None
+    lower_link_length_m: float | None = None
 
 
 BASELINE_CEM_REFERENCE_GEOMETRY = CEMReferenceGeometry()
@@ -189,7 +191,16 @@ def reference_action(
     )
     if config.minimum_foot_surface_gap_m > 0.0:
         torso_length = geometry.torso_length_m
-        length = geometry.link_length_m
+        upper_length = (
+            geometry.link_length_m
+            if geometry.upper_link_length_m is None
+            else geometry.upper_link_length_m
+        )
+        lower_length = (
+            geometry.link_length_m
+            if geometry.lower_link_length_m is None
+            else geometry.lower_link_length_m
+        )
         target_distance = (
             geometry.foot_diameter_m
             + config.minimum_foot_surface_gap_m
@@ -197,23 +208,23 @@ def reference_action(
         )
         for _ in range(6):
             front_hip, front_knee, rear_hip, rear_knee = target
-            delta_x = torso_length + length * (
-                xp.sin(front_hip)
-                + xp.sin(front_hip - front_knee)
-                + xp.sin(rear_hip)
-                + xp.sin(rear_hip - rear_knee)
+            delta_x = torso_length + (
+                upper_length * xp.sin(front_hip)
+                + lower_length * xp.sin(front_hip - front_knee)
+                + upper_length * xp.sin(rear_hip)
+                + lower_length * xp.sin(rear_hip - rear_knee)
             )
-            delta_z = length * (
-                -xp.cos(front_hip)
-                - xp.cos(front_knee - front_hip)
-                + xp.cos(rear_hip)
-                + xp.cos(rear_knee - rear_hip)
+            delta_z = (
+                -upper_length * xp.cos(front_hip)
+                - lower_length * xp.cos(front_knee - front_hip)
+                + upper_length * xp.cos(rear_hip)
+                + lower_length * xp.cos(rear_knee - rear_hip)
             )
             distance = xp.sqrt(delta_x * delta_x + delta_z * delta_z)
-            front_dx = -length * xp.cos(front_hip - front_knee)
-            front_dz = -length * xp.sin(front_knee - front_hip)
-            rear_dx = -length * xp.cos(rear_hip - rear_knee)
-            rear_dz = -length * xp.sin(rear_knee - rear_hip)
+            front_dx = -lower_length * xp.cos(front_hip - front_knee)
+            front_dz = -lower_length * xp.sin(front_knee - front_hip)
+            rear_dx = -lower_length * xp.cos(rear_hip - rear_knee)
+            rear_dz = -lower_length * xp.sin(rear_knee - rear_hip)
             front_gradient = (
                 delta_x * front_dx + delta_z * front_dz
             ) / xp.maximum(distance, 1.0e-6)

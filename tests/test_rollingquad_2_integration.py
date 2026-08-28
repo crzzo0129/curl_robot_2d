@@ -61,7 +61,7 @@ class Rollingquad2IntegrationTest(unittest.TestCase):
         model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))
         reference = mujoco.MjModel.from_xml_path(str(REFERENCE_MODEL_PATH))
 
-        for key_name in ("open", "stand", "stand_previous", "park", "compact"):
+        for key_name in ("open", "stand_previous", "park", "compact"):
             key_id = model.key(key_name).id
             reference_key_id = reference.key(key_name).id
             for joint_name in WALKING_JOINT_NAMES_3D:
@@ -84,6 +84,39 @@ class Rollingquad2IntegrationTest(unittest.TestCase):
                     places=6,
                     msg=f"{key_name}: {actuator_name}",
                 )
+
+    def test_crouched_walking_stand_has_one_mm_cad_clearance(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))
+        data = mujoco.MjData(model)
+        mujoco.mj_resetDataKeyframe(model, data, model.key("stand").id)
+
+        expected = {
+            "hip_abduction": 0.0,
+            "hip": 0.70,
+            "knee": 1.15,
+        }
+        for joint_name in WALKING_JOINT_NAMES_3D:
+            joint_kind = next(
+                kind for kind in expected if joint_name.endswith(kind)
+            )
+            qpos_index = model.jnt_qposadr[model.joint(joint_name).id]
+            self.assertAlmostEqual(
+                data.qpos[qpos_index], expected[joint_kind], places=6
+            )
+
+        self.assertAlmostEqual(
+            data.qpos[2], ROLLINGQUAD_2_STAND_ROOT_HEIGHT_M, places=9
+        )
+        mujoco.mj_forward(model, data)
+        floor_id = model.geom("floor").id
+        distances = []
+        for leg in ("front_left", "front_right", "rear_left", "rear_right"):
+            fromto = np.zeros(6)
+            distances.append(mujoco.mj_geomDistance(
+                model, data, floor_id, model.geom(f"{leg}_foot_proxy").id,
+                0.01, fromto,
+            ))
+        self.assertAlmostEqual(min(distances), 0.001, places=6)
 
     def test_servo_limits_and_short_cpu_dynamics_are_finite(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))

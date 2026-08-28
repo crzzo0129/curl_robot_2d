@@ -25,7 +25,7 @@ python -m scripts.train_ppo_deploy
 
 行走训练生成的临时 XML 使用 `2 ms × 10` 个物理子步，控制频率保持 50 Hz，并继续使用原始 MJCF 的完整 CAD 接触几何。walking 与后续 rolling 因此共享同一套几何语义；两者可以根据接触难度采用不同 solver profile，但不再通过简化脚球或机身盒改变碰撞形状。
 
-不要恢复旧 Pupper、旧 MJX walking policy 或此前 `4 ms / CAD-contact` 的 checkpoint。新输出使用独立文件名 `rollingquad_2_walk3d_fine_policy.bin` / `rollingquad_2_deploy_fine_policy.bin`，避免误续训旧物理环境中的 policy。
+不要恢复旧 Pupper、旧 MJX walking policy 或此前不同 solver/stand/reward 的 checkpoint。当前默认站姿为每腿 `abduction/hip/knee = 0/0.70/1.15 rad`，统一 nominal root height 为 `0.1642125372 m`。两个入口都把摆动足目标净空提高到 20 mm，并加入有上限的抬脚正奖励；deploy 额外保留近地拖脚和对角步态约束。新输出使用独立文件名 `rollingquad_2_walk3d_fine_lift_policy.bin` / `rollingquad_2_deploy_fine_lift_policy.bin`，避免误续训旧 policy。
 
 ## 策略接口
 
