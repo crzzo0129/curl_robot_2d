@@ -131,8 +131,11 @@ FOOT_LIFT_SPEED = 0.20        # full reward above this horizontal speed (m/s)
 
 # Straight-line trot symmetry.  The gate below disables these terms for
 # lateral motion and turning so they do not remove steering authority.
-DIAG_ACTION_W = 0.03
-DIAG_CONTACT_W = 0.05
+# Fine-tuning weights: diagonal action differences are smooth and receive the
+# stronger signal; contact mismatch is binary, so keep it below the tracking
+# rewards to avoid converging to a four-feet-down solution.
+DIAG_ACTION_W = 0.06
+DIAG_CONTACT_W = 0.10
 
 # ============================================================ PPO config
 NUM_TIMESTEPS = 300_000_000  # more than walk3d: no velocity input, so the
@@ -266,6 +269,7 @@ class DeployEnv(PipelineEnv):
         metrics = {k: jp.zeros(()) for k in
                    ("track_lin", "track_ang", "air", "slip", "scuff",
                     "clearance", "lift", "diag_action", "diag_contact",
+                    "height_error", "height_penalty",
                     "vx", "vy", "wz", "height", "cmd_vx", "cmd_wz")}
         return State(ps, self._noise(info["hist"], k_obs), jp.zeros(()),
                      jp.zeros(()), metrics, info)
@@ -386,6 +390,8 @@ class DeployEnv(PipelineEnv):
             "clearance": p_clearance, "lift": r_lift,
             "diag_action": p_diag_action,
             "diag_contact": p_diag_contact,
+            "height_error": jp.abs(ps.q[2] - self._nom_h),
+            "height_penalty": p_height,
             "vx": lin_b[0], "vy": lin_b[1], "wz": ang_b[2],
             "height": ps.q[2], "cmd_vx": cmd[0], "cmd_wz": cmd[2],
         })
@@ -573,7 +579,7 @@ def probe():
 
 
 # ================================================================ train
-def main():
+def main(resume_path=None):
     os.makedirs(VID_DIR, exist_ok=True)
     os.makedirs(CKPT_DIR, exist_ok=True)
     env, eval_env = DeployEnv(), DeployEnv()
@@ -586,7 +592,7 @@ def main():
           f"solver {w3.SOLVER_ITER}/{w3.SOLVER_LS_ITER}, "
           f"walking proxies {'ON' if w3.WALK_COLLISION_PROXIES else 'off'}")
     print(f"  hidden {POLICY_HIDDEN}")
-    print(f"  gait shaping slip={SLIP_W} scuff={SCUFF_W} "
+    print(f"  gait shaping height={HEIGHT_W} slip={SLIP_W} scuff={SCUFF_W} "
           f"clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
           f"lift={FOOT_LIFT_W}@{CLEARANCE_TARGET:.3f}m "
           f"diag_action={DIAG_ACTION_W} "
@@ -596,9 +602,12 @@ def main():
     print("=" * 72, flush=True)
 
     resume = {}
-    if os.path.exists(SAVE):
-        resume["restore_params"] = model.load_params(SAVE)
-        print(f"RESUMING from {SAVE}\n", flush=True)
+    restore_from = resume_path or (SAVE if os.path.exists(SAVE) else None)
+    if restore_from is not None:
+        if not os.path.isfile(restore_from):
+            raise FileNotFoundError(f"resume checkpoint not found: {restore_from}")
+        resume["restore_params"] = model.load_params(restore_from)
+        print(f"RESUMING from {restore_from}\n", flush=True)
 
     ticker = Ticker(NUM_EVALS)
 
@@ -616,6 +625,8 @@ def main():
               f"clearance {g('clearance')}  lift {g('lift')}  "
               f"diag_action {g('diag_action')}  "
               f"diag_contact {g('diag_contact')}", flush=True)
+        print(f"    height_error {g('height_error')}  "
+              f"height_penalty {g('height_penalty')}", flush=True)
         print(f"    took {_hms(took)}  |  elapsed "
               f"{_hms(time.time() - ticker.run_t0)}  |  ETA {ticker.eta()}",
               flush=True)
@@ -684,6 +695,13 @@ if __name__ == "__main__":
     code = 0
     try:
         argv = _sys.argv[1:]
+        resume_path = None
+        if "--resume" in argv:
+            i = argv.index("--resume")
+            if i + 1 >= len(argv):
+                raise ValueError("--resume requires a checkpoint path")
+            resume_path = argv[i + 1]
+            del argv[i:i + 2]
         if "dr" in argv:
             w3.enable_dr()          # sets w3.OBS_NOISE / PUSH_* / DOMAIN_*
             SAVE = "rollingquad_2_deploy_fine_lift_policy_dr.bin"
@@ -702,7 +720,7 @@ if __name__ == "__main__":
             do_export(argv[1] if len(argv) > 1 else None,
                       argv[2] if len(argv) > 2 else None)
         else:
-            main()
+            main(resume_path=resume_path)
     except BaseException:
         traceback.print_exc()
         code = 1

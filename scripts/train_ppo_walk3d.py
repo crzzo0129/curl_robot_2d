@@ -136,7 +136,11 @@ AIR_TIME_TARGET = 0.15      # s of swing per step before it starts paying
 LIN_Z_W = 2.0               # bouncing
 ANG_XY_W = 0.05             # roll/pitch rate
 ORIENT_W = 5.0              # staying upright
-HEIGHT_W = 10.0             # not in barkour; this robot will otherwise crouch
+# A 2 cm height error used to cost only 0.004 at HEIGHT_W=10, which was too
+# small to influence a locomotion reward whose tracking terms are O(1).
+# 250 keeps the settled 3--4 mm servo sag cheap, but makes sustained crouching
+# or body-height oscillation visible to PPO (2 cm -> 0.10 per control step).
+HEIGHT_W = 250.0
 TORQUE_W = 0.0002
 JVEL_W = 0.0002            # not in barkour; cheap insurance against shivering
 RATE_W = 0.01               # action rate
@@ -685,6 +689,7 @@ class Walk3DEnv(PipelineEnv):
         }
         metrics = {k: jp.zeros(()) for k in
                    ("track_lin", "track_ang", "air", "clearance", "lift",
+                    "height_error", "height_penalty",
                     "vx", "vy", "wz", "height", "cmd_vx", "cmd_wz")}
         obs = self._obs(ps, info, k_obs)
         return State(ps, obs, jp.zeros(()), jp.zeros(()), metrics, info)
@@ -792,6 +797,8 @@ class Walk3DEnv(PipelineEnv):
         metrics.update({
             "track_lin": r_lin, "track_ang": r_ang, "air": r_air,
             "clearance": p_clearance, "lift": r_lift,
+            "height_error": jp.abs(ps.q[2] - self._nom_h),
+            "height_penalty": p_height,
             "vx": lin_b[0], "vy": lin_b[1], "wz": ang_b[2],
             "height": ps.q[2], "cmd_vx": cmd[0], "cmd_wz": cmd[2],
         })
@@ -1018,7 +1025,7 @@ def enable_dr():
 
 
 # =============================================================== training
-def main():
+def main(resume_path=None):
     _install_sigint()
     os.makedirs(VID_DIR, exist_ok=True)
     os.makedirs(CKPT_DIR, exist_ok=True)
@@ -1033,7 +1040,8 @@ def main():
           f"walking proxies {'ON' if WALK_COLLISION_PROXIES else 'off'}")
     print(f"  stance height {env._nom_h:.4f} m   "
           f"commands vx{CMD_VX} vy{CMD_VY} yaw{CMD_WZ}")
-    print(f"  gait shaping clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
+    print(f"  gait shaping height={HEIGHT_W} "
+          f"clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
           f"lift={FOOT_LIFT_W}@{CLEARANCE_TARGET:.3f}m")
     print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, "
           f"{NUM_EVALS} evals -> a video every "
@@ -1046,9 +1054,12 @@ def main():
     print("=" * 72, flush=True)
 
     resume = {}
-    if os.path.exists(SAVE):
-        resume["restore_params"] = model.load_params(SAVE)
-        print(f"RESUMING from {SAVE}\n", flush=True)
+    restore_from = resume_path or (SAVE if os.path.exists(SAVE) else None)
+    if restore_from is not None:
+        if not os.path.isfile(restore_from):
+            raise FileNotFoundError(f"resume checkpoint not found: {restore_from}")
+        resume["restore_params"] = model.load_params(restore_from)
+        print(f"RESUMING from {restore_from}\n", flush=True)
 
     ticker = Ticker(NUM_EVALS)
 
@@ -1060,10 +1071,13 @@ def main():
         ta = metrics.get("eval/episode_track_ang", float("nan"))
         clearance = metrics.get("eval/episode_clearance", float("nan"))
         lift = metrics.get("eval/episode_lift", float("nan"))
+        h_err = metrics.get("eval/episode_height_error", float("nan"))
+        h_cost = metrics.get("eval/episode_height_penalty", float("nan"))
         pct = 100.0 * step / max(NUM_TIMESTEPS, 1)
         print(f"[{ticker.done}/{NUM_EVALS}] step {step:>13,} ({pct:4.1f}%)  "
               f"reward {r}  ep_len {n}", flush=True)
         print(f"    track_lin {tl}  track_ang {ta}", flush=True)
+        print(f"    height_error {h_err}  height_penalty {h_cost}", flush=True)
         print(f"    clearance {clearance}  lift {lift}", flush=True)
         print(f"    took {_hms(took)}  |  elapsed "
               f"{_hms(time.time() - ticker.run_t0)}  |  ETA {ticker.eta()}",
@@ -1150,6 +1164,13 @@ if __name__ == "__main__":
     code = 0
     try:
         argv = _sys.argv[1:]
+        resume_path = None
+        if "--resume" in argv:
+            i = argv.index("--resume")
+            if i + 1 >= len(argv):
+                raise ValueError("--resume requires a checkpoint path")
+            resume_path = argv[i + 1]
+            del argv[i:i + 2]
         if "dr" in argv:
             enable_dr()
             argv.remove("dr")
@@ -1161,7 +1182,7 @@ if __name__ == "__main__":
         elif cmd == "video":
             make_video(argv[1] if len(argv) > 1 else None)
         else:
-            main()
+            main(resume_path=resume_path)
     except BaseException:
         traceback.print_exc()
         code = 1
