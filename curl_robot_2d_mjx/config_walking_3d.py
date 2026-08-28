@@ -12,7 +12,10 @@ from curl_robot_2d.parameters import (
 )
 
 
-WALKING_GEOMETRY_NAMES_3D = ("pupper_open60",)
+WALKING_GEOMETRY_NAMES_3D = ("pupper_open60", "rollingquad_2")
+
+ROLLINGQUAD_2_STAND_ROOT_HEIGHT_M = 0.1712243631
+ROLLINGQUAD_2_FOOT_RADIUS_M = 0.0195
 
 
 WALKING_PHYSICS_PROFILE_NAMES_3D = (
@@ -329,6 +332,13 @@ def walking_physics_profile_3d(
 
 def walking_geometry_config_3d(config: Walking3DConfig) -> Walking3DConfig:
     """Bind geometry-dependent task measurements to the selected MJCF."""
+
+    if config.geometry == "rollingquad_2":
+        return replace(
+            config,
+            nominal_root_height_m=ROLLINGQUAD_2_STAND_ROOT_HEIGHT_M,
+            foot_radius_m=ROLLINGQUAD_2_FOOT_RADIUS_M,
+        )
 
     geometry = {
         "fixed": FIXED_PARAMETERS,

@@ -44,10 +44,18 @@ PUPPER_OPEN60_MODEL_PATH_3D = (
     / "assets"
     / "curl_robot_3d_pupper_r127p5_open60_width120.xml"
 )
+ROLLINGQUAD_2_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "rollingquad_description_2"
+    / "mjcf"
+    / "rollingquad.xml"
+)
 MODEL_PATHS_3D = {
     "baseline": MODEL_PATH_3D,
     "real": REAL_MODEL_PATH_3D,
     "pupper_open60": PUPPER_OPEN60_MODEL_PATH_3D,
+    "rollingquad_2": ROLLINGQUAD_2_MODEL_PATH_3D,
 }
 BASELINE_3D_CEM_CONTROLLER = (
     PROJECT_ROOT
@@ -160,7 +168,7 @@ def geometry_parameters_3d(name: str):
         return FIXED_PARAMETERS
     if name == "real":
         return REAL_GEOMETRY_PARAMETERS
-    if name == "pupper_open60":
+    if name in ("pupper_open60", "rollingquad_2"):
         return PUPPER_ORIGINAL_SHELL_60_PARAMETERS
     raise ValueError(f"unknown 3-D geometry: {name!r}")
 

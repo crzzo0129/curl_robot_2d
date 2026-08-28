@@ -1,6 +1,29 @@
 # Curl Robot：ANYmal 风格 MJX 行走任务
 
-本入口使用 `assets/curl_robot_3d_pupper_r127p5_open60_width120.xml`，目标是借鉴 ETH `legged_gym` 的 locomotion MDP，而不是复刻 ANYmal 的机构或步态。
+本入口默认使用 `assets/curl_robot_3d_pupper_r127p5_open60_width120.xml`，目标是借鉴 ETH `legged_gym` 的 locomotion MDP，而不是复刻 ANYmal 的机构或步态。由正确 URDF 转换得到的真实结构模型位于 `assets/rollingquad_description_2/mjcf/rollingquad.xml`，可通过 `--geometry rollingquad_2` 选择。
+
+## RollingQuad 2 重新训练
+
+先做 MJX 冒烟检查，再启动一个全新的 policy 训练目录：
+
+```bash
+python -m scripts.mjx_3d_walking_smoke \
+  --geometry rollingquad_2 \
+  --physics-profile cg12 \
+  --mujoco-gl disable
+
+python -m scripts.train_mjx_3d_walking_ppo \
+  --geometry rollingquad_2 \
+  --preset h200 \
+  --recipe forward_stage1_v1 \
+  --steps 15000000 \
+  --num-evals 32 \
+  --save-ppo-checkpoints \
+  --ppo-checkpoint-dir results/mjx_rollingquad_2_forward_stage1_v1/ppo_checkpoint \
+  --out results/mjx_rollingquad_2_forward_stage1_v1
+```
+
+该适配不改变 URDF 的倾斜外摆轴、零位、范围、质量或惯量。模型内部 `qpos` 仍按导出层级排列；执行器和 policy 动作则统一为 `FL, FR, RL, RR`，每腿均为 `abduction, hip, knee`。不要直接恢复旧 Pupper policy checkpoint，因为机构和轴方向已经改变，应从新目录重新训练。
 
 ## 策略接口
 

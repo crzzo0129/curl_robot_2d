@@ -1,0 +1,371 @@
+<?xml version="1.0"?>
+<robot name="rollingquad_description_2">
+  <link name="Lower_leg_with_foot_1">
+    <!-- sw2robot density="502.769" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Lower_leg_with_foot_1.stl" />
+      </geometry>
+    <material name="Lower_leg_with_foot_1_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Lower_leg_with_foot_1.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.004572420743 -0.06026689144 0.002531898692" rpy="0 0 0" />
+      <mass value="0.046425" />
+      <inertia ixx="5.52993e-05" ixy="-7.15202e-06" ixz="3.19815e-08" iyy="1.01444e-05" iyz="1.51894e-06" izz="6.03228e-05" />
+    </inertial>
+  </link>
+  <link name="Lower_leg_with_foot_2">
+    <!-- sw2robot density="502.769" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Lower_leg_with_foot_1_2.stl" />
+      </geometry>
+    <material name="Lower_leg_with_foot_1_2_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Lower_leg_with_foot_1_2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.004572420743 -0.06026689144 -0.02728189869" rpy="0 0 0" />
+      <mass value="0.046425" />
+      <inertia ixx="5.52993e-05" ixy="7.15202e-06" ixz="3.19815e-08" iyy="1.01444e-05" iyz="-1.51894e-06" izz="6.03228e-05" />
+    </inertial>
+  </link>
+  <link name="Lower_leg_with_foot_mirror_1">
+    <!-- sw2robot density="502.769" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Lower_leg_with_foot_mirror_1.stl" />
+      </geometry>
+    <material name="Lower_leg_with_foot_mirror_1_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Lower_leg_with_foot_mirror_1.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.004572417008 -0.06026689702 0.02728189911" rpy="0 0 0" />
+      <mass value="0.046425" />
+      <inertia ixx="5.52993e-05" ixy="7.15202e-06" ixz="-3.19831e-08" iyy="1.01444e-05" iyz="1.51894e-06" izz="6.03228e-05" />
+    </inertial>
+  </link>
+  <link name="Lower_leg_with_foot_mirror_2">
+    <!-- sw2robot density="502.769" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Lower_leg_with_foot_mirror_1_2.stl" />
+      </geometry>
+    <material name="Lower_leg_with_foot_mirror_1_2_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Lower_leg_with_foot_mirror_1_2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.004572417008 -0.06026689702 -0.02728189911" rpy="0 0 0" />
+      <mass value="0.046425" />
+      <inertia ixx="5.52993e-05" ixy="-7.15202e-06" ixz="-3.19831e-08" iyy="1.01444e-05" iyz="-1.51894e-06" izz="6.03228e-05" />
+    </inertial>
+  </link>
+  <link name="Upperleg_with_motor_1">
+    <!-- sw2robot density="1462.87" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Upperleg_with_motor_1.stl" />
+      </geometry>
+    <material name="Upperleg_with_motor_1_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Upperleg_with_motor_1.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.01124563179 -0.07026909311 -0.0002269412062" rpy="0 0 0" />
+      <mass value="0.18907" />
+      <inertia ixx="8.95846e-05" ixy="2.76161e-05" ixz="-7.82387e-08" iyy="6.20897e-05" iyz="3.01536e-07" izz="0.000132231" />
+    </inertial>
+  </link>
+  <link name="Upperleg_with_motor_2">
+    <!-- sw2robot density="1462.87" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Upperleg_with_motor_1_2.stl" />
+      </geometry>
+    <material name="Upperleg_with_motor_1_2_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Upperleg_with_motor_1_2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.01019914867 -0.07085635206 0.0002269412062" rpy="0 0 0" />
+      <mass value="0.18907" />
+      <inertia ixx="8.95846e-05" ixy="-2.76161e-05" ixz="-7.82387e-08" iyy="6.20897e-05" iyz="-3.01536e-07" izz="0.000132231" />
+    </inertial>
+  </link>
+  <link name="Upperleg_with_motor_mirror_1">
+    <!-- sw2robot density="1462.87" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Upperleg_with_motor_mirror_1.stl" />
+      </geometry>
+    <material name="Upperleg_with_motor_mirror_1_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Upperleg_with_motor_mirror_1.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.01036906302 -0.07076414259 0.0006383642672" rpy="0 0 0" />
+      <mass value="0.18907" />
+      <inertia ixx="8.95837e-05" ixy="-2.76399e-05" ixz="-5.15227e-07" iyy="6.21076e-05" iyz="-6.53699e-07" izz="0.000132237" />
+    </inertial>
+  </link>
+  <link name="Upperleg_with_motor_mirror_2">
+    <!-- sw2robot density="1462.87" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Upperleg_with_motor_mirror_1_2.stl" />
+      </geometry>
+    <material name="Upperleg_with_motor_mirror_1_2_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/Upperleg_with_motor_mirror_1_2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.01036906302 -0.07076414259 -0.0006383642672" rpy="0 0 0" />
+      <mass value="0.18907" />
+      <inertia ixx="8.95837e-05" ixy="2.76399e-05" ixz="-5.15227e-07" iyy="6.21076e-05" iyz="6.53699e-07" izz="0.000132237" />
+    </inertial>
+  </link>
+  <link name="abduction_mirror_1">
+    <!-- sw2robot density="2379.76" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/abduction_mirror_1.stl" />
+      </geometry>
+    <material name="abduction_mirror_1_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/abduction_mirror_1.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.003103323135 -0.001896479874 -0.160009081" rpy="0 0 0" />
+      <mass value="0.179903" />
+      <inertia ixx="6.70875e-05" ixy="-8.2906e-06" ixz="-1.04081e-06" iyy="5.60847e-05" iyz="2.96831e-07" izz="4.28514e-05" />
+    </inertial>
+  </link>
+  <link name="abduction_mirror_2">
+    <!-- sw2robot density="2379.76" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/abduction_mirror_1_2.stl" />
+      </geometry>
+    <material name="abduction_mirror_1_2_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/abduction_mirror_1_2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.003103323135 -0.001896479874 0.160009081" rpy="0 0 0" />
+      <mass value="0.179903" />
+      <inertia ixx="6.70875e-05" ixy="8.2906e-06" ixz="-1.04081e-06" iyy="5.60847e-05" iyz="-2.96831e-07" izz="4.28514e-05" />
+    </inertial>
+  </link>
+  <link name="abduction_1">
+    <!-- sw2robot density="2380.41" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/abduction_1.stl" />
+      </geometry>
+    <material name="abduction_1_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/abduction_1.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="0.002846868528 -0.001746823351 0.1599504248" rpy="0 0 0" />
+      <mass value="0.179903" />
+      <inertia ixx="6.77093e-05" ixy="-8.43425e-06" ixz="1.18229e-06" iyy="5.65794e-05" iyz="-7.77162e-07" izz="4.38514e-05" />
+    </inertial>
+  </link>
+  <link name="abduction_9">
+    <!-- sw2robot density="2380.41" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/abduction_1_2.stl" />
+      </geometry>
+    <material name="abduction_1_2_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/abduction_1_2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.002846868528 -0.001746823351 -0.1599504248" rpy="0 0 0" />
+      <mass value="0.179903" />
+      <inertia ixx="6.77093e-05" ixy="8.43425e-06" ixz="1.18229e-06" iyy="5.65794e-05" iyz="7.77162e-07" izz="4.38514e-05" />
+    </inertial>
+  </link>
+  <link name="base_link">
+    <!-- sw2robot density="1237.77" inertia="solidworks" -->
+    <visual>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/torso_2.stl" />
+      </geometry>
+    <material name="torso_2_material"><color rgba="0.749 0.749 0.749 1" /></material></visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <geometry>
+        <mesh filename="../meshes/torso_2.stl" />
+      </geometry>
+    </collision>
+    <inertial>
+      <origin xyz="-0.000349048829 -2.267291516e-05 -0.0168232962" rpy="0 0 0" />
+      <mass value="1.47556" />
+      <inertia ixx="0.00473904" ixy="1.23727e-08" ixz="7.69713e-05" iyy="0.00838848" iyz="-7.00545e-07" izz="0.00826464" />
+    </inertial>
+  </link>
+  <joint name="torso_2__abduction_mirror_1" type="revolute">
+    <origin xyz="0.07520017026 -0.06500080302 -3.154367054e-07" rpy="1.5708 1.019610379e-06 2.619343745e-06" />
+    <parent link="base_link" />
+    <child link="abduction_mirror_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-1.745329252" upper="1.902408885" effort="10" velocity="3.14" />
+    <!-- mates: CONCENTRIC, COINCIDENT, CONCENTRIC, COINCIDENT -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="torso_2__abduction_mirror_2" type="revolute">
+    <origin xyz="-0.07520017026 0.06500080302 3.154367054e-07" rpy="1.5708 1.019610379e-06 2.619343745e-06" />
+    <parent link="base_link" />
+    <child link="abduction_mirror_2" />
+    <axis xyz="0 0 -1" />
+    <limit lower="-1.745329252" upper="1.902408885" effort="10" velocity="3.14" />
+    <!-- mates: CONCENTRIC, COINCIDENT, CONCENTRIC, COINCIDENT -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="torso_2__abduction_1" type="revolute">
+    <origin xyz="0.07519982974 0.06500119697 1.620873044e-07" rpy="1.5708 1.019610379e-06 2.619343745e-06" />
+    <parent link="base_link" />
+    <child link="abduction_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="-1.74533" upper="1.90241" effort="10" velocity="3.14" />
+    <!-- mates: CONCENTRIC, COINCIDENT, CONCENTRIC, COINCIDENT -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="torso_2__abduction_9" type="revolute">
+    <origin xyz="-0.07519982974 -0.06500119697 -1.620873044e-07" rpy="1.5708 1.019610379e-06 2.619343745e-06" />
+    <parent link="base_link" />
+    <child link="abduction_9" />
+    <axis xyz="0 0 -1" />
+    <limit lower="-1.74533" upper="1.90241" effort="10" velocity="3.14" />
+    <!-- mates: CONCENTRIC, COINCIDENT, CONCENTRIC, COINCIDENT -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="abduction_mirror_1__Upperleg_with_motor_2" type="revolute">
+    <origin xyz="0.01460716031 -0.008197156067 -0.162001" rpy="0 0 0" />
+    <parent link="abduction_mirror_1" />
+    <child link="Upperleg_with_motor_2" />
+    <axis xyz="0.87206927 -0.48938245 0" />
+    <limit lower="-0.5236" upper="3.66519" effort="10" velocity="3.14" />
+    <!-- mates: CONCENTRIC, COINCIDENT, CONCENTRIC, COINCIDENT -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="abduction_mirror_2__Upperleg_with_motor_1" type="revolute">
+    <origin xyz="-0.01565364344 -0.008784415009 0.162001" rpy="0 0 0" />
+    <parent link="abduction_mirror_2" />
+    <child link="Upperleg_with_motor_1" />
+    <axis xyz="-0.87206927 -0.48938245 0" />
+    <limit lower="-0.5236" upper="3.66519" effort="10" velocity="3.14" />
+    <!-- mates: COINCIDENT, CONCENTRIC, COINCIDENT, CONCENTRIC -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="abduction_1__Upperleg_with_motor_mirror_1" type="revolute">
+    <origin xyz="0.01460716031 -0.008197156067 0.162001" rpy="0 0 0" />
+    <parent link="abduction_1" />
+    <child link="Upperleg_with_motor_mirror_1" />
+    <axis xyz="-0.87206927 0.48938245 0" />
+    <limit lower="-0.5236" upper="3.66519" effort="10" velocity="3.14" />
+    <!-- mates: COINCIDENT, CONCENTRIC, COINCIDENT, CONCENTRIC -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="abduction_9__Upperleg_with_motor_mirror_2" type="revolute">
+    <origin xyz="-0.01460716031 -0.008197156067 -0.162001" rpy="0 0 0" />
+    <parent link="abduction_9" />
+    <child link="Upperleg_with_motor_mirror_2" />
+    <axis xyz="0.87206927 0.48938245 0" />
+    <limit lower="-0.5236" upper="3.66519" effort="10" velocity="3.14" />
+    <!-- mates: COINCIDENT, CONCENTRIC, COINCIDENT, CONCENTRIC -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="Upperleg_with_motor_2__Lower_leg_with_foot_2" type="revolute">
+    <origin xyz="-0.01377588703 -0.07676775722 0.01075" rpy="0 0 0" />
+    <parent link="Upperleg_with_motor_2" />
+    <child link="Lower_leg_with_foot_2" />
+    <axis xyz="0 0 -1" />
+    <limit lower="0.1745329252" upper="2.094395102" effort="10" velocity="3.14" />
+    <!-- mates: COINCIDENT, CONCENTRIC, COINCIDENT, CONCENTRIC -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="Upperleg_with_motor_1__Lower_leg_with_foot_1" type="revolute">
+    <origin xyz="0.01482237016 -0.07618049827 0.014" rpy="0 0 0" />
+    <parent link="Upperleg_with_motor_1" />
+    <child link="Lower_leg_with_foot_1" />
+    <axis xyz="0 0 1" />
+    <limit lower="0.1745329252" upper="2.094395102" effort="10" velocity="3.14" />
+    <!-- mates: COINCIDENT, CONCENTRIC, COINCIDENT, CONCENTRIC -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="Upperleg_with_motor_mirror_1__Lower_leg_with_foot_mirror_1" type="revolute">
+    <origin xyz="-0.01395029982 -0.07666988132 -0.00975" rpy="0 0 0" />
+    <parent link="Upperleg_with_motor_mirror_1" />
+    <child link="Lower_leg_with_foot_mirror_1" />
+    <axis xyz="0 0 -1" />
+    <limit lower="0.17453" upper="2.0944" effort="10" velocity="3.14" />
+    <!-- mates: COINCIDENT, CONCENTRIC, COINCIDENT, CONCENTRIC -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+  <joint name="Upperleg_with_motor_mirror_2__Lower_leg_with_foot_mirror_2" type="revolute">
+    <origin xyz="0.01395029982 -0.07666988132 0.00975" rpy="0 0 0" />
+    <parent link="Upperleg_with_motor_mirror_2" />
+    <child link="Lower_leg_with_foot_mirror_2" />
+    <axis xyz="0 0 1" />
+    <limit lower="0.17453" upper="2.0944" effort="10" velocity="3.14" />
+    <!-- mates: COINCIDENT, CONCENTRIC, COINCIDENT, CONCENTRIC -->
+    <!-- sw2robot-note: geo: free rotation about mate axis (1 DOF) -->
+  </joint>
+</robot>

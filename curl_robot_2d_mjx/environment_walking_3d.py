@@ -350,10 +350,27 @@ EXPECTED_WALKING_JOINT_AXES_3D = {
     "rear_right_hip": (0.0, 1.0, 0.0),
     "rear_right_knee": (0.0, -1.0, 0.0),
 }
+EXPECTED_ROLLINGQUAD_2_WORLD_JOINT_AXES_3D = {
+    "front_left_hip_abduction": (-0.872069, 0.0, 0.489382),
+    "front_left_hip": (0.0, -1.0, 0.0),
+    "front_left_knee": (0.0, 1.0, 0.0),
+    "front_right_hip_abduction": (0.872069, 0.0, -0.489382),
+    "front_right_hip": (0.0, -1.0, 0.0),
+    "front_right_knee": (0.0, 1.0, 0.0),
+    "rear_left_hip_abduction": (-0.872069, 0.0, -0.489382),
+    "rear_left_hip": (0.0, 1.0, 0.0),
+    "rear_left_knee": (0.0, -1.0, 0.0),
+    "rear_right_hip_abduction": (0.872069, 0.0, 0.489382),
+    "rear_right_hip": (0.0, 1.0, 0.0),
+    "rear_right_knee": (0.0, -1.0, 0.0),
+}
 
 
 def validate_walking_morphology_3d(
-    model, geometry=PUPPER_ORIGINAL_SHELL_60_PARAMETERS
+    model,
+    geometry=PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+    *,
+    geometry_name: str = "pupper_open60",
 ) -> None:
     """Reject models that do not match the mirrored planar-leg convention."""
 
@@ -361,26 +378,42 @@ def validate_walking_morphology_3d(
 
     if tuple(WALKING_JOINT_NAMES_3D) != tuple(EXPECTED_WALKING_JOINT_AXES_3D):
         raise ValueError("unexpected 3-D walking joint order")
-    for joint_name, expected_axis in EXPECTED_WALKING_JOINT_AXES_3D.items():
+    rollingquad_2 = geometry_name == "rollingquad_2"
+    data = mujoco.MjData(model) if rollingquad_2 else None
+    if data is not None:
+        mujoco.mj_forward(model, data)
+    expected_axes = (
+        EXPECTED_ROLLINGQUAD_2_WORLD_JOINT_AXES_3D
+        if rollingquad_2
+        else EXPECTED_WALKING_JOINT_AXES_3D
+    )
+    actuator_ids = []
+    for joint_name, expected_axis in expected_axes.items():
         joint_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_JOINT, joint_name
         )
         if joint_id < 0:
             raise ValueError(f"missing walking joint: {joint_name}")
-        if not np.allclose(model.jnt_axis[joint_id], expected_axis, atol=1e-8):
+        actual_axis = (
+            data.xaxis[joint_id] if data is not None else model.jnt_axis[joint_id]
+        )
+        if not np.allclose(actual_axis, expected_axis, atol=2e-5):
             raise ValueError(
                 f"walking joint axis changed for {joint_name}: "
-                f"{model.jnt_axis[joint_id]}"
+                f"{actual_axis}"
             )
         actuator_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{joint_name}_servo"
         )
         if actuator_id < 0:
             raise ValueError(f"missing walking actuator: {joint_name}_servo")
+        actuator_ids.append(actuator_id)
         if int(model.actuator_trnid[actuator_id, 0]) != joint_id:
             raise ValueError(
                 f"walking actuator is bound to wrong joint: {joint_name}_servo"
             )
+    if actuator_ids != list(range(len(WALKING_JOINT_NAMES_3D))):
+        raise ValueError("walking actuators are not in canonical policy order")
     for prefix in ("front_left", "front_right", "rear_left", "rear_right"):
         thigh_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_BODY, f"{prefix}_thigh"
@@ -393,24 +426,35 @@ def validate_walking_morphology_3d(
         )
         if min(thigh_id, shank_id, foot_id) < 0:
             raise ValueError(f"incomplete walking leg chain: {prefix}")
-        if not np.isclose(
-            abs(model.body_pos[shank_id, 2]),
-            geometry.upper_length,
-            atol=1e-8,
-        ):
-            raise ValueError(f"walking upper-link length changed: {prefix}")
-        if not np.isclose(
-            abs(model.geom_pos[foot_id, 2]),
-            geometry.lower_length,
-            atol=1e-8,
-        ):
-            raise ValueError(f"walking lower-link length changed: {prefix}")
-        if not np.isclose(
-            model.geom_size[foot_id, 0],
-            geometry.foot_radius,
-            atol=1e-8,
-        ):
-            raise ValueError(f"walking foot radius changed: {prefix}")
+        if rollingquad_2:
+            foot_site_id = mujoco.mj_name2id(
+                model, mujoco.mjtObj.mjOBJ_SITE, f"{prefix}_foot_site"
+            )
+            if foot_site_id < 0:
+                raise ValueError(f"missing walking foot site: {prefix}")
+            if int(model.geom_bodyid[foot_id]) != shank_id:
+                raise ValueError(f"walking foot geom is on wrong body: {prefix}")
+            if int(model.site_bodyid[foot_site_id]) != shank_id:
+                raise ValueError(f"walking foot site is on wrong body: {prefix}")
+        else:
+            if not np.isclose(
+                abs(model.body_pos[shank_id, 2]),
+                geometry.upper_length,
+                atol=1e-8,
+            ):
+                raise ValueError(f"walking upper-link length changed: {prefix}")
+            if not np.isclose(
+                abs(model.geom_pos[foot_id, 2]),
+                geometry.lower_length,
+                atol=1e-8,
+            ):
+                raise ValueError(f"walking lower-link length changed: {prefix}")
+            if not np.isclose(
+                model.geom_size[foot_id, 0],
+                geometry.foot_radius,
+                atol=1e-8,
+            ):
+                raise ValueError(f"walking foot radius changed: {prefix}")
         hip_body_id = mujoco.mj_name2id(
             model,
             mujoco.mjtObj.mjOBJ_BODY,
@@ -469,7 +513,9 @@ def make_brax_walking_env_3d(
                 self.mj_model, enabled=False
             )
             validate_walking_morphology_3d(
-                self.mj_model, self.geometry_parameters
+                self.mj_model,
+                self.geometry_parameters,
+                geometry_name=task.geometry,
             )
             apply_physics_options_3d(self.mj_model, task)
             total_mass = float(np.sum(self.mj_model.body_mass))
