@@ -309,10 +309,24 @@ def validate_model_contract(mj):
             )
     ctrl_lo = np.asarray(CTRL_LO)
     ctrl_hi = np.asarray(CTRL_HI)
-    if np.any(ctrl_lo < mj.actuator_ctrlrange[:, 0] - 1e-8) or np.any(
-        ctrl_hi > mj.actuator_ctrlrange[:, 1] + 1e-8
-    ):
-        raise RuntimeError("policy control limits exceed the MJCF actuator limits")
+    # JAX defaults these constants to float32, while MuJoCo stores actuator
+    # ranges as float64.  A 1e-8 comparison rejects equal decimal values after
+    # float32 rounding, so use a tolerance below the XML's 1e-5 precision.
+    limit_tolerance = 5e-6
+    low_violation = ctrl_lo < mj.actuator_ctrlrange[:, 0] - limit_tolerance
+    high_violation = ctrl_hi > mj.actuator_ctrlrange[:, 1] + limit_tolerance
+    if np.any(low_violation | high_violation):
+        invalid = np.flatnonzero(low_violation | high_violation)
+        details = ", ".join(
+            f"{JOINT_NAMES[index]} policy=[{ctrl_lo[index]:.9g}, "
+            f"{ctrl_hi[index]:.9g}] xml="
+            f"[{mj.actuator_ctrlrange[index, 0]:.9g}, "
+            f"{mj.actuator_ctrlrange[index, 1]:.9g}]"
+            for index in invalid
+        )
+        raise RuntimeError(
+            "policy control limits exceed the MJCF actuator limits: " + details
+        )
     stand = stand_key_qpos(mj)
     if not np.allclose(stand[qpos_indices], np.asarray(DEFAULT_POSE), atol=1e-6):
         raise RuntimeError("stand keyframe does not match DEFAULT_POSE")
