@@ -21,7 +21,11 @@ python -m scripts.train_ppo_deploy
 
 `train_ppo_walk3d.py` 使用48维仿真本体观测；`train_ppo_deploy.py` 使用与实机控制器一致的36维单帧、20帧历史观测。两者网络输入不同，需要分别训练，不能互相恢复 checkpoint。需要域随机化时在命令中加入 `dr`。
 
-该适配不改变 URDF 的倾斜外摆轴、零位、范围、质量或惯量。模型内部 `qpos` 仍按导出层级排列，脚本会按关节名映射到统一的 `FL, FR, RL, RR` policy顺序，每腿均为 `abduction, hip, knee`。不要恢复旧 Pupper 或旧 MJX walking policy checkpoint。新输出使用独立文件名 `rollingquad_2_walk3d_policy.bin` / `rollingquad_2_deploy_policy.bin`，不会自动续训旧模型的 policy。
+该适配不改变 URDF 的倾斜外摆轴、零位、范围、质量或惯量。模型内部 `qpos` 仍按导出层级排列，脚本会按关节名映射到统一的 `FL, FR, RL, RR` policy顺序，每腿均为 `abduction, hip, knee`。
+
+行走训练生成的临时 XML 使用 `2 ms × 10` 个物理子步，控制频率保持 50 Hz，并继续使用原始 MJCF 的完整 CAD 接触几何。walking 与后续 rolling 因此共享同一套几何语义；两者可以根据接触难度采用不同 solver profile，但不再通过简化脚球或机身盒改变碰撞形状。
+
+不要恢复旧 Pupper、旧 MJX walking policy 或此前 `4 ms / CAD-contact` 的 checkpoint。新输出使用独立文件名 `rollingquad_2_walk3d_fine_policy.bin` / `rollingquad_2_deploy_fine_policy.bin`，避免误续训旧物理环境中的 policy。
 
 ## 策略接口
 

@@ -29,6 +29,10 @@ from math import sin
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_ENTRY_SIZE_BYTES", "0")
+# Some managed multi-GPU nodes expose NVLink but do not have working NVSwitch
+# Fabric Manager/NVLS multicast support.  NCCL otherwise fails at the first
+# replicated PPO update even though model compilation and evaluation succeed.
+os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
 os.environ.setdefault("MUJOCO_GL", "egl")
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
@@ -52,9 +56,9 @@ SRC_XML = os.path.normpath(os.path.join(
     SCRIPT_DIR, "..", "assets",
     "rollingquad_description_2", "mjcf", "rollingquad.xml"))
 RUN_XML = os.path.expanduser("~/robot/rollingquad_2_walk3d.xml")
-SAVE = "rollingquad_2_walk3d_policy.bin"
-VID_DIR = "rollingquad_2_walk3d_videos"
-CKPT_DIR = "rollingquad_2_walk3d_checkpoints"
+SAVE = "rollingquad_2_walk3d_fine_policy.bin"
+VID_DIR = "rollingquad_2_walk3d_fine_videos"
+CKPT_DIR = "rollingquad_2_walk3d_fine_checkpoints"
 
 # ============================================================== geometry
 # Measurements used only by diagnostics and reward normalization.  Reset
@@ -96,18 +100,20 @@ NOMINAL_H = 0.1712243631                  # rollingquad_2 stand keyframe
 FULL_H = 0.1934653619                     # rollingquad_2 open keyframe
 
 # =============================================================== physics
-# Stanford's shipped Pupper MJX config, which is the one config in this family
-# known to train: a coarse solver is fine because the contacts are soft.
-PHYS_TIMESTEP = 0.004
-SOLVER_ITER = 4
-SOLVER_LS_ITER = 8
+# The corrected CAD feet produced occasional large contact impulses at the
+# old 4 ms / 4-iteration setting.  Two 2 ms substeps replace every old 4 ms
+# substep, while N_FRAMES keeps the policy/controller rate at 50 Hz.
+PHYS_TIMESTEP = 0.002
+SOLVER_ITER = 8
+SOLVER_LS_ITER = 10
 IMPRATIO = 10.0
 CONE = "pyramidal"
 EULERDAMP = False           # disable, as Stanford's model does
-SELF_COLLISION = False      # corrected CAD meshes collide with ground only
+SELF_COLLISION = False      # used only when walking proxies are disabled
 MOTOR_SELF_COLLIDE = False  # retained for compatibility with the older model
 SHELL_CONTACT = False       # the rolling shells are decorative when walking
-N_FRAMES = 5                # 0.004 * 5 = 50 Hz control
+WALK_COLLISION_PROXIES = False
+N_FRAMES = 10               # 0.002 * 10 = 50 Hz control
 
 # ============================================================== commands
 # "Both sides" = the fore/aft command is signed, so the same policy walks
@@ -188,10 +194,9 @@ def patch_xml():
     model does not:
       1. preserve the source directory for relative CAD mesh paths after the
          patched XML is written under ~/robot;
-      2. solver settings -> Stanford's proven MJX numbers (the shipped file is
-         a 1 ms elliptic-cone CPU config, ~40x more solver work per control
-         step than MJX needs);
-      3. collision masks -> optionally drop self-collision or the shells;
+      2. solver settings -> the finer walking-contact profile below;
+      3. collision geometry -> preserve full CAD by default, with optional
+         walking-only proxies retained as an explicit diagnostic switch;
       4. a com-tracking camera, so the training videos follow the robot.
     The <sensor> block is stripped because nothing here reads it.
     """
@@ -221,14 +226,50 @@ def patch_xml():
     if n != 1:
         raise RuntimeError("could not find the <option .../> element to patch")
 
-    # Collision masks.  Collide iff (contype_a & conaffinity_b) or the reverse.
-    #   floor is contype=1 conaffinity=1
-    #   ground-only  -> contype=0 conaffinity=1   (hits the floor, not itself)
-    #   structural   -> contype=2 conaffinity=7   (hits the floor and itself)
-    struct = ('contype="2" conaffinity="7"' if SELF_COLLISION
-              else 'contype="0" conaffinity="1"')
-    xml = xml.replace('<geom contype="2" conaffinity="7"',
-                      f'<geom {struct}')
+    # Keep the source MJCF's full CAD collision geometry so walking and rolling
+    # share one geometry contract.  Cheap walking-only proxies remain as an
+    # explicit diagnostic switch, but are disabled in the training profile.
+    if WALK_COLLISION_PROXIES:
+        struct = 'contype="0" conaffinity="0"'
+    else:
+        struct = ('contype="2" conaffinity="7"' if SELF_COLLISION
+                  else 'contype="0" conaffinity="1"')
+    xml, ndefault = re.subn(
+        r'<geom contype="(?:0|2)" conaffinity="(?:1|7)" condim="3"',
+        f'<geom {struct} condim="3"', xml, count=1)
+    if ndefault != 1:
+        raise RuntimeError("could not find the default collision geom")
+
+    if WALK_COLLISION_PROXIES:
+        torso_proxy = (
+            '<geom name="torso_collision" type="box" '
+            'pos="0 0 -0.018" size="0.073 0.060 0.035" '
+            'contype="0" conaffinity="1" rgba="0 0 0 0"/>')
+        xml, ntorso = re.subn(
+            r'(<geom name="torso_mesh"[^>]*?/>)',
+            torso_proxy + r'\n      \1', xml, count=1, flags=re.S)
+        if ntorso != 1:
+            raise RuntimeError("could not add the walking torso proxy")
+
+        for leg in LEGS:
+            site_pattern = (
+                rf'(?P<indent>\s*)<site name="{leg}_foot_site" '
+                r'pos="(?P<pos>[^"]+)" size="0\.004"/>')
+
+            def add_foot_proxy(match, leg=leg):
+                indent = match.group("indent")
+                site = match.group(0).lstrip()
+                proxy = (
+                    f'<geom name="{leg}_foot_collision" type="sphere" '
+                    f'pos="{match.group("pos")}" size="{FOOT_R}" '
+                    'contype="0" conaffinity="1" rgba="0 0 0 0"/>')
+                return f'{indent}{proxy}{indent}{site}'
+
+            xml, nfoot = re.subn(site_pattern, add_foot_proxy, xml, count=1)
+            if nfoot != 1:
+                raise RuntimeError(
+                    f"could not add the {leg} walking foot proxy")
+
     if SHELL_CONTACT:
         xml = xml.replace(
             '<geom type="capsule" size="0.003"\n                    '
@@ -860,7 +901,8 @@ def probe():
     print(f"          tilt after settling   {tilt:.2f} deg")
 
     self_p, ground_p = candidate_pairs(mj)
-    print(f"\ncontact   self-collision={SELF_COLLISION} shells={SHELL_CONTACT} "
+    print(f"\ncontact   walking-proxies={WALK_COLLISION_PROXIES} "
+          f"self-collision={SELF_COLLISION} shells={SHELL_CONTACT} "
           f"motor-self={MOTOR_SELF_COLLIDE}")
     print(f"          -> {self_p} robot-vs-robot pairs, {ground_p} vs floor "
           f"({self_p + ground_p} total)")
@@ -948,9 +990,9 @@ def enable_dr():
     OBS_NOISE = 1.0
     PUSH_EVERY = 2.5
     LATENCY_PROB = 0.15
-    SAVE = "rollingquad_2_walk3d_policy_dr.bin"
-    VID_DIR = "rollingquad_2_walk3d_videos_dr"
-    CKPT_DIR = "rollingquad_2_walk3d_checkpoints_dr"
+    SAVE = "rollingquad_2_walk3d_fine_policy_dr.bin"
+    VID_DIR = "rollingquad_2_walk3d_fine_videos_dr"
+    CKPT_DIR = "rollingquad_2_walk3d_fine_checkpoints_dr"
     NUM_TIMESTEPS = 300_000_000
 
 
@@ -965,6 +1007,9 @@ def main():
     print("rollingquad_2 — omnidirectional walking PPO")
     print(f"  obs {env.observation_size}  action {env.action_size}  "
           f"control {1 / env.dt:.0f} Hz  episode {EPISODE_LENGTH * env.dt:.0f} s")
+    print(f"  physics {PHYS_TIMESTEP * 1000:.0f} ms x {N_FRAMES}, "
+          f"solver {SOLVER_ITER}/{SOLVER_LS_ITER}, "
+          f"walking proxies {'ON' if WALK_COLLISION_PROXIES else 'off'}")
     print(f"  stance height {env._nom_h:.4f} m   "
           f"commands vx{CMD_VX} vy{CMD_VY} yaw{CMD_WZ}")
     print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, "

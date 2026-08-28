@@ -41,6 +41,7 @@ import time
 import functools
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
+os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
 os.environ.setdefault("MUJOCO_GL", "egl")
 os.environ.setdefault("PYOPENGL_PLATFORM", "egl")
 
@@ -80,10 +81,10 @@ from train_ppo_walk3d import (
 
 w3.RUN_XML = os.path.expanduser("~/robot/rollingquad_2_deploy.xml")
 
-SAVE = "rollingquad_2_deploy_policy.bin"
-VID_DIR = "rollingquad_2_deploy_videos"
-CKPT_DIR = "rollingquad_2_deploy_checkpoints"
-JSON_OUT = "rollingquad_2_deploy_policy.json"
+SAVE = "rollingquad_2_deploy_fine_policy.bin"
+VID_DIR = "rollingquad_2_deploy_fine_videos"
+CKPT_DIR = "rollingquad_2_deploy_fine_checkpoints"
+JSON_OUT = "rollingquad_2_deploy_fine_policy.json"
 
 # ==================================================== controller contract
 # neural_controller.hpp:67-76.  Do not reorder; the C++ writes these indices
@@ -478,7 +479,7 @@ def make_video(policy_path=None, seconds=None, out=None):
 def write_config(path=None):
     """The metadata block export_rtneural.py embeds and the Pi reads back."""
     import json
-    path = path or "rollingquad_2_deploy_config.json"
+    path = path or "rollingquad_2_deploy_fine_config.json"
     cfg = {
         "use_imu": True,
         "control_orientation": False,
@@ -568,6 +569,9 @@ def main():
     print("deployment-compatible walking")
     print(f"  obs {OBS_SIZE} = {HISTORY} x {SINGLE_OBS}, controller layout")
     print(f"  activation {ACTIVATION_NAME}, no action filter")
+    print(f"  physics {w3.PHYS_TIMESTEP * 1000:.0f} ms x {w3.N_FRAMES}, "
+          f"solver {w3.SOLVER_ITER}/{w3.SOLVER_LS_ITER}, "
+          f"walking proxies {'ON' if w3.WALK_COLLISION_PROXIES else 'off'}")
     print(f"  hidden {POLICY_HIDDEN}")
     print(f"  gait shaping slip={SLIP_W} scuff={SCUFF_W} "
           f"clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
@@ -668,10 +672,10 @@ if __name__ == "__main__":
         argv = _sys.argv[1:]
         if "dr" in argv:
             w3.enable_dr()          # sets w3.OBS_NOISE / PUSH_* / DOMAIN_*
-            SAVE = "rollingquad_2_deploy_policy_dr.bin"
-            VID_DIR = "rollingquad_2_deploy_videos_dr"
-            CKPT_DIR = "rollingquad_2_deploy_checkpoints_dr"
-            JSON_OUT = "rollingquad_2_deploy_policy_dr.json"
+            SAVE = "rollingquad_2_deploy_fine_policy_dr.bin"
+            VID_DIR = "rollingquad_2_deploy_fine_videos_dr"
+            CKPT_DIR = "rollingquad_2_deploy_fine_checkpoints_dr"
+            JSON_OUT = "rollingquad_2_deploy_fine_policy_dr.json"
             argv.remove("dr")
         cmd = argv[0] if argv else "train"
         if cmd == "probe":
