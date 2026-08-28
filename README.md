@@ -136,3 +136,34 @@ python -m unittest discover -s tests -v
 geom 一起缩放，只用于复现。
 设计、reward 公式、smoke/H200 命令和验收方法
 见 [`docs/3d_robustness_curriculum_zh.md`](docs/3d_robustness_curriculum_zh.md)。
+
+## 滚动到行走的可运行基线
+
+`curl_robot_2d` 现在提供一条单模型端到端状态机：
+`ROLL -> BRAKE -> DEPLOY -> WALK -> COMPLETE`。它复用已有滚动 reference、
+phase-aware braking 参数、五次展开轨迹和二维足端轨迹/解析 IK 行走控制器，
+入口为：
+
+```powershell
+python -m scripts.run_roll_to_walk
+```
+
+设计和输出诊断见 [`docs/roll_to_walk_baseline_zh.md`](docs/roll_to_walk_baseline_zh.md)。
+
+## 3D Transition policy 第一版
+
+面向最终 12 自由度 Pupper 模型，现已增加独立的 Transition policy 代码，
+由同一个策略学习 `BRAKE -> DEPLOY -> STABILIZE`，并通过 READY 连续门限从
+已有 ROLL policy 切换到已有 WALK policy。展开参考中心采用
+`compact -> park -> stand`，最终状态与 WALK 的 `stand` 初态对齐。
+
+本地可运行不依赖 JAX 的契约测试和训练配置检查；MJX 编译与 PPO 训练留到
+Linux GPU 云端执行：
+
+```powershell
+python -m unittest tests.test_transition_3d -v
+python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --dry-run
+```
+
+完整设计、四阶段课程和云端命令见
+[`docs/3d_transition_policy_zh.md`](docs/3d_transition_policy_zh.md)。

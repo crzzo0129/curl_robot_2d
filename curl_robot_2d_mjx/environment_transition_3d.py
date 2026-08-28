@@ -1,0 +1,803 @@
+"""MJX environment for one learned BRAKE + DEPLOY + STABILIZE policy.
+
+The module intentionally imports JAX/Brax only inside the environment factory,
+so configuration, deployment supervision, CLI parsing, and CPU model contract
+tests remain usable on machines without the GPU training stack.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+
+from curl_robot_2d.model_3d import FOOT_SITE_NAMES_3D
+from curl_robot_2d_mjx.config_transition_3d import (
+    TRANSITION_ACTION_SIZE_3D,
+    TRANSITION_ACTOR_OBSERVATION_SIZE_3D,
+    TRANSITION_CRITIC_OBSERVATION_SIZE_3D,
+    Transition3DConfig,
+    TransitionMode3D,
+    transition_curriculum_config_3d,
+    validate_transition_config_3d,
+)
+from curl_robot_2d_mjx.environment_3d import (
+    apply_physics_options_3d,
+    configure_pupper_shell_collisions_3d,
+    geometry_parameters_3d,
+    model_path_3d,
+)
+from curl_robot_2d_mjx.environment_walking_3d import (
+    FOOT_GEOM_NAMES_3D,
+    WALKING_JOINT_NAMES_3D,
+    validate_walking_morphology_3d,
+)
+from curl_robot_2d_mjx.reward_transition_3d import (
+    TRANSITION_REWARD_TERM_NAMES_3D,
+    Transition3DRewardConfig,
+    reward_terms_transition_3d,
+)
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+TRANSITION_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "curl_robot_3d_pupper_r127p5_open60_width120.xml"
+)
+TRANSITION_KEYFRAME_NAMES_3D = ("compact", "park", "stand")
+
+
+def transition_reference_ctrl_3d(
+    xp,
+    compact_ctrl,
+    park_ctrl,
+    stand_ctrl,
+    mode,
+    progress,
+    *,
+    park_fraction=0.55,
+):
+    """Mode-conditioned reference center for the residual policy."""
+
+    progress = xp.clip(progress, 0.0, 1.0)
+    before_park = xp.clip(progress / park_fraction, 0.0, 1.0)
+    after_park = xp.clip(
+        (progress - park_fraction) / (1.0 - park_fraction), 0.0, 1.0
+    )
+    before_park = before_park * before_park * (3.0 - 2.0 * before_park)
+    after_park = after_park * after_park * (3.0 - 2.0 * after_park)
+    deploy_reference = xp.where(
+        progress < park_fraction,
+        compact_ctrl + before_park * (park_ctrl - compact_ctrl),
+        park_ctrl + after_park * (stand_ctrl - park_ctrl),
+    )
+    return xp.where(
+        mode == int(TransitionMode3D.BRAKE),
+        compact_ctrl,
+        xp.where(
+            mode == int(TransitionMode3D.DEPLOY),
+            deploy_reference,
+            stand_ctrl,
+        ),
+    )
+
+
+def _load_transition_dependencies_3d():
+    try:
+        import jax
+        import jax.numpy as jp
+        import mujoco
+        from brax.envs.base import Env, State
+        from mujoco import mjx
+    except ImportError as exc:
+        raise RuntimeError(
+            "3-D transition MJX dependencies are unavailable. Install "
+            "requirements-mjx.txt on the Linux GPU instance."
+        ) from exc
+    return jax, jp, mujoco, mjx, Env, State
+
+
+def _duration_steps(duration_s: float, dt: float) -> int:
+    return max(1, int(round(duration_s / dt)))
+
+
+def make_brax_transition_env_3d(
+    config: Transition3DConfig | None = None,
+    *,
+    reward_config: Transition3DRewardConfig | None = None,
+    seed: int = 0,
+):
+    """Create the 12-DoF transition task.
+
+    This first version synthesizes reset states around compact/park/stand.
+    Cloud training should replace the ``brake_full`` synthetic distribution
+    with terminal snapshots collected from the frozen learned ROLL policy.
+    The policy observation/action contract does not change when that dataset is
+    introduced.
+    """
+
+    task = config or transition_curriculum_config_3d("deploy_near_stand")
+    validate_transition_config_3d(task)
+    rewards = reward_config or Transition3DRewardConfig()
+    jax, jp, mujoco, mjx, Env, State = _load_transition_dependencies_3d()
+
+    class CurlRobot3DTransitionMJXEnv(Env):
+        def __init__(self):
+            self.config = task
+            self.reward_config = rewards
+            self.seed = seed
+            self.model_path = model_path_3d(task.geometry)
+            self.geometry_parameters = geometry_parameters_3d(task.geometry)
+            self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
+            # The shell remains physical while braking/deploying.  It is the
+            # expected rolling contact, not an illegal walking collision.
+            configure_pupper_shell_collisions_3d(self.mj_model, enabled=True)
+            validate_walking_morphology_3d(
+                self.mj_model, self.geometry_parameters
+            )
+            apply_physics_options_3d(self.mj_model, task)
+            self.cpu_data = mujoco.MjData(self.mj_model)
+            self.sys = mjx.put_model(self.mj_model)
+            self.base_data = mjx.put_data(self.mj_model, self.cpu_data)
+
+            def object_id(kind, name):
+                value = mujoco.mj_name2id(self.mj_model, kind, name)
+                if value < 0:
+                    raise ValueError(f"missing MuJoCo object: {name}")
+                return int(value)
+
+            self.torso_body_id = object_id(
+                mujoco.mjtObj.mjOBJ_BODY, "torso"
+            )
+            self.floor_geom_id = object_id(
+                mujoco.mjtObj.mjOBJ_GEOM, "floor"
+            )
+            self.foot_geom_id_values = tuple(
+                object_id(mujoco.mjtObj.mjOBJ_GEOM, name)
+                for name in FOOT_GEOM_NAMES_3D
+            )
+            self.foot_geom_ids = jp.asarray(
+                self.foot_geom_id_values, dtype=jp.int32
+            )
+            self.foot_site_ids = jp.asarray(
+                [
+                    object_id(mujoco.mjtObj.mjOBJ_SITE, name)
+                    for name in FOOT_SITE_NAMES_3D
+                ],
+                dtype=jp.int32,
+            )
+            joint_ids = [
+                object_id(mujoco.mjtObj.mjOBJ_JOINT, name)
+                for name in WALKING_JOINT_NAMES_3D
+            ]
+            self.joint_qpos_indices = jp.asarray(
+                [self.mj_model.jnt_qposadr[index] for index in joint_ids],
+                dtype=jp.int32,
+            )
+            self.joint_dof_indices = jp.asarray(
+                [self.mj_model.jnt_dofadr[index] for index in joint_ids],
+                dtype=jp.int32,
+            )
+            self.joint_low = jp.asarray(
+                [self.mj_model.jnt_range[index, 0] for index in joint_ids]
+            )
+            self.joint_high = jp.asarray(
+                [self.mj_model.jnt_range[index, 1] for index in joint_ids]
+            )
+            self.action_scales = jp.asarray(task.action_scales)
+
+            keyframes = {}
+            for name in TRANSITION_KEYFRAME_NAMES_3D:
+                key_id = object_id(mujoco.mjtObj.mjOBJ_KEY, name)
+                keyframes[name] = (
+                    jp.asarray(self.mj_model.key_qpos[key_id]),
+                    jp.asarray(self.mj_model.key_ctrl[key_id]),
+                )
+            self.compact_qpos, self.compact_ctrl = keyframes["compact"]
+            self.park_qpos, self.park_ctrl = keyframes["park"]
+            self.stand_qpos, self.stand_ctrl = keyframes["stand"]
+            self.stand_root_height = self.stand_qpos[2]
+
+            self.deploy_gate_steps = _duration_steps(
+                task.deploy_gate_hold_s, task.control_timestep
+            )
+            self.stabilize_min_steps = _duration_steps(
+                task.stabilize_min_s, task.control_timestep
+            )
+            self.ready_hold_steps = _duration_steps(
+                task.ready_hold_s, task.control_timestep
+            )
+            self.brake_timeout_steps = _duration_steps(
+                task.brake_timeout_s, task.control_timestep
+            )
+
+        @property
+        def observation_size(self):
+            return {
+                "state": TRANSITION_ACTOR_OBSERVATION_SIZE_3D,
+                "privileged_state": TRANSITION_CRITIC_OBSERVATION_SIZE_3D,
+            }
+
+        @property
+        def action_size(self):
+            return TRANSITION_ACTION_SIZE_3D
+
+        @property
+        def backend(self):
+            return "mjx"
+
+        def _zero_metrics(self):
+            zero = jp.zeros((), dtype=jp.float32)
+            return {
+                "reward": zero,
+                "reward_total": zero,
+                **{
+                    f"reward_{name}": zero
+                    for name in TRANSITION_REWARD_TERM_NAMES_3D
+                },
+                "mode": zero,
+                "mode_brake": zero,
+                "mode_deploy": zero,
+                "mode_stabilize": zero,
+                "transition_success": zero,
+                "ready_gate": zero,
+                "ready_hold_fraction": zero,
+                "deploy_gate": zero,
+                "deploy_progress": zero,
+                "linear_speed_m_s": zero,
+                "angular_speed_rad_s": zero,
+                "combined_speed": zero,
+                "upright_tilt_rad": zero,
+                "root_z_m": zero,
+                "reference_pose_error_rms_rad": zero,
+                "stand_pose_error_rms_rad": zero,
+                "foot_contact_count": zero,
+                "nonfoot_contact_count": zero,
+                "foot_slip_rms_m_s": zero,
+                "action_rms": zero,
+                "action_rate_rms": zero,
+                "failed": zero,
+                "timeout": zero,
+            }
+
+        def _contact_arrays(self, data):
+            contact = data.contact
+            if hasattr(contact, "geom1"):
+                return contact.geom1, contact.geom2, contact.dist
+            return contact.geom[:, 0], contact.geom[:, 1], contact.dist
+
+        def _geom_in_ids(self, geom, ids):
+            return jp.any(geom[:, None] == ids[None, :], axis=1)
+
+        def _contacts(self, data):
+            geom1, geom2, distance = self._contact_arrays(data)
+            valid = (geom1 >= 0) & (geom2 >= 0) & (distance <= 0.0)
+            ground = valid & (
+                (geom1 == self.floor_geom_id)
+                | (geom2 == self.floor_geom_id)
+            )
+            geom1_foot = self._geom_in_ids(geom1, self.foot_geom_ids)
+            geom2_foot = self._geom_in_ids(geom2, self.foot_geom_ids)
+            foot_ground = jp.stack(
+                [
+                    jp.any(
+                        ground & ((geom1 == foot_id) | (geom2 == foot_id))
+                    ).astype(jp.float32)
+                    for foot_id in self.foot_geom_id_values
+                ]
+            )
+            nonfoot = ground & (~geom1_foot) & (~geom2_foot)
+            return {
+                "foot_ground": foot_ground,
+                "foot_count": jp.sum(foot_ground),
+                "nonfoot_count": jp.sum(nonfoot).astype(jp.float32),
+            }
+
+        def _kinematics(self, data):
+            rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
+            linear_velocity = rotation.T @ data.qvel[:3]
+            angular_velocity = data.qvel[3:6]
+            gravity = rotation.T @ jp.asarray((0.0, 0.0, -1.0))
+            upright_tilt = jp.arccos(jp.clip(rotation[2, 2], -1.0, 1.0))
+            return {
+                "rotation": rotation,
+                "linear_velocity": linear_velocity,
+                "angular_velocity": angular_velocity,
+                "gravity": gravity,
+                "linear_speed": jp.linalg.norm(data.qvel[:3]),
+                "angular_speed": jp.linalg.norm(data.qvel[3:6]),
+                "upright_tilt": upright_tilt,
+            }
+
+        def _mode_progress(self, mode, mode_steps):
+            deploy_progress = jp.clip(
+                mode_steps * task.control_timestep / task.deploy_duration_s,
+                0.0,
+                1.0,
+            )
+            brake_progress = jp.clip(
+                mode_steps / self.brake_timeout_steps, 0.0, 1.0
+            )
+            stabilize_progress = jp.clip(
+                mode_steps / self.ready_hold_steps, 0.0, 1.0
+            )
+            return jp.where(
+                mode == int(TransitionMode3D.BRAKE),
+                brake_progress,
+                jp.where(
+                    mode == int(TransitionMode3D.DEPLOY),
+                    deploy_progress,
+                    stabilize_progress,
+                ),
+            )
+
+        def _reference(self, mode, mode_steps):
+            deploy_progress = jp.clip(
+                mode_steps * task.control_timestep / task.deploy_duration_s,
+                0.0,
+                1.0,
+            )
+            return transition_reference_ctrl_3d(
+                jp,
+                self.compact_ctrl,
+                self.park_ctrl,
+                self.stand_ctrl,
+                mode,
+                deploy_progress,
+                park_fraction=task.deploy_park_fraction,
+            )
+
+        def _gates(self, data, contacts, kinematics, reference):
+            joint_position = data.qpos[self.joint_qpos_indices]
+            stand_error = jp.sqrt(
+                jp.mean(jp.square(joint_position - self.stand_ctrl))
+            )
+            reference_error = jp.sqrt(
+                jp.mean(jp.square(joint_position - reference))
+            )
+            deploy_gate = (
+                (kinematics["linear_speed"] <= task.deploy_gate_linear_speed_m_s)
+                & (kinematics["angular_speed"] <= task.deploy_gate_angular_speed_rad_s)
+                & (kinematics["upright_tilt"] <= task.deploy_gate_tilt_rad)
+            )
+            ready_gate = (
+                (kinematics["linear_speed"] <= task.ready_linear_speed_m_s)
+                & (kinematics["angular_speed"] <= task.ready_angular_speed_rad_s)
+                & (kinematics["upright_tilt"] <= task.ready_upright_tilt_rad)
+                & (stand_error <= task.ready_joint_error_rad)
+                & (data.qpos[2] >= task.ready_root_height_min_m)
+                & (data.qpos[2] <= task.ready_root_height_max_m)
+                & (contacts["foot_count"] >= task.ready_min_foot_contacts)
+                & jp.all(jp.isfinite(data.qpos))
+                & jp.all(jp.isfinite(data.qvel))
+            )
+            deploy_fraction = jp.minimum(
+                task.deploy_gate_linear_speed_m_s
+                / jp.maximum(kinematics["linear_speed"], 1.0e-6),
+                task.deploy_gate_angular_speed_rad_s
+                / jp.maximum(kinematics["angular_speed"], 1.0e-6),
+            )
+            return {
+                "deploy_gate": deploy_gate,
+                "ready_gate": ready_gate,
+                "deploy_gate_fraction": jp.clip(deploy_fraction, 0.0, 1.0),
+                "stand_error": stand_error,
+                "reference_error": reference_error,
+            }
+
+        def _observation(
+            self,
+            data,
+            contacts,
+            kinematics,
+            gates,
+            *,
+            mode,
+            mode_steps,
+            ready_steps,
+            policy_action,
+            reference,
+            noise_key,
+        ):
+            joint_position = data.qpos[self.joint_qpos_indices]
+            joint_velocity = data.qvel[self.joint_dof_indices]
+            foot_position = data.site_xpos[self.foot_site_ids]
+            foot_height = jp.maximum(foot_position[:, 2], 0.0)
+            roll_phase = 2.0 * jp.arctan2(data.qpos[5], data.qpos[3])
+            mode_one_hot = jp.eye(4, dtype=jp.float32)[mode]
+            progress = self._mode_progress(mode, mode_steps)
+            ready_fraction = jp.clip(
+                ready_steps / self.ready_hold_steps, 0.0, 1.0
+            )
+            combined_speed = jp.sqrt(
+                jp.square(kinematics["linear_speed"])
+                + 0.04 * jp.square(kinematics["angular_speed"])
+            )
+            actor = jp.concatenate(
+                (
+                    kinematics["linear_velocity"],
+                    kinematics["angular_velocity"],
+                    kinematics["gravity"],
+                    joint_position - reference,
+                    joint_velocity,
+                    policy_action,
+                    contacts["foot_ground"],
+                    foot_height,
+                    mode_one_hot,
+                    jp.stack((jp.sin(roll_phase), jp.cos(roll_phase))),
+                    jp.stack(
+                        (
+                            progress,
+                            ready_fraction,
+                            data.qpos[2],
+                            gates["reference_error"],
+                            combined_speed,
+                            1.0,
+                            gates["deploy_gate_fraction"],
+                        )
+                    ),
+                )
+            )
+            if task.observation_noise_enabled:
+                scales = task.observation_noise_level * jp.concatenate(
+                    (
+                        jp.full((3,), task.observation_noise_velocity),
+                        jp.full((3,), task.observation_noise_velocity),
+                        jp.full((3,), task.observation_noise_gravity),
+                        jp.full((12,), task.observation_noise_joint_position),
+                        jp.full((12,), task.observation_noise_joint_velocity),
+                        jp.zeros((33,)),
+                    )
+                )
+                actor = actor + scales * jax.random.normal(
+                    noise_key, shape=actor.shape
+                )
+            privileged_extra = jp.concatenate(
+                (
+                    data.qpos[:3],
+                    data.qpos[3:7],
+                    foot_position.reshape((-1,)),
+                    jp.asarray((contacts["nonfoot_count"],)),
+                )
+            )
+            actor = jp.nan_to_num(actor)
+            critic = jp.nan_to_num(jp.concatenate((actor, privileged_extra)))
+            return {"state": actor, "privileged_state": critic}
+
+        def reset(self, rng):
+            rng = jax.random.fold_in(rng, self.seed)
+            fraction_key, joint_key, velocity_key, phase_key, tilt_key = (
+                jax.random.split(rng, 5)
+            )
+            low, high = task.reset_compact_fraction_range
+            compact_fraction = jax.random.uniform(
+                fraction_key, shape=(), minval=low, maxval=high
+            )
+            joint_noise = jax.random.uniform(
+                joint_key,
+                shape=(TRANSITION_ACTION_SIZE_3D,),
+                minval=-task.reset_joint_noise_rad,
+                maxval=task.reset_joint_noise_rad,
+            )
+            qpos = self.stand_qpos + compact_fraction * (
+                self.compact_qpos - self.stand_qpos
+            )
+            joints = jp.clip(
+                qpos[self.joint_qpos_indices] + joint_noise,
+                self.joint_low,
+                self.joint_high,
+            )
+            qpos = qpos.at[self.joint_qpos_indices].set(joints)
+            phase_low, phase_high = task.reset_roll_phase_range_rad
+            phase = jax.random.uniform(
+                phase_key, shape=(), minval=phase_low, maxval=phase_high
+            )
+            tilt = jax.random.uniform(
+                tilt_key,
+                shape=(),
+                minval=-task.reset_tilt_rad,
+                maxval=task.reset_tilt_rad,
+            )
+            half_phase = 0.5 * phase
+            half_tilt = 0.5 * tilt
+            # qx(tilt) * qy(phase), MuJoCo quaternion order w,x,y,z.
+            quaternion = jp.stack(
+                (
+                    jp.cos(half_tilt) * jp.cos(half_phase),
+                    jp.sin(half_tilt) * jp.cos(half_phase),
+                    jp.cos(half_tilt) * jp.sin(half_phase),
+                    jp.sin(half_tilt) * jp.sin(half_phase),
+                )
+            )
+            qpos = qpos.at[3:7].set(quaternion)
+            velocity = jax.random.uniform(
+                velocity_key,
+                shape=(self.mj_model.nv,),
+                minval=-1.0,
+                maxval=1.0,
+            )
+            velocity = velocity.at[:3].multiply(task.reset_linear_speed_m_s)
+            velocity = velocity.at[3:6].multiply(
+                task.reset_angular_speed_rad_s
+            )
+            velocity = velocity.at[6:].multiply(0.20)
+            mode = jp.asarray(task.reset_start_mode, dtype=jp.int32)
+            mode_steps = jp.asarray(
+                jp.where(
+                    mode == int(TransitionMode3D.DEPLOY),
+                    (1.0 - compact_fraction)
+                    * task.deploy_duration_s
+                    / task.control_timestep,
+                    0.0,
+                ),
+                dtype=jp.int32,
+            )
+            reference = self._reference(mode, mode_steps)
+            data = self.base_data.replace(qpos=qpos, qvel=velocity, ctrl=reference)
+            data = mjx.forward(self.sys, data)
+            contacts = self._contacts(data)
+            kinematics = self._kinematics(data)
+            gates = self._gates(data, contacts, kinematics, reference)
+            zero_action = jp.zeros((TRANSITION_ACTION_SIZE_3D,))
+            info = {
+                "rng": rng,
+                "step_count": jp.asarray(0, dtype=jp.int32),
+                "mode": mode,
+                "mode_steps": mode_steps,
+                "deploy_gate_steps": jp.asarray(0, dtype=jp.int32),
+                "ready_steps": jp.asarray(0, dtype=jp.int32),
+                "last_action": zero_action,
+                "last_foot_position": data.site_xpos[self.foot_site_ids],
+                "previous_combined_speed": jp.sqrt(
+                    jp.square(kinematics["linear_speed"])
+                    + 0.04 * jp.square(kinematics["angular_speed"])
+                ),
+                "previous_reference_error": gates["reference_error"],
+                "time_out": jp.asarray(0.0),
+            }
+            obs = self._observation(
+                data,
+                contacts,
+                kinematics,
+                gates,
+                mode=mode,
+                mode_steps=mode_steps,
+                ready_steps=info["ready_steps"],
+                policy_action=zero_action,
+                reference=reference,
+                noise_key=jax.random.fold_in(rng, 99),
+            )
+            return State(
+                data,
+                obs,
+                jp.zeros((), dtype=jp.float32),
+                jp.zeros((), dtype=jp.float32),
+                metrics=self._zero_metrics(),
+                info=info,
+            )
+
+        def step(self, state, action):
+            mode = state.info["mode"]
+            mode_steps = state.info["mode_steps"]
+            reference = self._reference(mode, mode_steps)
+            action_finite = jp.all(jp.isfinite(action))
+            policy_action = jp.nan_to_num(
+                jp.clip(action, -1.0, 1.0), nan=0.0, posinf=1.0, neginf=-1.0
+            )
+            target = jp.clip(
+                reference + self.action_scales * policy_action,
+                self.joint_low,
+                self.joint_high,
+            )
+            data = state.pipeline_state.replace(ctrl=target)
+
+            def physics_step(carry, unused):
+                del unused
+                return mjx.step(self.sys, carry), None
+
+            data, _ = jax.lax.scan(
+                physics_step, data, None, length=task.action_repeat
+            )
+            contacts = self._contacts(data)
+            kinematics = self._kinematics(data)
+            gates = self._gates(data, contacts, kinematics, reference)
+
+            next_deploy_gate_steps = jp.where(
+                (mode == int(TransitionMode3D.BRAKE)) & gates["deploy_gate"],
+                state.info["deploy_gate_steps"] + 1,
+                0,
+            )
+            enter_deploy = (
+                (mode == int(TransitionMode3D.BRAKE))
+                & (next_deploy_gate_steps >= self.deploy_gate_steps)
+            )
+            deploy_complete = (
+                (mode == int(TransitionMode3D.DEPLOY))
+                & (
+                    mode_steps * task.control_timestep
+                    >= task.deploy_duration_s
+                )
+                & (gates["stand_error"] <= 0.45)
+                & (contacts["foot_count"] >= 2)
+            )
+            next_mode = jp.where(
+                enter_deploy,
+                int(TransitionMode3D.DEPLOY),
+                jp.where(
+                    deploy_complete,
+                    int(TransitionMode3D.STABILIZE),
+                    mode,
+                ),
+            ).astype(jp.int32)
+            changed_mode = next_mode != mode
+            next_mode_steps = jp.where(changed_mode, 0, mode_steps + 1)
+
+            ready_gate_active = (
+                (next_mode == int(TransitionMode3D.STABILIZE))
+                & (next_mode_steps >= self.stabilize_min_steps)
+                & gates["ready_gate"]
+            )
+            next_ready_steps = jp.where(
+                ready_gate_active, state.info["ready_steps"] + 1, 0
+            )
+            newly_ready = next_ready_steps >= self.ready_hold_steps
+            next_mode = jp.where(
+                newly_ready, int(TransitionMode3D.READY), next_mode
+            ).astype(jp.int32)
+
+            physics_finite = (
+                jp.all(jp.isfinite(data.qpos))
+                & jp.all(jp.isfinite(data.qvel))
+            )
+            failed = (
+                (~action_finite)
+                | (~physics_finite)
+                | (data.qpos[2] < task.failure_root_height_min_m)
+                | (data.qpos[2] > task.failure_root_height_max_m)
+                | (
+                    (mode == int(TransitionMode3D.BRAKE))
+                    & (mode_steps >= self.brake_timeout_steps)
+                )
+            )
+            next_step_count = state.info["step_count"] + 1
+            timeout = next_step_count >= task.episode_length
+            done = failed | newly_ready | timeout
+
+            foot_position = data.site_xpos[self.foot_site_ids]
+            foot_velocity = (
+                foot_position - state.info["last_foot_position"]
+            ) / task.control_timestep
+            foot_slip_squared = jp.mean(
+                contacts["foot_ground"]
+                * jp.sum(jp.square(foot_velocity[:, :2]), axis=1)
+            )
+            combined_speed = jp.sqrt(
+                jp.square(kinematics["linear_speed"])
+                + 0.04 * jp.square(kinematics["angular_speed"])
+            )
+            next_reference = self._reference(next_mode, next_mode_steps)
+            next_reference_error = jp.sqrt(
+                jp.mean(
+                    jp.square(
+                        data.qpos[self.joint_qpos_indices] - next_reference
+                    )
+                )
+            )
+            mode_brake = (mode == int(TransitionMode3D.BRAKE)).astype(jp.float32)
+            mode_deploy = (mode == int(TransitionMode3D.DEPLOY)).astype(jp.float32)
+            mode_stabilize = (
+                mode == int(TransitionMode3D.STABILIZE)
+            ).astype(jp.float32)
+            reward_inputs = {
+                "mode_brake": mode_brake,
+                "mode_deploy": mode_deploy,
+                "mode_stabilize": mode_stabilize,
+                "combined_speed": combined_speed,
+                "previous_combined_speed": state.info["previous_combined_speed"],
+                "reference_pose_error_rms": next_reference_error,
+                "previous_reference_pose_error_rms": state.info[
+                    "previous_reference_error"
+                ],
+                "upright_tilt": kinematics["upright_tilt"],
+                "root_height_error": data.qpos[2] - self.stand_root_height,
+                "support_fraction": contacts["foot_count"] / 4.0,
+                "newly_ready": newly_ready.astype(jp.float32),
+                "action_rate_squared": jp.mean(
+                    jp.square(policy_action - state.info["last_action"])
+                ),
+                "action_squared": jp.mean(jp.square(policy_action)),
+                "joint_velocity_squared": jp.mean(
+                    jp.square(data.qvel[self.joint_dof_indices])
+                ),
+                "foot_slip_velocity_squared": foot_slip_squared,
+                # Precise contact force is intentionally deferred to the cloud
+                # MJX validation pass because its storage differs by MuJoCo API.
+                "contact_force_peak_n": jp.asarray(0.0),
+                "nonfoot_contact_count": (
+                    mode_stabilize * contacts["nonfoot_count"]
+                ),
+                "failed": failed.astype(jp.float32),
+            }
+            terms = reward_terms_transition_3d(jp, rewards, reward_inputs)
+            reward = jp.sum(jp.stack(tuple(terms.values())))
+            reward = jp.nan_to_num(reward, nan=-rewards.termination)
+
+            next_info = {
+                **state.info,
+                "step_count": next_step_count,
+                "mode": next_mode,
+                "mode_steps": next_mode_steps,
+                "deploy_gate_steps": jp.where(
+                    changed_mode, 0, next_deploy_gate_steps
+                ),
+                "ready_steps": next_ready_steps,
+                "last_action": policy_action,
+                "last_foot_position": foot_position,
+                "previous_combined_speed": combined_speed,
+                "previous_reference_error": next_reference_error,
+                "time_out": timeout.astype(jp.float32),
+            }
+            next_gates = self._gates(
+                data, contacts, kinematics, next_reference
+            )
+            obs = self._observation(
+                data,
+                contacts,
+                kinematics,
+                next_gates,
+                mode=next_mode,
+                mode_steps=next_mode_steps,
+                ready_steps=next_ready_steps,
+                policy_action=policy_action,
+                reference=next_reference,
+                noise_key=jax.random.fold_in(
+                    state.info["rng"], next_step_count + 99
+                ),
+            )
+            metrics = {
+                "reward": reward,
+                "reward_total": reward,
+                **{f"reward_{name}": value for name, value in terms.items()},
+                "mode": next_mode.astype(jp.float32),
+                "mode_brake": mode_brake,
+                "mode_deploy": mode_deploy,
+                "mode_stabilize": mode_stabilize,
+                "transition_success": newly_ready.astype(jp.float32),
+                "ready_gate": next_gates["ready_gate"].astype(jp.float32),
+                "ready_hold_fraction": jp.clip(
+                    next_ready_steps / self.ready_hold_steps, 0.0, 1.0
+                ),
+                "deploy_gate": next_gates["deploy_gate"].astype(jp.float32),
+                "deploy_progress": jp.where(
+                    next_mode == int(TransitionMode3D.DEPLOY),
+                    self._mode_progress(next_mode, next_mode_steps),
+                    0.0,
+                ),
+                "linear_speed_m_s": kinematics["linear_speed"],
+                "angular_speed_rad_s": kinematics["angular_speed"],
+                "combined_speed": combined_speed,
+                "upright_tilt_rad": kinematics["upright_tilt"],
+                "root_z_m": data.qpos[2],
+                "reference_pose_error_rms_rad": next_reference_error,
+                "stand_pose_error_rms_rad": next_gates["stand_error"],
+                "foot_contact_count": contacts["foot_count"],
+                "nonfoot_contact_count": contacts["nonfoot_count"],
+                "foot_slip_rms_m_s": jp.sqrt(foot_slip_squared),
+                "action_rms": jp.sqrt(jp.mean(jp.square(policy_action))),
+                "action_rate_rms": jp.sqrt(
+                    reward_inputs["action_rate_squared"]
+                ),
+                "failed": failed.astype(jp.float32),
+                "timeout": timeout.astype(jp.float32),
+            }
+            return State(
+                data,
+                obs,
+                reward,
+                done.astype(jp.float32),
+                metrics=metrics,
+                info=next_info,
+            )
+
+    return CurlRobot3DTransitionMJXEnv()

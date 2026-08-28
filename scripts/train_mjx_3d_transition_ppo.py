@@ -1,0 +1,249 @@
+"""Train the 3-D BRAKE + DEPLOY + STABILIZE transition policy with PPO."""
+
+from __future__ import annotations
+
+import argparse
+from dataclasses import asdict
+import inspect
+import json
+from pathlib import Path
+import time
+
+from curl_robot_2d_mjx.config_transition_3d import (
+    TRANSITION_CURRICULUM_STAGE_NAMES_3D,
+    TRANSITION_PHYSICS_PROFILE_NAMES_3D,
+    Transition3DConfig,
+    transition_curriculum_config_3d,
+    transition_physics_profile_3d,
+)
+from curl_robot_2d_mjx.reward_transition_3d import Transition3DRewardConfig
+from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
+
+
+PRESETS_TRANSITION_3D = {
+    "smoke": {
+        "steps": 131_072,
+        "envs": 64,
+        "eval_envs": 8,
+        "num_evals": 4,
+        "batch_size": 64,
+        "num_minibatches": 4,
+    },
+    "4090": {
+        "steps": 8_000_000,
+        "envs": 512,
+        "eval_envs": 64,
+        "num_evals": 10,
+        "batch_size": 512,
+        "num_minibatches": 16,
+    },
+    "h200": {
+        "steps": 16_000_000,
+        "envs": 2048,
+        "eval_envs": 256,
+        "num_evals": 10,
+        "batch_size": 1024,
+        "num_minibatches": 32,
+    },
+}
+
+
+def parse_args(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--stage",
+        choices=TRANSITION_CURRICULUM_STAGE_NAMES_3D,
+        default="deploy_near_stand",
+    )
+    parser.add_argument("--preset", choices=tuple(PRESETS_TRANSITION_3D), default="smoke")
+    parser.add_argument(
+        "--physics-profile",
+        choices=TRANSITION_PHYSICS_PROFILE_NAMES_3D,
+        default="newton4",
+    )
+    parser.add_argument(
+        "--out", type=Path, default=Path("results/mjx_3d_transition_ppo")
+    )
+    parser.add_argument("--restore-checkpoint", type=Path, default=None)
+    parser.add_argument("--seed", type=int, default=31)
+    parser.add_argument("--learning-rate", type=float, default=2.0e-4)
+    parser.add_argument("--entropy-cost", type=float, default=3.0e-3)
+    parser.add_argument("--discounting", type=float, default=0.985)
+    parser.add_argument("--unroll-length", type=int, default=24)
+    parser.add_argument("--updates-per-batch", type=int, default=4)
+    parser.add_argument("--hidden-layers", type=int, nargs="+", default=(256, 256, 128))
+    parser.add_argument("--memory-fraction", type=float, default=0.90)
+    parser.add_argument("--mujoco-gl", default="auto")
+    parser.add_argument("--dry-run", action="store_true")
+    return parser.parse_args(argv)
+
+
+def build_task(args) -> Transition3DConfig:
+    task = transition_curriculum_config_3d(
+        args.stage, Transition3DConfig(curriculum_stage=args.stage)
+    )
+    return transition_physics_profile_3d(args.physics_profile, task)
+
+
+def _float(value):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(value.item())
+
+
+def main(argv=None) -> None:
+    args = parse_args(argv)
+    if args.learning_rate <= 0.0:
+        raise SystemExit("--learning-rate must be positive")
+    if args.unroll_length < 1 or args.updates_per_batch < 1:
+        raise SystemExit("rollout and update lengths must be positive")
+
+    task = build_task(args)
+    reward = Transition3DRewardConfig()
+    preset = PRESETS_TRANSITION_3D[args.preset]
+    stage_out = args.out / args.stage
+    payload = {
+        "task": asdict(task),
+        "reward": asdict(reward),
+        "training": {
+            **preset,
+            "learning_rate": args.learning_rate,
+            "entropy_cost": args.entropy_cost,
+            "discounting": args.discounting,
+            "unroll_length": args.unroll_length,
+            "updates_per_batch": args.updates_per_batch,
+            "hidden_layers": list(args.hidden_layers),
+        },
+        "restore_checkpoint": (
+            str(args.restore_checkpoint.resolve())
+            if args.restore_checkpoint is not None
+            else None
+        ),
+        "curriculum_order": list(TRANSITION_CURRICULUM_STAGE_NAMES_3D),
+        "next_stage": (
+            TRANSITION_CURRICULUM_STAGE_NAMES_3D[
+                TRANSITION_CURRICULUM_STAGE_NAMES_3D.index(args.stage) + 1
+            ]
+            if args.stage != TRANSITION_CURRICULUM_STAGE_NAMES_3D[-1]
+            else None
+        ),
+        "seed": args.seed,
+    }
+    if args.dry_run:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    configure_cloud_runtime(
+        memory_fraction=args.memory_fraction,
+        mujoco_gl=args.mujoco_gl,
+        verbose=True,
+    )
+    from brax.io import model as model_io
+    from brax.training.agents.ppo import networks as ppo_networks
+    from brax.training.agents.ppo import train as ppo
+    import jax.nn as jnn
+
+    from curl_robot_2d_mjx.environment_transition_3d import (
+        make_brax_transition_env_3d,
+    )
+
+    payload["runtime"] = describe_runtime()
+    stage_out.mkdir(parents=True, exist_ok=True)
+    (stage_out / "training_config.json").write_text(
+        json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    train_env = make_brax_transition_env_3d(task, reward_config=reward, seed=args.seed)
+    eval_env = make_brax_transition_env_3d(
+        task, reward_config=reward, seed=args.seed + 10_000
+    )
+
+    def network_factory(observation_size, action_size, preprocess_observations_fn):
+        return ppo_networks.make_ppo_networks(
+            observation_size,
+            action_size,
+            preprocess_observations_fn=preprocess_observations_fn,
+            policy_hidden_layer_sizes=tuple(args.hidden_layers),
+            value_hidden_layer_sizes=tuple(args.hidden_layers),
+            activation=jnn.swish,
+            policy_obs_key="state",
+            value_obs_key="privileged_state",
+        )
+
+    history = []
+
+    def progress(step, metrics):
+        clean = {name: _float(value) for name, value in metrics.items()}
+        history.append({"step": int(step), **clean})
+        success = clean.get("eval/episode_transition_success", 0.0)
+        failed = clean.get("eval/episode_failed", 0.0)
+        print(
+            f"[transition eval] stage={args.stage} step={int(step)} "
+            f"success_sum={success:.3f} failure_sum={failed:.3f}",
+            flush=True,
+        )
+
+    checkpoint_kwargs = {}
+    train_parameters = inspect.signature(ppo.train).parameters
+    if "save_checkpoint_path" in train_parameters:
+        checkpoint_kwargs["save_checkpoint_path"] = str(
+            (stage_out / "ppo_checkpoint").resolve()
+        )
+    if args.restore_checkpoint is not None:
+        if "restore_checkpoint_path" not in train_parameters:
+            raise SystemExit("Installed Brax cannot restore PPO checkpoints")
+        checkpoint_kwargs["restore_checkpoint_path"] = str(
+            args.restore_checkpoint.resolve()
+        )
+
+    print(
+        f"[transition PPO] stage={args.stage} preset={args.preset} "
+        f"steps={preset['steps']:,} envs={preset['envs']}",
+        flush=True,
+    )
+    started = time.perf_counter()
+    _, params, final_metrics = ppo.train(
+        environment=train_env,
+        eval_env=eval_env,
+        num_timesteps=preset["steps"],
+        episode_length=task.episode_length,
+        action_repeat=1,
+        num_envs=preset["envs"],
+        num_eval_envs=preset["eval_envs"],
+        num_evals=preset["num_evals"],
+        learning_rate=args.learning_rate,
+        entropy_cost=args.entropy_cost,
+        discounting=args.discounting,
+        reward_scaling=1.0,
+        unroll_length=args.unroll_length,
+        batch_size=preset["batch_size"],
+        num_minibatches=preset["num_minibatches"],
+        num_updates_per_batch=args.updates_per_batch,
+        normalize_observations=True,
+        deterministic_eval=True,
+        network_factory=network_factory,
+        seed=args.seed,
+        progress_fn=progress,
+        **checkpoint_kwargs,
+    )
+    model_io.save_params(stage_out / "params_final", params)
+    (stage_out / "metrics_history.json").write_text(
+        json.dumps(history, indent=2) + "\n", encoding="utf-8"
+    )
+    summary = {
+        "stage": args.stage,
+        "elapsed_s": time.perf_counter() - started,
+        "params": str((stage_out / "params_final").resolve()),
+        "final_metrics": {
+            name: _float(value) for name, value in (final_metrics or {}).items()
+        },
+        "next_stage": payload["next_stage"],
+    }
+    (stage_out / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    print(json.dumps(summary, indent=2, sort_keys=True))
+
+
+if __name__ == "__main__":
+    main()

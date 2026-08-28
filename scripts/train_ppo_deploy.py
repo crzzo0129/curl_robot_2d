@@ -120,10 +120,10 @@ SERVO_KD = 0.1
 # Contact slip alone misses a swing foot skimming just above the contact
 # threshold, so use both contact slip and a smooth near-ground scuff cost.
 SLIP_W = 0.25
-SCUFF_W = 0.25
-SCUFF_HEIGHT = 0.012          # exponential decay length above the floor (m)
-CLEARANCE_W = 0.05
-CLEARANCE_TARGET = 0.020      # desired swing-foot bottom clearance (m)
+SCUFF_W = 0.15
+SCUFF_HEIGHT = 0.008          # only suppress motion very close to floor (m)
+CLEARANCE_W = 0.02
+CLEARANCE_TARGET = 0.012      # modest swing-foot bottom clearance (m)
 
 # Straight-line trot symmetry.  The gate below disables these terms for
 # lateral motion and turning so they do not remove steering authority.
@@ -496,12 +496,18 @@ def write_config(path=None):
 
 
 def do_export(ckpt=None, out=None):
+    import subprocess
+
     cfg = write_config()
     ckpt = ckpt or SAVE
     out = out or JSON_OUT
-    os.system(f"{_sys.executable} export_rtneural.py {ckpt} {out} "
-              f"--activation {ACTIVATION_NAME} --config {cfg} "
-              f"--obs-history {HISTORY}")
+    exporter = os.path.join(SCRIPT_DIR, "export_rtneural.py")
+    subprocess.run([
+        _sys.executable, exporter, ckpt, out,
+        "--activation", ACTIVATION_NAME,
+        "--config", cfg,
+        "--obs-history", str(HISTORY),
+    ], check=True)
 
 
 # ================================================================ probe
@@ -557,7 +563,8 @@ def main():
     print(f"  activation {ACTIVATION_NAME}, no action filter")
     print(f"  hidden {POLICY_HIDDEN}")
     print(f"  gait shaping slip={SLIP_W} scuff={SCUFF_W} "
-          f"clearance={CLEARANCE_W} diag_action={DIAG_ACTION_W} "
+          f"clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
+          f"diag_action={DIAG_ACTION_W} "
           f"diag_contact={DIAG_CONTACT_W}")
     print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, {NUM_EVALS} evals")
     print(f"  writing to {SAVE}, {CKPT_DIR}/, {VID_DIR}/")
@@ -640,7 +647,7 @@ def main():
                                 eval_env=eval_env)
         model.save_params(SAVE, params)
         print(f"\ndone — policy in {SAVE}", flush=True)
-        print(f"export it with:  python3 {os.path.basename(__file__)} export",
+        print("export it with:  python -m scripts.train_ppo_deploy export",
               flush=True)
     except KeyboardInterrupt:
         print(f"\nstopped — newest policy in {SAVE} (and {CKPT_DIR}/)",
