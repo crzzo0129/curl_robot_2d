@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PPO for curl_robot_3d — trained to be DEPLOYABLE on the Pupper Pi stack.
+"""PPO for rollingquad_2 — trained to be DEPLOYABLE on the Pupper Pi stack.
 
 Same robot, same physics and the same reward stack as train_ppo_walk3d.py.
 What changes is everything the real controller constrains, and nothing else:
@@ -78,12 +78,12 @@ from train_ppo_walk3d import (
     Z_MIN, UP_MIN, FOOT_R, Ticker, _hms, _INT,
 )
 
-w3.RUN_XML = os.path.expanduser("~/robot/curl_robot_3d_deploy.xml")
+w3.RUN_XML = os.path.expanduser("~/robot/rollingquad_2_deploy.xml")
 
-SAVE = "deploy_policy.bin"
-VID_DIR = "deploy_videos"
-CKPT_DIR = "deploy_checkpoints"
-JSON_OUT = "deploy_policy.json"
+SAVE = "rollingquad_2_deploy_policy.bin"
+VID_DIR = "rollingquad_2_deploy_videos"
+CKPT_DIR = "rollingquad_2_deploy_checkpoints"
+JSON_OUT = "rollingquad_2_deploy_policy.json"
 
 # ==================================================== controller contract
 # neural_controller.hpp:67-76.  Do not reorder; the C++ writes these indices
@@ -169,6 +169,10 @@ class DeployEnv(PipelineEnv):
         self._mj = mj
         self._nom_h = w3.stand_height(mj)
         self._init_z = w3.NOMINAL_H + 0.0005
+        joint_qpos, joint_dof = w3.joint_state_indices(mj)
+        self._joint_qpos = jp.asarray(joint_qpos)
+        self._joint_dof = jp.asarray(joint_dof)
+        self._stand_qpos = jp.asarray(w3.stand_key_qpos(mj))
 
         self._foot_site = np.array([
             mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_SITE, f"{leg}_foot_site")
@@ -209,7 +213,7 @@ class DeployEnv(PipelineEnv):
             math.rotate(jp.array([0.0, 0.0, -1.0]), inv_rot),   # proj. gravity
             info["command"],                                     # unscaled
             DESIRED_WORLD_Z,
-            ps.q[7:] - DEFAULT_POSE,
+            ps.q[self._joint_qpos] - DEFAULT_POSE,
             info["last_act"],
         ])
 
@@ -232,7 +236,10 @@ class DeployEnv(PipelineEnv):
         quat = jp.array([1.0, 0.0, 0.0, 0.0])
         z = self._init_z
         joints = DEFAULT_POSE
-        qpos = jp.concatenate([jp.array([0.0, 0.0, z]), quat, joints])
+        qpos = (self._stand_qpos
+                .at[:3].set(jp.array([0.0, 0.0, z]))
+                .at[3:7].set(quat)
+                .at[self._joint_qpos].set(joints))
         ps = self.pipeline_init(qpos, jp.zeros(self.sys.nv))
 
         # Match neural_controller::on_activate: stationary gravity is -z and
@@ -307,7 +314,7 @@ class DeployEnv(PipelineEnv):
         p_angxy = ANG_XY_W * jp.sum(jp.square(ang_b[:2]))
         p_height = HEIGHT_W * jp.square(ps.q[2] - self._nom_h)
         p_torque = TORQUE_W * jp.sum(jp.square(ps.qfrc_actuator[6:]))
-        p_jvel = JVEL_W * jp.sum(jp.square(ps.qd[6:]))
+        p_jvel = JVEL_W * jp.sum(jp.square(ps.qd[self._joint_dof]))
         p_rate = RATE_W * jp.sum(jp.square(action - info["last_act"]))
         p_slip = SLIP_W * jp.sum(foot_vxy2 * contact)
 
@@ -335,7 +342,7 @@ class DeployEnv(PipelineEnv):
             jp.square(contact_f[0] - contact_f[3])
             + jp.square(contact_f[1] - contact_f[2]))
         p_stand = STAND_W * (1.0 - moving) * jp.sum(
-            jp.abs(ps.q[7:] - DEFAULT_POSE))
+            jp.abs(ps.q[self._joint_qpos] - DEFAULT_POSE))
 
         bad = jp.isnan(ps.q).any() | jp.isnan(ps.qd).any()
         done = ((ps.q[2] < Z_MIN) | (up[2] < UP_MIN) | bad).astype(jp.float32)
@@ -471,7 +478,7 @@ def make_video(policy_path=None, seconds=None, out=None):
 def write_config(path=None):
     """The metadata block export_rtneural.py embeds and the Pi reads back."""
     import json
-    path = path or "deploy_config.json"
+    path = path or "rollingquad_2_deploy_config.json"
     cfg = {
         "use_imu": True,
         "control_orientation": False,
@@ -661,10 +668,10 @@ if __name__ == "__main__":
         argv = _sys.argv[1:]
         if "dr" in argv:
             w3.enable_dr()          # sets w3.OBS_NOISE / PUSH_* / DOMAIN_*
-            SAVE = "deploy_policy_dr.bin"
-            VID_DIR = "deploy_videos_dr"
-            CKPT_DIR = "deploy_checkpoints_dr"
-            JSON_OUT = "deploy_policy_dr.json"
+            SAVE = "rollingquad_2_deploy_policy_dr.bin"
+            VID_DIR = "rollingquad_2_deploy_videos_dr"
+            CKPT_DIR = "rollingquad_2_deploy_checkpoints_dr"
+            JSON_OUT = "rollingquad_2_deploy_policy_dr.json"
             argv.remove("dr")
         cmd = argv[0] if argv else "train"
         if cmd == "probe":

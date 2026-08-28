@@ -74,5 +74,7 @@ data = mujoco.MjData(model)
 mujoco.mj_resetDataKeyframe(model, data, 0)
 ```
 
-From the `curl_robot_2d` project root, select this model with
-`--geometry rollingquad_2` in the walking smoke test or PPO trainer.
+From the `curl_robot_2d` project root, this is the fixed source model used by
+`python -m scripts.train_ppo_walk3d` and
+`python -m scripts.train_ppo_deploy`.  Both scripts remap the URDF body-tree
+qpos order to the canonical policy/controller joint order by name.

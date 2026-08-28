@@ -1,29 +1,27 @@
 # Curl Robot：ANYmal 风格 MJX 行走任务
 
-本入口默认使用 `assets/curl_robot_3d_pupper_r127p5_open60_width120.xml`，目标是借鉴 ETH `legged_gym` 的 locomotion MDP，而不是复刻 ANYmal 的机构或步态。由正确 URDF 转换得到的真实结构模型位于 `assets/rollingquad_description_2/mjcf/rollingquad.xml`，可通过 `--geometry rollingquad_2` 选择。
+> 当前主训练入口已经切换为 `scripts/train_ppo_walk3d.py` 和
+> `scripts/train_ppo_deploy.py`。本文件后续关于
+> `train_mjx_3d_walking_ppo.py` 的内容只作为旧实验记录，不再是推荐流程。
+
+当前两个主入口都固定使用由正确 URDF 转换得到的真实结构模型：
+`assets/rollingquad_description_2/mjcf/rollingquad.xml`。
 
 ## RollingQuad 2 重新训练
 
-先做 MJX 冒烟检查，再启动一个全新的 policy 训练目录：
+先执行 probe，再开始训练：
 
 ```bash
-python -m scripts.mjx_3d_walking_smoke \
-  --geometry rollingquad_2 \
-  --physics-profile cg12 \
-  --mujoco-gl disable
+python -m scripts.train_ppo_walk3d probe
+python -m scripts.train_ppo_walk3d
 
-python -m scripts.train_mjx_3d_walking_ppo \
-  --geometry rollingquad_2 \
-  --preset h200 \
-  --recipe forward_stage1_v1 \
-  --steps 15000000 \
-  --num-evals 32 \
-  --save-ppo-checkpoints \
-  --ppo-checkpoint-dir results/mjx_rollingquad_2_forward_stage1_v1/ppo_checkpoint \
-  --out results/mjx_rollingquad_2_forward_stage1_v1
+python -m scripts.train_ppo_deploy probe
+python -m scripts.train_ppo_deploy
 ```
 
-该适配不改变 URDF 的倾斜外摆轴、零位、范围、质量或惯量。模型内部 `qpos` 仍按导出层级排列；执行器和 policy 动作则统一为 `FL, FR, RL, RR`，每腿均为 `abduction, hip, knee`。不要直接恢复旧 Pupper policy checkpoint，因为机构和轴方向已经改变，应从新目录重新训练。
+`train_ppo_walk3d.py` 使用48维仿真本体观测；`train_ppo_deploy.py` 使用与实机控制器一致的36维单帧、20帧历史观测。两者网络输入不同，需要分别训练，不能互相恢复 checkpoint。需要域随机化时在命令中加入 `dr`。
+
+该适配不改变 URDF 的倾斜外摆轴、零位、范围、质量或惯量。模型内部 `qpos` 仍按导出层级排列，脚本会按关节名映射到统一的 `FL, FR, RL, RR` policy顺序，每腿均为 `abduction, hip, knee`。不要恢复旧 Pupper 或旧 MJX walking policy checkpoint。新输出使用独立文件名 `rollingquad_2_walk3d_policy.bin` / `rollingquad_2_deploy_policy.bin`，不会自动续训旧模型的 policy。
 
 ## 策略接口
 

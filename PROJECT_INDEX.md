@@ -54,6 +54,12 @@
 ## 推荐工作流
 
 ```powershell
+# 当前 RollingQuad 2 行走训练主入口
+python -m scripts.train_ppo_walk3d probe
+python -m scripts.train_ppo_walk3d
+python -m scripts.train_ppo_deploy probe
+python -m scripts.train_ppo_deploy
+
 # 生成模型
 python -m scripts.generate_model
 python -m scripts.generate_3d_model
@@ -68,6 +74,8 @@ python -m scripts.evaluate_3d_symmetric_cem_reference --help
 # 进入 RL 前先做 reference-only 鲁棒性验证
 python -m scripts.compare_mjx_3d_reference --help
 ```
+
+旧 `train_mjx_3d_walking_ppo.py` 行走流程仅用于历史实验复现；后续行走与实机部署 policy 使用上述两个 `train_ppo_*` 入口。
 
 ## 文件管理规则
 

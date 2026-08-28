@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PPO for curl_robot_3d — omnidirectional walking (forward, backward, turn).
+"""PPO for rollingquad_2 — omnidirectional walking (forward, backward, turn).
 
 Structure follows the Stanford Pupper / Brax "joystick" locomotion task:
 
@@ -24,7 +24,7 @@ import threading
 import time
 import functools
 import re
-from math import cos, sin
+from math import sin
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault("JAX_PERSISTENT_CACHE_MIN_COMPILE_TIME_SECS", "0")
@@ -50,52 +50,50 @@ from brax.training.agents.ppo import networks as ppo_networks
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_XML = os.path.normpath(os.path.join(
     SCRIPT_DIR, "..", "assets",
-    "curl_robot_3d_pupper_r127p5_open60_width120.xml"))
-RUN_XML = os.path.expanduser("~/robot/curl_robot_3d_run.xml")
-SAVE = "walk3d_policy.bin"
-VID_DIR = "walk3d_videos"
-CKPT_DIR = "walk3d_checkpoints"
+    "rollingquad_description_2", "mjcf", "rollingquad.xml"))
+RUN_XML = os.path.expanduser("~/robot/rollingquad_2_walk3d.xml")
+SAVE = "rollingquad_2_walk3d_policy.bin"
+VID_DIR = "rollingquad_2_walk3d_videos"
+CKPT_DIR = "rollingquad_2_walk3d_checkpoints"
 
 # ============================================================== geometry
-# Read straight out of the XML.  Every number below is verified against the
-# model's own keyframes in `probe`; do not edit one without re-running it.
-L_THIGH = 0.0844547808      # hip joint -> knee joint
-L_SHANK = 0.0880136895      # knee joint -> foot centre
+# Measurements used only by diagnostics and reward normalization.  Reset
+# states and observations are resolved from named MJCF joints/keyframes below;
+# they never depend on the exported body-tree order.
+L_THIGH = 0.0844547808
+L_SHANK = 0.0880136895
 FOOT_R = 0.0195             # foot sphere radius
 HIP_X = 0.0752              # hip fore/aft offset from torso centre
-HIP_Y = 0.06                # hip lateral offset  (=> 120 mm track width)
+HIP_Y = 0.065                # exported abduction mount lateral offset
 SHELL_R = 0.1275            # outer rolling-shell radius (unused when walking)
 
-# Joint order, matching both the body tree and the actuator list:
+# Canonical policy/controller order.  The rollingquad_2 body tree uses a
+# different qpos order, so all state access is remapped by these names.
 #   [FL_abd FL_hip FL_knee  FR_abd FR_hip FR_knee
 #    RL_abd RL_hip RL_knee  RR_abd RR_hip RR_knee]
 LEGS = ("front_left", "front_right", "rear_left", "rear_right")
+JOINT_NAMES = tuple(
+    f"{leg}_{joint}"
+    for leg in LEGS
+    for joint in ("hip_abduction", "hip", "knee")
+)
 
-# The `stand` keyframe.  NOTE: that keyframe's own qpos z (0.18556) is stale —
-# it was copied from `stand_previous` and never updated.  The true height for
-# this pose is computed below and checked in `probe`.
+# The values match the rollingquad_2 `stand` keyframe in canonical policy
+# order.  Limits are the common safe intersection of the four URDF legs.
 DEFAULT_POSE = jp.array([0.0, 0.6, 1.0] * 4)
-CTRL_LO = jp.array([-0.17, -1.12, -0.61] * 4)
-CTRL_HI = jp.array([0.17, 2.41, 2.69] * 4)
+CTRL_LO = jp.array([-0.5236, -1.745329252, 0.1745329252] * 4)
+CTRL_HI = jp.array([3.66519, 1.902408885, 2.094395102] * 4)
 
 # Per-joint action range, in radians, added on top of DEFAULT_POSE.  Abduction
-# gets its entire travel (it only has +-0.17 rad); hip and knee get a useful
-# swing without letting the policy fling the leg to a limit every step.
+# deliberately uses only +-0.17 rad of its wider URDF travel; hip and knee get
+# a useful swing without letting the policy fling the leg to a limit.
 ACTION_SCALE = jp.array([0.17, 0.50, 0.50] * 4)
 
 
-def foot_depth(hip, knee):
-    """Vertical drop from the hip joint to the bottom of the foot.
-
-    The knee angle is measured from the torso vertical, not from the thigh, so
-    the shank's angle from vertical is (knee - hip).  Verified to 3e-5 m
-    against the `stand_previous` and `compact` keyframes.
-    """
-    return L_THIGH * cos(hip) + L_SHANK * cos(knee - hip) + FOOT_R
-
-
-NOMINAL_H = foot_depth(0.6, 1.0)          # 0.17027 m for the stance pose
-FULL_H = foot_depth(0.0, 0.0)             # 0.19197 m, legs straight down
+# Root heights are mesh-ground clearances computed for the corrected CAD
+# model, rather than planar-link approximations that ignore its inclined axes.
+NOMINAL_H = 0.1712243631                  # rollingquad_2 stand keyframe
+FULL_H = 0.1934653619                     # rollingquad_2 open keyframe
 
 # =============================================================== physics
 # Stanford's shipped Pupper MJX config, which is the one config in this family
@@ -106,9 +104,8 @@ SOLVER_LS_ITER = 8
 IMPRATIO = 10.0
 CONE = "pyramidal"
 EULERDAMP = False           # disable, as Stanford's model does
-SELF_COLLISION = True       # leg-vs-leg; the model already excludes torso-leg
-MOTOR_SELF_COLLIDE = False  # see patch_xml: 32 of the 46 collision geoms are
-                            # motor-housing capsules that cannot reach each other
+SELF_COLLISION = False      # corrected CAD meshes collide with ground only
+MOTOR_SELF_COLLIDE = False  # retained for compatibility with the older model
 SHELL_CONTACT = False       # the rolling shells are decorative when walking
 N_FRAMES = 5                # 0.004 * 5 = 50 Hz control
 
@@ -187,17 +184,33 @@ OBS_SIZE = 48
 def patch_xml():
     """Rewrite the source XML into the one MJX actually runs.
 
-    Three changes, all of them things MJX or Brax care about and the authoring
+    Four changes, all of them things MJX or Brax care about and the authoring
     model does not:
-      1. solver settings -> Stanford's proven MJX numbers (the shipped file is
+      1. preserve the source directory for relative CAD mesh paths after the
+         patched XML is written under ~/robot;
+      2. solver settings -> Stanford's proven MJX numbers (the shipped file is
          a 1 ms elliptic-cone CPU config, ~40x more solver work per control
          step than MJX needs);
-      2. collision masks -> optionally drop self-collision or the shells;
-      3. a com-tracking camera, so the training videos follow the robot.
+      3. collision masks -> optionally drop self-collision or the shells;
+      4. a com-tracking camera, so the training videos follow the robot.
     The <sensor> block is stripped because nothing here reads it.
     """
     with open(SRC_XML) as f:
         xml = f.read()
+
+    mesh_dir = os.path.dirname(os.path.abspath(SRC_XML)).replace("\\", "/")
+
+    def preserve_mesh_dir(match):
+        tag = match.group(0)
+        if "meshdir=" in tag:
+            return tag
+        return tag[:-2] + f' meshdir="{mesh_dir}"/>'
+
+    xml, ncompiler = re.subn(
+        r"<compiler\b[^>]*/>", preserve_mesh_dir, xml, count=1
+    )
+    if ncompiler != 1:
+        raise RuntimeError("could not find the <compiler .../> element to patch")
 
     opt = (f'<option timestep="{PHYS_TIMESTEP}" gravity="0 0 -9.81" '
            f'integrator="implicitfast" cone="{CONE}" impratio="{IMPRATIO}" '
@@ -223,19 +236,16 @@ def patch_xml():
             '<geom type="capsule" size="0.003"\n                    '
             'contype="0" conaffinity="1"')
 
-    # Each of the 8 motors is wrapped in 4 collision capsules -- 32 of the 46
-    # structure geoms.  Left/right hips sit 120 mm apart and front/rear 150 mm,
-    # against a 16.5 mm capsule radius and only +-0.17 rad of abduction, so no
-    # two motor housings can physically reach each other while walking.  Making
-    # them ground-only keeps them solid underfoot and takes the robot-vs-robot
-    # candidate set from ~726 pairs to ~60, which is most of the GPU memory.
+    # The older generated model had 32 named motor collision capsules.  The
+    # corrected rollingquad_2 CAD model has none, so zero replacements are a
+    # valid model contract rather than an error.
     if not MOTOR_SELF_COLLIDE:
         xml, nmot = re.subn(
             r'(<geom name="[a-z_]+_motor_collision_\d+" type="capsule")',
             r'\1 contype="0" conaffinity="1"', xml)
-        if nmot != 32:
+        if nmot not in (0, 32):
             raise RuntimeError(
-                f"expected 32 motor collision geoms, patched {nmot}")
+                f"expected either 0 or 32 motor collision geoms, patched {nmot}")
 
     xml = re.sub(r"<sensor\b.*?</sensor>", "", xml, flags=re.S)
 
@@ -249,8 +259,76 @@ def patch_xml():
     return RUN_XML
 
 
+def joint_state_indices(mj):
+    """Return canonical policy-order qpos and qvel indices by joint name."""
+
+    qpos = []
+    dof = []
+    for name in JOINT_NAMES:
+        joint_id = mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_JOINT, name)
+        if joint_id < 0:
+            raise RuntimeError(f"joint not found in the XML: {name}")
+        qpos.append(int(mj.jnt_qposadr[joint_id]))
+        dof.append(int(mj.jnt_dofadr[joint_id]))
+    return np.asarray(qpos, dtype=np.int32), np.asarray(dof, dtype=np.int32)
+
+
+def stand_key_qpos(mj):
+    key_id = mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_KEY, "stand")
+    if key_id < 0:
+        raise RuntimeError("stand keyframe not found in the XML")
+    return np.asarray(mj.key_qpos[key_id]).copy()
+
+
+def validate_model_contract(mj):
+    """Fail before training if policy and corrected-MJCF channels diverge."""
+
+    if (mj.nq, mj.nv, mj.nu) != (19, 18, 12):
+        raise RuntimeError(
+            f"expected floating-base 12-DoF model, got "
+            f"nq={mj.nq} nv={mj.nv} nu={mj.nu}"
+        )
+    qpos_indices, _ = joint_state_indices(mj)
+    actuator_names = tuple(
+        mujoco.mj_id2name(mj, mujoco.mjtObj.mjOBJ_ACTUATOR, index)
+        for index in range(mj.nu)
+    )
+    expected_actuators = tuple(f"{name}_servo" for name in JOINT_NAMES)
+    if actuator_names != expected_actuators:
+        raise RuntimeError(
+            "actuators are not in canonical FL/FR/RL/RR policy order: "
+            f"{actuator_names}"
+        )
+    for index, joint_name in enumerate(JOINT_NAMES):
+        joint_id = mujoco.mj_name2id(
+            mj, mujoco.mjtObj.mjOBJ_JOINT, joint_name
+        )
+        if int(mj.actuator_trnid[index, 0]) != joint_id:
+            raise RuntimeError(
+                f"{expected_actuators[index]} is bound to the wrong joint"
+            )
+    ctrl_lo = np.asarray(CTRL_LO)
+    ctrl_hi = np.asarray(CTRL_HI)
+    if np.any(ctrl_lo < mj.actuator_ctrlrange[:, 0] - 1e-8) or np.any(
+        ctrl_hi > mj.actuator_ctrlrange[:, 1] + 1e-8
+    ):
+        raise RuntimeError("policy control limits exceed the MJCF actuator limits")
+    stand = stand_key_qpos(mj)
+    if not np.allclose(stand[qpos_indices], np.asarray(DEFAULT_POSE), atol=1e-6):
+        raise RuntimeError("stand keyframe does not match DEFAULT_POSE")
+    for leg in LEGS:
+        for obj_type, name in (
+            (mujoco.mjtObj.mjOBJ_BODY, f"{leg}_shank"),
+            (mujoco.mjtObj.mjOBJ_SITE, f"{leg}_foot_site"),
+        ):
+            if mujoco.mj_name2id(mj, obj_type, name) < 0:
+                raise RuntimeError(f"required MJCF object not found: {name}")
+
+
 def load_mj():
-    return mujoco.MjModel.from_xml_path(patch_xml())
+    mj = mujoco.MjModel.from_xml_path(patch_xml())
+    validate_model_contract(mj)
+    return mj
 
 
 def candidate_pairs(mj):
@@ -293,9 +371,11 @@ def settle(mj, seconds=1.5, pose=None):
     """Drop the robot from the nominal stance and let it come to rest on CPU."""
     d = mujoco.MjData(mj)
     q = np.array(DEFAULT_POSE if pose is None else pose)
+    qpos_indices, _ = joint_state_indices(mj)
+    d.qpos[:] = stand_key_qpos(mj)
     d.qpos[:3] = [0.0, 0.0, NOMINAL_H + 0.005]
     d.qpos[3:7] = [1.0, 0.0, 0.0, 0.0]
-    d.qpos[7:] = q
+    d.qpos[qpos_indices] = q
     d.ctrl[:] = q
     for _ in range(int(seconds / mj.opt.timestep)):
         mujoco.mj_step(mj, d)
@@ -305,16 +385,16 @@ def settle(mj, seconds=1.5, pose=None):
 def stand_height(mj):
     """Height the robot actually settles at, which is what the servos give.
 
-    The analytic NOMINAL_H assumes rigid legs; the servos are soft (kp = 5), so
-    the real stance sags.  If the robot collapses entirely we fall back to the
-    analytic value rather than spawning it underground -- a collapsed reading
-    used as a spawn height is what produced the -54000 rewards in the 2-D run.
+    The stand-keyframe height has 1 mm mesh clearance; the servos are soft
+    (kp = 5), so the real stance sags.  If the robot collapses entirely we
+    fall back to the keyframe value rather than spawning it underground.  A
+    collapsed reading used as a spawn height produced invalid rewards before.
     """
     z = float(settle(mj).qpos[2])
     if z < 0.5 * NOMINAL_H:
-        print(f"  ! settled to {z:.4f} m, far below the analytic "
+        print(f"  ! settled to {z:.4f} m, far below the stand-keyframe "
               f"{NOMINAL_H:.4f} m -- the stance is collapsing.  Falling back "
-              f"to the analytic height; run `tune` to find solver settings "
+              f"to the keyframe height; run `tune` to find solver settings "
               f"that hold the pose.")
         return NOMINAL_H
     return z
@@ -451,6 +531,10 @@ class Walk3DEnv(PipelineEnv):
         mj = load_mj()
         self._nom_h = stand_height(mj)
         self._init_z = self._nom_h + 0.005          # spawn just clear of the floor
+        joint_qpos, joint_dof = joint_state_indices(mj)
+        self._joint_qpos = jp.asarray(joint_qpos)
+        self._joint_dof = jp.asarray(joint_dof)
+        self._stand_qpos = jp.asarray(stand_key_qpos(mj))
 
         self._foot_site = np.array([
             mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_SITE, f"{leg}_foot_site")
@@ -499,8 +583,8 @@ class Walk3DEnv(PipelineEnv):
             math.rotate(jp.array([0.0, 0.0, -1.0]), inv_rot),   # projected gravity
             math.rotate(ps.xd.ang[0], inv_rot) * 0.25,          # gyro, body frame
             math.rotate(ps.xd.vel[0], inv_rot) * 2.0,           # linvel, body frame
-            ps.q[7:] - DEFAULT_POSE,
-            ps.qd[6:] * 0.05,
+            ps.q[self._joint_qpos] - DEFAULT_POSE,
+            ps.qd[self._joint_dof] * 0.05,
             info["last_act"],
         ])
         if OBS_NOISE:
@@ -521,7 +605,10 @@ class Walk3DEnv(PipelineEnv):
                 k_pose, (12,), minval=-0.05, maxval=0.05),
             CTRL_LO, CTRL_HI)
 
-        qpos = jp.concatenate([jp.array([0.0, 0.0, z]), quat, joints])
+        qpos = (self._stand_qpos
+                .at[:3].set(jp.array([0.0, 0.0, z]))
+                .at[3:7].set(quat)
+                .at[self._joint_qpos].set(joints))
         ps = self.pipeline_init(qpos, jp.zeros(self.sys.nv))
 
         info = {
@@ -599,7 +686,7 @@ class Walk3DEnv(PipelineEnv):
         p_slip = SLIP_W * jp.sum(
             jp.sum(jp.square(foot_vel[:, :2]), axis=1) * contact)
         p_stand = STAND_W * (1.0 - moving) * jp.sum(
-            jp.abs(ps.q[7:] - DEFAULT_POSE))
+            jp.abs(ps.q[self._joint_qpos] - DEFAULT_POSE))
 
         bad = jp.isnan(ps.q).any() | jp.isnan(ps.qd).any()
         done = ((ps.q[2] < Z_MIN) | (up[2] < UP_MIN) | bad).astype(jp.float32)
@@ -729,33 +816,31 @@ def probe():
     print(f"mass     {mj.body_mass.sum():.4f} kg   "
           f"weight {mj.body_mass.sum() * 9.81:.2f} N")
 
-    print("\nkeyframe check — analytic foot depth vs the height stored in the "
-          "keyframe")
+    print("\nkeyframe check — named joints and CAD foot-site clearance")
+    qpos_indices, _ = joint_state_indices(mj)
+    foot_site_ids = np.asarray([
+        mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_SITE, f"{leg}_foot_site")
+        for leg in LEGS
+    ])
+    data = mujoco.MjData(mj)
     for i in range(mj.nkey):
         name = mujoco.mj_id2name(mj, mujoco.mjtObj.mjOBJ_KEY, i)
-        q = mj.key_qpos[i]
-        hip_f, knee_f = float(q[8]), float(q[9])
-        hip_r, knee_r = float(q[14]), float(q[15])
-        pred = max(foot_depth(hip_f, knee_f), foot_depth(hip_r, knee_r))
-        err = pred - float(q[2])
-        flag = "ok" if abs(err) < 1e-3 else "MISMATCH"
-        print(f"  {name:<16} stored z={float(q[2]):.6f}  "
-              f"analytic={pred:.6f}  diff={err:+.6f}  {flag}")
-    print("  Two mismatches are expected and are not bugs:")
-    print("    stand — its stored z was copied from stand_previous and never "
-          "updated when\n           the angles changed to 0.6/1.0. The analytic "
-          "value is the one used here.")
-    print("    park  — its stored z (0.367 m) is higher than the legs can "
-          "reach (0.192 m), so\n           it is not a foot-stance pose at all. This trainer never uses it.")
+        mujoco.mj_resetDataKeyframe(mj, data, i)
+        mujoco.mj_forward(mj, data)
+        joints = data.qpos[qpos_indices]
+        foot_bottom = data.site_xpos[foot_site_ids, 2] - FOOT_R
+        print(f"  {name:<16} stored z={float(data.qpos[2]):.6f}  "
+              f"min foot bottom={float(np.min(foot_bottom)):+.6f}  "
+              f"joints finite={bool(np.isfinite(joints).all())}")
 
     print(f"\nstance    default pose {np.array(DEFAULT_POSE)[:3]} per leg")
-    print(f"          analytic stand height {NOMINAL_H:.4f} m "
-          f"(legs straight: {FULL_H:.4f} m)")
+    print(f"          stand key height    {NOMINAL_H:.4f} m "
+          f"(open key: {FULL_H:.4f} m)")
     t0 = time.time()
     d = settle(mj, 2.0)
     print(f"          settled height        {float(d.qpos[2]):.4f} m "
           f"after 2.0 s  ({time.time() - t0:.1f} s wall)")
-    print(f"          sag {NOMINAL_H - float(d.qpos[2]):+.4f} m "
+    print(f"          sag from stand key   {NOMINAL_H - float(d.qpos[2]):+.4f} m "
           f"(soft servos: kp={mj.actuator_gainprm[0, 0]:.1f})")
     tilt = np.degrees(2 * np.arccos(np.clip(abs(d.qpos[3]), 0, 1)))
     print(f"          tilt after settling   {tilt:.2f} deg")
@@ -780,10 +865,12 @@ def probe():
     print(f"          static load per leg {static:.2f} N, hip lever "
           f"{lever * 1000:.1f} mm -> {static * lever:.3f} N·m holding torque")
 
-    print("\njoint sign convention (this is why front and rear differ):")
+    print("\njoint sign convention in the world frame at stand:")
+    mujoco.mj_resetDataKeyframe(mj, data, mj.key("stand").id)
+    mujoco.mj_forward(mj, data)
     for leg in LEGS:
         jid = mujoco.mj_name2id(mj, mujoco.mjtObj.mjOBJ_JOINT, f"{leg}_hip")
-        axis = mj.jnt_axis[jid]
+        axis = data.xaxis[jid]
         fwd = "forward" if axis[1] < 0 else "backward"
         print(f"  {leg:<12} hip axis {axis}  -> +hip swings the foot {fwd}")
     print("  The chains are mirrored front-to-rear, so the robot has no "
@@ -832,7 +919,7 @@ def tune_table():
                 except Exception as e:
                     print(f"{it:>6} {ls:>4} {cone:>10} {imp:>9.1f}  failed: {e}")
     SOLVER_ITER, SOLVER_LS_ITER, CONE, IMPRATIO = keep
-    print(f"\nanalytic target height {NOMINAL_H:.4f} m; pick the cheapest row "
+    print(f"\nstand-key target height {NOMINAL_H:.4f} m; pick the cheapest row "
           f"that holds it.")
 
 
@@ -847,9 +934,9 @@ def enable_dr():
     OBS_NOISE = 1.0
     PUSH_EVERY = 2.5
     LATENCY_PROB = 0.15
-    SAVE = "walk3d_policy_dr.bin"
-    VID_DIR = "walk3d_videos_dr"
-    CKPT_DIR = "walk3d_checkpoints_dr"
+    SAVE = "rollingquad_2_walk3d_policy_dr.bin"
+    VID_DIR = "rollingquad_2_walk3d_videos_dr"
+    CKPT_DIR = "rollingquad_2_walk3d_checkpoints_dr"
     NUM_TIMESTEPS = 300_000_000
 
 
@@ -861,7 +948,7 @@ def main():
     env, eval_env = Walk3DEnv(), Walk3DEnv()
 
     print("=" * 72)
-    print(f"curl_robot_3d — omnidirectional walking PPO")
+    print("rollingquad_2 — omnidirectional walking PPO")
     print(f"  obs {env.observation_size}  action {env.action_size}  "
           f"control {1 / env.dt:.0f} Hz  episode {EPISODE_LENGTH * env.dt:.0f} s")
     print(f"  stance height {env._nom_h:.4f} m   "
