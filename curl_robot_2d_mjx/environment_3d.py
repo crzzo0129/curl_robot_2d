@@ -81,6 +81,7 @@ CEM_CONTROLLER_PATHS_3D = {
     "baseline": BASELINE_3D_CEM_CONTROLLER,
     "real": REAL_3D_CEM_CONTROLLER,
     "pupper_open60": PUPPER_OPEN60_CEM_CONTROLLER,
+    "rollingquad_2": PUPPER_OPEN60_CEM_CONTROLLER,
 }
 DEFAULT_3D_CEM_CONTROLLER = PUPPER_OPEN60_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
@@ -320,7 +321,7 @@ def validate_rolling_morphology_3d(model, geometry: str) -> None:
 
     expected_names = (
         PUPPER_JOINT_NAMES_3D
-        if geometry == "pupper_open60"
+        if geometry in ("pupper_open60", "rollingquad_2")
         else JOINT_NAMES_3D
     )
     if model.nu != len(expected_names):
@@ -733,14 +734,25 @@ def make_brax_env_3d(
                 )
                 if "_shell_" in name:
                     shell_geom_ids.append(int(geom_id))
+            foot_geom_ids = (
+                self.front_left_foot_geom_id,
+                self.front_right_foot_geom_id,
+                self.rear_left_foot_geom_id,
+                self.rear_right_foot_geom_id,
+            )
+            if task.geometry == "rollingquad_2" and not shell_geom_ids:
+                # The corrected URDF integrates the rolling surfaces into the
+                # CAD link meshes instead of naming separate analytic shells.
+                # Classify non-foot dynamic geoms as shell/body surfaces for
+                # rolling contact rewards and diagnostics.
+                for geom_id in range(self.mj_model.ngeom):
+                    if geom_id in foot_geom_ids:
+                        continue
+                    if int(self.mj_model.geom_bodyid[geom_id]) != 0:
+                        shell_geom_ids.append(int(geom_id))
             self.shell_geom_ids = jp.asarray(shell_geom_ids, dtype=jp.int32)
             self.foot_geom_ids = jp.asarray(
-                (
-                    self.front_left_foot_geom_id,
-                    self.front_right_foot_geom_id,
-                    self.rear_left_foot_geom_id,
-                    self.rear_right_foot_geom_id,
-                ),
+                foot_geom_ids,
                 dtype=jp.int32,
             )
 
@@ -768,7 +780,7 @@ def make_brax_env_3d(
                         "rear_right",
                     )
                 ]
-                if task.geometry == "pupper_open60"
+                if task.geometry in ("pupper_open60", "rollingquad_2")
                 else []
             )
             self.locked_joint_dof_indices = jp.asarray(
@@ -1491,9 +1503,7 @@ def make_brax_env_3d(
                     "lateral_drift": lateral_drift,
                     "yaw_rate": yaw_rate,
                     "yaw": lateral_yaw,
-                    "previous_stability_cost": state.info[
-                        "previous_stability_cost"
-                    ],
+                    "previous_stability_cost": state.info["previous_stability_cost"],
                     "axis_tilt_squared": jp.square(axis_tilt),
                     "action_rate": action_rate,
                     "residual_action_cost": jp.mean(jp.square(policy_action)),

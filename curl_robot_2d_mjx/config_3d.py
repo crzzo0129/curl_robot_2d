@@ -18,6 +18,7 @@ GEOMETRY_NAMES_3D = (
     "baseline",
     "real",
     "pupper_open60",
+    "rollingquad_2",
 )
 
 
@@ -25,7 +26,7 @@ GEOMETRY_NAMES_3D = (
 class Rolling3DConfig:
     """Task constants for the first 3-D CEM-reference rolling env."""
 
-    geometry: str = "pupper_open60"
+    geometry: str = "rollingquad_2"
     physics_profile: str = "reference"
     physics_timestep: float = 0.001
     solver_name: str = "newton"

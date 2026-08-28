@@ -19,6 +19,7 @@ from curl_robot_2d_mjx.environment_3d import (
     MODEL_PATH_3D,
     PUPPER_OPEN60_MODEL_PATH_3D,
     PUPPER_OPEN60_CEM_CONTROLLER,
+    ROLLINGQUAD_2_MODEL_PATH_3D,
     REAL_3D_CEM_CONTROLLER,
     REAL_MODEL_PATH_3D,
     OBSERVATION_SIZE_3D,
@@ -60,11 +61,15 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertTrue(REAL_MODEL_PATH_3D.exists())
         self.assertTrue(PUPPER_OPEN60_MODEL_PATH_3D.exists())
         self.assertEqual(
-            GEOMETRY_NAMES_3D, ("baseline", "real", "pupper_open60")
+            GEOMETRY_NAMES_3D,
+            ("baseline", "real", "pupper_open60", "rollingquad_2"),
         )
         self.assertEqual(model_path_3d("real"), REAL_MODEL_PATH_3D)
         self.assertEqual(
             model_path_3d("pupper_open60"), PUPPER_OPEN60_MODEL_PATH_3D
+        )
+        self.assertEqual(
+            model_path_3d("rollingquad_2"), ROLLINGQUAD_2_MODEL_PATH_3D
         )
         self.assertAlmostEqual(geometry_parameters_3d("real").edge_length, 0.18)
         self.assertAlmostEqual(geometry_parameters_3d("real").foot_radius, 0.03)
@@ -82,6 +87,10 @@ class MJX3DContractTest(unittest.TestCase):
             cem_controller_path_3d("pupper_open60"),
             PUPPER_OPEN60_CEM_CONTROLLER,
         )
+        self.assertEqual(
+            cem_controller_path_3d("rollingquad_2"),
+            PUPPER_OPEN60_CEM_CONTROLLER,
+        )
         for controller in (
             BASELINE_3D_CEM_CONTROLLER,
             REAL_3D_CEM_CONTROLLER,
@@ -94,7 +103,7 @@ class MJX3DContractTest(unittest.TestCase):
     def test_3d_config_defaults_are_training_smoke_safe(self) -> None:
         config = Rolling3DConfig()
 
-        self.assertEqual(config.geometry, "pupper_open60")
+        self.assertEqual(config.geometry, "rollingquad_2")
         self.assertAlmostEqual(config.control_timestep, 0.02)
         self.assertEqual(config.episode_length, 500)
         self.assertEqual(len(config.action_scales), 8)
@@ -256,6 +265,13 @@ class MJX3DContractTest(unittest.TestCase):
         for geom_id in shell_ids:
             self.assertEqual(int(model.geom_contype[geom_id]), 4)
             self.assertEqual(int(model.geom_conaffinity[geom_id]), 3)
+
+    def test_corrected_rollingquad_is_the_default_rolling_model(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))
+
+        validate_rolling_morphology_3d(model, "rollingquad_2")
+        self.assertEqual((model.nq, model.nv, model.nu), (19, 18, 12))
+        self.assertEqual(Rolling3DConfig().geometry, "rollingquad_2")
 
     def test_rolling_phase_integrates_signed_local_y_velocity(self) -> None:
         forward = advance_rolling_phase_3d(np, 0.2, 3.0, 0.01)

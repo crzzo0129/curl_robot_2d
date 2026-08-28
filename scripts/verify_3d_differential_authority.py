@@ -86,7 +86,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--controller", type=Path, default=DEFAULT_3D_CEM_CONTROLLER
     )
-    parser.add_argument("--geometry", default="pupper_open60")
+    parser.add_argument("--geometry", default="rollingquad_2")
     parser.add_argument("--physics-profile", default="cg20")
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--envs", type=int, default=64)

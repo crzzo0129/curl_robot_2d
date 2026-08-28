@@ -42,11 +42,14 @@
 5. 修复迁移后，旧 90/75 壳体分配在 3D 达到 9.754 圈。
 6. 壳体改为躯干 150°/大腿 45° 后，必须重新优化匹配 reference。
 7. 当前匹配方案在 3D 达到位移等效 8.781 圈、实际滚动 8.568 圈，力矩饱和 0%。
+8. corrected RollingQuad 2 完整 CAD 模型复用该 reference 后，10 s 达到位移等效
+   8.795 圈、实际滚动 8.799 圈；滚动轴倾斜 RMS 1.58°，力矩饱和 0%。
 
 当前正式模型已提升到 `assets/`：
 
 - `assets/curl_robot_2d_pupper_r127p5_open60.xml`
 - `assets/curl_robot_3d_pupper_r127p5_open60_width120.xml`
+- `assets/rollingquad_description_2/mjcf/rollingquad.xml`（当前行走、部署和 3D 滚动默认模型）
 
 二者都是 60° 开口、R=127.5 mm、躯干 150°/大腿 45° 的匹配模型；正式
 `assets` 中不再保留 90° 开口 Pupper 模型。
@@ -69,7 +72,7 @@ python -m unittest discover -s tests -v
 
 # 2D CEM 与 3D reference 验证
 python -m scripts.optimize_phase_controller --help
-python -m scripts.evaluate_3d_symmetric_cem_reference --help
+python -m scripts.evaluate_3d_symmetric_cem_reference --duration 10 --physics-profile reference --out results/rollingquad_2_3d_reference/cpu_newton20_reference_10s.json
 
 # 进入 RL 前先做 reference-only 鲁棒性验证
 python -m scripts.compare_mjx_3d_reference --help

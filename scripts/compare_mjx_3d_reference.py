@@ -15,14 +15,17 @@ from curl_robot_2d.parameters import FIXED_PARAMETERS
 from curl_robot_2d_mjx.cem_reference import load_cem_reference
 from curl_robot_2d_mjx.environment_3d import (
     DEFAULT_3D_CEM_CONTROLLER,
-    PUPPER_OPEN60_MODEL_PATH_3D,
+    ROLLINGQUAD_2_MODEL_PATH_3D,
 )
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = (
-    PROJECT_ROOT / "results" / "mjx_3d_reference_parity" / "summary.json"
+    PROJECT_ROOT
+    / "results"
+    / "rollingquad_2_3d_reference_parity"
+    / "summary.json"
 )
 CASE_NAMES = (
     "cpu_newton_exact",
@@ -175,11 +178,11 @@ def _run_cpu_case(args, *, name, physics_profile):
     cpu_args = parse_cpu_args(
         [
             "--xml",
-            str(PUPPER_OPEN60_MODEL_PATH_3D),
+            str(ROLLINGQUAD_2_MODEL_PATH_3D),
             "--controller",
             str(args.controller),
             "--geometry",
-            "pupper60",
+            "rollingquad_2",
             "--duration",
             str(duration),
             "--control-dt",

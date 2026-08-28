@@ -15,6 +15,7 @@
 | `pupper_r127p5_open60_3d_width120/` | 旧 90/75 分配的 3D 迁移与修复 | `evaluation_migration_corrected.json` |
 | `pupper_r127p5_open60_shell150_45_three_stage_cem/` | 当前 150/45 分配的匹配 2D CEM | `summary.json`, 阶段 3 controller |
 | `pupper_r127p5_open60_3d_width120_shell150_45/` | 当前方案的 3D paired evaluation | `evaluation_new_2d_reference.json`, `reference_new_2d_cem_tracking.gif` |
+| `rollingquad_2_3d_reference/` | corrected RollingQuad 2 完整 CAD 的 3D reference | `cpu_newton20_reference_10s.json`, 关节曲线与 10 s GIF |
 | `design_logic_exploration_ppt/` | 设计探索汇报 | `CURL_robot_design_exploration_CN.pptx` |
 
 ### 当前推荐 reference
@@ -44,6 +45,21 @@ pupper_r127p5_open60_3d_width120_shell150_45/
 
 关键结果：10 s 位移 7.034 m，位移等效 8.781 圈，实际滚动 8.568 圈，跟踪
 RMSE 6.34°，力矩饱和 0%，横向漂移近似 0。
+
+当前训练默认使用 corrected RollingQuad 2：
+
+```text
+rollingquad_2_3d_reference/
+  cpu_newton20_reference_10s.json
+  joint_angles_10s.png
+  joint_angles_10s.csv
+  reference_10s.gif
+```
+
+该模型沿用同一 CEM reference，使用完整 CAD 碰撞和 reference 求解配置
+（1 ms、Newton 20、line-search 10）。10 s 位移 7.046 m，位移等效 8.795 圈，
+实际滚动 8.799 圈，滚动轴倾斜 RMS 1.58° / 最大 3.19°，无非有限值、
+无自碰撞、3 Nm 力矩饱和 0%。
 
 ## B. Real-geometry 与旧模型基线
 

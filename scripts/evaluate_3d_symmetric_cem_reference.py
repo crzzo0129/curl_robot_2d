@@ -29,19 +29,16 @@ from curl_robot_2d_mjx.config_3d import (
     physics_profile_3d,
 )
 from curl_robot_2d_mjx.environment_3d import (
+    DEFAULT_3D_CEM_CONTROLLER,
+    ROLLINGQUAD_2_MODEL_PATH_3D,
     apply_physics_options_3d,
     configure_pupper_shell_collisions_3d,
 )
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONTROLLER_PATH = (
-    PROJECT_ROOT
-    / "results"
-    / "collision_constrained_cem_foot_gap_2mm_short_contact"
-    / "best_phase_controller.json"
-)
-DEFAULT_XML_PATH = PROJECT_ROOT / "assets" / "curl_robot_3d.xml"
+DEFAULT_CONTROLLER_PATH = DEFAULT_3D_CEM_CONTROLLER
+DEFAULT_XML_PATH = ROLLINGQUAD_2_MODEL_PATH_3D
 
 PLANAR_COMPACT = np.asarray(
     (
@@ -267,7 +264,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--xml", type=Path, default=DEFAULT_XML_PATH)
     parser.add_argument("--controller", type=Path, default=DEFAULT_CONTROLLER_PATH)
     parser.add_argument(
-        "--geometry", choices=("baseline", "real", "pupper60"), default="baseline"
+        "--geometry",
+        choices=("baseline", "real", "pupper60", "rollingquad_2"),
+        default="rollingquad_2",
     )
     parser.add_argument("--minimum-foot-gap-mm", type=float, default=None)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float, default=None)
@@ -309,6 +308,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--kp", type=float, default=5.0)
     parser.add_argument("--kd", type=float, default=0.1)
     parser.add_argument("--torque-limit", type=float, default=3.0)
+    parser.add_argument(
+        "--diagnose-self-collision",
+        action="store_true",
+        help=(
+            "Replay each simulated pose through a shadow MuJoCo model with "
+            "robot-robot collision enabled. This measures potential CAD "
+            "self-contact without changing the reference trajectory."
+        ),
+    )
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
         "--joint-plot",
@@ -335,6 +343,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         "baseline": FixedParameters(),
         "real": REAL_GEOMETRY_PARAMETERS,
         "pupper60": PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+        "rollingquad_2": PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
     }[args.geometry])
     if args.duration <= 0.0 or args.control_dt <= 0.0:
         raise SystemExit("--duration and --control-dt must be positive")
@@ -414,7 +423,23 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     torso_body_id = model.body("torso").id
     floor_geom_id = model.geom("floor").id
     foot_geom_ids = {model.geom(name).id for name in FOOT_GEOM_NAMES_3D}
-    shell_geom_ids = _shell_geom_ids(model, mujoco)
+    shell_geom_ids = _shell_geom_ids(model, mujoco, foot_geom_ids)
+    self_collision_physics_enabled = _robot_self_collision_enabled(
+        model, floor_geom_id
+    )
+    diagnostic_model = None
+    diagnostic_data = None
+    diagnostic_floor_geom_id = None
+    if args.diagnose_self_collision:
+        diagnostic_model = mujoco.MjModel.from_xml_path(str(args.xml.resolve()))
+        if args.geometry == "pupper60":
+            configure_pupper_shell_collisions_3d(diagnostic_model, enabled=True)
+        apply_physics_options_3d(diagnostic_model, task)
+        diagnostic_floor_geom_id = diagnostic_model.geom("floor").id
+        _enable_robot_self_collision(
+            diagnostic_model, diagnostic_floor_geom_id
+        )
+        diagnostic_data = mujoco.MjData(diagnostic_model)
 
     model.actuator_gainprm[actuator_ids, 0] = args.kp
     model.actuator_biasprm[actuator_ids, 1] = -args.kp
@@ -459,12 +484,16 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     commanded_joint_angles = []
     self_contact_pair_steps: dict[str, int] = {}
     self_contact_pair_max_penetration: dict[str, float] = {}
+    potential_self_contact_fractions = []
+    potential_self_contact_pair_steps: dict[str, int] = {}
+    potential_self_contact_pair_max_penetration: dict[str, float] = {}
     nonfinite = False
     for _ in range(steps):
         saturated = []
         shell_contacts = []
         foot_contacts = []
         self_contacts = []
+        potential_self_contacts = []
         phase_rates = []
         for _ in range(control_repeat):
             previous_phase = phase
@@ -561,6 +590,56 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
                     self_contact_pair_max_penetration.get(pair_name, 0.0),
                     penetration,
                 )
+            if diagnostic_data is not None:
+                diagnostic_data.qpos[:] = data.qpos
+                diagnostic_data.qvel[:] = data.qvel
+                diagnostic_data.time = data.time
+                mujoco.mj_forward(diagnostic_model, diagnostic_data)
+                potential_self_contacts.append(
+                    _contact_flags(
+                        diagnostic_data,
+                        diagnostic_floor_geom_id,
+                        set(),
+                        set(),
+                    )[2]
+                )
+                diagnostic_active_pairs: dict[str, float] = {}
+                for contact in diagnostic_data.contact:
+                    geom1 = int(contact.geom1)
+                    geom2 = int(contact.geom2)
+                    if diagnostic_floor_geom_id in (geom1, geom2):
+                        continue
+                    names = sorted(
+                        (
+                            mujoco.mj_id2name(
+                                diagnostic_model,
+                                mujoco.mjtObj.mjOBJ_GEOM,
+                                geom1,
+                            )
+                            or f"geom_{geom1}",
+                            mujoco.mj_id2name(
+                                diagnostic_model,
+                                mujoco.mjtObj.mjOBJ_GEOM,
+                                geom2,
+                            )
+                            or f"geom_{geom2}",
+                        )
+                    )
+                    pair_name = "__".join(names)
+                    diagnostic_active_pairs[pair_name] = max(
+                        diagnostic_active_pairs.get(pair_name, 0.0),
+                        max(-float(contact.dist), 0.0),
+                    )
+                for pair_name, penetration in diagnostic_active_pairs.items():
+                    potential_self_contact_pair_steps[pair_name] = (
+                        potential_self_contact_pair_steps.get(pair_name, 0) + 1
+                    )
+                    potential_self_contact_pair_max_penetration[pair_name] = max(
+                        potential_self_contact_pair_max_penetration.get(
+                            pair_name, 0.0
+                        ),
+                        penetration,
+                    )
         if args.linear_phase:
             phase += (
                 args.phase_rate_scale
@@ -592,6 +671,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
             )
         )
         joint_times.append(float(data.time))
+        if potential_self_contacts:
+            potential_self_contact_fractions.append(
+                float(np.mean(potential_self_contacts))
+            )
         actual_joint_angles.append(data.qpos[measured_qpos_indices].copy())
         commanded_joint_angles.append(data.ctrl[measured_actuator_ids].copy())
         if nonfinite:
@@ -648,6 +731,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     status = "failed" if nonfinite else "ok"
     return {
         "status": status,
+        "geometry": args.geometry,
         "xml": str(args.xml.resolve()),
         "controller": str(args.controller.resolve()),
         "elapsed_s": float(elapsed),
@@ -695,6 +779,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         "shell_floor_contact_fraction": float(np.mean(values[:, 9])),
         "foot_floor_contact_fraction": float(np.mean(values[:, 10])),
         "self_contact_fraction": float(np.mean(values[:, 11])),
+        "self_collision_physics_enabled": bool(self_collision_physics_enabled),
         "self_contact_pairs": {
             pair_name: {
                 "duration_s": steps * float(model.opt.timestep),
@@ -703,6 +788,22 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
                 ],
             }
             for pair_name, steps in sorted(self_contact_pair_steps.items())
+        },
+        "potential_self_contact_fraction": (
+            None
+            if not args.diagnose_self_collision
+            else float(np.mean(potential_self_contact_fractions))
+        ),
+        "potential_self_contact_pairs": {
+            pair_name: {
+                "duration_s": steps * float(model.opt.timestep),
+                "maximum_penetration_m": (
+                    potential_self_contact_pair_max_penetration[pair_name]
+                ),
+            }
+            for pair_name, steps in sorted(
+                potential_self_contact_pair_steps.items()
+            )
         },
         "nonfinite": bool(nonfinite),
         "target_scale": float(args.target_scale),
@@ -880,13 +981,59 @@ def _reset_data(model, data, mujoco, qpos_indices, actuator_ids, ctrl) -> None:
     mujoco.mj_forward(model, data)
 
 
-def _shell_geom_ids(model, mujoco) -> set[int]:
+def _shell_geom_ids(model, mujoco, foot_geom_ids: set[int]) -> set[int]:
     geom_ids = set()
     for geom_id in range(model.ngeom):
         name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id) or ""
         if "_shell_" in name:
             geom_ids.add(int(geom_id))
+    if geom_ids:
+        return geom_ids
+
+    # rollingquad_2 exports each physical shell as part of its CAD link mesh,
+    # rather than as a separately named analytic ``*_shell_*`` geom.  Report
+    # every non-foot robot geom as shell/body contact while preserving the
+    # four lower-leg/foot meshes as the existing foot-contact category.
+    floor_geom_id = model.geom("floor").id
+    for geom_id in range(model.ngeom):
+        if geom_id == floor_geom_id or geom_id in foot_geom_ids:
+            continue
+        if int(model.geom_bodyid[geom_id]) != 0:
+            geom_ids.add(int(geom_id))
     return geom_ids
+
+
+def _robot_geom_ids(model, floor_geom_id: int) -> list[int]:
+    floor_body_id = int(model.geom_bodyid[floor_geom_id])
+    return [
+        geom_id
+        for geom_id in range(model.ngeom)
+        if int(model.geom_bodyid[geom_id]) != floor_body_id
+    ]
+
+
+def _robot_self_collision_enabled(model, floor_geom_id: int) -> bool:
+    geom_ids = _robot_geom_ids(model, floor_geom_id)
+    for index, geom1 in enumerate(geom_ids):
+        for geom2 in geom_ids[index + 1 :]:
+            if int(model.geom_bodyid[geom1]) == int(model.geom_bodyid[geom2]):
+                continue
+            if (
+                int(model.geom_contype[geom1])
+                & int(model.geom_conaffinity[geom2])
+                or int(model.geom_contype[geom2])
+                & int(model.geom_conaffinity[geom1])
+            ):
+                return True
+    return False
+
+
+def _enable_robot_self_collision(model, floor_geom_id: int) -> None:
+    # Bit 1 preserves floor contact; bit 2 enables robot-robot contact.  This
+    # is used only by the shadow diagnostic model, never by the rollout model.
+    for geom_id in _robot_geom_ids(model, floor_geom_id):
+        model.geom_contype[geom_id] = 2
+        model.geom_conaffinity[geom_id] = 3
 
 
 def _contact_flags(

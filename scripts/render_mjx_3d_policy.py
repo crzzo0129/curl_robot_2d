@@ -139,7 +139,7 @@ def render_rollout(
     output_path: Path,
     *,
     model_path: Path | None = None,
-    geometry: str = "baseline",
+    geometry: str = "rollingquad_2",
     physics_profile: str,
     control_dt: float,
     fps: float,
@@ -333,7 +333,7 @@ def parse_args(argv=None):
     parser.add_argument("rollout", type=Path)
     parser.add_argument("--model-xml", type=Path)
     parser.add_argument(
-        "--geometry", choices=GEOMETRY_NAMES_3D, default="pupper_open60"
+        "--geometry", choices=GEOMETRY_NAMES_3D, default="rollingquad_2"
     )
     parser.add_argument(
         "--physics-profile",

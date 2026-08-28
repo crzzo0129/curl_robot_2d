@@ -269,7 +269,7 @@ def parse_args(argv=None):
         help="CEM reference; defaults to the controller matched to --geometry.",
     )
     parser.add_argument(
-        "--geometry", choices=GEOMETRY_NAMES_3D, default="pupper_open60"
+        "--geometry", choices=GEOMETRY_NAMES_3D, default="rollingquad_2"
     )
     parser.add_argument("--minimum-foot-gap-mm", type=float)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float)

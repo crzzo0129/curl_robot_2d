@@ -54,7 +54,7 @@ def parse_args(argv=None):
     parser.add_argument("--out", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--controller", type=Path)
     parser.add_argument(
-        "--geometry", choices=GEOMETRY_NAMES_3D, default="pupper_open60"
+        "--geometry", choices=GEOMETRY_NAMES_3D, default="rollingquad_2"
     )
     parser.add_argument(
         "--timesteps-ms",

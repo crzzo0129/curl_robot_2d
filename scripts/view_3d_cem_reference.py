@@ -44,7 +44,9 @@ def parse_args(argv=None):
     parser.add_argument("--xml", default=DEFAULT_XML_PATH)
     parser.add_argument("--controller", default=DEFAULT_CONTROLLER_PATH)
     parser.add_argument(
-        "--geometry", choices=("baseline", "real", "pupper60"), default="baseline"
+        "--geometry",
+        choices=("baseline", "real", "pupper60", "rollingquad_2"),
+        default="rollingquad_2",
     )
     parser.add_argument("--minimum-foot-gap-mm", type=float, default=None)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float, default=None)
@@ -143,6 +145,7 @@ def run(argv=None):
         "baseline": FIXED_PARAMETERS,
         "real": REAL_GEOMETRY_PARAMETERS,
         "pupper60": PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
+        "rollingquad_2": PUPPER_ORIGINAL_SHELL_60_PARAMETERS,
     }[args.geometry]
     activate_planar_geometry(geometry_parameters)
     if args.duration <= 0.0 or args.control_dt <= 0.0 or args.realtime <= 0.0:

@@ -1557,10 +1557,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--geometry",
         choices=GEOMETRY_NAMES_3D,
-        default="pupper_open60",
+        default="rollingquad_2",
         help=(
-            "Select the latest 12-joint Pupper geometry or a legacy "
-            "8-joint rolling geometry."
+            "Select the corrected 12-joint RollingQuad geometry, the older "
+            "Pupper geometry, or a legacy 8-joint rolling geometry."
         ),
     )
     parser.add_argument(
