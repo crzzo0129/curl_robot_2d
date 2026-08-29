@@ -328,6 +328,15 @@ def parse_args(argv=None):
         default=1.0,
         help="Additional multiplier for bodies whose name contains right.",
     )
+    parser.add_argument(
+        "--actuator-gain-scale",
+        type=float,
+        default=1.0,
+        help=(
+            "Fixed multiplier applied to position-actuator kp; kd and "
+            "force limits remain unchanged."
+        ),
+    )
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--chunk-size", type=int, default=512)
@@ -475,6 +484,7 @@ def parse_args(argv=None):
         (args.body_mass_scale, "--body-mass-scale"),
         (args.body_mass_left_scale, "--body-mass-left-scale"),
         (args.body_mass_right_scale, "--body-mass-right-scale"),
+        (args.actuator_gain_scale, "--actuator-gain-scale"),
     ):
         if not math.isfinite(value) or value <= 0.0:
             parser.error(f"{name} must be finite and positive")
@@ -545,6 +555,7 @@ def main(argv=None) -> None:
             body_mass_scale=args.body_mass_scale,
             body_mass_left_scale=args.body_mass_left_scale,
             body_mass_right_scale=args.body_mass_right_scale,
+            actuator_gain_scale=args.actuator_gain_scale,
             reset_joint_noise_rad=args.reset_joint_noise_rad,
             reset_velocity_noise=args.reset_velocity_noise,
             reset_root_velocity_noise=args.reset_root_velocity_noise,
@@ -901,7 +912,8 @@ def main(argv=None) -> None:
         f"floor_override={task.floor_contact_friction_override}\n"
         f"  body_mass_scale={task.body_mass_scale:g} "
         f"left={task.body_mass_left_scale:g} "
-        f"right={task.body_mass_right_scale:g}\n"
+        f"right={task.body_mass_right_scale:g} "
+        f"actuator_gain_scale={task.actuator_gain_scale:g}\n"
         f"  reset_noise q={task.reset_joint_noise_rad:g} "
         f"joint_v={task.reset_velocity_noise:g} "
         f"root_v={task.reset_root_velocity_noise:g} "

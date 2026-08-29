@@ -51,8 +51,9 @@ python -m scripts.train_mjx_3d_residual_ppo \
   --out results/rollingquad2_floor_mass_v2_h200_seed0
 ```
 
-`params_best` 仍只从最终 `floor_mass_05` 阶段选择。通过 ±5% 后再单独加入
-actuator gain 随机化，不在本阶段同时扩大质量范围。
+`params_best` 仍只从最终 `floor_mass_05` 阶段选择。该阶段通过后，下一阶段使用
+[`floor_mass_gain_v3`](3d_actuator_gain_curriculum_zh.md) 单独加入 actuator `kp`
+随机化，不同时扩大质量范围。
 
 ## 旧路径：`mass_v1`
 

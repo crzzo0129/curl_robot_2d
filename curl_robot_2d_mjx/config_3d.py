@@ -39,6 +39,7 @@ class Rolling3DConfig:
     body_mass_scale: float = 1.0
     body_mass_left_scale: float = 1.0
     body_mass_right_scale: float = 1.0
+    actuator_gain_scale: float = 1.0
     action_repeat: int = 20
     episode_length: int = 500
     action_scales: tuple[float, ...] = (
@@ -110,6 +111,7 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         (config.body_mass_scale, "body_mass_scale"),
         (config.body_mass_left_scale, "body_mass_left_scale"),
         (config.body_mass_right_scale, "body_mass_right_scale"),
+        (config.actuator_gain_scale, "actuator_gain_scale"),
     ):
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"{name} must be finite and positive")

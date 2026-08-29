@@ -595,6 +595,8 @@ def apply_physics_options_3d(model, task: Rolling3DConfig) -> None:
         scale = task.body_mass_scale * side_scale
         model.body_mass[body_id] *= scale
         model.body_inertia[body_id] *= scale
+    model.actuator_gainprm[:, 0] *= task.actuator_gain_scale
+    model.actuator_biasprm[:, 1] = -model.actuator_gainprm[:, 0]
     if task.disable_root_damping:
         root_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_JOINT, "root"

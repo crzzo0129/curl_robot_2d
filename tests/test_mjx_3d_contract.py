@@ -134,6 +134,7 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.body_mass_scale, 1.0)
         self.assertEqual(config.body_mass_left_scale, 1.0)
         self.assertEqual(config.body_mass_right_scale, 1.0)
+        self.assertEqual(config.actuator_gain_scale, 1.0)
         self.assertFalse(config.explicit_phase_observation)
         reward = Rolling3DRewardConfig()
         self.assertEqual(reward.roll_progress, 6.0)
@@ -169,6 +170,7 @@ class MJX3DContractTest(unittest.TestCase):
             {"body_mass_scale": 0.0},
             {"body_mass_left_scale": float("nan")},
             {"body_mass_right_scale": -1.0},
+            {"actuator_gain_scale": 0.0},
             {"explicit_phase_observation": 1},
             {"terminate_root_z_min": -0.01},
             {"terminate_axis_tilt_duration_s": 0.0},
@@ -642,6 +644,47 @@ class MJX3DContractTest(unittest.TestCase):
                 stage.domain_randomization.actuator_gain_scale, (1.0, 1.0)
             )
 
+    def test_floor_mass_gain_v3_only_expands_actuator_gain(self) -> None:
+        stages = curriculum_stages_3d("floor_mass_gain_v3")
+
+        self.assertEqual(
+            [stage.name for stage in stages],
+            ["floor_mass_gain_02", "floor_mass_gain_05"],
+        )
+        self.assertEqual([stage.weight for stage in stages], [0.30, 0.70])
+        self.assertEqual(
+            [
+                stage.domain_randomization.actuator_gain_scale
+                for stage in stages
+            ],
+            [(0.98, 1.02), (0.95, 1.05)],
+        )
+        base = Rolling3DConfig(
+            reset_root_velocity_noise=0.1,
+            reset_pair_differential_scale=0.25,
+        )
+        for stage in stages:
+            task = stage.task_config(base)
+            self.assertEqual(stage.reset_joint_noise_rad, 0.005)
+            self.assertEqual(stage.reset_velocity_noise, 0.005)
+            self.assertTrue(stage.reset_independent)
+            self.assertEqual(task.reset_root_velocity_noise, 0.0)
+            self.assertIsNone(task.reset_pair_differential_scale)
+            self.assertEqual(task.reset_axis_tilt_noise_rad, 0.0)
+            self.assertTrue(task.floor_contact_friction_override)
+            self.assertEqual(
+                stage.domain_randomization.floor_friction_scale,
+                (0.90, 1.10),
+            )
+            self.assertEqual(
+                stage.domain_randomization.body_mass_scale,
+                (0.95, 1.05),
+            )
+            self.assertEqual(
+                stage.domain_randomization.geom_friction_scale,
+                (1.0, 1.0),
+            )
+
     def test_domain_randomization_ranges_are_positive_and_ordered(self) -> None:
         validate_domain_randomization_3d(
             Rolling3DDomainRandomization(
@@ -797,6 +840,29 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(args.physics_profile, "cg12")
         self.assertEqual(args.batch_size, 1)
         self.assertEqual(args.steps, 1)
+
+    def test_3d_physics_options_scale_kp_but_preserve_kd_and_limits(
+        self,
+    ) -> None:
+        model = mujoco.MjModel.from_xml_path(str(MODEL_PATH_3D))
+        original_gain = model.actuator_gainprm.copy()
+        original_bias = model.actuator_biasprm.copy()
+        original_force = model.actuator_forcerange.copy()
+
+        apply_physics_options_3d(
+            model, Rolling3DConfig(actuator_gain_scale=0.95)
+        )
+
+        np.testing.assert_allclose(
+            model.actuator_gainprm[:, 0], original_gain[:, 0] * 0.95
+        )
+        np.testing.assert_allclose(
+            model.actuator_biasprm[:, 1], -original_gain[:, 0] * 0.95
+        )
+        np.testing.assert_allclose(
+            model.actuator_biasprm[:, 2], original_bias[:, 2]
+        )
+        np.testing.assert_allclose(model.actuator_forcerange, original_force)
 
     def test_3d_environment_declares_required_metrics_and_guards(self) -> None:
         source = (

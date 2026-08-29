@@ -134,7 +134,9 @@ python -m unittest discover -s tests -v
 保持上述 reset 分布不变的前提下逐步扩展纯地面接触摩擦到
 `U(0.90, 1.10)`；机器人自接触摩擦不随之改变。摩擦课程通过后，当前下一阶段
 是 `floor_mass_v2`：继续保留独立 reset 与 floor 摩擦分布，只逐步加入每个
-body 耦合的质量/惯量 ±2% 和 ±5%。旧 `friction_v1/mass_v1` 只用于复现。
+body 耦合的质量/惯量 ±2% 和 ±5%。该阶段通过后使用
+`floor_mass_gain_v3`，固定已通过的质量/惯量分布，只加入每个 actuator 独立的
+`kp` ±2% 和 ±5%。旧 `friction_v1/mass_v1` 只用于复现。
 设计、reward 公式、smoke/H200 命令和验收方法
 见 [`docs/3d_robustness_curriculum_zh.md`](docs/3d_robustness_curriculum_zh.md)。
 

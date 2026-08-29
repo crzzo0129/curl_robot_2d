@@ -393,6 +393,26 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
         self.assertEqual([item["num_evals"] for item in plan], [4, 8])
 
+    def test_floor_mass_gain_v3_allocates_two_progressive_stages(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--curriculum", "floor_mass_gain_v3", "--num-evals", "12"]
+        )
+        values = train_mjx_3d_residual_ppo.PRESETS["smoke"].copy()
+        values["num_evals"] = args.num_evals
+
+        plan = train_mjx_3d_residual_ppo._curriculum_training_plan(
+            args, values
+        )
+
+        self.assertEqual(
+            [item["stage"].name for item in plan],
+            ["floor_mass_gain_02", "floor_mass_gain_05"],
+        )
+        self.assertTrue(
+            all(item["schedule"]["effective_steps"] > 0 for item in plan)
+        )
+        self.assertEqual([item["num_evals"] for item in plan], [4, 8])
+
     def test_curriculum_stage_must_belong_to_selected_curriculum(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             train_mjx_3d_residual_ppo.parse_args(
@@ -912,6 +932,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
                 "1.05",
                 "--body-mass-right-scale",
                 "0.95",
+                "--actuator-gain-scale",
+                "0.95",
             ]
         )
 
@@ -925,6 +947,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.body_mass_scale, 0.95)
         self.assertEqual(args.body_mass_left_scale, 1.05)
         self.assertEqual(args.body_mass_right_scale, 0.95)
+        self.assertEqual(args.actuator_gain_scale, 0.95)
 
     def test_evaluator_rejects_nonpositive_friction_scale(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
@@ -957,6 +980,17 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
                     "--out",
                     "eval_bad_mass",
                     "--body-mass-left-scale",
+                    "0",
+                ]
+            )
+
+        with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            evaluate_mjx_3d_policy.parse_args(
+                [
+                    "params_best",
+                    "--out",
+                    "eval_bad_gain",
+                    "--actuator-gain-scale",
                     "0",
                 ]
             )
