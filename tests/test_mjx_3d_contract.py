@@ -568,6 +568,49 @@ class MJX3DContractTest(unittest.TestCase):
             self.assertEqual(stage.reset_pair_differential_scale, 0.25)
             self.assertEqual(stage.reset_axis_tilt_noise_rad, 0.030)
 
+    def test_floor_mass_v2_keeps_floor_friction_and_independent_reset(
+        self,
+    ) -> None:
+        stages = curriculum_stages_3d("floor_mass_v2")
+
+        self.assertEqual(
+            [stage.name for stage in stages],
+            ["floor_mass_02", "floor_mass_05"],
+        )
+        self.assertEqual([stage.weight for stage in stages], [0.30, 0.70])
+        self.assertEqual(
+            [
+                stage.domain_randomization.body_mass_scale
+                for stage in stages
+            ],
+            [(0.98, 1.02), (0.95, 1.05)],
+        )
+        base = Rolling3DConfig(
+            reset_root_velocity_noise=0.1,
+            reset_pair_differential_scale=0.25,
+        )
+        for stage in stages:
+            task = stage.task_config(base)
+            self.assertEqual(stage.reset_joint_noise_rad, 0.005)
+            self.assertEqual(stage.reset_velocity_noise, 0.005)
+            self.assertTrue(stage.reset_independent)
+            self.assertEqual(task.reset_root_velocity_noise, 0.0)
+            self.assertIsNone(task.reset_pair_differential_scale)
+            self.assertEqual(task.reset_axis_tilt_noise_rad, 0.0)
+            self.assertTrue(task.floor_contact_friction_override)
+            self.assertEqual(
+                stage.domain_randomization.floor_friction_scale,
+                (0.90, 1.10),
+            )
+            self.assertEqual(
+                stage.domain_randomization.geom_friction_scale,
+                (1.0, 1.0),
+            )
+            self.assertEqual(
+                stage.domain_randomization.actuator_gain_scale,
+                (1.0, 1.0),
+            )
+
     def test_mass_v1_retains_friction_and_only_expands_mass_inertia(
         self,
     ) -> None:

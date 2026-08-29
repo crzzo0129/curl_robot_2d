@@ -1,5 +1,64 @@
 # 3D rolling mass/inertia curriculum
 
+## 当前路径：`floor_mass_v2`
+
+`floor_mass_v2` 从已通过的
+`results/rollingquad2_floor_friction_v2_h200_seed0/params_best` 热启动，完整保留
+`floor_friction_v2` 的目标分布：八关节 q/qdot 独立噪声均为 `0.005`、root
+velocity 和 axis tilt 为 0、只随机化 floor 接触摩擦到 `U(0.90, 1.10)`。
+本阶段唯一新增变量是每个非 world body 独立采样的质量/惯量耦合缩放：
+
+| stage | 权重 | floor friction | 每个 body 的 mass/inertia |
+|---|---:|---:|---:|
+| `floor_mass_02` | 0.30 | U(0.90, 1.10) | U(0.98, 1.02) |
+| `floor_mass_05` | 0.70 | U(0.90, 1.10) | U(0.95, 1.05) |
+
+同一个 body 使用同一个 scale 同时缩放质量和三个主惯量，因而保留回转半径；
+不同 body 独立采样，所以也覆盖左右质量差和重心偏移。全局
+`geom_friction_scale` 和 actuator gain 均固定为 1。
+
+### Smoke
+
+```bash
+python -m scripts.train_mjx_3d_residual_ppo \
+  --preset smoke \
+  --recipe robust_recovery_v15 \
+  --geometry rollingquad_2 \
+  --physics-profile cg20 \
+  --curriculum floor_mass_v2 \
+  --restore-params results/rollingquad2_floor_friction_v2_h200_seed0/params_best \
+  --episode-length 500 --num-evals 12 --eval-envs 64 \
+  --phase-rate-scale 1.0 --selection-target-turns 6.0 \
+  --reset-root-velocity-noise 0 --reset-axis-tilt-noise-rad 0 \
+  --seed 0 --mujoco-gl disable --memory-fraction 0.50 \
+  --out results/rollingquad2_floor_mass_v2_smoke_seed0
+```
+
+### H200 正式训练
+
+```bash
+python -m scripts.train_mjx_3d_residual_ppo \
+  --preset h200 \
+  --recipe robust_recovery_v15 \
+  --geometry rollingquad_2 \
+  --physics-profile cg20 \
+  --curriculum floor_mass_v2 \
+  --restore-params results/rollingquad2_floor_friction_v2_h200_seed0/params_best \
+  --episode-length 500 --num-evals 30 --eval-envs 256 \
+  --phase-rate-scale 1.0 --selection-target-turns 6.0 \
+  --reset-root-velocity-noise 0 --reset-axis-tilt-noise-rad 0 \
+  --seed 0 --mujoco-gl disable --memory-fraction 0.80 \
+  --out results/rollingquad2_floor_mass_v2_h200_seed0
+```
+
+`params_best` 仍只从最终 `floor_mass_05` 阶段选择。通过 ±5% 后再单独加入
+actuator gain 随机化，不在本阶段同时扩大质量范围。
+
+## 旧路径：`mass_v1`
+
+以下内容只用于复现旧 `reset_v2 -> friction_v1 -> mass_v1` 实验，不应接在当前
+`floor_friction_v2` checkpoint 后面。
+
 ## 设计边界
 
 `mass_v1` 从已经通过独立端点评估的 `friction_v1/params_best` 热启动。本阶段不修改 torso 碰撞体、reference、reward、termination、observation 或 actuator gain。

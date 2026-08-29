@@ -373,6 +373,26 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
         self.assertGreaterEqual(sum(item["num_evals"] for item in plan), 2)
 
+    def test_floor_mass_v2_allocates_two_progressive_stages(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--curriculum", "floor_mass_v2", "--num-evals", "12"]
+        )
+        values = train_mjx_3d_residual_ppo.PRESETS["smoke"].copy()
+        values["num_evals"] = args.num_evals
+
+        plan = train_mjx_3d_residual_ppo._curriculum_training_plan(
+            args, values
+        )
+
+        self.assertEqual(
+            [item["stage"].name for item in plan],
+            ["floor_mass_02", "floor_mass_05"],
+        )
+        self.assertTrue(
+            all(item["schedule"]["effective_steps"] > 0 for item in plan)
+        )
+        self.assertEqual([item["num_evals"] for item in plan], [4, 8])
+
     def test_curriculum_stage_must_belong_to_selected_curriculum(self) -> None:
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
             train_mjx_3d_residual_ppo.parse_args(

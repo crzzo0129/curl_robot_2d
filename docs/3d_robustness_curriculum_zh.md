@@ -8,10 +8,11 @@ Reference 已经提供名义滚动能力。当前 residual PPO 的目标不是�
 
 - `--recipe robust_recovery_v15`：使用有界 Huber 状态代价、误差下降恢复奖励和更强的 residual reference 锚定；
 - 已完成的 reset 基线使用 `--curriculum independent_reset_v4`：从第一阶段开始八个活动关节始终独立采样，只增加 q/qdot 噪声幅度；
-- 当前下一阶段使用 `--curriculum floor_friction_v2`：从已通过的 v4 `params_best` 热启动，保持目标独立 reset 不变，只扩展地面接触摩擦；
+- 已完成的摩擦阶段使用 `--curriculum floor_friction_v2`：从已通过的 v4 `params_best` 热启动，保持目标独立 reset 不变，只扩展地面接触摩擦；
+- 当前下一阶段使用 `--curriculum floor_mass_v2`：保持上述 reset 与 floor 摩擦分布，只逐步加入每个 body 耦合的质量/惯量 ±2% 和 ±5%；
 - `--physics-profile cg20`：训练与 reference 验证使用相同求解器。
 
-旧 `reset_v1/reset_v2/nominal_reset_v3` 和旧 recipe 全部保留用于复现实验，但不再作为当前独立关节鲁棒性实验的推荐入口。`friction_v1` 也保留原来的全局 geom 摩擦语义。质量、执行器和 root 扰动仍不与当前摩擦实验同时加入。
+旧 `reset_v1/reset_v2/nominal_reset_v3` 和旧 recipe 全部保留用于复现实验，但不再作为当前独立关节鲁棒性实验的推荐入口。`friction_v1` 也保留原来的全局 geom 摩擦语义。当前质量阶段见 [`3d_mass_inertia_curriculum_zh.md`](3d_mass_inertia_curriculum_zh.md)；执行器和 root 扰动仍不同时加入。
 
 默认仍为 `--curriculum none`。
 

@@ -18,6 +18,7 @@ CURRICULUM_NAMES_3D = (
     "independent_reset_v4",
     "friction_v1",
     "floor_friction_v2",
+    "floor_mass_v2",
     "friction_low_v1",
     "mass_v1",
     "robustness_v1",
@@ -336,6 +337,36 @@ FLOOR_FRICTION_V2_STAGES_3D = (
     ),
 )
 
+
+FLOOR_MASS_V2_STAGES_3D = (
+    Rolling3DCurriculumStage(
+        name="floor_mass_02",
+        weight=0.30,
+        reset_joint_noise_rad=0.005,
+        reset_velocity_noise=0.005,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+        domain_randomization=Rolling3DDomainRandomization(
+            floor_friction_scale=(0.90, 1.10),
+            body_mass_scale=(0.98, 1.02),
+        ),
+    ),
+    Rolling3DCurriculumStage(
+        name="floor_mass_05",
+        weight=0.70,
+        reset_joint_noise_rad=0.005,
+        reset_velocity_noise=0.005,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+        domain_randomization=Rolling3DDomainRandomization(
+            floor_friction_scale=(0.90, 1.10),
+            body_mass_scale=(0.95, 1.05),
+        ),
+    ),
+)
+
 FRICTION_LOW_V1_STAGES_3D = (
     Rolling3DCurriculumStage(
         name="friction_low_090",
@@ -437,6 +468,7 @@ CURRICULUM_STAGE_NAMES_3D = tuple(
         *INDEPENDENT_RESET_V4_STAGES_3D,
         *FRICTION_V1_STAGES_3D,
         *FLOOR_FRICTION_V2_STAGES_3D,
+        *FLOOR_MASS_V2_STAGES_3D,
         *FRICTION_LOW_V1_STAGES_3D,
         *MASS_V1_STAGES_3D,
         *PHYSICS_STAGES_3D,
@@ -465,6 +497,8 @@ def curriculum_stages_3d(
         stages = FRICTION_V1_STAGES_3D
     elif name == "floor_friction_v2":
         stages = FLOOR_FRICTION_V2_STAGES_3D
+    elif name == "floor_mass_v2":
+        stages = FLOOR_MASS_V2_STAGES_3D
     elif name == "friction_low_v1":
         stages = FRICTION_LOW_V1_STAGES_3D
     elif name == "mass_v1":

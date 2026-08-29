@@ -130,10 +130,11 @@ python -m unittest discover -s tests -v
 `independent_reset_v4` curriculum：CEM reference 保留名义滚动，residual PPO
 只学习八关节独立 q/qdot 扰动后的恢复。课程从始至终保持独立噪声结构，最终
 达到 `q/qdot=0.005` 的目标分布；root velocity 和 axis tilt 在本轮保持为零。
-该基线通过验收后，下一阶段使用 `floor_friction_v2` 从它的 `params_best`
-热启动，在保持上述 reset 分布不变的前提下逐步扩展纯地面接触摩擦到
-`U(0.90, 1.10)`；机器人自接触摩擦不随之改变。旧 `friction_v1` 仍表示所有
-geom 一起缩放，只用于复现。
+该基线通过验收后，使用 `floor_friction_v2` 从它的 `params_best` 热启动，在
+保持上述 reset 分布不变的前提下逐步扩展纯地面接触摩擦到
+`U(0.90, 1.10)`；机器人自接触摩擦不随之改变。摩擦课程通过后，当前下一阶段
+是 `floor_mass_v2`：继续保留独立 reset 与 floor 摩擦分布，只逐步加入每个
+body 耦合的质量/惯量 ±2% 和 ±5%。旧 `friction_v1/mass_v1` 只用于复现。
 设计、reward 公式、smoke/H200 命令和验收方法
 见 [`docs/3d_robustness_curriculum_zh.md`](docs/3d_robustness_curriculum_zh.md)。
 
