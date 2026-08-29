@@ -92,7 +92,7 @@ class Rollingquad2IntegrationTest(unittest.TestCase):
 
         expected = {
             "hip_abduction": 0.0,
-            "hip": 0.70,
+            "hip": 0.90,
             "knee": 1.15,
         }
         for joint_name in WALKING_JOINT_NAMES_3D:

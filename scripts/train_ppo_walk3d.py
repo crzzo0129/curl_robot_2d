@@ -84,7 +84,7 @@ JOINT_NAMES = tuple(
 
 # The values match the rollingquad_2 `stand` keyframe in canonical policy
 # order.  Limits are the common safe intersection of the four URDF legs.
-DEFAULT_POSE = jp.array([0.0, 0.70, 1.15] * 4)
+DEFAULT_POSE = jp.array([0.0, 0.90, 1.15] * 4)
 CTRL_LO = jp.array([-0.5236, -1.745329252, 0.1745329252] * 4)
 CTRL_HI = jp.array([3.66519, 1.902408885, 2.094395102] * 4)
 
@@ -96,7 +96,7 @@ ACTION_SCALE = jp.array([0.17, 0.50, 0.50] * 4)
 
 # Root heights are mesh-ground clearances computed for the corrected CAD
 # model, rather than planar-link approximations that ignore its inclined axes.
-NOMINAL_H = 0.1642125372                  # crouched stand, 1 mm CAD clearance
+NOMINAL_H = 0.1580029248                  # crouched stand, 1 mm CAD clearance
 FULL_H = 0.1934653619                     # rollingquad_2 open keyframe
 
 # =============================================================== physics
@@ -945,7 +945,7 @@ def probe():
     print(f"\ntorque    forcerange {mj.actuator_forcerange[0]} N·m per motor "
           f"(one motor per joint on this model)")
     static = mj.body_mass.sum() * 9.81 / 4.0
-    lever = L_THIGH * sin(0.70)
+    lever = L_THIGH * sin(0.90)
     print(f"          static load per leg {static:.2f} N, hip lever "
           f"{lever * 1000:.1f} mm -> {static * lever:.3f} N·m holding torque")
 
