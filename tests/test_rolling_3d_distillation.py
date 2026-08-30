@@ -85,6 +85,23 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
         np.testing.assert_array_equal(frame[12:24], np.arange(20.0, 32.0))
         np.testing.assert_array_equal(frame[24:36], np.arange(40.0, 52.0))
 
+    def test_batched_deploy_frame_broadcasts_constant_channels(self):
+        batch_size = 32
+        frame = rolling_deploy_frame_3d(
+            np,
+            angular_velocity_body=np.zeros((batch_size, 3)),
+            projected_gravity=np.zeros((batch_size, 3)),
+            joint_position_offset=np.zeros((batch_size, 12)),
+            last_action=np.zeros((batch_size, 12)),
+        )
+
+        self.assertEqual(frame.shape, (batch_size, 36))
+        np.testing.assert_array_equal(frame[:, 6:9], 0.0)
+        np.testing.assert_array_equal(
+            frame[:, 9:12],
+            np.broadcast_to((0.0, 0.0, 1.0), (batch_size, 3)),
+        )
+
     def test_history_is_newest_first_and_matches_controller_startup(self):
         history = initial_rolling_deploy_history_3d(np)
         self.assertEqual(

@@ -85,10 +85,19 @@ def rolling_deploy_frame_3d(
     """Build one raw 36-value frame in neural_controller.cpp order."""
 
     if command is None:
-        command = xp.zeros((3,), dtype=angular_velocity_body.dtype)
+        command = xp.zeros_like(angular_velocity_body)
+    else:
+        command = xp.broadcast_to(command, angular_velocity_body.shape)
     if desired_world_z is None:
-        desired_world_z = xp.asarray(
-            (0.0, 0.0, 1.0), dtype=angular_velocity_body.dtype
+        desired_world_z = xp.broadcast_to(
+            xp.asarray(
+                (0.0, 0.0, 1.0), dtype=angular_velocity_body.dtype
+            ),
+            angular_velocity_body.shape,
+        )
+    else:
+        desired_world_z = xp.broadcast_to(
+            desired_world_z, angular_velocity_body.shape
         )
     return xp.concatenate(
         (
