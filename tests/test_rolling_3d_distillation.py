@@ -36,6 +36,14 @@ MODEL_PATH = (
 
 
 class Rolling3DDistillationContractTest(unittest.TestCase):
+    def test_dagger_teacher_probability_reaches_both_endpoints(self):
+        probability = (
+            train_mjx_3d_roll_distillation.dagger_teacher_probability
+        )
+        self.assertEqual(probability(0, 10_000, 0.25, 0.0), 0.25)
+        self.assertEqual(probability(9_999, 10_000, 0.25, 0.0), 0.0)
+        self.assertEqual(probability(0, 1, 0.25, 0.0), 0.25)
+
     def test_hardware_policy_and_imu_rates_are_not_confused(self):
         self.assertEqual(HARDWARE_POLICY_FREQUENCY_HZ_3D, 52.0)
         self.assertEqual(HARDWARE_IMU_PUBLISH_FREQUENCY_HZ_3D, 260.0)
@@ -176,6 +184,7 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
             )
 
         self.assertEqual(args.envs, 32)
+        self.assertEqual(args.dagger_steps, 16)
         self.assertEqual(task.physics_timestep, 0.001)
         self.assertEqual(task.action_repeat, 20)
         self.assertAlmostEqual(task.control_timestep, 0.02)
@@ -186,9 +195,30 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
             episode_length=args.episode_length,
             direct_effective_action=True,
         )
-        self.assertFalse(direct_task.explicit_phase_observation)
+        self.assertTrue(direct_task.explicit_phase_observation)
         self.assertTrue(direct_task.direct_effective_action)
         self.assertIsNone(direct_task.residual_pair_differential_scale)
+
+    def test_restore_student_must_exist(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            teacher = root / "params_best"
+            teacher.write_bytes(b"placeholder")
+            controller = root / "controller.json"
+            controller.write_text("{}", encoding="utf-8")
+
+            with self.assertRaises(SystemExit):
+                train_mjx_3d_roll_distillation.parse_args(
+                    [
+                        str(teacher),
+                        "--restore-student",
+                        str(root / "missing_student"),
+                        "--controller",
+                        str(controller),
+                        "--out",
+                        str(root / "output"),
+                    ]
+                )
 
 
 if __name__ == "__main__":

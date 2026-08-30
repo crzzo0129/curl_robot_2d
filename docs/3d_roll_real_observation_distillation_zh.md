@@ -18,6 +18,12 @@ IMU 和 joint-state broadcaster 的发布频率，不是策略控制频率。
 本身，而是环境真正施加的 `CEM reference + residual` 最终 8 维归一化 hip/knee
 命令。
 
+训练分为两段：先在教师轨迹上做 behavior cloning，再执行 online DAgger。DAgger
+让学生用完整动作直接控制模型，并在学生实际访问的状态上调用拥有 65 维 privileged
+observation 的教师重新标注。行为策略中的教师干预概率默认从 25% 线性降至 0%；每个
+终止环境独立 reset。H200 preset 为 `20000` 步 BC 加 `10000` 步 DAgger，DAgger
+使用较小的 `1e-4` 学习率。
+
 学生输入严格匹配 `neural_controller.cpp`：单帧 36 维、最新帧在前、历史 20 帧，
 总计 720 维：
 
@@ -54,6 +60,29 @@ python -m scripts.train_mjx_3d_roll_distillation \
   results/rollingquad2_floor_mass_gain_v3_h200_seed0/params_best \
   --preset h200 \
   --out results/rollingquad2_roll_distill_h200_seed0 \
+  --mujoco-gl disable \
+  --memory-fraction 0.80
+```
+
+如需显式覆盖 DAgger 预算和退火，可以追加：
+
+```bash
+--dagger-steps 10000 \
+--dagger-learning-rate 1e-4 \
+--dagger-teacher-start-probability 0.25 \
+--dagger-teacher-end-probability 0.0
+```
+
+如果已经完成旧版 20000 步 BC，可以复用其 checkpoint，只补 DAgger。该模式会读取
+旧 checkpoint 的 720 维归一化统计和学生参数、把 abduction 最终层硬投影为 0，并
+跳过统计与 BC：
+
+```bash
+python -m scripts.train_mjx_3d_roll_distillation \
+  results/rollingquad2_floor_mass_gain_v3_h200_seed0/params_best \
+  --restore-student results/rollingquad2_roll_distill_h200_seed0_v2/student_params \
+  --preset h200 \
+  --out results/rollingquad2_roll_dagger_h200_seed0 \
   --mujoco-gl disable \
   --memory-fraction 0.80
 ```

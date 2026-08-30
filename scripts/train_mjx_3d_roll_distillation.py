@@ -43,12 +43,14 @@ PRESETS = {
         "envs": 32,
         "stats_steps": 8,
         "train_steps": 32,
+        "dagger_steps": 16,
         "eval_envs": 16,
     },
     "h200": {
         "envs": 2048,
         "stats_steps": 500,
         "train_steps": 20_000,
+        "dagger_steps": 10_000,
         "eval_envs": 256,
     },
 }
@@ -74,11 +76,26 @@ EVALUATION_FAILURE_METRICS = (
 )
 
 
+def dagger_teacher_probability(step, total_steps, start, end):
+    """Linear expert-intervention schedule, including both endpoints."""
+
+    fraction = step / max(total_steps - 1, 1)
+    return start + fraction * (end - start)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Distill the accepted rolling teacher to real observations"
     )
     parser.add_argument("teacher", type=Path, help="teacher params_best")
+    parser.add_argument(
+        "--restore-student",
+        type=Path,
+        help=(
+            "existing student_params checkpoint; reuse its normalizer and "
+            "skip statistics plus behavior cloning, then run DAgger"
+        ),
+    )
     parser.add_argument(
         "--preset", choices=tuple(PRESETS), default="smoke"
     )
@@ -92,9 +109,17 @@ def parse_args(argv=None):
     parser.add_argument("--envs", type=int)
     parser.add_argument("--stats-steps", type=int)
     parser.add_argument("--train-steps", type=int)
+    parser.add_argument("--dagger-steps", type=int)
     parser.add_argument("--eval-envs", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--dagger-learning-rate", type=float, default=1e-4)
+    parser.add_argument(
+        "--dagger-teacher-start-probability", type=float, default=0.25
+    )
+    parser.add_argument(
+        "--dagger-teacher-end-probability", type=float, default=0.0
+    )
     parser.add_argument(
         "--hidden-layers",
         type=int,
@@ -117,7 +142,13 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
-    for name in ("envs", "stats_steps", "train_steps", "eval_envs"):
+    for name in (
+        "envs",
+        "stats_steps",
+        "train_steps",
+        "dagger_steps",
+        "eval_envs",
+    ):
         if getattr(args, name) is None:
             setattr(args, name, PRESETS[args.preset][name])
         if getattr(args, name) < 1:
@@ -126,6 +157,20 @@ def parse_args(argv=None):
         parser.error("--episode-length and --log-every must be positive")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         parser.error("--learning-rate must be finite and positive")
+    if (
+        not math.isfinite(args.dagger_learning_rate)
+        or args.dagger_learning_rate <= 0.0
+    ):
+        parser.error("--dagger-learning-rate must be finite and positive")
+    for name in (
+        "dagger_teacher_start_probability",
+        "dagger_teacher_end_probability",
+    ):
+        value = getattr(args, name)
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            parser.error(
+                f"--{name.replace('_', '-')} must be between zero and one"
+            )
     if (
         not math.isfinite(args.observation_noise_scale)
         or args.observation_noise_scale < 0.0
@@ -140,6 +185,10 @@ def parse_args(argv=None):
         )
     if not args.teacher.is_file():
         parser.error(f"teacher checkpoint does not exist: {args.teacher}")
+    if args.restore_student is not None and not args.restore_student.is_file():
+        parser.error(
+            f"student checkpoint does not exist: {args.restore_student}"
+        )
     if not args.controller.is_file():
         parser.error(f"CEM controller does not exist: {args.controller}")
     if (
@@ -207,7 +256,11 @@ def _task(*, episode_length, direct_effective_action=False):
             residual_pair_differential_scale=(
                 None if direct_effective_action else 0.25
             ),
-            explicit_phase_observation=not direct_effective_action,
+            # DAgger queries the privileged teacher on states visited by the
+            # direct-action student.  The deployable student never reads
+            # state.obs, but both environments must retain the teacher's 65-D
+            # observation ABI so a direct state can be labelled by teacher_env.
+            explicit_phase_observation=True,
             direct_effective_action=direct_effective_action,
         ),
     )
@@ -359,6 +412,11 @@ def main(argv=None):
 
     student = StudentPolicy(tuple(args.hidden_layers))
     rng = jax.random.PRNGKey(args.seed)
+    restored_student_checkpoint = (
+        model_io.load_params(args.restore_student)
+        if args.restore_student is not None
+        else None
+    )
 
     def reset_rollout(rng_key, batch_size):
         reset_keys = jax.random.split(rng_key, batch_size)
@@ -385,12 +443,16 @@ def main(argv=None):
         f"  student_obs=36x20={ROLLING_DEPLOY_OBSERVATION_SIZE_3D} "
         "student_action=12 effective_motor_command\n"
         f"  simulation=50Hz hardware={HARDWARE_POLICY_FREQUENCY_HZ_3D:g}Hz\n"
-        f"  stats_steps={args.stats_steps} train_steps={args.train_steps} "
+        f"  stats_steps={args.stats_steps} bc_steps={args.train_steps} "
+        f"dagger_steps={args.dagger_steps} "
         f"envs={args.envs}",
         flush=True,
     )
 
-    for step in range(args.stats_steps):
+    stats_steps_to_run = (
+        0 if restored_student_checkpoint is not None else args.stats_steps
+    )
+    for step in range(stats_steps_to_run):
         rng, policy_key, noise_key = jax.random.split(rng, 3)
         policy_keys = jax.random.split(policy_key, args.envs)
         history = deployment_observation(
@@ -414,17 +476,41 @@ def main(argv=None):
                 reset_key, args.envs
             )
 
-    observation_mean = observation_sum / observation_count
-    observation_variance = jp.maximum(
-        observation_square_sum / observation_count
-        - jp.square(observation_mean),
-        1e-6,
-    )
-    observation_std = jp.sqrt(observation_variance)
+    if restored_student_checkpoint is None:
+        observation_mean = observation_sum / observation_count
+        observation_variance = jp.maximum(
+            observation_square_sum / observation_count
+            - jp.square(observation_mean),
+            1e-6,
+        )
+        observation_std = jp.sqrt(observation_variance)
+    else:
+        restored_normalizer = restored_student_checkpoint[0]
+        observation_mean = jp.asarray(restored_normalizer["mean"])
+        observation_std = jp.asarray(restored_normalizer["std"])
+        if (
+            observation_mean.shape
+            != (ROLLING_DEPLOY_OBSERVATION_SIZE_3D,)
+            or observation_std.shape
+            != (ROLLING_DEPLOY_OBSERVATION_SIZE_3D,)
+        ):
+            raise RuntimeError(
+                "restored student normalizer must contain 720-value mean/std"
+            )
+        print(
+            "[restore student]\n"
+            f"  checkpoint={args.restore_student.resolve()}\n"
+            "  skipping observation statistics and behavior cloning",
+            flush=True,
+        )
     rng, init_key, reset_key = jax.random.split(rng, 3)
-    student_params = student.init(
-        init_key,
-        jp.zeros((1, ROLLING_DEPLOY_OBSERVATION_SIZE_3D)),
+    student_params = (
+        student.init(
+            init_key,
+            jp.zeros((1, ROLLING_DEPLOY_OBSERVATION_SIZE_3D)),
+        )
+        if restored_student_checkpoint is None
+        else restored_student_checkpoint[1]
     )
 
     # The C++ controller writes raw network output back into the last-action
@@ -448,35 +534,48 @@ def main(argv=None):
         if params_were_frozen
         else mutable_student_params
     )
+    def make_train_step(current_optimizer):
+        @jax.jit
+        def train_step(params, opt_state, observation, target):
+            normalized = (observation - observation_mean) / observation_std
+
+            def loss_fn(current_params):
+                prediction = student.apply(current_params, normalized)
+                # The four abduction outputs are structurally locked at zero.
+                # Report and optimize only the eight controlled hip/knee
+                # channels so the BC/DAgger diagnostics are not diluted.
+                error = controller_action_to_effective_action_3d(
+                    jp, prediction - target
+                )
+                mse = jp.mean(jp.square(error))
+                return mse, (
+                    jp.sqrt(mse),
+                    jp.max(jp.abs(error)),
+                )
+
+            (loss, diagnostics), gradients = jax.value_and_grad(
+                loss_fn, has_aux=True
+            )(params)
+            updates, next_opt_state = current_optimizer.update(
+                gradients, opt_state, params
+            )
+            next_params = optax.apply_updates(params, updates)
+            return next_params, next_opt_state, loss, diagnostics
+
+        return train_step
+
     optimizer = optax.adam(args.learning_rate)
     optimizer_state = optimizer.init(student_params)
-
-    @jax.jit
-    def train_step(params, opt_state, observation, target):
-        normalized = (observation - observation_mean) / observation_std
-
-        def loss_fn(current_params):
-            prediction = student.apply(current_params, normalized)
-            error = prediction - target
-            return jp.mean(jp.square(error)), (
-                jp.sqrt(jp.mean(jp.square(error))),
-                jp.max(jp.abs(error)),
-            )
-
-        (loss, diagnostics), gradients = jax.value_and_grad(
-            loss_fn, has_aux=True
-        )(params)
-        updates, next_opt_state = optimizer.update(
-            gradients, opt_state, params
-        )
-        next_params = optax.apply_updates(params, updates)
-        return next_params, next_opt_state, loss, diagnostics
+    train_step = make_train_step(optimizer)
 
     state, history, previous_controller_action = reset_rollout(
         reset_key, args.envs
     )
     loss_history = []
-    for step in range(args.train_steps):
+    bc_steps_to_run = (
+        0 if restored_student_checkpoint is not None else args.train_steps
+    )
+    for step in range(bc_steps_to_run):
         rng, policy_key, noise_key = jax.random.split(rng, 3)
         policy_keys = jax.random.split(policy_key, args.envs)
         history = deployment_observation(
@@ -511,6 +610,7 @@ def main(argv=None):
             )
         if step == 0 or (step + 1) % args.log_every == 0:
             record = {
+                "stage": "behavior_cloning",
                 "step": step + 1,
                 "loss": float(loss),
                 "action_rmse": float(diagnostics[0]),
@@ -537,7 +637,14 @@ def main(argv=None):
         cem_reference=reference,
         seed=args.seed + 50_000,
     )
+    if direct_env.observation_size != teacher_env.observation_size:
+        raise RuntimeError(
+            "DAgger contract mismatch: direct states must retain the "
+            f"teacher's {teacher_env.observation_size}-D observation, got "
+            f"{direct_env.observation_size}"
+        )
     direct_reset_batch = jax.jit(jax.vmap(direct_env.reset))
+    direct_step_raw_batch = jax.jit(jax.vmap(direct_env.step))
 
     def direct_step_if_active(single_state, single_action, single_active):
         return jax.lax.cond(
@@ -549,11 +656,184 @@ def main(argv=None):
 
     direct_step_batch = jax.jit(jax.vmap(direct_step_if_active))
     student_policy_batch = jax.jit(
-        lambda observation: student.apply(
-            student_params,
+        lambda params, observation: student.apply(
+            params,
             (observation - observation_mean) / observation_std,
         )
     )
+
+    @jax.jit
+    def reset_finished_rollouts(
+        current_state,
+        reset_state,
+        current_history,
+        current_previous_action,
+    ):
+        finished = current_state.done > 0.5
+
+        def choose_reset(reset_value, current_value):
+            mask_shape = finished.shape + (1,) * (
+                current_value.ndim - finished.ndim
+            )
+            return jp.where(
+                jp.reshape(finished, mask_shape),
+                reset_value,
+                current_value,
+            )
+
+        next_state = jax.tree_util.tree_map(
+            choose_reset, reset_state, current_state
+        )
+        next_history = jp.where(
+            finished[:, None],
+            jp.broadcast_to(initial_history, current_history.shape),
+            current_history,
+        )
+        next_previous_action = jp.where(
+            finished[:, None],
+            jp.zeros_like(current_previous_action),
+            current_previous_action,
+        )
+        return (
+            next_state,
+            next_history,
+            next_previous_action,
+            jp.mean(finished.astype(jp.float32)),
+        )
+
+    # Online DAgger: visit states under the current student (with a decaying
+    # amount of expert intervention), ask the privileged teacher for the
+    # complete effective command at those exact states, and update the student
+    # on that label before moving on.  This attacks the covariate shift that
+    # ordinary teacher-forced behavior cloning cannot see.
+    dagger_optimizer = optax.adam(args.dagger_learning_rate)
+    dagger_optimizer_state = dagger_optimizer.init(student_params)
+    dagger_train_step = make_train_step(dagger_optimizer)
+    rng, dagger_reset_key = jax.random.split(rng)
+    dagger_reset_keys = jax.random.split(dagger_reset_key, args.envs)
+    dagger_state = direct_reset_batch(dagger_reset_keys)
+    dagger_history = jp.broadcast_to(
+        initial_history,
+        (args.envs, ROLLING_DEPLOY_OBSERVATION_SIZE_3D),
+    )
+    dagger_previous_controller_action = jp.zeros(
+        (args.envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
+    )
+    dagger_loss_history = []
+    print(
+        "[DAgger]\n"
+        f"  steps={args.dagger_steps} lr={args.dagger_learning_rate:g} "
+        "teacher_intervention="
+        f"{args.dagger_teacher_start_probability:.1%}->"
+        f"{args.dagger_teacher_end_probability:.1%}",
+        flush=True,
+    )
+
+    for step in range(args.dagger_steps):
+        rng, policy_key, noise_key, mixture_key, reset_key = (
+            jax.random.split(rng, 5)
+        )
+        policy_keys = jax.random.split(policy_key, args.envs)
+        dagger_history = deployment_observation(
+            dagger_state,
+            dagger_history,
+            dagger_previous_controller_action,
+            noise_key,
+            args.observation_noise_scale,
+        )
+        student_controller_action = student_policy_batch(
+            student_params, dagger_history
+        )
+
+        # teacher_env and direct_env share the same MJX/state/info structure.
+        # teacher_env.step is evaluated on a copy solely to recover the full
+        # CEM+residual action; its next physics state is never used by DAgger.
+        teacher_residual_action = teacher_policy_batch(
+            dagger_state.obs, policy_keys
+        )
+        teacher_label_state = step_batch(
+            dagger_state, teacher_residual_action
+        )
+        teacher_controller_action = (
+            effective_action_to_controller_action_3d(
+                jp, teacher_label_state.info["last_action"]
+            )
+        )
+        (
+            student_params,
+            dagger_optimizer_state,
+            loss,
+            diagnostics,
+        ) = dagger_train_step(
+            student_params,
+            dagger_optimizer_state,
+            dagger_history,
+            teacher_controller_action,
+        )
+
+        teacher_probability = dagger_teacher_probability(
+            step,
+            args.dagger_steps,
+            args.dagger_teacher_start_probability,
+            args.dagger_teacher_end_probability,
+        )
+        use_teacher = jax.random.bernoulli(
+            mixture_key,
+            teacher_probability,
+            (args.envs,),
+        )
+        behavior_controller_action = jp.where(
+            use_teacher[:, None],
+            teacher_controller_action,
+            student_controller_action,
+        )
+        behavior_effective_action = (
+            controller_action_to_effective_action_3d(
+                jp, behavior_controller_action
+            )
+        )
+        dagger_state = direct_step_raw_batch(
+            dagger_state, behavior_effective_action
+        )
+        dagger_previous_controller_action = behavior_controller_action
+
+        reset_keys = jax.random.split(reset_key, args.envs)
+        reset_state = direct_reset_batch(reset_keys)
+        (
+            dagger_state,
+            dagger_history,
+            dagger_previous_controller_action,
+            reset_rate,
+        ) = reset_finished_rollouts(
+            dagger_state,
+            reset_state,
+            dagger_history,
+            dagger_previous_controller_action,
+        )
+
+        if step == 0 or (step + 1) % args.log_every == 0:
+            record = {
+                "stage": "dagger",
+                "step": step + 1,
+                "loss": float(loss),
+                "action_rmse": float(diagnostics[0]),
+                "action_max_abs": float(diagnostics[1]),
+                "teacher_probability": float(teacher_probability),
+                "teacher_fraction": float(jp.mean(use_teacher)),
+                "reset_rate": float(reset_rate),
+            }
+            dagger_loss_history.append(record)
+            loss_history.append(record)
+            print(
+                f"[dagger {step + 1:>6}/{args.dagger_steps}] "
+                f"loss={record['loss']:.6g} "
+                f"rmse={record['action_rmse']:.5f} "
+                f"max={record['action_max_abs']:.5f} "
+                f"expert={record['teacher_fraction']:.1%} "
+                f"reset={record['reset_rate']:.1%}",
+                flush=True,
+            )
+
     rng, eval_reset_key = jax.random.split(rng)
     eval_reset_keys = jax.random.split(eval_reset_key, args.eval_envs)
     eval_state = direct_reset_batch(eval_reset_keys)
@@ -588,7 +868,9 @@ def main(argv=None):
             eval_noise_key,
             0.0,
         )
-        controller_action = student_policy_batch(eval_history)
+        controller_action = student_policy_batch(
+            student_params, eval_history
+        )
         abduction_action = jp.take(
             controller_action, abduction_indices, axis=-1
         )
@@ -726,6 +1008,7 @@ def main(argv=None):
             for name, value in vars(args).items()
         },
         "loss_history": loss_history,
+        "dagger_loss_history": dagger_loss_history,
         "closed_loop_evaluation": closed_loop_evaluation,
     }
     with (args.out / "distillation.json").open(
