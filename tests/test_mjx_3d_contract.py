@@ -136,6 +136,7 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.body_mass_right_scale, 1.0)
         self.assertEqual(config.actuator_gain_scale, 1.0)
         self.assertFalse(config.explicit_phase_observation)
+        self.assertFalse(config.direct_effective_action)
         reward = Rolling3DRewardConfig()
         self.assertEqual(reward.roll_progress, 6.0)
         self.assertEqual(reward.cross_side_foot_contact, 30.0)
@@ -172,6 +173,7 @@ class MJX3DContractTest(unittest.TestCase):
             {"body_mass_right_scale": -1.0},
             {"actuator_gain_scale": 0.0},
             {"explicit_phase_observation": 1},
+            {"direct_effective_action": 1},
             {"terminate_root_z_min": -0.01},
             {"terminate_axis_tilt_duration_s": 0.0},
             {"terminate_forbidden_contact_duration_s": -1.0},

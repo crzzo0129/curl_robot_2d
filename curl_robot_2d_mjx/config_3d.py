@@ -74,6 +74,7 @@ class Rolling3DConfig:
     lateral_command_error_limit: float = 0.20
     lateral_command_fixed: float | None = None
     explicit_phase_observation: bool = False
+    direct_effective_action: bool = False
     disable_root_damping: bool = True
 
     terminate_root_z_min: float | None = 0.025
@@ -197,6 +198,8 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("lateral_command_fixed must be finite")
     if not isinstance(config.explicit_phase_observation, bool):
         raise ValueError("explicit_phase_observation must be boolean")
+    if not isinstance(config.direct_effective_action, bool):
+        raise ValueError("direct_effective_action must be boolean")
     if not isinstance(config.floor_contact_friction_override, bool):
         raise ValueError("floor_contact_friction_override must be boolean")
     if config.terminate_root_z_min is not None:

@@ -1156,10 +1156,14 @@ def make_brax_env_3d(
                 posinf=1.0,
                 neginf=-1.0,
             )
-            policy_action = pair_coupled_residual_action_3d(
-                jp,
-                raw_policy_action,
-                task.residual_pair_differential_scale,
+            policy_action = (
+                raw_policy_action
+                if task.direct_effective_action
+                else pair_coupled_residual_action_3d(
+                    jp,
+                    raw_policy_action,
+                    task.residual_pair_differential_scale,
+                )
             )
             residual_left = policy_action[jp.asarray((0, 1, 4, 5))]
             residual_right = policy_action[jp.asarray((2, 3, 6, 7))]
@@ -1169,7 +1173,10 @@ def make_brax_env_3d(
             residual_differential_rms = jp.sqrt(
                 jp.mean(jp.square(0.5 * (residual_left - residual_right)))
             )
-            if task.lateral_reflex_gain != 0.0:
+            if (
+                not task.direct_effective_action
+                and task.lateral_reflex_gain != 0.0
+            ):
                 lateral_drift = (
                     state.pipeline_state.qpos[1]
                     - state.info["initial_root_y"]
@@ -1232,11 +1239,17 @@ def make_brax_env_3d(
                     current_data.time,
                     task.startup_action_ramp_s,
                 )
-                current_action = jp.clip(
-                    reference_weight_value * current_reference_action
-                    + current_ramp * residual_gain_value * policy_action,
-                    -1.0,
-                    1.0,
+                current_action = (
+                    jp.clip(policy_action, -1.0, 1.0)
+                    if task.direct_effective_action
+                    else jp.clip(
+                        reference_weight_value * current_reference_action
+                        + current_ramp
+                        * residual_gain_value
+                        * policy_action,
+                        -1.0,
+                        1.0,
+                    )
                 )
                 current_target = rolling_target_ctrl_3d(
                     jp,
