@@ -512,6 +512,10 @@ def main(argv=None):
         if restored_student_checkpoint is None
         else restored_student_checkpoint[1]
     )
+    # model_io restores arrays as NumPy values, whereas freshly initialized
+    # Flax parameters are JAX arrays.  Normalize both paths before using JAX's
+    # indexed-update API and before initializing the DAgger optimizer.
+    student_params = jax.tree_util.tree_map(jp.asarray, student_params)
 
     # The C++ controller writes raw network output back into the last-action
     # observation even when action_scale is zero.  Projecting the final layer
