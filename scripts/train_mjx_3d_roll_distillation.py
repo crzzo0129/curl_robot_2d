@@ -24,6 +24,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     CONTROLLER_JOINT_NAMES_3D,
     HARDWARE_IMU_PUBLISH_FREQUENCY_HZ_3D,
     HARDWARE_POLICY_FREQUENCY_HZ_3D,
+    ROLLING_CONTROLLER_ACTION_MASK_3D,
     ROLLING_CONTROLLER_ACTION_SIZE_3D,
     ROLLING_DEPLOY_OBSERVATION_HISTORY_3D,
     ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
@@ -102,6 +103,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--observation-noise-scale", type=float, default=1.0)
+    parser.add_argument(
+        "--minimum-closed-loop-turns",
+        type=float,
+        default=5.0,
+        help="minimum net turns required for a closed-loop success",
+    )
     parser.add_argument("--log-every", type=int, default=100)
     parser.add_argument("--memory-fraction", type=float, default=0.80)
     parser.add_argument(
@@ -124,6 +131,13 @@ def parse_args(argv=None):
         or args.observation_noise_scale < 0.0
     ):
         parser.error("--observation-noise-scale must be finite and nonnegative")
+    if (
+        not math.isfinite(args.minimum_closed_loop_turns)
+        or args.minimum_closed_loop_turns < 0.0
+    ):
+        parser.error(
+            "--minimum-closed-loop-turns must be finite and nonnegative"
+        )
     if not args.teacher.is_file():
         parser.error(f"teacher checkpoint does not exist: {args.teacher}")
     if not args.controller.is_file():
@@ -339,7 +353,9 @@ def main(argv=None):
                 ROLLING_CONTROLLER_ACTION_SIZE_3D,
                 name="location",
             )(value)
-            return jp.tanh(value)
+            return jp.tanh(value) * jp.asarray(
+                ROLLING_CONTROLLER_ACTION_MASK_3D
+            )
 
     student = StudentPolicy(tuple(args.hidden_layers))
     rng = jax.random.PRNGKey(args.seed)
@@ -409,6 +425,28 @@ def main(argv=None):
     student_params = student.init(
         init_key,
         jp.zeros((1, ROLLING_DEPLOY_OBSERVATION_SIZE_3D)),
+    )
+
+    # The C++ controller writes raw network output back into the last-action
+    # observation even when action_scale is zero.  Projecting the final layer
+    # therefore matters: it keeps the exported RTNeural model's four locked
+    # abduction outputs exactly zero, not merely close to zero on teacher data.
+    from flax.core import FrozenDict, freeze, unfreeze
+
+    params_were_frozen = isinstance(student_params, FrozenDict)
+    mutable_student_params = unfreeze(student_params)
+    location_params = mutable_student_params["params"]["location"]
+    locked_indices = jp.asarray((0, 3, 6, 9))
+    location_params["kernel"] = location_params["kernel"].at[
+        :, locked_indices
+    ].set(0.0)
+    location_params["bias"] = location_params["bias"].at[
+        locked_indices
+    ].set(0.0)
+    student_params = (
+        freeze(mutable_student_params)
+        if params_were_frozen
+        else mutable_student_params
     )
     optimizer = optax.adam(args.learning_rate)
     optimizer_state = optimizer.init(student_params)
@@ -602,11 +640,17 @@ def main(argv=None):
         )
         for name, flags in eval_failure_flags.items()
     }
+    movement_success = (
+        (~eval_failed_np)
+        & (eval_turns >= args.minimum_closed_loop_turns)
+    )
     closed_loop_evaluation = {
         "episodes": args.eval_envs,
         "episode_length": args.episode_length,
         "duration_s": args.episode_length * direct_task.control_timestep,
-        "success_rate": float(1.0 - np.mean(eval_failed_np)),
+        "minimum_success_turns": args.minimum_closed_loop_turns,
+        "failure_free_rate": float(1.0 - np.mean(eval_failed_np)),
+        "success_rate": float(np.mean(movement_success)),
         "mean_turns": float(np.mean(eval_turns)),
         "median_turns": float(np.median(eval_turns)),
         "minimum_turns": float(np.min(eval_turns)),
@@ -626,6 +670,7 @@ def main(argv=None):
     print(
         "[student closed loop]\n"
         f"  success={closed_loop_evaluation['success_rate']:.1%} "
+        f"failure_free={closed_loop_evaluation['failure_free_rate']:.1%} "
         f"turns_mean={closed_loop_evaluation['mean_turns']:.3f} "
         f"turns_min={closed_loop_evaluation['minimum_turns']:.3f}\n"
         f"  abduction_rms="

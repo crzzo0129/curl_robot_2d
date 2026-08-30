@@ -20,6 +20,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     initial_rolling_deploy_history_3d,
     push_rolling_deploy_frame_3d,
     rolling_deploy_frame_3d,
+    ROLLING_CONTROLLER_ACTION_MASK_3D,
 )
 from scripts import train_mjx_3d_roll_distillation
 
@@ -65,6 +66,10 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
         np.testing.assert_array_equal(
             controller_action_to_effective_action_3d(np, controller),
             effective,
+        )
+        np.testing.assert_array_equal(
+            np.asarray(ROLLING_CONTROLLER_ACTION_MASK_3D)[[0, 3, 6, 9]],
+            0.0,
         )
 
     def test_deploy_frame_matches_36_value_cpp_layout(self):

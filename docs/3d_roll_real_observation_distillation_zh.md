@@ -32,7 +32,9 @@ IMU 和 joint-state broadcaster 的发布频率，不是策略控制频率。
 `abduction, hip, knee`，腿序为 `FL, FR, RL, RR`。实机 URDF 的 `_1/_2/_3`
 分别代表 hip/abduction/knee，因此控制器 `joint_names` 使用 `_2,_1,_3` 完成物理
 映射。滚动教师没有控制 abduction，导出配置把四个 abduction action scale 固定为
-0，实机以 KP/KD 保持 compact 零位。
+0，并把网络对应的四个输出硬锁为精确 0；实机以 KP/KD 保持 compact 零位。只把
+action scale 设为 0 还不够，因为 C++ 会把原始网络输出写回下一帧的 last-action
+观测，非零的无效输出仍会造成历史分布漂移。
 
 ## 先跑 smoke
 
@@ -57,8 +59,9 @@ python -m scripts.train_mjx_3d_roll_distillation \
 ```
 
 训练结束会自动做一次无教师闭环验证：学生只接收 720 维实机 ABI 观测，并直接输出
-完整动作。终端会报告 `success`、平均/最小圈数，以及 abduction 输出误差；完整结果
-记录在 `distillation.json`。
+完整动作。终端会分别报告 `failure_free` 和 `success`：前者只表示没有触发故障终止，
+后者还要求在 10 秒内达到默认 5 圈，因此“没倒但也没滚”不再计为成功。平均/最小圈数
+和 abduction 输出误差也会记录在 `distillation.json`。
 
 输出目录包含：
 
