@@ -19,7 +19,7 @@ python -m scripts.train_ppo_deploy probe
 python -m scripts.train_ppo_deploy
 ```
 
-`train_ppo_walk3d.py` 使用48维仿真本体观测；`train_ppo_deploy.py` 使用与实机控制器一致的36维单帧、20帧历史观测。两者网络输入不同，需要分别训练，不能互相恢复 checkpoint。需要域随机化时在命令中加入 `dr`。
+`train_ppo_walk3d.py` 使用48维仿真本体观测；`train_ppo_deploy.py` 使用与实机控制器一致的36维单帧、20帧历史观测。两者网络输入不同，需要分别训练，不能互相恢复 checkpoint。需要域随机化时在命令中加入 `dr`。deploy 的 robust DR 不使用随机推力，也不使用动作低通；它随机化摩擦、torso/腿质量、惯量、torso COM、每电机独立 kp/kd/力矩上限，并在每个 episode 加入固定电机零偏、编码器 bias、0/20/40 ms 动作延迟和5%控制 deadline miss。输出独立写入 `rollingquad_2_deploy_robust_dr_*`，避免覆盖旧 DR checkpoint。
 
 该适配不改变 URDF 的倾斜外摆轴、零位、范围、质量或惯量。模型内部 `qpos` 仍按导出层级排列，脚本会按关节名映射到统一的 `FL, FR, RL, RR` policy顺序，每腿均为 `abduction, hip, knee`。
 

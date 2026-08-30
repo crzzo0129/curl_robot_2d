@@ -155,6 +155,30 @@ POLICY_HIDDEN = (512, 256, 128)
 VALUE_HIDDEN = (512, 256, 128)
 SEED = 0
 
+# ================================================= deploy-only randomisation
+# These ranges model fixed robot-to-robot calibration and manufacturing errors.
+# Model parameters are sampled independently for each vectorised MJX system;
+# episode parameters are sampled at reset and then held for the whole episode.
+DEPLOY_DR = False
+FRICTION_RANGE = (0.60, 1.40)
+TORSO_MASS_SCALE = (0.85, 1.20)
+LEG_MASS_SCALE = (0.90, 1.10)
+INERTIA_SCALE = (0.85, 1.15)
+TORSO_COM_XY_M = 0.010
+TORSO_COM_Z_M = 0.005
+MOTOR_KP_SCALE = (0.85, 1.15)
+MOTOR_KD_SCALE = (0.80, 1.20)
+MOTOR_TORQUE_SCALE = (0.85, 1.15)
+
+# No low-pass filter.  Latency is an integer action queue and control-frequency
+# jitter is represented by an occasional missed 50 Hz command deadline.  A
+# missed deadline holds the last command; physics still advances at 500 Hz.
+ACTION_LATENCY_PROBS = jp.array([0.60, 0.30, 0.10])  # 0/20/40 ms at 50 Hz
+ACTION_QUEUE_LEN = 3
+CONTROL_DEADLINE_MISS_PROB = 0.05
+MOTOR_ZERO_BIAS_RAD = 0.020
+ENCODER_FIXED_BIAS_RAD = 0.010
+
 # Per-frame observation noise, tiled across the history.
 FRAME_SIGMA = jp.concatenate([
     jp.full(3, 0.20),       # gyro
@@ -165,6 +189,83 @@ FRAME_SIGMA = jp.concatenate([
     jp.zeros(12),           # last action is known exactly
 ])
 NOISE_SIGMA = jp.tile(FRAME_SIGMA, HISTORY)
+
+
+def deploy_domain_randomize(sys, rng):
+    """Batched deploy-only model DR with independent motor/body variation."""
+    @jax.vmap
+    def randomize_one(key):
+        (k_fric, k_torso_mass, k_leg_mass, k_inertia, k_com,
+         k_kp, k_kd, k_torque) = jax.random.split(key, 8)
+
+        friction_value = jax.random.uniform(
+            k_fric, (), minval=FRICTION_RANGE[0], maxval=FRICTION_RANGE[1])
+        friction = sys.geom_friction.at[:, 0].set(friction_value)
+
+        torso_mass = jax.random.uniform(
+            k_torso_mass, (), minval=TORSO_MASS_SCALE[0],
+            maxval=TORSO_MASS_SCALE[1])
+        leg_mass = jax.random.uniform(
+            k_leg_mass, (sys.nbody,), minval=LEG_MASS_SCALE[0],
+            maxval=LEG_MASS_SCALE[1])
+        mass_scale = (jp.ones(sys.nbody)
+                      .at[1].set(torso_mass)
+                      .at[2:].set(leg_mass[2:]))
+        body_mass = sys.body_mass * mass_scale
+
+        inertia_uncertainty = jax.random.uniform(
+            k_inertia, (sys.nbody,), minval=INERTIA_SCALE[0],
+            maxval=INERTIA_SCALE[1])
+        body_inertia = (sys.body_inertia * mass_scale[:, None]
+                        * inertia_uncertainty[:, None])
+
+        com_unit = jax.random.uniform(k_com, (3,), minval=-1.0, maxval=1.0)
+        com_offset = com_unit * jp.array(
+            [TORSO_COM_XY_M, TORSO_COM_XY_M, TORSO_COM_Z_M])
+        body_ipos = sys.body_ipos.at[1].add(com_offset)
+
+        kp_scale = jax.random.uniform(
+            k_kp, (sys.nu,), minval=MOTOR_KP_SCALE[0],
+            maxval=MOTOR_KP_SCALE[1])
+        kd_scale = jax.random.uniform(
+            k_kd, (sys.nu,), minval=MOTOR_KD_SCALE[0],
+            maxval=MOTOR_KD_SCALE[1])
+        kp = sys.actuator_gainprm[:, 0] * kp_scale
+        gain = sys.actuator_gainprm.at[:, 0].set(kp)
+        bias = (sys.actuator_biasprm
+                .at[:, 1].set(-kp)
+                .at[:, 2].set(sys.actuator_biasprm[:, 2] * kd_scale))
+
+        torque_scale = jax.random.uniform(
+            k_torque, (sys.nu,), minval=MOTOR_TORQUE_SCALE[0],
+            maxval=MOTOR_TORQUE_SCALE[1])
+        force = sys.actuator_forcerange * torque_scale[:, None]
+        return (friction, body_mass, body_inertia, body_ipos,
+                gain, bias, force)
+
+    values = randomize_one(rng)
+    names = (
+        "geom_friction", "body_mass", "body_inertia", "body_ipos",
+        "actuator_gainprm", "actuator_biasprm", "actuator_forcerange",
+    )
+    replacements = dict(zip(names, values))
+    in_axes = jax.tree_util.tree_map(lambda _: None, sys).tree_replace(
+        {name: 0 for name in names})
+    return sys.tree_replace(replacements), in_axes
+
+
+def enable_deploy_dr():
+    """Enable deploy DR without inheriting walk3d's random shove/latency."""
+    global DEPLOY_DR, SAVE, VID_DIR, CKPT_DIR, JSON_OUT
+    DEPLOY_DR = True
+    w3.DOMAIN_RANDOMIZE = True
+    w3.OBS_NOISE = 1.0
+    w3.PUSH_EVERY = 0.0
+    w3.LATENCY_PROB = 0.0
+    SAVE = "rollingquad_2_deploy_robust_dr_policy.bin"
+    VID_DIR = "rollingquad_2_deploy_robust_dr_videos"
+    CKPT_DIR = "rollingquad_2_deploy_robust_dr_checkpoints"
+    JSON_OUT = "rollingquad_2_deploy_robust_dr_policy.json"
 
 
 # ================================================================== env
@@ -220,7 +321,7 @@ class DeployEnv(PipelineEnv):
             math.rotate(jp.array([0.0, 0.0, -1.0]), inv_rot),   # proj. gravity
             info["command"],                                     # unscaled
             DESIRED_WORLD_Z,
-            ps.q[self._joint_qpos] - DEFAULT_POSE,
+            ps.q[self._joint_qpos] + info["encoder_bias"] - DEFAULT_POSE,
             info["last_act"],
         ])
 
@@ -236,7 +337,8 @@ class DeployEnv(PipelineEnv):
 
     # -------------------------------------------------------------- reset
     def reset(self, rng):
-        rng, k_cmd, k_obs = jax.random.split(rng, 3)
+        rng, k_cmd, k_obs, k_latency, k_motor_zero, k_encoder = (
+            jax.random.split(rng, 6))
 
         # A deterministic, contact-consistent reset avoids teaching the policy
         # to compensate for a 5--25 mm drop and independently perturbed legs.
@@ -260,6 +362,25 @@ class DeployEnv(PipelineEnv):
             "rng": rng,
             "command": self._sample_command(k_cmd),
             "last_act": jp.zeros(12),
+            "action_queue": jp.zeros((ACTION_QUEUE_LEN, 12)),
+            "applied_action": jp.zeros(12),
+            "latency_steps": jp.where(
+                DEPLOY_DR,
+                jax.random.choice(
+                    k_latency, ACTION_QUEUE_LEN, p=ACTION_LATENCY_PROBS),
+                jp.int32(0)),
+            "motor_zero_bias": jp.where(
+                DEPLOY_DR,
+                jax.random.uniform(
+                    k_motor_zero, (12,), minval=-MOTOR_ZERO_BIAS_RAD,
+                    maxval=MOTOR_ZERO_BIAS_RAD),
+                jp.zeros(12)),
+            "encoder_bias": jp.where(
+                DEPLOY_DR,
+                jax.random.uniform(
+                    k_encoder, (12,), minval=-ENCODER_FIXED_BIAS_RAD,
+                    maxval=ENCODER_FIXED_BIAS_RAD),
+                jp.zeros(12)),
             "air_time": jp.zeros(4),
             "last_contact": jp.zeros(4, dtype=bool),
             "step": jp.int32(0),
@@ -277,19 +398,25 @@ class DeployEnv(PipelineEnv):
     # --------------------------------------------------------------- step
     def step(self, state, action):
         info = dict(state.info)
-        rng, k_push, k_pv, k_cmd, k_obs = jax.random.split(info["rng"], 5)
+        rng, k_deadline, k_cmd, k_obs = jax.random.split(info["rng"], 4)
 
         # Identical to neural_controller.cpp:605 -- no filter, no rate limit.
         action = jp.clip(action, -1.0, 1.0)
-        ctrl = jp.clip(DEFAULT_POSE + action * ACTION_SCALE, CTRL_LO, CTRL_HI)
+        action_queue = jp.concatenate(
+            [action[None, :], info["action_queue"][:-1]], axis=0)
+        delayed_action = action_queue[info["latency_steps"]]
+        deadline_missed = (DEPLOY_DR & (jax.random.uniform(k_deadline)
+                                        < CONTROL_DEADLINE_MISS_PROB))
+        applied_action = jp.where(
+            deadline_missed, info["applied_action"], delayed_action)
+        ctrl = jp.clip(
+            DEFAULT_POSE + applied_action * ACTION_SCALE
+            + info["motor_zero_bias"],
+            CTRL_LO, CTRL_HI)
 
-        ps_in = state.pipeline_state
-        if w3.PUSH_EVERY:
-            hit = jax.random.uniform(k_push) < (self.dt / w3.PUSH_EVERY)
-            dv = jax.random.normal(k_pv, (2,)) * w3.PUSH_MAG
-            qvel = ps_in.qvel.at[:2].add(jp.where(hit, dv, jp.zeros(2)))
-            ps_in = ps_in.replace(qvel=qvel, qd=qvel)
-        ps = self.pipeline_step(ps_in, ctrl)
+        # No random shove in deploy DR.  Robustness comes from model,
+        # calibration, sensing, latency and deadline randomisation instead.
+        ps = self.pipeline_step(state.pipeline_state, ctrl)
 
         inv_rot = math.quat_inv(ps.x.rot[0])
         lin_b = math.rotate(ps.xd.vel[0], inv_rot)
@@ -378,6 +505,8 @@ class DeployEnv(PipelineEnv):
         info["command"] = jp.where(resample, self._sample_command(k_cmd), cmd)
         info["rng"] = rng
         info["last_act"] = action
+        info["action_queue"] = action_queue
+        info["applied_action"] = applied_action
         info["air_time"] = air_time * (1.0 - done)
         info["last_contact"] = contact
         info["step"] = step_i
@@ -597,6 +726,17 @@ def main(resume_path=None):
           f"lift={FOOT_LIFT_W}@{CLEARANCE_TARGET:.3f}m "
           f"diag_action={DIAG_ACTION_W} "
           f"diag_contact={DIAG_CONTACT_W}")
+    if DEPLOY_DR:
+        print("  deploy DR: latency=0/20/40ms@60/30/10%, "
+              f"deadline_miss={CONTROL_DEADLINE_MISS_PROB:.0%}, no shove")
+        print(f"             motor_zero=±{MOTOR_ZERO_BIAS_RAD:.3f}rad "
+              f"encoder_bias=±{ENCODER_FIXED_BIAS_RAD:.3f}rad "
+              f"kp={MOTOR_KP_SCALE} kd={MOTOR_KD_SCALE} "
+              f"torque={MOTOR_TORQUE_SCALE}")
+        print(f"             torso_mass={TORSO_MASS_SCALE} "
+              f"leg_mass={LEG_MASS_SCALE} inertia={INERTIA_SCALE} "
+              f"torso_com=±{TORSO_COM_XY_M*1000:.0f}/"
+              f"{TORSO_COM_Z_M*1000:.0f}mm")
     print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, {NUM_EVALS} evals")
     print(f"  writing to {SAVE}, {CKPT_DIR}/, {VID_DIR}/")
     print("=" * 72, flush=True)
@@ -673,7 +813,7 @@ def main(resume_path=None):
             policy_hidden_layer_sizes=POLICY_HIDDEN,
             value_hidden_layer_sizes=VALUE_HIDDEN,
             activation=ACTIVATION),
-        randomization_fn=w3.domain_randomize if w3.DOMAIN_RANDOMIZE else None,
+        randomization_fn=deploy_domain_randomize if DEPLOY_DR else None,
         policy_params_fn=policy_params_fn, seed=SEED, **resume,
     )
 
@@ -703,11 +843,7 @@ if __name__ == "__main__":
             resume_path = argv[i + 1]
             del argv[i:i + 2]
         if "dr" in argv:
-            w3.enable_dr()          # sets w3.OBS_NOISE / PUSH_* / DOMAIN_*
-            SAVE = "rollingquad_2_deploy_fine_lift_policy_dr.bin"
-            VID_DIR = "rollingquad_2_deploy_fine_lift_videos_dr"
-            CKPT_DIR = "rollingquad_2_deploy_fine_lift_checkpoints_dr"
-            JSON_OUT = "rollingquad_2_deploy_fine_lift_policy_dr.json"
+            enable_deploy_dr()
             argv.remove("dr")
         cmd = argv[0] if argv else "train"
         if cmd == "probe":
