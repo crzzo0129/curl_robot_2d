@@ -101,3 +101,45 @@ python -m scripts.train_mjx_3d_roll_distillation \
 
 smoke 的目标只是验证数据流、显存和导出，不代表策略已蒸馏成功。正式模型至少要确认
 闭环 `success_rate` 和圈数接近教师，再进入实机吊绳/急停保护测试。
+
+## 只评估现有 DAgger checkpoint：横向漂移诊断
+
+Actuator-gain 教师的平均圈数约为 8.8 圈；不要再用早期 reference 约 6.7 圈作为这个
+教师的性能基准。要判断学生横向漂移的来源，需要记录逐步数据，而不只是最终成功率。
+
+以下命令跳过统计、BC、DAgger，不覆盖 checkpoint、不重新导出模型：
+
+```bash
+python -m scripts.train_mjx_3d_roll_distillation \
+  results/rollingquad2_floor_mass_gain_v3_h200_seed0/params_best \
+  --restore-student results/rollingquad2_roll_dagger_h200_seed0/student_params \
+  --eval-only --preset h200 --eval-envs 256 --episode-length 500 \
+  --eval-seed 0 \
+  --out results/rollingquad2_roll_dagger_lateral_eval_seed0 \
+  --mujoco-gl disable --memory-fraction 0.80
+```
+
+记录内容：
+
+- `evaluation.json`：成功率、圈数、任务配置、评估 seed 和实际 reset keys。
+- `lateral_diagnostics.json`：正/负 y 越界数、共同/差动误差 RMSE 与有符号偏差，以及按
+  无故障、横向失败、正向失败、负向失败分组的误差。
+- `lateral_episodes.csv`：每个 episode 的终止时刻、最终 y/vy/航向、越过5/10/15 cm的
+  时刻及动作误差。
+- `lateral_timeseries.csv`：每个控制时刻的 y/vy/航向和动作误差统计；明确列出仍活动的
+  episode 数量，避免忽略提前终止导致的样本变化。
+- `lateral_trace.npz`：完整 `(time, env, ...)` 轨迹、active 掩码、学生与教师8维动作、
+  共同/差动分量及误差。终止后的冻结状态不参与汇总。
+
+`y` 是相对起点的世界系横向位移，`vy` 是世界系横向速度。航向采用环境原有的
+`atan2(-body_y_axis.x, body_y_axis.y)`，避免滚动翻转导致普通 Euler 角解释混乱。
+共同/差动定义分别为 `(L+R)/2`、`(L-R)/2`；误差为学生减教师，单位为归一化动作，
+四个通道依次是前 hip、前 knee、后 hip、后 knee。
+
+教师标签来自**同一学生 pre-step 状态**的教师查询，沿用 DAgger 的最后子步有效动作
+定义；不是另外一条教师轨迹。教师查询得到的物理状态会丢弃，学生始终独立控制，所以
+记录动作对照不等于教师接管。查询需要额外物理计算，诊断会比只评估学生更慢。
+
+这里固定 `--eval-seed 0` 便于后续复现；旧版评估没有保存 reset keys，因此本次是新的
+评估样本，不保证逐 episode 重现旧的31.6%。如需在后续训练的最终评估同时记录，追加
+`--record-diagnostics --eval-seed 0` 即可。

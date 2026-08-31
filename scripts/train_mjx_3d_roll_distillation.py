@@ -36,6 +36,10 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
 )
 from curl_robot_2d_mjx.environment_3d import cem_controller_path_3d
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
+from curl_robot_2d_mjx.rolling_diagnostics_3d import (
+    lateral_state_features_3d,
+    save_lateral_trace,
+)
 
 
 PRESETS = {
@@ -88,6 +92,18 @@ def parse_args(argv=None):
         description="Distill the accepted rolling teacher to real observations"
     )
     parser.add_argument("teacher", type=Path, help="teacher params_best")
+    parser.add_argument(
+        "--eval-only", action="store_true",
+        help="load --restore-student, skip all training, save lateral diagnostics only",
+    )
+    parser.add_argument(
+        "--record-diagnostics", action="store_true",
+        help="record signed lateral state and same-state teacher action errors during evaluation",
+    )
+    parser.add_argument(
+        "--eval-seed", type=int,
+        help="independent evaluation reset seed; defaults to seed+100000 in eval-only mode",
+    )
     parser.add_argument(
         "--restore-student",
         type=Path,
@@ -142,6 +158,12 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
+    if args.eval_only:
+        if args.restore_student is None:
+            parser.error("--eval-only requires --restore-student")
+        args.record_diagnostics = True
+        if args.eval_seed is None:
+            args.eval_seed = args.seed + 100_000
     for name in (
         "envs",
         "stats_steps",
@@ -430,9 +452,10 @@ def main(argv=None):
         return state, history, previous_controller_action
 
     rng, reset_key = jax.random.split(rng)
-    state, history, previous_controller_action = reset_rollout(
-        reset_key, args.envs
-    )
+    if restored_student_checkpoint is None:
+        state, history, previous_controller_action = reset_rollout(
+            reset_key, args.envs
+        )
     observation_sum = jp.zeros((ROLLING_DEPLOY_OBSERVATION_SIZE_3D,))
     observation_square_sum = jp.zeros_like(observation_sum)
     observation_count = 0
@@ -572,9 +595,10 @@ def main(argv=None):
     optimizer_state = optimizer.init(student_params)
     train_step = make_train_step(optimizer)
 
-    state, history, previous_controller_action = reset_rollout(
-        reset_key, args.envs
-    )
+    if restored_student_checkpoint is None:
+        state, history, previous_controller_action = reset_rollout(
+            reset_key, args.envs
+        )
     loss_history = []
     bc_steps_to_run = (
         0 if restored_student_checkpoint is not None else args.train_steps
@@ -710,30 +734,33 @@ def main(argv=None):
     # complete effective command at those exact states, and update the student
     # on that label before moving on.  This attacks the covariate shift that
     # ordinary teacher-forced behavior cloning cannot see.
-    dagger_optimizer = optax.adam(args.dagger_learning_rate)
-    dagger_optimizer_state = dagger_optimizer.init(student_params)
-    dagger_train_step = make_train_step(dagger_optimizer)
-    rng, dagger_reset_key = jax.random.split(rng)
-    dagger_reset_keys = jax.random.split(dagger_reset_key, args.envs)
-    dagger_state = direct_reset_batch(dagger_reset_keys)
-    dagger_history = jp.broadcast_to(
-        initial_history,
-        (args.envs, ROLLING_DEPLOY_OBSERVATION_SIZE_3D),
-    )
-    dagger_previous_controller_action = jp.zeros(
-        (args.envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
-    )
+    if not args.eval_only:
+        dagger_optimizer = optax.adam(args.dagger_learning_rate)
+        dagger_optimizer_state = dagger_optimizer.init(student_params)
+        dagger_train_step = make_train_step(dagger_optimizer)
+        rng, dagger_reset_key = jax.random.split(rng)
+        dagger_reset_keys = jax.random.split(dagger_reset_key, args.envs)
+        dagger_state = direct_reset_batch(dagger_reset_keys)
+        dagger_history = jp.broadcast_to(
+            initial_history,
+            (args.envs, ROLLING_DEPLOY_OBSERVATION_SIZE_3D),
+        )
+        dagger_previous_controller_action = jp.zeros(
+            (args.envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
+        )
     dagger_loss_history = []
-    print(
-        "[DAgger]\n"
-        f"  steps={args.dagger_steps} lr={args.dagger_learning_rate:g} "
-        "teacher_intervention="
-        f"{args.dagger_teacher_start_probability:.1%}->"
-        f"{args.dagger_teacher_end_probability:.1%}",
-        flush=True,
-    )
+    if args.eval_only:
+        print("[evaluation only] BC=0 DAgger=0; no checkpoint updates", flush=True)
+    else:
+        print(
+            "[DAgger]\n"
+            f"  steps={args.dagger_steps} lr={args.dagger_learning_rate:g} "
+            "teacher_intervention="
+            f"{args.dagger_teacher_start_probability:.1%}->"
+            f"{args.dagger_teacher_end_probability:.1%}", flush=True,
+        )
 
-    for step in range(args.dagger_steps):
+    for step in range(0 if args.eval_only else args.dagger_steps):
         rng, policy_key, noise_key, mixture_key, reset_key = (
             jax.random.split(rng, 5)
         )
@@ -839,6 +866,8 @@ def main(argv=None):
             )
 
     rng, eval_reset_key = jax.random.split(rng)
+    if args.eval_seed is not None:
+        eval_reset_key = jax.random.PRNGKey(args.eval_seed)
     eval_reset_keys = jax.random.split(eval_reset_key, args.eval_envs)
     eval_state = direct_reset_batch(eval_reset_keys)
     eval_history = jp.broadcast_to(
@@ -860,8 +889,39 @@ def main(argv=None):
     abduction_sample_count = jp.asarray(0, dtype=jp.int32)
     abduction_max_abs = jp.asarray(0.0)
     abduction_indices = jp.asarray((0, 3, 6, 9))
+    diagnostic_frames = []
+    diagnostic_rng = jax.random.PRNGKey(args.seed + 200_000)
 
-    for _ in range(args.episode_length):
+    @jax.jit
+    def diagnostic_frame(before, after, active, student_action, teacher_action, label_valid, turns):
+        def state_values(state):
+            data = state.pipeline_state
+            rotation = data.xmat[:, direct_env.torso_body_id].reshape((-1, 3, 3))
+            return lateral_state_features_3d(
+                jp, data.qpos, data.qvel, rotation, state.info["initial_root_y"]
+            )
+
+        return {
+            "time_s": before.pipeline_state.time,
+            "next_time_s": after.pipeline_state.time,
+            "active": active,
+            **state_values(before),
+            **{f"next_{name}": value for name, value in state_values(after).items()},
+            "student_action": student_action,
+            "teacher_action": teacher_action,
+            "teacher_label_valid": label_valid,
+            "turns": turns,
+            "failed": after.metrics["failed"] > 0.5,
+            "lateral_failed": after.metrics["failure_lateral_drift"] > 0.5,
+        }
+
+    if args.record_diagnostics:
+        print(
+            "[lateral diagnostics] teacher queries only; no interventions. "
+            "Recording active transitions including termination.", flush=True,
+        )
+
+    for eval_step in range(args.episode_length):
         # No synthetic sensor noise in acceptance: this measures whether the
         # student itself can close the loop through the deployable ABI.
         rng, eval_noise_key = jax.random.split(rng)
@@ -890,6 +950,15 @@ def main(argv=None):
         effective_action = controller_action_to_effective_action_3d(
             jp, controller_action
         )
+        if args.record_diagnostics:
+            diagnostic_rng, label_key = jax.random.split(diagnostic_rng)
+            label_keys = jax.random.split(label_key, args.eval_envs)
+            label_residual = teacher_policy_batch(eval_state.obs, label_keys)
+            # Query a copy of the same PRE-step student state, exactly as in
+            # DAgger. Never feed the resulting physics state into the rollout.
+            label_state = step_batch(eval_state, label_residual)
+            label_action = label_state.info["last_action"]
+            label_valid = label_state.metrics["failure_nonfinite"] < 0.5
         was_active = eval_active
         next_eval_state = direct_step_batch(
             eval_state, effective_action, was_active
@@ -899,6 +968,11 @@ def main(argv=None):
             next_eval_state.metrics["roll_progress_rad"],
             0.0,
         )
+        if args.record_diagnostics:
+            diagnostic_frames.append(jax.device_get(diagnostic_frame(
+                eval_state, next_eval_state, was_active, effective_action,
+                label_action, label_valid, eval_roll_progress / (2.0 * math.pi),
+            )))
         eval_steps += was_active.astype(jp.int32)
         failed_now = (
             next_eval_state.metrics["failed"] > 0.5
@@ -915,6 +989,15 @@ def main(argv=None):
             controller_action,
             eval_previous_controller_action,
         )
+        if args.record_diagnostics and (
+            (eval_step + 1) % args.log_every == 0
+            or eval_step + 1 == args.episode_length
+        ):
+            print(
+                f"[diagnostic {eval_step + 1}/{args.episode_length}] "
+                f"active_before_step={int(jp.sum(was_active))}/{args.eval_envs}",
+                flush=True,
+            )
 
     eval_turns = np.asarray(
         jax.device_get(eval_roll_progress / (2.0 * math.pi))
@@ -966,6 +1049,42 @@ def main(argv=None):
         flush=True,
     )
 
+    lateral_diagnostics = None
+    if args.record_diagnostics:
+        trace = {
+            name: np.stack([frame[name] for frame in diagnostic_frames])
+            for name in diagnostic_frames[0]
+        }
+        lateral_diagnostics = save_lateral_trace(args.out, trace)
+        print(
+            "[lateral diagnostics]\n"
+            f"  failed_y_positive={lateral_diagnostics['lateral_failure_positive_count']} "
+            f"failed_y_negative={lateral_diagnostics['lateral_failure_negative_count']}\n"
+            f"  common_error_rmse={lateral_diagnostics['common_error']['rmse']} "
+            f"differential_error_rmse={lateral_diagnostics['differential_error']['rmse']}\n"
+            f"  reports={args.out / 'lateral_diagnostics.json'}", flush=True,
+        )
+
+    if args.eval_only:
+        report = {
+            "mode": "evaluation_only_no_training_or_checkpoint_export",
+            "teacher": str(args.teacher.resolve()),
+            "student": str(args.restore_student.resolve()),
+            "controller": str(args.controller.resolve()),
+            "eval_seed": args.eval_seed,
+            "eval_reset_keys": np.asarray(jax.device_get(eval_reset_keys)).tolist(),
+            "closed_loop_task": asdict(direct_task),
+            "teacher_task": asdict(teacher_task),
+            "observation_noise_scale": 0.0,
+            "closed_loop_evaluation": closed_loop_evaluation,
+            "lateral_diagnostics": lateral_diagnostics,
+        }
+        with (args.out / "evaluation.json").open("w", encoding="utf-8") as handle:
+            json.dump(report, handle, indent=2, allow_nan=False)
+            handle.write("\n")
+        print(f"[saved evaluation only] {args.out / 'evaluation.json'}", flush=True)
+        return
+
     normalizer = {
         "mean": np.asarray(observation_mean),
         "std": np.asarray(observation_std),
@@ -1014,6 +1133,8 @@ def main(argv=None):
         "loss_history": loss_history,
         "dagger_loss_history": dagger_loss_history,
         "closed_loop_evaluation": closed_loop_evaluation,
+        "eval_reset_keys": np.asarray(jax.device_get(eval_reset_keys)).tolist(),
+        "lateral_diagnostics": lateral_diagnostics,
     }
     with (args.out / "distillation.json").open(
         "w", encoding="utf-8"
