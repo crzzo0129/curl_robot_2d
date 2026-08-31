@@ -33,6 +33,8 @@ def parse_args(argv=None):
     )
     parser.add_argument("--batch-size", type=int, default=2)
     parser.add_argument("--steps", type=int, default=8)
+    parser.add_argument("--require-ready", action="store_true",
+                        help="walking_start only: zero action must reach READY in every lane")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--memory-fraction", type=float, default=0.90)
     parser.add_argument("--mujoco-gl", default="auto")
@@ -43,6 +45,8 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     if args.batch_size < 1 or args.steps < 1:
         raise SystemExit("--batch-size and --steps must be positive")
+    if args.require_ready and args.stage != "walking_start":
+        raise SystemExit("--require-ready zero-action baseline is only valid for walking_start")
     if args.stage.startswith("brake_") and not args.roll_snapshots:
         raise SystemExit("BRAKE smoke requires --roll-snapshots")
     configure_cloud_runtime(
@@ -56,6 +60,7 @@ def main(argv=None) -> None:
     from curl_robot_2d_mjx.environment_transition_3d import (
         make_brax_transition_env_3d,
     )
+    from curl_robot_2d_mjx.wrappers_transition_3d import wrap_transition_3d
 
     task = transition_curriculum_config_3d(
         args.stage, Transition3DConfig(
@@ -66,10 +71,11 @@ def main(argv=None) -> None:
         )
     )
     task = transition_physics_profile_3d(args.physics_profile, task)
-    env = make_brax_transition_env_3d(task, seed=args.seed)
+    base_env = make_brax_transition_env_3d(task, seed=args.seed)
+    env = wrap_transition_3d(base_env, task.episode_length)
     keys = jax.random.split(jax.random.PRNGKey(args.seed), args.batch_size)
-    reset = jax.jit(jax.vmap(env.reset))
-    step = jax.jit(jax.vmap(env.step))
+    reset = jax.jit(env.reset)
+    step = jax.jit(env.step)
     started = time.perf_counter()
     state = reset(keys)
     jax.block_until_ready(state.obs["state"])
@@ -90,21 +96,28 @@ def main(argv=None) -> None:
     state = step(state, actions)
     jax.block_until_ready(state.reward)
     step_compile_s = time.perf_counter() - started
+    successes = state.metrics["transition_success"]
+    failures = state.metrics["failed"]
     started = time.perf_counter()
     for _ in range(args.steps):
         state = step(state, actions)
+        successes = successes + state.metrics["transition_success"]
+        failures = failures + state.metrics["failed"]
     jax.block_until_ready(state.reward)
     rollout_s = time.perf_counter() - started
     if not bool(jp.all(jp.isfinite(state.obs["state"]))):
         raise RuntimeError("non-finite transition actor observation")
     if not bool(jp.all(jp.isfinite(state.reward))):
         raise RuntimeError("non-finite transition reward")
+    if args.require_ready and (not bool(jp.all(successes >= 1)) or bool(jp.any(failures > 0))):
+        raise RuntimeError(f"zero-action Walking baseline failed: successes={successes}, failures={failures}")
     result = {
         "status": "ok",
         "runtime": describe_runtime(),
         "stage": args.stage,
         "geometry": task.geometry,
-        "model_path": str(env.model_path),
+        "model_path": str(base_env.model_path),
+        "episode_reset": "full_task_state_with_fresh_rng",
         "physics_profile": args.physics_profile,
         "batch_size": args.batch_size,
         "steps": args.steps,
@@ -115,10 +128,9 @@ def main(argv=None) -> None:
         "cached_rollout_s": rollout_s,
         "mean_reward": float(jp.mean(state.reward)),
         "mean_mode": float(jp.mean(state.metrics["mode"])),
-        "success_fraction": float(
-            jp.mean(state.metrics["transition_success"])
-        ),
-        "failure_fraction": float(jp.mean(state.metrics["failed"])),
+        "success_fraction": float(jp.mean(successes >= 1)),
+        "failure_fraction": float(jp.mean(failures > 0)),
+        "success_count_per_env": jax.device_get(successes).tolist(),
     }
     print(json.dumps(result, indent=2, sort_keys=True))
 

@@ -16,6 +16,37 @@
 本地 CPU 检查通过不等于已训练出成功策略；MJX/JIT、PPO 收敛、真实 checkpoint
 导出验证及三策略连续闭环仍需云端验证。没有修改实机控制器或安全配置。
 
+### v4 训练修复：从 Walking 初态重新开始
+
+首次 smoke 评估全部超时、READY 为零，不能进入下一课程。针对这一结果：
+
+- PPO 和 smoke 都使用 `wrap_transition_3d`，结束回合后同时重置物理状态、
+  步数、阶段、READY/失败计数、前一动作、足位置及完整 observation 历史。
+  使用新随机种子重新采样课程初态；未结束的并行环境不受影响。
+  终止步的 reward/done/metrics/time_out 仍保留，供 PPO 和评估统计读取。
+- 新策略的最后一层初始 location 为零，pre-tanh 标准差默认 0.05；
+  `--initial-policy-std` 可调整这个初始探索量。保留随机隐层和原来的
+  24-logit 单输出层结构；不改变 720 维观察、关节 scale 或部署导出格式。
+  恢复 checkpoint 时不覆盖已训练参数。熵系数默认改为 0.0003。
+- STABILIZE 的直立/高度奖励必须有足部支撑且接近 Walking 姿态；增加
+  有界姿态误差惩罚，稳定奖励同时考虑速度，避免机身朝上但趴地仍持续获利。
+  DEPLOY 落足前的引导奖励保留。
+- 只在 STABILIZE 阶段设置支撑/姿态失败判据：进入后先宽限 0.30 s，之后
+  高度 <0.12 m、关节 RMS >0.65 rad、倾角 >0.65 rad、少于两足接触或
+  出现非足部接地，任一异常持续 0.25 s 才失败。正常一帧会清零计数。
+  BRAKE/DEPLOY 不使用这条规则；未修改实机急停或倾倒保护。
+- 成功、失败和超时统计互斥。`curriculum_next_stage` 只表示课程顺序；
+  `stage_passed` 需连续两次训练后的评估成功率 ≥90%、失败率 ≤5%、
+  超时率 ≤5%，且统计完整有效。未通过时 `next_stage=null`，不建议升级。
+  这是训练进度门限，不是实机安全认证。
+- 物理诊断增加 `_per_step` 指标（如 `eval/episode_root_z_m_per_step`），
+  Brax 会先按每个回合自己的步数归一化再求平均，避免把累计高度/速度误当作
+  瞬时值。旧累计指标保留；成功/失败/超时仍是回合事件，不做逐步归一化。
+
+原失败权重和日志应保留作对照。v4 首轮使用新输出目录、不恢复旧失败权重。
+训练入口拒绝覆盖非空阶段目录。新增测试覆盖混合成功/失败/超时、连续回合
+计数、历史重置、新随机种子、终止统计、零动作多回合 READY 和非零网络导出。
+
 ## Actor 与实机保持相同的 36 × 20 观察
 
 接口依据工作区内 `pupperv3-monorepo/ros2_ws/src/neural_controller` 的实际
@@ -136,17 +167,27 @@ brake_full 不施加这些课程上限。筛选为空就报错，不制造低速
 以下从 `curl_robot_2d` 目录运行；本地无 JAX 时自动跳过真实 MJX 测试：
 
 ```powershell
-python -m unittest tests.test_transition_3d tests.test_transition_deployment_3d tests.test_transition_mjx_3d -v
+python -m unittest tests.test_transition_3d tests.test_transition_deployment_3d tests.test_transition_training_3d tests.test_transition_wrappers_3d tests.test_transition_mjx_3d -v
 python -m scripts.train_mjx_3d_transition_ppo --stage walking_start --dry-run
 ```
 
 云端按 `requirements-mjx.txt` 准备 Linux GPU 环境，先跑上述测试及 smoke：
 
 ```bash
-python -m scripts.mjx_3d_transition_smoke --stage walking_start --physics-profile newton4
-python -m scripts.train_mjx_3d_transition_ppo --stage walking_start --preset smoke
+python -m scripts.mjx_3d_transition_smoke --stage walking_start --physics-profile newton4 --steps 80 --require-ready
+python -m scripts.train_mjx_3d_transition_ppo --stage walking_start --preset smoke \
+  --out results/mjx_3d_transition_ppo_v4
+```
+
+`--require-ready` 检查零动作能够在每个并行环境站稳，而且没有失败；这不等于
+学到完整转换策略。smoke 的 `success_fraction` 表示运行期间至少成功一次的
+环境比例，而不是恰好最后一帧的成功脉冲。上述训练完成且 `stage_passed=true`
+后才执行下一阶段：
+
+```bash
 python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --preset h200 \
-  --restore-checkpoint results/mjx_3d_transition_ppo/walking_start/ppo_checkpoint
+  --out results/mjx_3d_transition_ppo_v4 \
+  --restore-checkpoint results/mjx_3d_transition_ppo_v4/walking_start/ppo_checkpoint
 ```
 
 随后以同样方式训练 deploy_capture、brake_low、brake_full。每阶段先评估通过，
@@ -158,13 +199,15 @@ python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --preset
 
 ```bash
 python -m scripts.export_transition_rtneural \
-  results/mjx_3d_transition_ppo/brake_full/params_final \
-  results/mjx_3d_transition_ppo/brake_full/transition.json \
-  --config results/mjx_3d_transition_ppo/brake_full/deployment_config.json
+  results/mjx_3d_transition_ppo_v4/brake_full/params_final \
+  results/mjx_3d_transition_ppo_v4/brake_full/transition.json \
+  --config results/mjx_3d_transition_ppo_v4/brake_full/deployment_config.json
 ```
 
 本地测试覆盖 Walking CPU 稳定性、关节映射、快照保真、逐帧 C++ 历史语义、
-动作映射、合成权重导出数值一致性。云端还需验证真实 Brax checkpoint、
+动作映射、合成权重导出数值一致性。另已在隔离的 CPU JAX 0.6.2 / Brax 0.14
+环境通过三项完整重置测试，以及初始探索分布、非零随机 Actor 导出一致性测试；
+这五项不运行 MJX 物理，也不证明 PPO 收敛。云端还需验证真实 Brax checkpoint、
 批量 JIT、学习成功率、延迟/噪声鲁棒性和 WALK 接管后至少 1 s 的稳定性。
 当前 `contact_force_peak_n` 奖励输入仍为零，未测量冲击峰值；不能据此声称
 已验证实机接触安全或完整 ROLL→WALK 成功率。

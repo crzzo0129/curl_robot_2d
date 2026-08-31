@@ -20,6 +20,9 @@ from curl_robot_2d_mjx.training_transition_3d import (
     initialize_transition_actor, transition_scale_logit, transition_curriculum_acceptance,
 )
 from curl_robot_2d_mjx.wrappers_transition_3d import select_reset_lanes
+from curl_robot_2d_mjx.environment_transition_3d import (
+    TRANSITION_PER_STEP_METRICS_3D, add_transition_per_step_metrics_3d,
+)
 from scripts.train_mjx_3d_transition_ppo import main
 
 
@@ -132,6 +135,15 @@ class StandingRewardTests(unittest.TestCase):
 
 
 class CurriculumAcceptanceTests(unittest.TestCase):
+    def test_physical_metrics_have_explicit_per_step_channels(self):
+        metrics = {name: .25 for name in TRANSITION_PER_STEP_METRICS_3D}
+        metrics["transition_success"] = 1.
+        result = add_transition_per_step_metrics_3d(metrics)
+        for name in TRANSITION_PER_STEP_METRICS_3D:
+            self.assertEqual(result[name + "_per_step"], metrics[name])
+        self.assertNotIn("transition_success_per_step", result)
+        self.assertNotIn("root_z_m_per_step", metrics)
+
     def row(self, step, success=1., failure=0., timeout=0.):
         return {"step": step, "eval/episode_transition_success": success,
                 "eval/episode_failed": failure, "eval/episode_timeout": timeout}

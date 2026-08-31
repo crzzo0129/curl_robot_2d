@@ -52,6 +52,17 @@ from curl_robot_2d_mjx.deployment_transition_3d import (
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 TRANSITION_MODEL_PATH_3D = model_path_3d("rollingquad_2")
 TRANSITION_KEYFRAME_NAMES_3D = ("compact", "stand")
+TRANSITION_PER_STEP_METRICS_3D = (
+    "linear_speed_m_s", "angular_speed_rad_s", "upright_tilt_rad", "root_z_m",
+    "stand_pose_error_rms_rad", "foot_contact_count", "nonfoot_contact_count", "action_rms",
+)
+
+
+def add_transition_per_step_metrics_3d(metrics):
+    # Brax 0.14 Evaluator divides names ending in 'per_step' by each episode's
+    # own length before averaging across episodes. Keep legacy sums too.
+    return {**metrics, **{name + "_per_step": metrics[name]
+                         for name in TRANSITION_PER_STEP_METRICS_3D}}
 
 
 def transition_reference_ctrl_3d(
@@ -212,7 +223,7 @@ def make_brax_transition_env_3d(
 
         def _zero_metrics(self):
             zero = jp.zeros((), dtype=jp.float32)
-            return {
+            return add_transition_per_step_metrics_3d({
                 "reward": zero,
                 "reward_total": zero,
                 **{
@@ -243,7 +254,7 @@ def make_brax_transition_env_3d(
                 "failed": zero,
                 "failed_stabilize": zero,
                 "timeout": zero,
-            }
+            })
 
         def _contact_arrays(self, data):
             contact = data.contact
@@ -832,7 +843,7 @@ def make_brax_transition_env_3d(
                 obs,
                 reward,
                 done.astype(jp.float32),
-                metrics=metrics,
+                metrics=add_transition_per_step_metrics_3d(metrics),
                 info=next_info,
             )
 
