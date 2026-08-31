@@ -78,7 +78,21 @@ python -m scripts.export_startup_handoff_bank \
 ```
 
 只导出完整来源合格、exact 回放正确、四类扰动均达到原 probe 成功标准的候选。
-XML 哈希不符时先检查模型/换行等文件差异；不要手工改哈希绕过验证。
+MJCF 校验保留原始 `model_sha256` 作为溯源，新增 `model_lf_sha256`：仅将 CRLF 换成
+LF 后计算 SHA-256，兼容 Windows/Linux 及混合换行；不忽略其它空白、参数、元素顺序等
+任何内容变化。新的 probe、候选导出和启动训练元数据都会保存这两个值。
+它们只校验 MJCF 文件本身，不覆盖外部 mesh/include 文件；仍需同步完整模型资产。
+
+随附候选库已补充 portable 哈希。补充前确认本地原始 XML 与原试验的原始哈希完全一致：
+`9b3177d67c170cc5126d0cc46952eaf109a807b9c7d4708f4119a4b3961a58b8`；原文件 252 个换行中
+44 个是 CRLF，其余是 LF。统一为 LF 后为
+`f292c7e76d27721d40e93159012d7a1b905987d9dd8338c9bd73ef20a30c776a`。
+没有修改候选状态、教师权重或 XML 物理参数。
+
+遇到 `candidate bank MJCF does not match`，先同步新版代码**以及候选库 JSON**，原命令加
+`--dry-run` 检查；通过后去掉该选项训练。若仍失败，错误会显示实际模型路径、预期/实际
+哈希；此时不能归因于普通 CRLF/LF 差异，应核对模型版本，不要手工改哈希绕过验证。
+旧 probe/旧训练记录没有 portable 字段时仍严格比较原始字节，不会自动信任当前模型。
 
 ## 奖励和观测
 

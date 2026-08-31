@@ -15,6 +15,7 @@ TRANSITION_REWARD_TERM_NAMES_3D = (
     "height",
     "support",
     "stabilize",
+    "stabilize_pose",
     "ready",
     "action_rate",
     "action_magnitude",
@@ -41,6 +42,8 @@ class Transition3DRewardConfig:
     height_sigma_m: float = 0.06
     support: float = 0.8
     stabilize: float = 1.5
+    stabilize_pose: float = 2.0
+    stabilize_speed_sigma: float = 0.20
     ready: float = 12.0
     action_rate: float = 0.03
     action_magnitude: float = 0.005
@@ -84,9 +87,13 @@ def reward_terms_transition_3d(
     height_score = xp.exp(
         -xp.square(root_height_error / config.height_sigma_m)
     )
-    stable_score = (
-        deploy_score * upright_score * height_score * support_fraction
-    )
+    support_quality = support_fraction / (1.0 + inputs["nonfoot_contact_count"])
+    standing_quality = deploy_score * support_quality
+    stable_score = (standing_quality * upright_score * height_score
+                    * xp.exp(-xp.square(speed / config.stabilize_speed_sigma)))
+    # DEPLOY still needs shaping before feet land. In STABILIZE, belly/shell
+    # support with an upright torso must not collect the standing bonuses.
+    pose_support_gate = deploy + stabilize * standing_quality
     return {
         "brake_speed": config.brake_speed * brake * brake_score,
         "brake_progress": config.brake_progress * brake * brake_delta,
@@ -94,10 +101,13 @@ def reward_terms_transition_3d(
         "brake_capture": config.brake_capture * brake * brake_score * upright_score,
         "deploy_pose": config.deploy_pose * deploy * deploy_score,
         "deploy_progress": config.deploy_progress * deploy * deploy_delta,
-        "upright": config.upright * (deploy + stabilize) * upright_score,
-        "height": config.height * (deploy + stabilize) * height_score,
-        "support": config.support * (deploy + stabilize) * support_fraction,
+        "upright": config.upright * pose_support_gate * upright_score,
+        "height": config.height * pose_support_gate * height_score,
+        "support": config.support * (deploy * support_fraction
+                                     + stabilize * standing_quality * height_score),
         "stabilize": config.stabilize * stabilize * stable_score,
+        "stabilize_pose": -config.stabilize_pose * stabilize * xp.minimum(
+            xp.square(pose_error / config.deploy_pose_sigma_rad), 1.0),
         "ready": config.ready * inputs["newly_ready"],
         "action_rate": -config.action_rate * inputs["action_rate_squared"],
         "action_magnitude": (

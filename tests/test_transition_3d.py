@@ -235,6 +235,7 @@ class Transition3DModelAndCliTests(unittest.TestCase):
         except ImportError:
             self.skipTest("MuJoCo is unavailable")
         model = mujoco.MjModel.from_xml_path(str(TRANSITION_MODEL_PATH_3D))
+        apply_physics_options_3d(model, Transition3DConfig())
         data = mujoco.MjData(model)
         key_id = mujoco.mj_name2id(
             model, mujoco.mjtObj.mjOBJ_KEY, "stand"

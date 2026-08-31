@@ -16,6 +16,7 @@ import numpy as np
 
 from curl_robot_2d_mjx.autonomous_startup_3d import (
     CONTRACT, AUTONOMOUS_STARTUP_OBSERVATION_SIZE, AutonomousStartupConfig, load_candidate_bank, sha256,
+    model_fingerprint, validate_model_fingerprint,
 )
 from curl_robot_2d_mjx.cem_reference import CEMReferenceConfig
 from curl_robot_2d_mjx.config_3d import Rolling3DConfig
@@ -186,7 +187,7 @@ def main(argv=None):
     task, ref, reward, cfg, bank, bank_payload, teacher = build_inputs(args)
     payload = {"contract": CONTRACT, "task": asdict(task), "startup": asdict(cfg),
         "teacher_config_payload": teacher, "teacher_sha256": sha256(args.teacher),
-        "model_sha256": sha256(model_path_3d(task.geometry)),
+        **model_fingerprint(model_path_3d(task.geometry)),
         "candidate_bank_sha256": sha256(args.candidate_bank),
         "candidate_count": len(bank["time"]), "observation_size": AUTONOMOUS_STARTUP_OBSERVATION_SIZE, "action_size": 8,
         "episode_length": cfg.episode_steps(task.control_timestep),
@@ -201,9 +202,10 @@ def main(argv=None):
     if args.restore_startup:
         source = json.loads((args.restore_startup.parent / "training_config.json").read_text(encoding="utf-8"))
         for key in ("contract", "observation_size", "action_size", "teacher_sha256",
-                    "candidate_bank_sha256", "model_sha256"):
+                    "candidate_bank_sha256"):
             if source.get(key) != payload[key]:
                 raise ValueError(f"incompatible startup restore: {key}")
+        validate_model_fingerprint(source, model_path_3d(task.geometry), context="startup restore")
         if source["training"]["hidden_layers"] != args.hidden_layers:
             raise ValueError("restore hidden layers mismatch")
     if args.dry_run:

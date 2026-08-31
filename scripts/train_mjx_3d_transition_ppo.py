@@ -6,6 +6,7 @@ import argparse
 from dataclasses import asdict, replace
 import inspect
 import json
+import math
 from pathlib import Path
 import time
 
@@ -21,6 +22,10 @@ from curl_robot_2d_mjx.config_transition_3d import (
 )
 from curl_robot_2d_mjx.reward_transition_3d import Transition3DRewardConfig
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
+from curl_robot_2d_mjx.training_transition_3d import (
+    TRANSITION_INITIAL_POLICY_STD, TRANSITION_TRAINING_REVISION,
+    initialize_transition_actor, transition_scale_logit, transition_curriculum_acceptance,
+)
 
 
 PRESETS_TRANSITION_3D = {
@@ -74,7 +79,9 @@ def parse_args(argv=None):
     parser.add_argument("--restore-checkpoint", type=Path, default=None)
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--learning-rate", type=float, default=2.0e-4)
-    parser.add_argument("--entropy-cost", type=float, default=3.0e-3)
+    parser.add_argument("--entropy-cost", type=float, default=3.0e-4)
+    parser.add_argument("--initial-policy-std", type=float, default=TRANSITION_INITIAL_POLICY_STD,
+                        help="fresh actor pre-tanh std; never changes restored weights")
     parser.add_argument("--discounting", type=float, default=0.985)
     parser.add_argument("--unroll-length", type=int, default=24)
     parser.add_argument("--updates-per-batch", type=int, default=4)
@@ -105,11 +112,14 @@ def _float(value):
 
 
 def make_transition_networks(observation_size, action_size,
-                             preprocess_observations_fn, *, hidden_layers=(256, 256, 128)):
+                             preprocess_observations_fn, *, hidden_layers=(256, 256, 128),
+                             initial_std=TRANSITION_INITIAL_POLICY_STD):
     """One shared actor architecture for PPO and cloud export parity tests."""
     from brax.training.agents.ppo import networks as ppo_networks
     import jax.nn as jnn
-    return ppo_networks.make_ppo_networks(
+    import jax.numpy as jp
+    transition_scale_logit(initial_std)
+    nets = ppo_networks.make_ppo_networks(
         observation_size, action_size,
         preprocess_observations_fn=preprocess_observations_fn,
         policy_hidden_layer_sizes=tuple(hidden_layers),
@@ -117,12 +127,22 @@ def make_transition_networks(observation_size, action_size,
         activation=jnn.elu,
         policy_obs_key="state", value_obs_key="privileged_state",
     )
+    original_init = nets.policy_network.init
+
+    def init(key):
+        return initialize_transition_actor(
+            jp, original_init(key), hidden_layers, action_size, initial_std)
+
+    return replace(nets, policy_network=replace(nets.policy_network, init=init))
 
 
 def main(argv=None) -> None:
     args = parse_args(argv)
-    if args.learning_rate <= 0.0:
+    if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         raise SystemExit("--learning-rate must be positive")
+    if not math.isfinite(args.entropy_cost) or args.entropy_cost < 0:
+        raise SystemExit("--entropy-cost must be finite and nonnegative")
+    transition_scale_logit(args.initial_policy_std)
     if args.unroll_length < 1 or args.updates_per_batch < 1:
         raise SystemExit("rollout and update lengths must be positive")
 
@@ -134,6 +154,7 @@ def main(argv=None) -> None:
     preset = PRESETS_TRANSITION_3D[args.preset]
     stage_out = args.out / args.stage
     payload = {
+        "training_revision": TRANSITION_TRAINING_REVISION,
         "contract_version": "transition_neural_controller_36x20_v3",
         "actor_observation_size": TRANSITION_ACTOR_OBSERVATION_SIZE_3D,
         "critic_observation_size": TRANSITION_CRITIC_OBSERVATION_SIZE_3D,
@@ -152,6 +173,9 @@ def main(argv=None) -> None:
             "unroll_length": args.unroll_length,
             "updates_per_batch": args.updates_per_batch,
             "hidden_layers": list(args.hidden_layers),
+            "initial_policy_std": args.initial_policy_std,
+            "actor_init": "zero_location_fixed_small_initial_scale",
+            "episode_reset": "full_task_state_with_fresh_rng",
         },
         "restore_checkpoint": (
             str(args.restore_checkpoint.resolve())
@@ -159,7 +183,7 @@ def main(argv=None) -> None:
             else None
         ),
         "curriculum_order": list(TRANSITION_CURRICULUM_STAGE_NAMES_3D),
-        "next_stage": (
+        "curriculum_next_stage": (
             TRANSITION_CURRICULUM_STAGE_NAMES_3D[
                 TRANSITION_CURRICULUM_STAGE_NAMES_3D.index(args.stage) + 1
             ]
@@ -172,6 +196,10 @@ def main(argv=None) -> None:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
+    if stage_out.exists() and any(stage_out.iterdir()):
+        raise SystemExit(f"Output directory is not empty: {stage_out}. "
+                         "Use a new --out; existing weights/logs will not be overwritten.")
+
     configure_cloud_runtime(
         memory_fraction=args.memory_fraction,
         mujoco_gl=args.mujoco_gl,
@@ -183,6 +211,9 @@ def main(argv=None) -> None:
     from curl_robot_2d_mjx.environment_transition_3d import (
         make_brax_transition_env_3d,
     )
+    from curl_robot_2d_mjx.wrappers_transition_3d import wrap_transition_3d
+    if "wrap_env_fn" not in inspect.signature(ppo.train).parameters:
+        raise SystemExit("Installed Brax must support wrap_env_fn for full Transition resets")
 
     payload["runtime"] = describe_runtime()
     stage_out.mkdir(parents=True, exist_ok=True)
@@ -202,7 +233,7 @@ def main(argv=None) -> None:
     def network_factory(observation_size, action_size, preprocess_observations_fn):
         return make_transition_networks(
             observation_size, action_size, preprocess_observations_fn,
-            hidden_layers=args.hidden_layers)
+            hidden_layers=args.hidden_layers, initial_std=args.initial_policy_std)
 
     history = []
 
@@ -211,9 +242,10 @@ def main(argv=None) -> None:
         history.append({"step": int(step), **clean})
         success = clean.get("eval/episode_transition_success", 0.0)
         failed = clean.get("eval/episode_failed", 0.0)
+        timeout = clean.get("eval/episode_timeout", 0.0)
         print(
             f"[transition eval] stage={args.stage} step={int(step)} "
-            f"success_sum={success:.3f} failure_sum={failed:.3f}",
+            f"success={success:.3f} failure={failed:.3f} timeout={timeout:.3f}",
             flush=True,
         )
 
@@ -239,6 +271,7 @@ def main(argv=None) -> None:
     _, params, final_metrics = ppo.train(
         environment=train_env,
         eval_env=eval_env,
+        wrap_env_fn=wrap_transition_3d,
         num_timesteps=preset["steps"],
         episode_length=task.episode_length,
         action_repeat=1,
@@ -264,14 +297,19 @@ def main(argv=None) -> None:
     (stage_out / "metrics_history.json").write_text(
         json.dumps(history, indent=2) + "\n", encoding="utf-8"
     )
+    acceptance = transition_curriculum_acceptance(history)
     summary = {
         "stage": args.stage,
+        "training_revision": TRANSITION_TRAINING_REVISION,
         "elapsed_s": time.perf_counter() - started,
         "params": str((stage_out / "params_final").resolve()),
         "final_metrics": {
             name: _float(value) for name, value in (final_metrics or {}).items()
         },
-        "next_stage": payload["next_stage"],
+        "curriculum_next_stage": payload["curriculum_next_stage"],
+        "stage_passed": acceptance["passed"],
+        "acceptance": acceptance,
+        "next_stage": payload["curriculum_next_stage"] if acceptance["passed"] else None,
     }
     (stage_out / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"

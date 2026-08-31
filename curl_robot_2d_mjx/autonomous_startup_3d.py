@@ -64,6 +64,36 @@ def sha256(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
+def model_fingerprint(path):
+    """Keep original provenance and an EOL-portable XML fingerprint.
+
+    Only CRLF -> LF is normalized (including mixed EOL files). No XML parsing,
+    whitespace stripping, numeric rewriting, or changes to element order.
+    This fingerprints the MJCF file, not its external mesh/include assets.
+    """
+    raw = Path(path).read_bytes()
+    return {"model_sha256": hashlib.sha256(raw).hexdigest(),
+            "model_lf_sha256": hashlib.sha256(raw.replace(b"\r\n", b"\n")).hexdigest()}
+
+
+def validate_model_fingerprint(expected, model_path, *, context="candidate bank"):
+    actual = model_fingerprint(model_path)
+    # Legacy metadata has no normalized digest: retain strict raw validation.
+    # A normalized digest must come from the verified probe model, never from
+    # whatever happens to be installed on the training host after a mismatch.
+    key = "model_lf_sha256" if "model_lf_sha256" in expected else "model_sha256"
+    if expected.get(key) != actual[key]:
+        raise ValueError(
+            f"{context} MJCF does not match the current model\n"
+            f"model_path={Path(model_path).resolve()}\n"
+            f"comparison={key}\nexpected={expected.get(key)}\nactual={actual[key]}\n"
+            f"expected_raw={expected.get('model_sha256')}\nactual_raw={actual['model_sha256']}\n"
+            "Sync the verified model and candidate bank; do not overwrite hashes to bypass validation."
+            + (" Legacy metadata requires identical bytes; export portable metadata from the original "
+               "verified probe model to tolerate CRLF/LF differences."
+               if key == "model_sha256" else " CRLF/LF differences are already ignored."))
+
+
 def gate_errors(xp, qpos, qvel, rolling_phase, bank, cfg):
     """One vector of normalized errors per candidate; x translation is free.
 
@@ -114,8 +144,7 @@ def load_candidate_bank(path, *, teacher_path, teacher_payload, model_path):
         raise ValueError("invalid or empty startup candidate bank")
     if payload["teacher_sha256"] != sha256(teacher_path):
         raise ValueError("candidate bank belongs to a different teacher checkpoint")
-    if payload["model_sha256"] != sha256(model_path):
-        raise ValueError("candidate bank MJCF does not match the current model")
+    validate_model_fingerprint(payload, model_path)
     differences = compare_configs(payload["teacher_config_payload"], teacher_payload)
     if differences:
         raise ValueError(f"candidate bank/config mismatch: {differences}")

@@ -20,6 +20,7 @@ import time
 import numpy as np
 
 from curl_robot_2d.model_3d import JOINT_NAMES_3D
+from curl_robot_2d_mjx.autonomous_startup_3d import model_fingerprint
 from curl_robot_2d_mjx.cem_reference import (
     CEMReferenceConfig, CEMReferenceGeometry, advance_oscillator,
     load_cem_reference, reference_action,
@@ -452,7 +453,7 @@ def main(argv=None):
                                   if args.teacher_config else None),
         "teacher_config_payload": payload,
         "teacher_configuration_assumed": args.assume_accepted_gain_config,
-        "model_sha256": hashlib.sha256(model_path_3d(task.geometry).read_bytes()).hexdigest(),
+        **model_fingerprint(model_path_3d(task.geometry)),
         "task": asdict(task), "reference": asdict(reference), "noise": asdict(noise),
         "args": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "sample_times_s": [s * dt for s in sample_steps],

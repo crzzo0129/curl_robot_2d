@@ -2,6 +2,7 @@
   "contract": "autonomous_stand_to_roll_v1",
   "teacher_sha256": "905134d8a45551880fb44c3e693f6c1c8e88447e01e8a5d69dbe4c043ae41c35",
   "model_sha256": "9b3177d67c170cc5126d0cc46952eaf109a807b9c7d4708f4119a4b3961a58b8",
+  "model_lf_sha256": "f292c7e76d27721d40e93159012d7a1b905987d9dd8338c9bd73ef20a30c776a",
   "teacher_config_payload": {
     "configuration_source": "ASSUMED from documented accepted gain teacher; not embedded in checkpoint",
     "recipe": "robust_recovery_v15",

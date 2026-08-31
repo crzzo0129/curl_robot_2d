@@ -94,6 +94,14 @@ class Transition3DConfig:
     ready_min_foot_contacts: int = 3
     failure_root_height_min_m: float = 0.09
     failure_root_height_max_m: float = 0.55
+    # Debounced STABILIZE-only guard; shell contact is allowed during BRAKE
+    # and DEPLOY. These are simulation termination rules, not hardware estop.
+    stabilize_failure_grace_s: float = 0.30
+    stabilize_bad_support_hold_s: float = 0.25
+    stabilize_failure_root_height_min_m: float = 0.12
+    stabilize_failure_joint_error_rad: float = 0.65
+    stabilize_failure_tilt_rad: float = 0.65
+    stabilize_failure_min_foot_contacts: int = 2
 
     # Reset distributions are overwritten by transition_curriculum_config_3d.
     reset_start_mode: int = int(TransitionMode3D.STABILIZE)
@@ -178,6 +186,22 @@ def is_ready_to_walk_3d(
     config: Transition3DConfig | None = None,
 ) -> bool:
     return not ready_to_walk_reasons_3d(sample, config)
+
+
+def stabilize_failure_update_3d(xp, config, *, mode, mode_steps, previous_bad_steps,
+                                root_height, joint_error, tilt, foot_contacts,
+                                nonfoot_contacts):
+    """Consecutive bad support/posture after STABILIZE settling grace only."""
+    grace = math.ceil(config.stabilize_failure_grace_s / config.control_timestep)
+    hold = math.ceil(config.stabilize_bad_support_hold_s / config.control_timestep)
+    active = (mode == int(TransitionMode3D.STABILIZE)) & (mode_steps >= grace)
+    bad = ((root_height < config.stabilize_failure_root_height_min_m)
+           | (joint_error > config.stabilize_failure_joint_error_rad)
+           | (tilt > config.stabilize_failure_tilt_rad)
+           | (foot_contacts < config.stabilize_failure_min_foot_contacts)
+           | (nonfoot_contacts > 0))
+    count = xp.where(active & bad, previous_bad_steps + 1, 0)
+    return count, active & (count >= hold)
 
 
 def transition_curriculum_config_3d(
@@ -282,6 +306,10 @@ def validate_transition_config_3d(config: Transition3DConfig) -> None:
         config.stabilize_min_s,
         config.ready_hold_s,
         config.observation_limit,
+        config.stabilize_failure_grace_s,
+        config.stabilize_bad_support_hold_s,
+        config.stabilize_failure_joint_error_rad,
+        config.stabilize_failure_tilt_rad,
     )
     if any(not math.isfinite(float(value)) or value <= 0 for value in positive):
         raise ValueError("transition timing and step values must be positive")
@@ -299,6 +327,11 @@ def validate_transition_config_3d(config: Transition3DConfig) -> None:
         raise ValueError("READY root-height bounds must be ordered")
     if not 1 <= config.ready_min_foot_contacts <= 4:
         raise ValueError("ready_min_foot_contacts must be in [1, 4]")
+    if not 1 <= config.stabilize_failure_min_foot_contacts <= config.ready_min_foot_contacts:
+        raise ValueError("STABILIZE minimum contacts must be in [1, READY minimum]")
+    if not (config.failure_root_height_min_m
+            <= config.stabilize_failure_root_height_min_m < config.ready_root_height_min_m):
+        raise ValueError("STABILIZE failure height must lie below READY and above global failure")
     low, high = config.reset_compact_fraction_range
     if not 0.0 <= low <= high <= 1.0:
         raise ValueError("reset_compact_fraction_range must lie in [0, 1]")

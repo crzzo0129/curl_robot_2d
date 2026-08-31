@@ -32,6 +32,13 @@ class TransitionMJXTest(unittest.TestCase):
                for k, v in sizes.items()}
         normalizer = running_statistics.update(normalizer, obs)
         actor = nets.policy_network.init(jax.random.PRNGKey(10))
+        # The production initializer now has a zero location head. Perturb it
+        # ONLY in this fixture: all-zero outputs would make export parity pass
+        # vacuously and stop testing normalization/ELU/layer orientation.
+        head = actor["params"]["hidden_2"]
+        head["kernel"] = .1 * jax.random.normal(jax.random.PRNGKey(11), head["kernel"].shape)
+        head["bias"] = head["bias"].at[:12].set(
+            .1 * jax.random.normal(jax.random.PRNGKey(12), (12,)))
         params = (normalizer, actor)
         policy = ppo_networks.make_inference_fn(nets)(params, deterministic=True)
         key = jax.random.PRNGKey(20)
@@ -64,6 +71,7 @@ class TransitionMJXTest(unittest.TestCase):
         config = transition_controller_metadata_3d(model, Transition3DConfig())
         exported = convert_transition(params, config)
         actual = _run_layers(raw, exported["layers"])
+        self.assertGreater(float(np.std(actual)), .01)
         comparisons = {
             "normalization": (normalized_numpy, normalized_jax),
             "unfused_numpy_vs_brax_fp32": (unfused, expected),
@@ -88,6 +96,53 @@ class TransitionMJXTest(unittest.TestCase):
                                 f"nonfinite {name}: {diagnostics}")
                 np.testing.assert_allclose(left, right, atol=2e-5, rtol=2e-5,
                                            err_msg=f"{name}: {diagnostics}")
+
+    def test_fresh_actor_is_zero_centered_with_small_exploration(self):
+        import jax
+        import jax.numpy as jp
+        from brax.training.acme import running_statistics
+        from scripts.train_mjx_3d_transition_ppo import make_transition_networks
+        sizes = {"state": 720, "privileged_state": 86}
+        nets = make_transition_networks(sizes, 12, running_statistics.normalize, hidden_layers=(16,))
+        normalizer = running_statistics.init_state({k: jp.zeros(v) for k, v in sizes.items()})
+        actor = jax.jit(nets.policy_network.init)(jax.random.PRNGKey(10))
+        obs = {k: jax.random.normal(jax.random.PRNGKey(v), (32, v)) for k, v in sizes.items()}
+        logits = jax.jit(nets.policy_network.apply)(normalizer, actor, obs)
+        np.testing.assert_array_equal(logits[:, :12], np.zeros((32, 12)))
+        dist = nets.parametric_action_distribution.create_dist(logits)
+        np.testing.assert_allclose(dist.scale, .05, atol=1e-7)
+
+    def test_zero_action_reaches_ready_across_full_episode_resets(self):
+        import jax
+        import jax.numpy as jp
+        from curl_robot_2d_mjx.config_transition_3d import Transition3DConfig
+        from curl_robot_2d_mjx.environment_transition_3d import make_brax_transition_env_3d
+        from curl_robot_2d_mjx.wrappers_transition_3d import wrap_transition_3d
+        task = Transition3DConfig(observation_noise_enabled=False)
+        env = wrap_transition_3d(make_brax_transition_env_3d(task), task.episode_length)
+        state = jax.jit(env.reset)(jax.random.split(jax.random.PRNGKey(1), 2))
+        step = jax.jit(env.step)
+        successes = np.zeros(2)
+        previous_done = False
+        for _ in range(3 * round(1 / task.control_timestep)):
+            state = step(state, jp.zeros((2, 12)))
+            self.assertTrue(np.isfinite(state.reward).all())
+            np.testing.assert_array_equal(state.metrics["failed"], [0, 0])
+            np.testing.assert_array_equal(state.metrics["timeout"], [0, 0])
+            np.testing.assert_array_equal(state.info["actor_history"], state.obs["state"])
+            if previous_done:
+                np.testing.assert_array_equal(state.info["step_count"], [1, 1])
+                np.testing.assert_array_equal(state.done, [0, 0])
+            previous_done = bool(np.all(state.done))
+            successes += np.asarray(state.metrics["transition_success"])
+            if previous_done:
+                np.testing.assert_array_equal(state.info["step_count"], [0, 0])
+                np.testing.assert_array_equal(state.info["ready_steps"], [0, 0])
+                np.testing.assert_array_equal(state.info["stabilize_bad_steps"], [0, 0])
+                np.testing.assert_array_equal(state.info["last_action"], np.zeros((2, 12)))
+            if np.all(successes >= 2):
+                break
+        self.assertTrue(np.all(successes >= 2), f"zero-action READY successes={successes}")
 
     def test_reset_step_and_live_takeover(self):
         import jax

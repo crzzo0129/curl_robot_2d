@@ -12,6 +12,7 @@ import numpy as np
 from curl_robot_2d_mjx.autonomous_startup_3d import (
     AutonomousStartupConfig, candidate_potential, confirmation_update,
     continuation_score, gate_errors, load_candidate_bank,
+    model_fingerprint, sha256, validate_model_fingerprint,
 )
 from scripts.train_mjx_3d_startup_ppo import DEFAULT_BANK, parse_args
 
@@ -90,6 +91,82 @@ class AutonomousStartupContractTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "different teacher"):
                 load_candidate_bank(DEFAULT_BANK, teacher_path=teacher,
                     teacher_payload=payload["teacher_config_payload"], model_path=teacher)
+
+    def test_model_hash_normalizes_only_crlf(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.xml"
+            lf = b'<mujoco>\n  <option timestep="0.001"/>\n</mujoco>\n'
+            path.write_bytes(lf)
+            expected = model_fingerprint(path)
+            for raw in (lf, lf.replace(b"\n", b"\r\n"), lf.replace(b"\n", b"\r\n", 1)):
+                path.write_bytes(raw)
+                validate_model_fingerprint(expected, path)
+                self.assertEqual(model_fingerprint(path)["model_lf_sha256"], expected["model_lf_sha256"])
+            for raw in (lf.replace(b"0.001", b"0.002"), lf.replace(b"  <", b" <")):
+                path.write_bytes(raw)
+                with self.assertRaisesRegex(ValueError, "CRLF/LF differences are already ignored"):
+                    validate_model_fingerprint(expected, path)
+
+    def test_legacy_model_metadata_stays_strict_and_reports_hashes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.xml"
+            path.write_bytes(b"<mujoco/>\r\n")
+            expected = {"model_sha256": sha256(path)}
+            validate_model_fingerprint(expected, path)
+            path.write_bytes(b"<mujoco/>\n")
+            with self.assertRaises(ValueError) as caught:
+                validate_model_fingerprint(expected, path)
+            message = str(caught.exception)
+            for value in (str(path.resolve()), expected["model_sha256"], sha256(path), "Legacy metadata"):
+                self.assertIn(value, message)
+
+    def test_shipped_bank_loads_same_model_with_lf_crlf_or_mixed_endings(self):
+        from curl_robot_2d_mjx.environment_3d import model_path_3d
+        _, payload = fixture()
+        original = model_path_3d(payload["teacher_config_payload"]["task"]["geometry"]).read_bytes()
+        lf = original.replace(b"\r\n", b"\n")
+        with tempfile.TemporaryDirectory() as directory:
+            teacher, model, bank_path = (Path(directory) / name for name in ("params", "model.xml", "bank.json"))
+            teacher.write_bytes(b"test checkpoint")
+            payload["teacher_sha256"] = sha256(teacher)
+            bank_path.write_text(json.dumps(payload), encoding="utf-8")
+            # Keep shipped model hashes intact: only substitute the test teacher.
+            for raw in (original, lf, lf.replace(b"\n", b"\r\n"), lf.replace(b"\n", b"\r\n", 5)):
+                model.write_bytes(raw)
+                bank, _ = load_candidate_bank(bank_path, teacher_path=teacher,
+                    teacher_payload=payload["teacher_config_payload"], model_path=model)
+                self.assertEqual(bank["qpos"].shape, (3, 19))
+
+    def test_model_physics_changes_rejected_even_if_raw_hash_matches(self):
+        original = (b'<mujoco>\n<body mass="1"><joint axis="0 1 0" range="-1 1"/>'
+                    b'<position kp="5" forcerange="-3 3"/></body>\n</mujoco>\n')
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "model.xml"
+            path.write_bytes(original)
+            expected = model_fingerprint(path)
+            for before, after in ((b'mass="1"', b'mass="2"'), (b'axis="0 1 0"', b'axis="1 0 0"'),
+                                  (b'range="-1 1"', b'range="-2 2"'), (b'kp="5"', b'kp="10"'),
+                                  (b'forcerange="-3 3"', b'forcerange="-6 6"')):
+                with self.subTest(change=before):
+                    path.write_bytes(original.replace(before, after))
+                    with self.assertRaisesRegex(ValueError, "MJCF does not match"):
+                        validate_model_fingerprint(expected, path)
+                    # A stale/incorrect portable digest cannot fall back to raw.
+                    with self.assertRaisesRegex(ValueError, "MJCF does not match"):
+                        validate_model_fingerprint({**expected, "model_sha256": sha256(path)}, path)
+
+    def test_export_preserves_portable_provenance_and_rejects_different_models(self):
+        from scripts.export_startup_handoff_bank import merge_model_provenance
+        legacy = {"model_sha256": "raw-a"}
+        portable = {**legacy, "model_lf_sha256": "lf-a"}
+        result = dict(legacy)
+        merge_model_provenance(result, portable)
+        self.assertEqual(result, portable)
+        merge_model_provenance(result, {"model_sha256": "raw-b", "model_lf_sha256": "lf-a"})
+        for incompatible in ({"model_sha256": "raw-b"},
+                             {"model_sha256": "raw-a", "model_lf_sha256": "lf-b"}):
+            with self.assertRaisesRegex(ValueError, "different models"):
+                merge_model_provenance(result, incompatible)
 
     def test_cli_requires_real_files_and_new_output(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

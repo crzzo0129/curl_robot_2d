@@ -10,6 +10,16 @@ from curl_robot_2d_mjx.autonomous_startup_3d import CONTRACT
 from scripts.analyze_3d_roll_handoff import compare_configs, read_trials
 
 
+def merge_model_provenance(result, summary):
+    """Combine only matching probe models; never re-sign from a local XML."""
+    key = ("model_lf_sha256" if all("model_lf_sha256" in item for item in (result, summary))
+           else "model_sha256")
+    if result[key] != summary[key]:
+        raise ValueError("cannot combine different models")
+    if "model_lf_sha256" in summary:
+        result["model_lf_sha256"] = summary["model_lf_sha256"]
+
+
 def export_bank(probes, time_s):
     result, candidates = None, []
     for directory in map(Path, probes):
@@ -22,9 +32,9 @@ def export_bank(probes, time_s):
                 "interpretation": "empirical candidates only; NOT certified gates or stand demonstrations",
                 "probe_runtime": []}
         elif (result["teacher_sha256"] != summary["teacher_sha256"]
-              or result["model_sha256"] != summary["model_sha256"]
               or compare_configs(result["teacher_config_payload"], summary["teacher_config_payload"])):
             raise ValueError("cannot combine different teachers/models/configurations")
+        merge_model_provenance(result, summary)
         result["probe_runtime"].append({key: summary.get(key) for key in (
             "jax_version", "mujoco_version", "devices", "noise", "args")})
         rows = read_trials(directory / "trials.csv")

@@ -20,6 +20,7 @@ from curl_robot_2d_mjx.config_transition_3d import (
     TransitionMode3D,
     transition_curriculum_config_3d,
     validate_transition_config_3d,
+    stabilize_failure_update_3d,
 )
 from curl_robot_2d_mjx.environment_3d import (
     apply_physics_options_3d,
@@ -240,6 +241,7 @@ def make_brax_transition_env_3d(
                 "action_rms": zero,
                 "action_rate_rms": zero,
                 "failed": zero,
+                "failed_stabilize": zero,
                 "timeout": zero,
             }
 
@@ -560,6 +562,7 @@ def make_brax_transition_env_3d(
                 "mode_steps": mode_steps,
                 "deploy_gate_steps": jp.asarray(0, dtype=jp.int32),
                 "ready_steps": jp.asarray(0, dtype=jp.int32),
+                "stabilize_bad_steps": jp.asarray(0, dtype=jp.int32),
                 "last_action": previous_action,
                 "last_foot_position": data.site_xpos[self.foot_site_ids],
                 "previous_combined_speed": jp.sqrt(
@@ -644,6 +647,13 @@ def make_brax_transition_env_3d(
             ).astype(jp.int32)
             changed_mode = next_mode != mode
             next_mode_steps = jp.where(changed_mode, 0, mode_steps + 1)
+            next_bad_steps, failed_stabilize = stabilize_failure_update_3d(
+                jp, task, mode=next_mode, mode_steps=next_mode_steps,
+                previous_bad_steps=state.info["stabilize_bad_steps"],
+                root_height=data.qpos[2], joint_error=gates["stand_error"],
+                tilt=kinematics["upright_tilt"], foot_contacts=contacts["foot_count"],
+                nonfoot_contacts=contacts["nonfoot_count"],
+            )
 
             ready_gate_active = (
                 (next_mode == int(TransitionMode3D.STABILIZE))
@@ -654,9 +664,6 @@ def make_brax_transition_env_3d(
                 ready_gate_active, state.info["ready_steps"] + 1, 0
             )
             newly_ready = (next_ready_steps >= self.ready_hold_steps) & action_finite
-            next_mode = jp.where(
-                newly_ready, int(TransitionMode3D.READY), next_mode
-            ).astype(jp.int32)
 
             physics_finite = (
                 jp.all(jp.isfinite(data.qpos))
@@ -665,6 +672,7 @@ def make_brax_transition_env_3d(
             failed = (
                 (~action_finite)
                 | (~physics_finite)
+                | failed_stabilize
                 | (data.qpos[2] < task.failure_root_height_min_m)
                 | (data.qpos[2] > task.failure_root_height_max_m)
                 | (
@@ -678,8 +686,14 @@ def make_brax_transition_env_3d(
                     & (~deploy_complete)
                 )
             )
+            # Terminal outcomes are mutually exclusive: invalid physics or
+            # lost support cannot be counted as a simultaneous READY success.
+            newly_ready = newly_ready & (~failed)
+            next_mode = jp.where(
+                newly_ready, int(TransitionMode3D.READY), next_mode
+            ).astype(jp.int32)
             next_step_count = state.info["step_count"] + 1
-            timeout = next_step_count >= task.episode_length
+            timeout = (next_step_count >= task.episode_length) & (~failed) & (~newly_ready)
             done = failed | newly_ready | timeout
 
             foot_position = data.site_xpos[self.foot_site_ids]
@@ -750,6 +764,7 @@ def make_brax_transition_env_3d(
                     changed_mode, 0, next_deploy_gate_steps
                 ),
                 "ready_steps": next_ready_steps,
+                "stabilize_bad_steps": next_bad_steps,
                 "last_action": policy_action,
                 "last_foot_position": foot_position,
                 "previous_combined_speed": combined_speed,
@@ -809,6 +824,7 @@ def make_brax_transition_env_3d(
                     reward_inputs["action_rate_squared"]
                 ),
                 "failed": failed.astype(jp.float32),
+                "failed_stabilize": failed_stabilize.astype(jp.float32),
                 "timeout": timeout.astype(jp.float32),
             }
             return State(
