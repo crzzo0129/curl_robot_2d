@@ -1,4 +1,4 @@
-"""Train an autonomous stand-to-roll skill with a frozen rolling-teacher tail.
+"""Train stand -> low-speed compact, then a frozen cold-start rolling teacher.
 
 This is a privileged-observation startup teacher, not a deployable rolling
 student. No fixed stand-to-compact interpolation, state snap, or timed handoff.
@@ -7,6 +7,7 @@ student. No fixed stand-to-compact interpolation, state snap, or timed handoff.
 import argparse
 from dataclasses import asdict, replace
 import inspect
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -15,8 +16,11 @@ import time
 import numpy as np
 
 from curl_robot_2d_mjx.autonomous_startup_3d import (
-    CONTRACT, AUTONOMOUS_STARTUP_OBSERVATION_SIZE, AutonomousStartupConfig, load_candidate_bank, sha256,
+    AUTONOMOUS_STARTUP_OBSERVATION_SIZE, sha256,
     model_fingerprint, validate_model_fingerprint,
+)
+from curl_robot_2d_mjx.compact_startup_3d import (
+    COMPACT_STARTUP_CONTRACT as CONTRACT, CompactStartupConfig, compact_target,
 )
 from curl_robot_2d_mjx.cem_reference import CEMReferenceConfig
 from curl_robot_2d_mjx.config_3d import Rolling3DConfig
@@ -36,19 +40,25 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--teacher", type=Path, required=True)
     p.add_argument("--teacher-config", type=Path)
-    p.add_argument("--candidate-bank", type=Path, default=DEFAULT_BANK)
+    p.add_argument("--candidate-bank", type=Path,
+                   help="obsolete: v2 generates its compact target from the model and rejects dynamic banks")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--preset", choices=PRESETS, default="smoke")
     for key in PRESETS["smoke"]:
         p.add_argument("--" + key.replace("_", "-"), type=int)
     p.add_argument("--startup-budget-s", type=float, default=3)
-    p.add_argument("--continuation-s", type=float, default=3)
-    p.add_argument("--minimum-turns", type=float, default=1.5)
+    p.add_argument("--continuation-s", type=float, default=10)
+    p.add_argument("--minimum-turns", type=float, default=5)
     p.add_argument("--confirmation-steps", type=int, default=3)
     p.add_argument("--gate-scale", type=float, default=1)
     p.add_argument("--learning-rate", type=float, default=2e-4)
     p.add_argument("--entropy-cost", type=float, default=0.001)
-    p.add_argument("--discounting", type=float, default=0.995)
+    p.add_argument("--discounting", type=float, default=0.999)
+    compact_defaults = CompactStartupConfig()
+    for field in ("foot_slip_weight", "foot_slip_sigma_m_s", "settling_velocity_weight",
+                  "joint_position_rad", "joint_velocity_rad_s", "root_z_m",
+                  "root_linear_velocity_m_s", "root_angular_velocity_rad_s", "orientation_rad"):
+        p.add_argument("--" + field.replace("_", "-"), type=float, default=getattr(compact_defaults, field))
     p.add_argument("--unroll-length", type=int, default=20)
     p.add_argument("--updates-per-batch", type=int, default=4)
     p.add_argument("--hidden-layers", nargs="+", type=int, default=[256, 256, 128])
@@ -69,7 +79,9 @@ def parse_args(argv=None):
             setattr(args, key, default)
     if args.teacher_config is None:
         args.teacher_config = args.teacher.parent / "training_config.json"
-    for key in ("teacher", "teacher_config", "candidate_bank"):
+    if args.candidate_bank is not None:
+        p.error("stand-to-compact v2 no longer uses --candidate-bank; remove it and use a new output directory")
+    for key in ("teacher", "teacher_config"):
         if not getattr(args, key).is_file():
             p.error(f"missing {key}: {getattr(args, key)}")
     if args.out.exists() and any(args.out.iterdir()):
@@ -100,13 +112,19 @@ def build_inputs(args):
     task = Rolling3DConfig(**teacher["task"])
     ref = CEMReferenceConfig(**teacher["reference"])
     reward = Rolling3DRewardConfig(**teacher["reward"])
-    cfg = AutonomousStartupConfig(startup_budget_s=args.startup_budget_s,
+    cfg = CompactStartupConfig(startup_budget_s=args.startup_budget_s,
         continuation_s=args.continuation_s, minimum_turns=args.minimum_turns,
         confirmation_steps=args.confirmation_steps, gate_scale=args.gate_scale,
-        discounting=args.discounting)
+        discounting=args.discounting,
+        **{field: getattr(args, field) for field in (
+            "foot_slip_weight", "foot_slip_sigma_m_s", "settling_velocity_weight",
+            "joint_position_rad", "joint_velocity_rad_s", "root_z_m",
+            "root_linear_velocity_m_s", "root_angular_velocity_rad_s", "orientation_rad")})
     cfg.validate(task.control_timestep)
-    bank, bank_payload = load_candidate_bank(args.candidate_bank, teacher_path=args.teacher,
-        teacher_payload=teacher, model_path=model_path_3d(task.geometry))
+    import mujoco
+    bank = compact_target(mujoco.MjModel.from_xml_path(str(model_path_3d(task.geometry))))
+    bank_payload = {"contract": CONTRACT, "source": "current model compact keyframe; zero target velocity",
+                    "target": {k: v.tolist() for k, v in bank.items()}}
     return task, ref, reward, cfg, bank, bank_payload, teacher
 
 
@@ -175,6 +193,14 @@ def evaluate_startup(env, policy, *, count, seed):
                                        "axis_tilt", "forbidden_depth", "forbidden_contact")},
         "scope": "startup actor plus frozen rolling teacher; NOT an independent distilled student",
     }
+    if "foot_slip_distance_m" in totals:
+        elapsed = totals["startup_control_step"] * env.config.control_timestep
+        report.update(mean_startup_foot_slip_distance_m=float(totals["foot_slip_distance_m"].mean()),
+            startup_foot_slip_rms_m_s=float(np.sqrt(totals["foot_slip_squared_integral"].sum() / max(elapsed.sum(), 1e-8))),
+            maximum_startup_foot_slip_m_s=float(totals["terminal_foot_slip_peak_m_s"].max()),
+            mean_handoff_joint_speed_rad_s=float(totals["handoff_joint_speed_rad_s"][handoff].mean()) if handoff.any() else None,
+            mean_handoff_root_linear_speed_m_s=float(totals["handoff_root_linear_speed_m_s"][handoff].mean()) if handoff.any() else None,
+            mean_handoff_root_angular_speed_rad_s=float(totals["handoff_root_angular_speed_rad_s"][handoff].mean()) if handoff.any() else None)
     return report, {**totals, **{f"{key}_first_episodes": np.stack(value) for key, value in traces.items()}}
 
 
@@ -188,7 +214,7 @@ def main(argv=None):
     payload = {"contract": CONTRACT, "task": asdict(task), "startup": asdict(cfg),
         "teacher_config_payload": teacher, "teacher_sha256": sha256(args.teacher),
         **model_fingerprint(model_path_3d(task.geometry)),
-        "candidate_bank_sha256": sha256(args.candidate_bank),
+        "compact_target_sha256": hashlib.sha256(json.dumps(bank_payload, sort_keys=True).encode()).hexdigest(),
         "candidate_count": len(bank["time"]), "observation_size": AUTONOMOUS_STARTUP_OBSERVATION_SIZE, "action_size": 8,
         "episode_length": cfg.episode_steps(task.control_timestep),
         "training": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
@@ -197,17 +223,22 @@ def main(argv=None):
         "task_field_describes": "base rolling teacher; autonomous wrapper owns stand reset and episode termination",
         "deployable_student": False, "physics_snap_at_handoff": False,
         "initial_policy_mean": "stand; no folding interpolation",
+        "startup_target": "compact pose and low velocity, not a moving candidate",
+        "teacher_handoff": "cold start: zero reference age/oscillator phase; rebase controller phase only",
+        "foot_slip": "startup-only tangential velocity at foot-mesh/floor contact points; every physics substep",
         "teacher_tail_actions": "ignored startup actor actions; same-episode rewards/values carry downstream credit",
     }
     if args.restore_startup:
         source = json.loads((args.restore_startup.parent / "training_config.json").read_text(encoding="utf-8"))
         for key in ("contract", "observation_size", "action_size", "teacher_sha256",
-                    "candidate_bank_sha256"):
+                    "compact_target_sha256"):
             if source.get(key) != payload[key]:
                 raise ValueError(f"incompatible startup restore: {key}")
         validate_model_fingerprint(source, model_path_3d(task.geometry), context="startup restore")
         if source["training"]["hidden_layers"] != args.hidden_layers:
             raise ValueError("restore hidden layers mismatch")
+        if args.eval_only and source["startup"] != payload["startup"]:
+            raise ValueError("eval-only requires the same compact gates/reward/timing configuration as the checkpoint")
     if args.dry_run:
         print(json.dumps(payload, indent=2, ensure_ascii=False))
         return payload
@@ -224,7 +255,7 @@ def main(argv=None):
     env = make_autonomous_startup_env(task, ref, reward, bank, args.teacher, teacher, cfg, seed=args.seed)
     args.out.mkdir(parents=True, exist_ok=True)
     write_json(args.out / "training_config.json", payload)
-    write_json(args.out / "candidate_bank.json", bank_payload)
+    write_json(args.out / "compact_target.json", bank_payload)
     if args.smoke_steps:
         import jax.numpy as jp
         state = jax.jit(env.reset)(jax.random.PRNGKey(args.seed))
@@ -285,9 +316,11 @@ def main(argv=None):
         pending[int(step)] = (success, handoff, -failed, clean.get("eval/episode_reward", -1e30))
         try_save(int(step))
         print(f"[startup PPO] step={step} handoff={handoff:.1%} success={success:.1%} "
-              f"failed={failed:.1%} timeout={clean.get('eval/episode_startup_timeout', 0.):.1%}", flush=True)
+              f"failed={failed:.1%} timeout={clean.get('eval/episode_startup_timeout', 0.):.1%} "
+              f"slip_distance={clean.get('eval/episode_foot_slip_distance_m', 0.):.4f}m", flush=True)
     print(f"[startup PPO] {args.envs} envs, budget={cfg.startup_budget_s}s, "
-          f"teacher tail={cfg.continuation_s}s, candidates={len(bank['time'])}", flush=True)
+          f"teacher cold-start tail={cfg.continuation_s}s, target=compact, "
+          f"foot_slip_weight={cfg.foot_slip_weight}", flush=True)
     started = time.perf_counter()
     # No large nested rollout at the gate: each env advances one physical
     # control period, including in the frozen-teacher tail.

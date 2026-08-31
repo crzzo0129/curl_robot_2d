@@ -1,5 +1,9 @@
 # 自主 stand→rolling 启动 PPO
 
+> 历史 v1 设计，以下命令不再适用于当前训练入口。当前默认已改为
+> [stand→低速 compact v2](3d_compact_startup_training_zh.md)，请使用新文档；
+> 不再传 candidate bank，也不能恢复旧 v1 启动参数。
+
 入口：`python -m scripts.train_mjx_3d_startup_ppo`。
 
 这是**新的启动教师**，不是给旧 rolling PPO 加 stand reset，也不是旧插值启动原型。

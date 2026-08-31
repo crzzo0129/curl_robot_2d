@@ -1244,7 +1244,7 @@ def make_brax_env_3d(
                     controller_time = controller_time + state.info["reference_time_offset"]
                 next_phase = advance_oscillator(
                     jp,
-                    current_rolling_phase,
+                    current_rolling_phase - state.info.get("teacher_phase_offset", 0.),
                     current_phase,
                     physics_dt,
                     reference_settings,
@@ -1296,16 +1296,20 @@ def make_brax_env_3d(
                     physics_dt,
                 )
                 phase_rate = (next_phase - current_phase) / physics_dt
+                trace = (
+                    current_action, current_reference_action, current_ramp, phase_rate,
+                )
+                if "startup_slip_squared" in state.info:
+                    from curl_robot_2d_mjx.compact_startup_3d import data_contact_slip
+                    # Sample each solver substep's contact/kinematic state,
+                    # rather than missing touchdown/drag within a 20 ms action.
+                    trace += data_contact_slip(jp, self.mj_model, next_data,
+                                              self.foot_geom_ids, self.floor_geom_id)
                 return (
                     next_data,
                     next_phase,
                     next_rolling_phase,
-                ), (
-                    current_action,
-                    current_reference_action,
-                    current_ramp,
-                    phase_rate,
-                )
+                ), trace
 
             (
                 candidate_data,
@@ -1625,6 +1629,10 @@ def make_brax_env_3d(
                 ),
                 "step_count": step_count,
             }
+            if "startup_slip_squared" in state.info:
+                info.update(startup_slip_squared=jp.mean(reference_trace[4]),
+                            startup_slip_distance=physics_dt * jp.sum(reference_trace[5]),
+                            startup_slip_peak=jp.max(reference_trace[6]))
             metrics = {
                 "reward": reward,
                 "reward_total": reward,
@@ -1735,7 +1743,7 @@ def make_brax_env_3d(
                 axis_tilt=axis_tilt,
                 reference_action_value=next_reference_action,
                 oscillator_phase=oscillator_phase,
-                rolling_phase=rolling_phase,
+                rolling_phase=rolling_phase - state.info.get("teacher_phase_offset", 0.),
                 action_ramp=action_ramp,
                 lateral_drift=lateral_drift,
                 lateral_velocity_command=state.info[

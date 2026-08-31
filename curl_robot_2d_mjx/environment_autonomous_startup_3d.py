@@ -20,6 +20,7 @@ from curl_robot_2d_mjx.environment_3d import (
 from curl_robot_2d_mjx.cem_reference import advance_oscillator
 from curl_robot_2d_mjx.startup_rolling_3d import reset_pose_arrays_3d
 from curl_robot_2d_mjx.handoff_probe_3d import FAILURES
+from curl_robot_2d_mjx.compact_startup_3d import CompactStartupConfig, compact_target, compact_potential
 
 
 def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, teacher_payload,
@@ -30,6 +31,7 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
     from brax.envs.base import Env, State
 
     cfg = config or AutonomousStartupConfig()
+    compact_mode = isinstance(cfg, CompactStartupConfig)
     dt = task.control_timestep
     cfg.validate(dt)
     if (task.geometry != "rollingquad_2" or task.reset_pose != "compact"
@@ -43,6 +45,13 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
     task = replace(task, episode_length=cfg.episode_steps(dt) + 2)
     base = make_brax_env_3d(task, cem_reference=reference, reward_config=reward, seed=seed)
     policy = teacher_policy or load_frozen_teacher(base, teacher_path, teacher_payload)
+    if compact_mode:
+        expected = compact_target(base.mj_model)
+        if bank is not None:
+            for key in expected:
+                if np.shape(bank.get(key)) != expected[key].shape or not np.allclose(bank[key], expected[key], atol=1e-7, rtol=0):
+                    raise ValueError("compact startup cannot use the old dynamic candidate bank")
+        bank = expected
     targets = {key: jp.asarray(value) for key, value in bank.items()}
     stand_qpos, stand_action = reset_pose_arrays_3d(base.mj_model, replace(task, reset_pose="stand"))
     stand_qpos, stand_action = jp.asarray(stand_qpos), jp.asarray(stand_action)
@@ -82,6 +91,11 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                      "teacher_control_step", "gate_eligible", "gate_error", "action_change",
                      "command_jump_rad", "shaping", "tail_progress_reward",
                      *[f"failure_{name}" for name in FAILURES])
+            if compact_mode:
+                names += ("foot_slip_squared_integral", "foot_slip_distance_m", "reward_foot_slip",
+                          "reward_settling", "terminal_foot_slip_peak_m_s",
+                          "handoff_joint_speed_rad_s", "handoff_root_linear_speed_m_s",
+                          "handoff_root_angular_speed_rad_s")
             return {name: jp.zeros((), dtype=jp.float32) for name in names}
 
         def _unpack(self, state):
@@ -111,7 +125,9 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                                  b.info["rolling_phase"], targets, cfg)
             # Minimax picks a single candidate whose worst dimension is closest.
             index = jp.argmin(jp.max(errors, axis=-1))
-            return index, errors[index], jp.max(candidate_potential(jp, errors))
+            potential = (compact_potential(jp, b.pipeline_state.qpos, b.pipeline_state.qvel, targets, cfg)[0]
+                         if compact_mode else jp.max(candidate_potential(jp, errors)))
+            return index, errors[index], potential
 
         def prepare_teacher_context(self, b, index):
             """Only controller context changes; actual physics/counters/history stay."""
@@ -120,12 +136,17 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             delta = jp.arctan2(jp.sin(delta), jp.cos(delta))
             phase = targets["oscillator_phase"][index] + delta
             age = targets["time"][index]
+            if compact_mode:
+                # Rebase only the controller's phase, not physical state,
+                # absolute roll history, global origins or failure counters.
+                info["teacher_phase_offset"] = info["rolling_phase"]
+                phase, age = jp.zeros(()), jp.zeros(())
             ref = base._scaled_reference_action_8d(phase, jp.maximum(age - task.physics_timestep, 0))
             info.update(oscillator_phase=phase, reference_time_offset=age - d.time,
                         last_reference_action=ref, direct_action_override=jp.asarray(False))
             obs = base._observation(d, info["last_action"], base._contact_metrics(d),
                 axis_tilt=base._rolling_axis_tilt(d), reference_action_value=ref,
-                oscillator_phase=phase, rolling_phase=info["rolling_phase"],
+                oscillator_phase=phase, rolling_phase=info["rolling_phase"] - info.get("teacher_phase_offset", 0.),
                 action_ramp=smoothstep_ramp(jp, jp.maximum(age - task.physics_timestep, 0),
                                            task.startup_action_ramp_s),
                 lateral_drift=d.qpos[1] - info["initial_root_y"],
@@ -138,7 +159,7 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                                                      task.residual_pair_differential_scale)
             info, d = prepared.info, prepared.pipeline_state
             age = d.time + info["reference_time_offset"]
-            phase = advance_oscillator(jp, info["rolling_phase"], info["oscillator_phase"],
+            phase = advance_oscillator(jp, info["rolling_phase"] - info.get("teacher_phase_offset", 0.), info["oscillator_phase"],
                 task.physics_timestep, reference, rate_scale=task.reference_phase_rate_scale)
             effective = jp.clip(reference.reference_weight * base._scaled_reference_action_8d(phase, age)
                 + smoothstep_ramp(jp, age, task.startup_action_ramp_s) * reference.residual_gain * coupled, -1, 1)
@@ -157,6 +178,9 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             d = mjx.forward(base.mjx_model, d.replace(qpos=q, ctrl=stand_ctrl))
             bi = {**b.info, "last_action": stand_action, "last_policy_action": stand_action,
                   "reference_time_offset": jp.zeros(()), "direct_action_override": jp.asarray(True)}
+            if compact_mode:
+                bi.update(teacher_phase_offset=jp.zeros(()), startup_slip_squared=jp.zeros(()),
+                          startup_slip_distance=jp.zeros(()), startup_slip_peak=jp.zeros(()))
             b = b.replace(pipeline_state=d, info=bi)
             _, _, potential = self.candidate_match(b)
             zero, integer = jp.zeros(()), jp.asarray(0, dtype=jp.int32)
@@ -167,6 +191,8 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                 "handoff_phase": zero, "tail_turns": zero, "max_abs_y": zero,
                 "handoff_time": zero, "terminal": jp.asarray(False),
             }, b)
+            if compact_mode:
+                info["max_startup_slip"] = zero
             return State(d, self._obs(d, info), zero, zero, metrics=self._zero_metrics(), info=info)
 
         def step(self, state, action):
@@ -224,6 +250,14 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             reward_value = (shaping + tail_reward - jp.where(active, 0., cfg.time_cost)
                 - cfg.action_change_cost * change - cfg.torque_cost * torque
                 + cfg.handoff_bonus * handoff + cfg.success_bonus * success - cfg.failure_cost * failed)
+            if compact_mode:
+                slip_squared = jp.where(active, 0., next_b.info["startup_slip_squared"])
+                slip_distance = jp.where(active, 0., next_b.info["startup_slip_distance"])
+                peak_slip = jp.maximum(old["max_startup_slip"], jp.where(active, 0., next_b.info["startup_slip_peak"]))
+                slip_penalty = cfg.foot_slip_weight * slip_squared / cfg.foot_slip_sigma_m_s**2
+                settling = compact_potential(jp, d.qpos, d.qvel, targets, cfg)[1]
+                settling_penalty = jp.where(active, 0., cfg.settling_velocity_weight * settling)
+                reward_value -= slip_penalty + settling_penalty
             reward_value = jp.nan_to_num(reward_value, nan=-cfg.failure_cost,
                                          posinf=-cfg.failure_cost, neginf=-cfg.failure_cost)
             max_y = jp.maximum(old["max_abs_y"], jp.abs(y))
@@ -251,6 +285,15 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                 "shaping": shaping, "tail_progress_reward": tail_reward,
                 **{f"failure_{name}": next_b.metrics[f"failure_{name}"] for name in FAILURES},
             }
+            if compact_mode:
+                info["max_startup_slip"] = peak_slip
+                metrics.update(foot_slip_squared_integral=slip_squared * dt,
+                    foot_slip_distance_m=slip_distance, reward_foot_slip=-slip_penalty,
+                    reward_settling=-settling_penalty,
+                    terminal_foot_slip_peak_m_s=jp.where(terminal, peak_slip, 0.),
+                    handoff_joint_speed_rad_s=jp.where(handoff, jp.max(jp.abs(d.qvel[6:])), 0.),
+                    handoff_root_linear_speed_m_s=jp.where(handoff, jp.max(jp.abs(d.qvel[:3])), 0.),
+                    handoff_root_angular_speed_rad_s=jp.where(handoff, jp.max(jp.abs(d.qvel[3:6])), 0.))
             metrics = jax.tree_util.tree_map(lambda x: jp.nan_to_num(x), metrics)
             return State(d, self._obs(d, info), reward_value, terminal.astype(jp.float32),
                          metrics=metrics, info=info)

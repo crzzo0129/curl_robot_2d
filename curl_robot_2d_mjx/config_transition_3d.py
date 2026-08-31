@@ -18,7 +18,8 @@ TRANSITION_CURRICULUM_STAGE_NAMES_3D = (
     "walking_start",
     "deploy_near_stand",
     "deploy_capture",
-    "brake_low",
+    "brake_early",
+    "brake_later",
     "brake_full",
 )
 
@@ -115,8 +116,10 @@ class Transition3DConfig:
     # BRAKE resets must come from complete ROLL state snapshots, not poses.
     roll_snapshots_path: str | None = None
     snapshot_tail_fraction: float = 1.0
-    snapshot_max_linear_speed_m_s: float | None = None
-    snapshot_max_angular_speed_rad_s: float | None = None
+    snapshot_min_turns: float = 1.0
+    snapshot_max_turns: float | None = None  # Exclusive upper bound.
+    snapshot_roll_direction: int = 1
+    snapshot_phase_bins: int = 8
 
     observation_noise_enabled: bool = True
     observation_noise_level: float = 1.0
@@ -244,22 +247,18 @@ def transition_curriculum_config_3d(
             reset_tilt_rad=0.55,
             reset_roll_phase_range_rad=(-0.80, 0.80),
         )
+    elif stage in ("brake_early", "brake_later", "brake_full"):
+        low, high = {"brake_early": (1.0, 2.0), "brake_later": (2.0, 4.0),
+                     "brake_full": (1.0, None)}[stage]
+        result = replace(
+            base,
+            curriculum_stage=stage,
+            reset_start_mode=int(TransitionMode3D.BRAKE),
+            snapshot_min_turns=low, snapshot_max_turns=high,
+        )
     elif stage == "brake_low":
-        result = replace(
-            base,
-            curriculum_stage=stage,
-            reset_start_mode=int(TransitionMode3D.BRAKE),
-            snapshot_max_linear_speed_m_s=0.35,
-            snapshot_max_angular_speed_rad_s=3.5,
-        )
-    elif stage == "brake_full":
-        result = replace(
-            base,
-            curriculum_stage=stage,
-            reset_start_mode=int(TransitionMode3D.BRAKE),
-            snapshot_max_linear_speed_m_s=None,
-            snapshot_max_angular_speed_rad_s=None,
-        )
+        raise ValueError("brake_low was retired: use brake_early (real turns 1-2), "
+                         "then brake_later and brake_full; no low-speed filter")
     else:
         raise ValueError(f"unknown transition curriculum stage: {stage}")
     validate_transition_config_3d(result)
@@ -319,10 +318,19 @@ def validate_transition_config_3d(config: Transition3DConfig) -> None:
         raise ValueError("snapshot_tail_fraction must be in (0, 1]")
     if not config.walking_start_keyframe:
         raise ValueError("Walking startup keyframe is required")
-    for value in (config.snapshot_max_linear_speed_m_s,
-                  config.snapshot_max_angular_speed_rad_s):
-        if value is not None and (not math.isfinite(value) or value <= 0):
-            raise ValueError("snapshot speed bounds must be finite and positive")
+    if not math.isfinite(config.snapshot_min_turns) or config.snapshot_min_turns < 1.0:
+        raise ValueError("snapshot_min_turns must be finite and >= 1 (exclude startup)")
+    if config.snapshot_max_turns is not None and (
+            not math.isfinite(config.snapshot_max_turns)
+            or config.snapshot_max_turns <= config.snapshot_min_turns):
+        raise ValueError("snapshot_max_turns must exceed snapshot_min_turns")
+    for value in (config.snapshot_min_turns, config.snapshot_max_turns):
+        if value is not None and int(value) != value:
+            raise ValueError("snapshot turn bounds must be whole cycles")
+    if config.snapshot_roll_direction not in (-1, 1):
+        raise ValueError("snapshot_roll_direction must be +1 or -1")
+    if not isinstance(config.snapshot_phase_bins, int) or config.snapshot_phase_bins < 2:
+        raise ValueError("snapshot_phase_bins must be an integer >= 2")
     if config.ready_root_height_min_m >= config.ready_root_height_max_m:
         raise ValueError("READY root-height bounds must be ordered")
     if not 1 <= config.ready_min_foot_contacts <= 4:

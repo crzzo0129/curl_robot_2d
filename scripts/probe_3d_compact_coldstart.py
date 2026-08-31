@@ -22,6 +22,11 @@ from curl_robot_2d_mjx.handoff_probe_3d import FAILURES, HandoffNoise, perturbat
 from scripts.probe_3d_roll_handoff import MJXRunner, write_csv, write_json
 
 
+FIXED_VX = {f"vx_{sign}_{label}": multiplier * value
+            for sign, multiplier in (("neg", -1), ("pos", 1))
+            for label, value in (("001", .01), ("003", .03), ("005", .05), ("010", .10))}
+
+
 def sweep_cases(task):
     """Amplitudes are per component, independent uniform [-bound, bound]."""
     def noise(q=task.reset_joint_noise_rad, qd=task.reset_velocity_noise,
@@ -42,7 +47,18 @@ def sweep_cases(task):
         "combined_medium": noise(qd=.05, v=.03, w=.10),
         "combined_high": noise(qd=.10, v=.05, w=.20),
         "nearcompact_low": noise(q=.01, qd=.02, v=.01, w=.05, tilt=.02),
+        **{name: noise() for name in FIXED_VX},
     }
+
+
+def initial_offsets(group, noise, seed, count):
+    offsets = perturbation_batch("state_noise", noise, seed, count)
+    if group in FIXED_VX:
+        # Same q/qdot draws across +/- tests; isolate world X, all other root
+        # velocity components exactly zero. This is not an added random bound.
+        offsets["dv"][:] = 0
+        offsets["dv"][:, 0] = FIXED_VX[group]
+    return offsets
 
 
 def report_rows(first, current, max_y, max_axis, group, horizon_s, dt, minimum_turns):
@@ -139,10 +155,12 @@ def main(argv=None):
         "teacher_config_payload": payload, **model_fingerprint(model_path_3d(task.geometry)),
         "task": asdict(task), "reset_noise_audit": audit,
         "groups": {g: asdict(cases[g]) for g in groups},
+        "fixed_root_vx_m_s": {g: FIXED_VX[g] for g in groups if g in FIXED_VX},
         "trials_per_noisy_group": args.trials, "exact_unique_trials": 1, "seed": args.seed,
         "duration_s": args.duration_s, "minimum_success_turns": args.minimum_turns,
         "success_definition": "full horizon, no configured failure, conservative turns >= threshold, positive signed turns",
-        "nominal_physics_only": True, "sample_distribution": "independent uniform per component, paired draws across groups",
+        "nominal_physics_only": True,
+        "sample_distribution": "independent uniform per component, paired draws across groups; fixed_root_vx_m_s overrides all root velocity draws for signed-X groups",
         "abduction_position_and_velocity_noise": 0.,
         "teacher_clock_and_phase": "zero; original cold-start ramps preserved",
         "scope": "compact cold-start sensitivity only; not stand reachability, stationary equilibrium, or a certified handoff gate",
@@ -168,7 +186,7 @@ def main(argv=None):
     checkpoints_steps = {round(t / dt) for t in (3., 6., args.duration_s) if t <= args.duration_s}
     for group in groups:
         # Use the same random directions across groups to isolate amplitude effects.
-        offsets = perturbation_batch("state_noise", cases[group], args.seed, args.trials)
+        offsets = initial_offsets(group, cases[group], args.seed, args.trials)
         state = runner.branch(reset, np.arange(args.trials), offsets, "exact" if group == "exact" else "state_noise")
         first = runner.features(state)
         # Perturbations only change physical initial conditions, never controller memory.

@@ -68,6 +68,7 @@ class Transition3DConfigTests(unittest.TestCase):
                                 int(TransitionMode3D.DEPLOY),
                                 int(TransitionMode3D.DEPLOY),
                                 int(TransitionMode3D.BRAKE),
+                                int(TransitionMode3D.BRAKE),
                                 int(TransitionMode3D.BRAKE)])
         self.assertEqual(TRANSITION_CURRICULUM_STAGE_NAMES_3D[0], "walking_start")
 
@@ -317,10 +318,10 @@ class Transition3DModelAndCliTests(unittest.TestCase):
 
     def test_training_dry_configuration_requires_no_jax(self):
         args = parse_train_args(
-            ["--stage", "brake_low", "--preset", "smoke", "--dry-run"]
+            ["--stage", "brake_early", "--preset", "smoke", "--dry-run"]
         )
         task = build_task(args)
-        self.assertEqual(task.curriculum_stage, "brake_low")
+        self.assertEqual(task.curriculum_stage, "brake_early")
         self.assertEqual(task.reset_start_mode, int(TransitionMode3D.BRAKE))
         self.assertEqual(task.geometry, "rollingquad_2")
 
@@ -356,18 +357,14 @@ class TransitionRollSnapshotTests(unittest.TestCase):
         np.testing.assert_array_equal(bank["qvel"], self.qvel[2:])
         np.testing.assert_array_equal(bank["ctrl"], self.ctrl[2:])
 
-    def test_low_speed_course_filters_without_scaling(self):
-        task = transition_curriculum_config_3d("brake_low", self.config)
-        bank = load_roll_snapshots_3d(self.path, self.model, task)
-        np.testing.assert_array_equal(bank["qvel"], self.qvel[:3])
-        full = load_roll_snapshots_3d(
-            self.path, self.model, transition_curriculum_config_3d("brake_full"))
-        np.testing.assert_array_equal(full["qvel"], self.qvel)
+    def test_legacy_bank_cannot_claim_completed_roll_cycles(self):
+        for stage in ("brake_early", "brake_later", "brake_full"):
+            with self.subTest(stage=stage), self.assertRaisesRegex(ValueError, "recollect v2"):
+                load_roll_snapshots_3d(self.path, self.model, transition_curriculum_config_3d(stage))
 
     def test_empty_filter_raises_instead_of_modifying_velocities(self):
-        task = replace(self.config, snapshot_max_linear_speed_m_s=.01)
-        with self.assertRaisesRegex(ValueError, "no ROLL snapshots"):
-            load_roll_snapshots_3d(self.path, self.model, task)
+        with self.assertRaisesRegex(ValueError, "brake_low was retired"):
+            transition_curriculum_config_3d("brake_low", self.config)
 
     def test_wrong_model_and_pose_only_banks_rejected(self):
         with np.load(self.path) as data:

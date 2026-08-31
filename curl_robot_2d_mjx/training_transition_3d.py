@@ -1,10 +1,32 @@
 """Dependency-light Transition initialization and curriculum acceptance rules."""
 
 import math
+from pathlib import Path
 
 
-TRANSITION_TRAINING_REVISION = "v4_full_reset_standing"
+TRANSITION_TRAINING_REVISION = "v5_real_roll_cycles"
 TRANSITION_INITIAL_POLICY_STD = 0.05  # Pre-tanh Gaussian std; action ABI unchanged.
+
+
+def resolve_transition_checkpoint(path):
+    """Accept a completed Brax step directory or select latest completed child.
+
+    Brax writes ppo_network_config.json AFTER Orbax save completes. Never pick
+    temp/non-numeric children or mistake params_final for an Orbax checkpoint.
+    """
+    path = Path(path).resolve()
+    complete = lambda p: (p.is_dir() and (p / "_METADATA").is_file()
+                          and (p / "ppo_network_config.json").is_file())
+    if complete(path):
+        return path
+    if not path.is_dir():
+        raise ValueError(f"checkpoint directory does not exist: {path}; use ppo_checkpoint, not params_final")
+    if path.name.isdigit() or (path / "_METADATA").exists():
+        raise ValueError(f"incomplete checkpoint directory: {path}")
+    candidates = [p for p in path.iterdir() if p.name.isascii() and p.name.isdigit() and complete(p)]
+    if not candidates:
+        raise ValueError(f"no completed numeric Brax checkpoints under {path}")
+    return max(candidates, key=lambda p: int(p.name))
 
 
 def transition_scale_logit(initial_std):

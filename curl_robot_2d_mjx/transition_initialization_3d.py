@@ -10,6 +10,10 @@ import numpy as np
 from curl_robot_2d_mjx.config_transition_3d import Transition3DConfig
 from curl_robot_2d_mjx.environment_3d import model_path_3d
 from curl_robot_2d_mjx.environment_walking_3d import WALKING_JOINT_NAMES_3D
+from curl_robot_2d_mjx.roll_snapshot_curriculum_3d import (
+    ROLL_PROGRESS_FIELDS, ROLL_PROGRESS_SOURCE, validate_roll_progress,
+    select_roll_cycle_snapshots,
+)
 
 
 def walking_start_state_3d(model, config: Transition3DConfig):
@@ -62,7 +66,8 @@ def snapshot_metadata_3d(model, config):
 
 
 def save_roll_snapshots_3d(path, model, config, *, qpos, qvel, ctrl,
-                           time_s, episode_id, source_policy):
+                           time_s, episode_id, source_policy,
+                           roll_phase_rad=None, roll_origin_phase_rad=None):
     """Export arrays sampled from a frozen ROLL policy, before any braking.
 
     Caller owns trajectory collection. Velocities must be measured simulator
@@ -77,6 +82,13 @@ def save_roll_snapshots_3d(path, model, config, *, qpos, qvel, ctrl,
         "episode_id": np.asarray(episode_id),
         "source_policy": np.asarray(source_policy),
     }
+    if roll_phase_rad is not None or roll_origin_phase_rad is not None:
+        if roll_phase_rad is None or roll_origin_phase_rad is None:
+            raise ValueError("both roll_phase_rad and roll_origin_phase_rad are required")
+        arrays.update(schema_version=np.asarray(2),
+                      roll_progress_source=np.asarray(ROLL_PROGRESS_SOURCE),
+                      roll_phase_rad=np.asarray(roll_phase_rad),
+                      roll_origin_phase_rad=np.asarray(roll_origin_phase_rad))
     validate_roll_snapshots_3d(arrays, model, config)
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +99,10 @@ def save_roll_snapshots_3d(path, model, config, *, qpos, qvel, ctrl,
 
 def validate_roll_snapshots_3d(arrays, model, config):
     expected = snapshot_metadata_3d(model, config)
+    version = np.asarray(arrays.get("schema_version", 0))
+    if version.shape != () or version.item() not in (1, 2):
+        raise ValueError("unsupported ROLL snapshot schema_version")
+    expected["schema_version"] = version
     for key, value in expected.items():
         if key not in arrays or not np.array_equal(arrays[key], value):
             raise ValueError(f"ROLL snapshot model/order mismatch: {key}")
@@ -108,13 +124,20 @@ def validate_roll_snapshots_3d(arrays, model, config):
             raise ValueError(f"ROLL snapshots require {key} shape ({count},)")
         if not np.isfinite(arrays[key]).all():
             raise ValueError(f"nonfinite ROLL snapshot {key}")
+    if version.item() == 2:
+        validate_roll_progress(arrays)
 
 
-def load_roll_snapshots_3d(path, model, config):
-    """Select later/lower-speed real states; NEVER zero or scale their qvel."""
+def load_roll_snapshots_3d(path, model, config, *, return_report=False,
+                           require_coverage=True):
+    """Select real completed roll cycles; NEVER zero or scale their qvel."""
     with np.load(path, allow_pickle=False) as archive:
         arrays = {key: archive[key] for key in archive.files}
     validate_roll_snapshots_3d(arrays, model, config)
+    if config.curriculum_stage.startswith("brake_"):
+        bank, report = select_roll_cycle_snapshots(arrays, config,
+                                                  require_coverage=require_coverage)
+        return (bank, report) if return_report else bank
     count = len(arrays["qpos"])
     keep = np.ones(count, dtype=bool)
     # Tail selection is within each trajectory; 'later' does not imply 'slow'.
@@ -125,29 +148,27 @@ def load_roll_snapshots_3d(path, model, config):
             threshold = times.max() - config.snapshot_tail_fraction * (
                 times.max() - times.min())
             keep[indices] &= times >= threshold
-    for bound, section in (
-        (config.snapshot_max_linear_speed_m_s, slice(0, 3)),
-        (config.snapshot_max_angular_speed_rad_s, slice(3, 6)),
-    ):
-        if bound is not None:
-            keep &= np.linalg.norm(arrays["qvel"][:, section], axis=1) <= bound
     if not keep.any():
-        raise ValueError("no ROLL snapshots satisfy tail/speed filters; collect "
+        raise ValueError("no ROLL snapshots satisfy tail filter; collect "
                          "suitable states, do not artificially slow the saved qvel")
-    return {
+    bank = {
         key: arrays[key][keep].copy()
         for key in ("qpos", "qvel", "ctrl", "time_s", "episode_id")
     }
+    return (bank, None) if return_report else bank
 
 
 def collect_roll_snapshots_3d(env, policy, path, *, source_policy,
                              config=None, seed=0, episodes=8,
-                             steps_per_episode=500, warmup_steps=100,
-                             sample_every=5):
+                             steps_per_episode=500, warmup_steps=0,
+                             sample_every=1):
     """Sample a loaded, frozen Brax ROLL policy on cloud; never apply a brake.
 
     ``policy(obs, key) -> (action, extras)`` uses the native ROLL contract.
-    The snapshot contains resulting full model ctrl, NOT its 8-D policy action.
+    The snapshot contains resulting full model ctrl, NOT native policy action.
+    env must be unwrapped: info['rolling_phase'] is the signed body-y rotation
+    integral maintained at physics substeps, not the controller oscillator.
+    Capture its origin at reset even when warmup/sample decimation is requested.
     Offline snapshots restore physical state, not exact solver warm-starts;
     live takeover should instead call Transition.reset_from_roll_state.
     """
@@ -162,15 +183,25 @@ def collect_roll_snapshots_3d(env, policy, path, *, source_policy,
         raise FileExistsError(path)
     import jax
     reset, step, inference = jax.jit(env.reset), jax.jit(env.step), jax.jit(policy)
-    rows = {key: [] for key in ("qpos", "qvel", "ctrl", "time_s", "episode_id")}
+    rows = {key: [] for key in ("qpos", "qvel", "ctrl", "time_s", "episode_id",
+                               *ROLL_PROGRESS_FIELDS)}
     for episode in range(episodes):
         key = jax.random.fold_in(jax.random.PRNGKey(seed), episode)
         state = reset(key)
+        if "rolling_phase" not in state.info:
+            raise ValueError("ROLL env must expose signed info['rolling_phase'] from reset; "
+                             "oscillator phase and sparse qpos are not substitutes")
+        origin_phase = float(jax.device_get(state.info["rolling_phase"]))
+        previous_time = float(jax.device_get(state.pipeline_state.time))
         for index in range(steps_per_episode):
             action, _ = inference(state.obs, jax.random.fold_in(key, index + 1))
             state = step(state, action)
             if bool(jax.device_get(state.done)):
                 break
+            now = float(jax.device_get(state.pipeline_state.time))
+            if now <= previous_time:
+                raise ValueError("ROLL collector requires an unwrapped env; simulator time reset")
+            previous_time = now
             if index + 1 < warmup_steps or (index + 1 - warmup_steps) % sample_every:
                 continue
             data = jax.device_get(state.pipeline_state)
@@ -178,7 +209,12 @@ def collect_roll_snapshots_3d(env, policy, path, *, source_policy,
                 rows[name].append(np.asarray(getattr(data, name)).copy())
             rows["time_s"].append(float(data.time))
             rows["episode_id"].append(episode)
+            rows["roll_phase_rad"].append(float(jax.device_get(state.info["rolling_phase"])))
+            rows["roll_origin_phase_rad"].append(origin_phase)
     save_roll_snapshots_3d(path, env.mj_model, config,
                           source_policy=source_policy, **rows)
+    turns = (np.asarray(rows["roll_phase_rad"]) - rows["roll_origin_phase_rad"]) / (2 * np.pi)
     return {"samples": len(rows["qpos"]), "path": str(Path(path).resolve()),
-            "source_policy": source_policy, "external_braking": False}
+            "source_policy": source_policy, "external_braking": False,
+            "schema_version": 2, "signed_turns_min": float(turns.min()),
+            "signed_turns_max": float(turns.max())}

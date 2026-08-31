@@ -25,6 +25,10 @@ from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 from curl_robot_2d_mjx.training_transition_3d import (
     TRANSITION_INITIAL_POLICY_STD, TRANSITION_TRAINING_REVISION,
     initialize_transition_actor, transition_scale_logit, transition_curriculum_acceptance,
+    resolve_transition_checkpoint,
+)
+from curl_robot_2d_mjx.transition_snapshot_cli_3d import (
+    add_cycle_selection_arguments, apply_cycle_selection_arguments,
 )
 
 
@@ -67,6 +71,7 @@ def parse_args(argv=None):
                         default="rollingquad_2")
     parser.add_argument("--roll-snapshots", type=Path)
     parser.add_argument("--snapshot-tail-fraction", type=float, default=1.0)
+    add_cycle_selection_arguments(parser)
     parser.add_argument("--preset", choices=tuple(PRESETS_TRANSITION_3D), default="smoke")
     parser.add_argument(
         "--physics-profile",
@@ -101,7 +106,8 @@ def build_task(args) -> Transition3DConfig:
             snapshot_tail_fraction=args.snapshot_tail_fraction,
         )
     )
-    return transition_physics_profile_3d(args.physics_profile, task)
+    return transition_physics_profile_3d(
+        args.physics_profile, apply_cycle_selection_arguments(task, args))
 
 
 def _float(value):
@@ -196,9 +202,23 @@ def main(argv=None) -> None:
         print(json.dumps(payload, indent=2, sort_keys=True))
         return
 
+    if args.restore_checkpoint is not None:
+        requested = args.restore_checkpoint
+        args.restore_checkpoint = resolve_transition_checkpoint(requested)
+        payload["restore_checkpoint_requested"] = str(requested.resolve())
+        payload["restore_checkpoint"] = str(args.restore_checkpoint)
+        print(f"[restore Transition] {args.restore_checkpoint}", flush=True)
+
     if stage_out.exists() and any(stage_out.iterdir()):
         raise SystemExit(f"Output directory is not empty: {stage_out}. "
                          "Use a new --out; existing weights/logs will not be overwritten.")
+
+    # Validate cycle/phase coverage before importing JAX or creating outputs.
+    if args.stage.startswith("brake_"):
+        from scripts.inspect_transition_roll_snapshots import inspect_bank
+        payload["snapshot_selection"] = inspect_bank(args.roll_snapshots, task)
+        print("[ROLL snapshot selection] " + json.dumps(payload["snapshot_selection"],
+                                                       sort_keys=True), flush=True)
 
     configure_cloud_runtime(
         memory_fraction=args.memory_fraction,
@@ -220,6 +240,9 @@ def main(argv=None) -> None:
     (stage_out / "training_config.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
+    if "snapshot_selection" in payload:
+        (stage_out / "snapshot_selection.json").write_text(
+            json.dumps(payload["snapshot_selection"], indent=2) + "\n", encoding="utf-8")
     train_env = make_brax_transition_env_3d(task, reward_config=reward, seed=args.seed)
     eval_env = make_brax_transition_env_3d(
         replace(task, observation_noise_enabled=False),
@@ -308,6 +331,7 @@ def main(argv=None) -> None:
         },
         "curriculum_next_stage": payload["curriculum_next_stage"],
         "stage_passed": acceptance["passed"],
+        "snapshot_selection": payload.get("snapshot_selection"),
         "acceptance": acceptance,
         "next_stage": payload["curriculum_next_stage"] if acceptance["passed"] else None,
     }

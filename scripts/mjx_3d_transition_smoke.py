@@ -15,6 +15,9 @@ from curl_robot_2d_mjx.config_transition_3d import (
     transition_physics_profile_3d,
 )
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
+from curl_robot_2d_mjx.transition_snapshot_cli_3d import (
+    add_cycle_selection_arguments, apply_cycle_selection_arguments,
+)
 
 
 def parse_args(argv=None):
@@ -26,6 +29,7 @@ def parse_args(argv=None):
     )
     parser.add_argument("--roll-snapshots", type=Path)
     parser.add_argument("--snapshot-tail-fraction", type=float, default=1.0)
+    add_cycle_selection_arguments(parser)
     parser.add_argument(
         "--physics-profile",
         choices=TRANSITION_PHYSICS_PROFILE_NAMES_3D,
@@ -49,19 +53,6 @@ def main(argv=None) -> None:
         raise SystemExit("--require-ready zero-action baseline is only valid for walking_start")
     if args.stage.startswith("brake_") and not args.roll_snapshots:
         raise SystemExit("BRAKE smoke requires --roll-snapshots")
-    configure_cloud_runtime(
-        memory_fraction=args.memory_fraction,
-        mujoco_gl=args.mujoco_gl,
-        verbose=True,
-    )
-    import jax
-    import jax.numpy as jp
-
-    from curl_robot_2d_mjx.environment_transition_3d import (
-        make_brax_transition_env_3d,
-    )
-    from curl_robot_2d_mjx.wrappers_transition_3d import wrap_transition_3d
-
     task = transition_curriculum_config_3d(
         args.stage, Transition3DConfig(
             curriculum_stage=args.stage,
@@ -70,7 +61,17 @@ def main(argv=None) -> None:
             snapshot_tail_fraction=args.snapshot_tail_fraction,
         )
     )
-    task = transition_physics_profile_3d(args.physics_profile, task)
+    task = transition_physics_profile_3d(args.physics_profile,
+                                       apply_cycle_selection_arguments(task, args))
+    if args.stage.startswith("brake_"):
+        from scripts.inspect_transition_roll_snapshots import inspect_bank
+        print(json.dumps(inspect_bank(args.roll_snapshots, task), indent=2), flush=True)
+    configure_cloud_runtime(memory_fraction=args.memory_fraction,
+                            mujoco_gl=args.mujoco_gl, verbose=True)
+    import jax
+    import jax.numpy as jp
+    from curl_robot_2d_mjx.environment_transition_3d import make_brax_transition_env_3d
+    from curl_robot_2d_mjx.wrappers_transition_3d import wrap_transition_3d
     base_env = make_brax_transition_env_3d(task, seed=args.seed)
     env = wrap_transition_3d(base_env, task.episode_length)
     keys = jax.random.split(jax.random.PRNGKey(args.seed), args.batch_size)
@@ -131,6 +132,7 @@ def main(argv=None) -> None:
         "success_fraction": float(jp.mean(successes >= 1)),
         "failure_fraction": float(jp.mean(failures > 0)),
         "success_count_per_env": jax.device_get(successes).tolist(),
+        "snapshot_selection": base_env.snapshot_selection_report,
     }
     print(json.dumps(result, indent=2, sort_keys=True))
 

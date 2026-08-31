@@ -107,7 +107,7 @@ def make_brax_transition_env_3d(
 
     task = config or transition_curriculum_config_3d("walking_start")
     validate_transition_config_3d(task)
-    use_roll_snapshots = task.curriculum_stage in ("brake_low", "brake_full")
+    use_roll_snapshots = task.curriculum_stage.startswith("brake_")
     if use_roll_snapshots and not task.roll_snapshots_path:
         raise ValueError("BRAKE training requires --roll-snapshots from a frozen "
                          "rollingquad_2 ROLL policy (qpos, qvel and ctrl)")
@@ -185,12 +185,13 @@ def make_brax_transition_env_3d(
             self.compact_qpos = jp.asarray(self.mj_model.key_qpos[compact_id])
             self.compact_ctrl = jp.asarray(self.mj_model.key_ctrl[compact_id])
             self.roll_snapshots = None
+            self.snapshot_selection_report = None
             if use_roll_snapshots:
+                bank, self.snapshot_selection_report = load_roll_snapshots_3d(
+                    task.roll_snapshots_path, self.mj_model, task, return_report=True)
                 self.roll_snapshots = {
                     key: jp.asarray(value)
-                    for key, value in load_roll_snapshots_3d(
-                        task.roll_snapshots_path, self.mj_model, task
-                    ).items()
+                    for key, value in bank.items()
                 }
 
             self.deploy_gate_steps = _duration_steps(
@@ -515,8 +516,9 @@ def make_brax_transition_env_3d(
             mode = jp.asarray(task.reset_start_mode, dtype=jp.int32)
             ctrl = joints
             if self.roll_snapshots is not None:
-                index = jax.random.randint(fraction_key, (), 0,
-                                           self.roll_snapshots["qpos"].shape[0])
+                index = jp.minimum(jp.searchsorted(
+                    self.roll_snapshots["sampling_cdf"], jax.random.uniform(fraction_key),
+                    side="right"), self.roll_snapshots["qpos"].shape[0] - 1)
                 qpos = self.roll_snapshots["qpos"][index]
                 velocity = self.roll_snapshots["qvel"][index]
                 ctrl = self.roll_snapshots["ctrl"][index]

@@ -5,7 +5,7 @@ import numpy as np
 
 from curl_robot_2d_mjx.config_3d import Rolling3DConfig
 from curl_robot_2d_mjx.handoff_probe_3d import FAILURES, perturbation_batch
-from scripts.probe_3d_compact_coldstart import aggregate, report_rows, sweep_cases
+from scripts.probe_3d_compact_coldstart import aggregate, initial_offsets, report_rows, sweep_cases
 
 
 class CompactColdstartTest(unittest.TestCase):
@@ -45,6 +45,17 @@ class CompactColdstartTest(unittest.TestCase):
                  "time": np.zeros(2), "y": np.zeros(2), "failed": np.zeros(2, dtype=bool),
                  **{f"failure_{k}": np.zeros(2, dtype=bool) for k in FAILURES}}
         return first, {k: v.copy() for k, v in first.items()}
+
+    def test_signed_x_velocity_is_fixed_and_all_other_initial_conditions_are_paired(self):
+        cases = sweep_cases(Rolling3DConfig())
+        neg = initial_offsets("vx_neg_003", cases["vx_neg_003"], 34, 4)
+        pos = initial_offsets("vx_pos_003", cases["vx_pos_003"], 34, 4)
+        np.testing.assert_allclose(neg["dv"][:, 0], -.03)
+        np.testing.assert_allclose(pos["dv"][:, 0], .03)
+        np.testing.assert_array_equal(neg["dv"][:, 1:], 0)
+        np.testing.assert_array_equal(pos["dv"][:, 1:], 0)
+        for key in ("dq", "dqd", "daxis", "dphase", "dhistory"):
+            np.testing.assert_array_equal(neg[key], pos[key])
 
     def test_survival_and_success_are_distinct_and_require_signed_forward_turns(self):
         first, current = self.features()
