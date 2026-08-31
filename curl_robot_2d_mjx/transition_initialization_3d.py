@@ -161,7 +161,7 @@ def load_roll_snapshots_3d(path, model, config, *, return_report=False,
 def collect_roll_snapshots_3d(env, policy, path, *, source_policy,
                              config=None, seed=0, episodes=8,
                              steps_per_episode=500, warmup_steps=0,
-                             sample_every=1):
+                             sample_every=1, progress_fn=None):
     """Sample a loaded, frozen Brax ROLL policy on cloud; never apply a brake.
 
     ``policy(obs, key) -> (action, extras)`` uses the native ROLL contract.
@@ -186,6 +186,7 @@ def collect_roll_snapshots_3d(env, policy, path, *, source_policy,
     rows = {key: [] for key in ("qpos", "qvel", "ctrl", "time_s", "episode_id",
                                *ROLL_PROGRESS_FIELDS)}
     for episode in range(episodes):
+        samples_before = len(rows["qpos"])
         key = jax.random.fold_in(jax.random.PRNGKey(seed), episode)
         state = reset(key)
         if "rolling_phase" not in state.info:
@@ -204,13 +205,21 @@ def collect_roll_snapshots_3d(env, policy, path, *, source_policy,
             previous_time = now
             if index + 1 < warmup_steps or (index + 1 - warmup_steps) % sample_every:
                 continue
-            data = jax.device_get(state.pipeline_state)
-            for name in ("qpos", "qvel", "ctrl"):
-                rows[name].append(np.asarray(getattr(data, name)).copy())
-            rows["time_s"].append(float(data.time))
+            # Transfer only snapshot fields, not all MJX contact/solver arrays.
+            qpos, qvel, ctrl, phase = jax.device_get((state.pipeline_state.qpos,
+                state.pipeline_state.qvel, state.pipeline_state.ctrl, state.info["rolling_phase"]))
+            for name, value in (("qpos", qpos), ("qvel", qvel), ("ctrl", ctrl)):
+                rows[name].append(np.asarray(value).copy())
+            rows["time_s"].append(now)
             rows["episode_id"].append(episode)
-            rows["roll_phase_rad"].append(float(jax.device_get(state.info["rolling_phase"])))
+            rows["roll_phase_rad"].append(float(phase))
             rows["roll_origin_phase_rad"].append(origin_phase)
+        if progress_fn is not None:
+            progress_fn({"episode": episode, "steps_executed": index + 1,
+                         "samples": len(rows["qpos"]) - samples_before,
+                         "done": bool(jax.device_get(state.done)),
+                         "signed_turns": float((jax.device_get(state.info["rolling_phase"])
+                                                 - origin_phase) / (2 * np.pi))})
     save_roll_snapshots_3d(path, env.mj_model, config,
                           source_policy=source_policy, **rows)
     turns = (np.asarray(rows["roll_phase_rad"]) - rows["roll_origin_phase_rad"]) / (2 * np.pi)

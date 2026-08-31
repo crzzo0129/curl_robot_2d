@@ -162,7 +162,39 @@ reset 时的原点后除以 2π。它不是控制器的 oscillator phase，也�
 BRAKE 课程：需要重新采集，或从有完整旋转记录的原始日志重新导出，不能只凭
 旧稀疏姿态、末帧四元数或经过时间补造圈数。
 
-在已有 ROLL 加载脚本中，使用其原生、未加自动重置包装的环境和冻结策略：
+#### 一键生成快照库（已接入 residual ROLL checkpoint 加载）
+
+在云端 `curl_robot_2d` 目录执行下列命令，使用已确认的 ROLL 权重和配套配置：
+
+```bash
+python -m scripts.collect_transition_roll_snapshots \
+  --roll-checkpoint /inspire/qb-ilm2/project/leverage-robot/ky26210/curl_robot_2d/results/rollingquad2_floor_mass_gain_v3_h200_seed0/params_best \
+  --roll-config /inspire/qb-ilm2/project/leverage-robot/ky26210/curl_robot_2d/results/rollingquad2_floor_mass_gain_v3_h200_seed0/training_config.json \
+  --out results/roll_cycle_snapshots_v2.npz \
+  --episodes 8 --sample-every 1
+```
+
+这条命令才会实际生成 `results/roll_cycle_snapshots_v2.npz`；文件不是仓库自带，
+也不是 Transition 前三阶段的输出。可先附加 `--dry-run` 核对路径、配置和来源哈希，
+该选项不会生成文件或导入 JAX。正常运行需云端 JAX/MJX，首次编译需等待。
+
+入口读取保存的 task/reference/reward 与网络结构，恢复 ROLL 归一化统计和已训练参数，
+使用确定性原生 ROLL 推理；不会用零动作、CPU 参考控制器或 Transition 替代它。
+原 ROLL 若含残差参考控制器，其原有逻辑也完整保留。不会额外施加训练时的随机化
+包装器，采集的是配置中名义物理模型下的轨迹，物理参数记录在报告中。
+
+输出旁边还会生成 `roll_cycle_snapshots_v2.summary.json`，含权重/配置 SHA256、
+实际采集配置、每阶段相位覆盖和速度范围。默认要求 brake_early 覆盖完整，否则
+保留文件但以非零退出码结束；不能把“文件存在”当作采集通过。brake_later 是否可用
+也会单独报告。若方向相反，采集检查使用 `--roll-direction -1`，后续训练相应使用
+`--snapshot-roll-direction -1`。不足时检查报告；重采请换新输出名，绝不覆盖旧库。
+
+每回合默认使用保存配置中的 episode_length；`--steps-per-episode` 可缩短，
+不允许静默延长 ROLL 自身超时或忽略失败。是否采够后续圈数取决于实际轨迹，
+不是只把采集步数设大就一定能解决。该入口针对这次 residual ROLL，不接受直接动作
+student/Transition 权重冒充 ROLL；配置不匹配会报错。
+
+如需接到其他已经正确加载的 ROLL 环境中，底层 API 仍可用：
 
 ```python
 from curl_robot_2d_mjx.transition_initialization_3d import collect_roll_snapshots_3d
@@ -211,7 +243,7 @@ collect_roll_snapshots_3d(
 以下从 `curl_robot_2d` 目录运行；本地无 JAX 时自动跳过真实 MJX 测试：
 
 ```powershell
-python -m unittest tests.test_transition_3d tests.test_transition_deployment_3d tests.test_transition_training_3d tests.test_transition_roll_cycles_3d tests.test_transition_wrappers_3d tests.test_transition_mjx_3d -v
+python -m unittest tests.test_collect_transition_roll_snapshots tests.test_transition_3d tests.test_transition_deployment_3d tests.test_transition_training_3d tests.test_transition_roll_cycles_3d tests.test_transition_wrappers_3d tests.test_transition_mjx_3d -v
 python -m scripts.train_mjx_3d_transition_ppo --stage walking_start --dry-run
 ```
 
