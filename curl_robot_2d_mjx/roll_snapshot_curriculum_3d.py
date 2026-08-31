@@ -60,7 +60,8 @@ def select_roll_cycle_snapshots(arrays, config, *, require_coverage=True):
     selected_turns = turns[keep]
     cycle = np.floor(selected_turns).astype(np.int64)
     bins = config.snapshot_phase_bins
-    phase_bin = np.minimum(((selected_turns - cycle) * bins).astype(int), bins - 1)
+    # Round only floating-point noise at bin edges (not physical turn windows).
+    phase_bin = np.minimum(np.floor((selected_turns - cycle) * bins + 1e-12).astype(int), bins - 1)
     phase_counts = np.bincount(phase_bin, minlength=bins)
     cycles = (range(int(config.snapshot_min_turns), int(config.snapshot_max_turns))
               if config.snapshot_max_turns is not None else np.unique(cycle))

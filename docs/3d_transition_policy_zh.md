@@ -127,8 +127,9 @@ Critic、特权归一化和训练分布的 scale 输出均不进入实机文件�
 | walking_start | 精确 Walking 初态 | 稳定保持并满足 READY |
 | deploy_near_stand | 小幅关节/姿态/速度扰动，少量 compact 混合 | 回到 Walking 可接管状态 |
 | deploy_capture | 扩大紧凑程度、倾角和初速度 | 展开、捕获支撑、稳定 |
-| brake_low | 真实 ROLL 快照中原本低速的样本 | 策略自己减速并完成展开 |
-| brake_full | 真实 ROLL 快照，不设课程速度筛选上限 | 覆盖采集分布内的完整接管 |
+| brake_early | 从 reset 起累计净翻滚满 1 圈、未满 2 圈的真实快照 | 从已滚起来的较早周期接管，自己制动展开 |
+| brake_later | 累计净翻滚满 2 圈、未满 4 圈的真实快照 | 从后续周期接管，适应继续加速的 ROLL |
+| brake_full | 累计净翻滚满 1 圈后的全部采集快照 | 覆盖采集库内早期与后期接管 |
 
 这是手工分阶段扩展的反向初始状态课程，不是时间倒放或自动生成反向动力学。
 compact 仅用于合成 reset 邻域插值，没有 compact→park→stand 动作播放器。
@@ -141,9 +142,52 @@ source_policy=...)`；policy 仍用自己的原生观察和动作接口。采集
 模型 XML 摘要及关节/执行器顺序。也可由已有轨迹记录器调用 `save_roll_snapshots_3d`。
 单有视频/姿态不足以生成合格的接管状态。
 
-`--snapshot-tail-fraction` 按每条轨迹的时间选择后段，“后段”不等于“已经停止”。
-brake_low 只筛选原本线速度 ≤0.35 m/s、角速度 ≤3.5 rad/s 的状态，不缩放 qvel；
-brake_full 不施加这些课程上限。筛选为空就报错，不制造低速状态。
+### v5：按真实滚动周期接管，取消低速起步筛选
+
+`brake_low` 已删除，不再使用 0.35 m/s、3.5 rad/s 的初态筛选门槛；
+内部 BRAKE→DEPLOY 的速度门控仍保留，那是判断策略是否已经减速，不是挑选初态。
+上述圈数窗口是第一版默认课程，不保证更晚一定更快；应查看每圈实测速度统计。
+三个 BRAKE 阶段都保留原始 qpos/qvel/ctrl，制动仍由同一个 Transition policy 完成。
+720 维 actor、86 维 critic、动作映射与奖励不变，现有 v4 deploy_capture 权重可继续恢复。
+
+圈数取 ROLL 环境逐物理步积分的有符号 `info['rolling_phase']`，减去本回合
+reset 时的原点后除以 2π。它不是控制器的 oscillator phase，也不是角速度绝对值
+累计；来回摆动相互抵消，不会因为摆了很多次就算完成翻滚。默认方向为机体 +Y，
+反向 ROLL 使用 `--snapshot-roll-direction -1`。这是轴向旋转进度代理，不能单独证明
+无滑移、地面接触安全或无腾空；仍需检查采集轨迹与连续闭环。
+
+采集器现在默认 `warmup_steps=0, sample_every=1`，从 reset 开始记录原点。
+即使显式跳过 warmup 或稀疏保存，也不重新计圈。新 NPZ schema v2 额外保存
+`roll_phase_rad`、`roll_origin_phase_rad` 和进度来源。旧 v1 库不能直接用于新的
+BRAKE 课程：需要重新采集，或从有完整旋转记录的原始日志重新导出，不能只凭
+旧稀疏姿态、末帧四元数或经过时间补造圈数。
+
+在已有 ROLL 加载脚本中，使用其原生、未加自动重置包装的环境和冻结策略：
+
+```python
+from curl_robot_2d_mjx.transition_initialization_3d import collect_roll_snapshots_3d
+
+collect_roll_snapshots_3d(
+    env, roll_policy, "results/roll_cycle_snapshots_v2.npz",
+    source_policy="实际使用的ROLL权重路径或标识",
+    episodes=8, steps_per_episode=500, warmup_steps=0, sample_every=1,
+)
+```
+
+这里的 env、roll_policy 必须是你实际部署候选 ROLL 的加载结果；本修改不猜测
+它的网络结构，不替换其启动流程，也不运行外部制动。500 步不是保证采够圈数，
+还受 ROLL 自身 episode_length/终止条件影响，需用下方检查命令确认。
+
+每圈分 8 个进度相位格，按“圈数×相位格”等概率采样，格内均匀选快照，
+避免低速停留时间较长的部分占满训练批次。brake_early/later 要求指定窗口中的
+每个完整圈都覆盖全部相位格；缺失就拒绝训练。brake_full 保留末尾不完整圈，
+报告 `incomplete_cycles`，不暗中丢掉末段高速状态。它只覆盖实际采到的分布，
+不是任意速度制动能力认证；采样覆盖也不等于每个相位都评估成功。
+
+可以用整数 `--snapshot-min-turns` / `--snapshot-max-turns` 调整窗口，上界不含。
+例如 brake_later 默认 [2,4)，也可先用 [2,3) 细化课程；这种覆盖应按实际窗口解释。
+`--snapshot-tail-fraction` 仍可额外按每条轨迹的时间选择后段，默认 1.0，
+不建议用于早期周期课程；若它删除了目标圈或相位，程序会报错，不回退到起步样本。
 离线 NPZ 重建不保留求解器 warm-start；连续同模型接管应使用 full-data 接口。
 
 ## READY 和实机安全边界
@@ -167,7 +211,7 @@ brake_full 不施加这些课程上限。筛选为空就报错，不制造低速
 以下从 `curl_robot_2d` 目录运行；本地无 JAX 时自动跳过真实 MJX 测试：
 
 ```powershell
-python -m unittest tests.test_transition_3d tests.test_transition_deployment_3d tests.test_transition_training_3d tests.test_transition_wrappers_3d tests.test_transition_mjx_3d -v
+python -m unittest tests.test_transition_3d tests.test_transition_deployment_3d tests.test_transition_training_3d tests.test_transition_roll_cycles_3d tests.test_transition_wrappers_3d tests.test_transition_mjx_3d -v
 python -m scripts.train_mjx_3d_transition_ppo --stage walking_start --dry-run
 ```
 
@@ -190,18 +234,40 @@ python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --preset
   --restore-checkpoint results/mjx_3d_transition_ppo_v4/walking_start/ppo_checkpoint
 ```
 
-随后以同样方式训练 deploy_capture、brake_low、brake_full。每阶段先评估通过，
-再以最新恢复 checkpoint 热启动下一阶段；后两个阶段必须增加
+随后以同样方式训练 deploy_capture、brake_early、brake_later、brake_full。每阶段先评估通过，
+再以最新恢复 checkpoint 热启动下一阶段；三个 BRAKE 阶段必须增加
 `--roll-snapshots <真实采集的bank.npz>`。`params_final` 用于推理导出，
 `ppo_checkpoint` 用于训练恢复，不要混用。阶段不会未经评估自动推进。
+
+v5 恢复入口接受具体数字步数目录，也接受 `ppo_checkpoint` 父目录；后者自动
+选择同时存在 `_METADATA` 和 `ppo_network_config.json` 的最大数字步数，
+忽略未完成/临时目录。会打印实际恢复路径；没有合格存档则报错，不改用随机权重。
+
+**已经训练完 deploy_capture 的用户不需要重训前面的阶段。** 按上一轮
+`v4_retry` 输出位置，在云端先检查新库、跑 MJX smoke，再恢复训练：
+
+```bash
+python -m scripts.inspect_transition_roll_snapshots results/roll_cycle_snapshots_v2.npz --stage brake_early
+python -m scripts.mjx_3d_transition_smoke --stage brake_early --roll-snapshots results/roll_cycle_snapshots_v2.npz --physics-profile newton4
+python -m scripts.train_mjx_3d_transition_ppo --stage brake_early --preset h200 \
+  --roll-snapshots results/roll_cycle_snapshots_v2.npz \
+  --restore-checkpoint results/mjx_3d_transition_ppo_v4_retry/deploy_capture/ppo_checkpoint \
+  --out results/mjx_3d_transition_ppo_v5
+```
+
+上面的 bank 路径必须是真实采集产物，若实际位置不同请相应替换。BRAKE smoke
+只检验计算流程，不要求零动作能刹住；不要使用 `--require-ready`。
+训练前会检查快照覆盖并在 `snapshot_selection.json` / `summary.json` 中保存
+样本数、圈数窗口、每圈相位计数、实际速度范围。brake_early 通过后，使用同一库、
+`--stage brake_later` 并恢复 v5/brake_early/ppo_checkpoint；随后同理进入 brake_full。
 
 训练成功后导出（以下输入必须是真实产出的 checkpoint，而非占位文件）：
 
 ```bash
 python -m scripts.export_transition_rtneural \
-  results/mjx_3d_transition_ppo_v4/brake_full/params_final \
-  results/mjx_3d_transition_ppo_v4/brake_full/transition.json \
-  --config results/mjx_3d_transition_ppo_v4/brake_full/deployment_config.json
+  results/mjx_3d_transition_ppo_v5/brake_full/params_final \
+  results/mjx_3d_transition_ppo_v5/brake_full/transition.json \
+  --config results/mjx_3d_transition_ppo_v5/brake_full/deployment_config.json
 ```
 
 本地测试覆盖 Walking CPU 稳定性、关节映射、快照保真、逐帧 C++ 历史语义、
