@@ -2,6 +2,8 @@
 
 > 下文是早期固定插值启动原型，尚未通过直线启动验证；不是已经学会自主起滚的策略。
 > 当前独立启动技能的前置验证见 [滚动教师接管实验](3d_roll_handoff_probe_zh.md)。
+> 新的独立启动训练入口见 [自主 stand→rolling PPO](3d_autonomous_startup_training_zh.md)，
+> 它不执行下文的固定插值路径。
 
 本功能让 reset 真正使用 `_2` 模型的 `stand` keyframe，再通过电机位置目标完成
 “站立 → 收腿 → 起滚”。`compact` 仍是所有动作的零点，不是改成站立零点。

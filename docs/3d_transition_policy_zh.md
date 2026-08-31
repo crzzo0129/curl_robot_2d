@@ -168,3 +168,28 @@ python -m scripts.export_transition_rtneural \
 批量 JIT、学习成功率、延迟/噪声鲁棒性和 WALK 接管后至少 1 s 的稳定性。
 当前 `contact_force_peak_n` 奖励输入仍为零，未测量冲击峰值；不能据此声称
 已验证实机接触安全或完整 ROLL→WALK 成功率。
+
+### 导出一致性测试出现约 1e-3 误差时
+
+旧测试直接比较 NumPy FP32 导出推理与未指定 matmul precision 的 JAX GPU
+推理。float32 数组不保证底层矩阵乘法使用完整 FP32 精度；GPU 可能采用
+TF32 等较低精度路径。仅凭误差幅值不能断定导出错误或精度问题。
+
+测试现保留 `atol=rtol=2e-5`，在 `jax.default_matmul_precision("highest")`
+作用域内编译并执行严格参考推理，同时打印原配置与最高精度输出的差异。
+还分别比较归一化、未折叠的 NumPy 网络、归一化折入首层后的导出网络。
+未修改导出权重、动作定义或训练/MJX 的全局精度设置。
+
+只重跑这一项即可定位，无需重复编译物理环境：
+
+```bash
+python -m unittest tests.test_transition_mjx_3d.TransitionMJXTest.test_real_brax_actor_export_parity -v
+```
+
+如果 `configured_vs_fp32_max_abs` 约为原来的 1e-3，而四项严格比较通过，
+说明这次误差来自推理计算精度。如果严格比较仍失败，保留完整的
+`[transition export parity]` 诊断输出，继续检查对应计算环节，不能放宽阈值。
+这项随机网络测试通过也不等于真实训练权重和闭环部署验收通过。
+
+JAX 的精度控制说明见
+[官方文档](https://docs.jax.dev/en/latest/_autosummary/jax.default_matmul_precision.html)。

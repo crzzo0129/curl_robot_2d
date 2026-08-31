@@ -15,7 +15,7 @@ import time
 import numpy as np
 
 from curl_robot_2d_mjx.autonomous_startup_3d import (
-    CONTRACT, AutonomousStartupConfig, load_candidate_bank, sha256,
+    CONTRACT, AUTONOMOUS_STARTUP_OBSERVATION_SIZE, AutonomousStartupConfig, load_candidate_bank, sha256,
 )
 from curl_robot_2d_mjx.cem_reference import CEMReferenceConfig
 from curl_robot_2d_mjx.config_3d import Rolling3DConfig
@@ -140,13 +140,22 @@ def evaluate_startup(env, policy, *, count, seed):
         return env.step(s, action)
     step = jax.jit(jax.vmap(one))
     totals = {key: np.zeros(count) for key in env._zero_metrics()}
-    traces = []
+    traces = {key: [] for key in ("qpos", "qvel", "ctrl", "time", "teacher_active_next",
+                                  "candidate_id", "gate_error", "effective_action", "rolling_phase",
+                                  "oscillator_phase", "reference_time_offset")}
     for index in range(env.episode_length):
         state = step(state)
         metrics = jax.device_get(state.metrics)
         for key in totals:
             totals[key] += np.asarray(metrics[key])
-        traces.append(np.asarray(jax.device_get(state.pipeline_state.qpos[:min(count, 4)])))
+        trace = {key: getattr(state.pipeline_state, key) for key in ("qpos", "qvel", "ctrl", "time")}
+        trace.update(teacher_active_next=state.info["teacher_active"],
+                     candidate_id=state.info["candidate_id"], gate_error=state.metrics["gate_error"],
+                     effective_action=state.info["base_info"]["last_action"])
+        trace.update({key: state.info["base_info"][key] for key in (
+            "rolling_phase", "oscillator_phase", "reference_time_offset")})
+        for key, value in jax.device_get(trace).items():
+            traces[key].append(np.asarray(value[:min(count, 4)]))
         if index % 50 == 49:
             print(f"[startup eval] step={index + 1}/{env.episode_length}", flush=True)
     handoff = totals["handoff"] > 0
@@ -165,7 +174,7 @@ def evaluate_startup(env, policy, *, count, seed):
                                        "axis_tilt", "forbidden_depth", "forbidden_contact")},
         "scope": "startup actor plus frozen rolling teacher; NOT an independent distilled student",
     }
-    return report, {**totals, "qpos_first_episodes": np.stack(traces)}
+    return report, {**totals, **{f"{key}_first_episodes": np.stack(value) for key, value in traces.items()}}
 
 
 def write_json(path, payload):
@@ -179,10 +188,12 @@ def main(argv=None):
         "teacher_config_payload": teacher, "teacher_sha256": sha256(args.teacher),
         "model_sha256": sha256(model_path_3d(task.geometry)),
         "candidate_bank_sha256": sha256(args.candidate_bank),
-        "candidate_count": len(bank["time"]), "observation_size": 63, "action_size": 8,
+        "candidate_count": len(bank["time"]), "observation_size": AUTONOMOUS_STARTUP_OBSERVATION_SIZE, "action_size": 8,
         "episode_length": cfg.episode_steps(task.control_timestep),
         "training": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "model_randomization": False, "gate_is_provisional": True,
+        "reset_pose": "stand", "reference_interpolation_during_startup": False,
+        "task_field_describes": "base rolling teacher; autonomous wrapper owns stand reset and episode termination",
         "deployable_student": False, "physics_snap_at_handoff": False,
         "initial_policy_mean": "stand; no folding interpolation",
         "teacher_tail_actions": "ignored startup actor actions; same-episode rewards/values carry downstream credit",
@@ -202,7 +213,6 @@ def main(argv=None):
                             xla_triton=False, mujoco_gl=args.mujoco_gl, verbose=True)
     import jax
     from brax.io import model as model_io
-    from brax.training.agents.ppo import train as ppo
     from brax.training.agents.ppo import networks as ppo_networks
     from brax.training.acme import running_statistics
     from curl_robot_2d_mjx.environment_autonomous_startup_3d import (
@@ -238,6 +248,7 @@ def main(argv=None):
         np.savez_compressed(args.out / "evaluation_arrays.npz", **arrays)
         print(json.dumps(report, indent=2), flush=True)
         return report
+    from brax.training.agents.ppo import train as ppo
     signature = inspect.signature(ppo.train).parameters
     required = {"wrap_env_fn", "policy_params_fn", "max_devices_per_host", "restore_params"}
     if not required.issubset(signature):

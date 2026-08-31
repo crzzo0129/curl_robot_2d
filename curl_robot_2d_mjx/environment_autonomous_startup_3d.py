@@ -10,7 +10,7 @@ from dataclasses import replace
 import numpy as np
 
 from curl_robot_2d_mjx.autonomous_startup_3d import (
-    AutonomousStartupConfig, candidate_potential, confirmation_update,
+    AUTONOMOUS_STARTUP_OBSERVATION_SIZE, AutonomousStartupConfig, candidate_potential, confirmation_update,
     continuation_score, gate_errors, load_frozen_teacher,
 )
 from curl_robot_2d_mjx.config_3d import smoothstep_ramp
@@ -65,7 +65,7 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
 
         @property
         def observation_size(self):
-            return 63
+            return AUTONOMOUS_STARTUP_OBSERVATION_SIZE
 
         @property
         def action_size(self):
@@ -291,6 +291,8 @@ def wrap_autonomous_startup(env, episode_length, action_repeat=1, randomization_
             # The terminal step's truncation/length must remain available to PPO/evaluator.
             info["truncation"] = next_state.info["truncation"]
             info["steps"] = next_state.info["steps"]
+            info["episode_metrics"] = next_state.info["episode_metrics"]
+            info["episode_done"] = next_state.info["episode_done"]
             info["reset_rng"] = keys[:, 1]
             info["needs_step_reset"] = next_state.done > 0
             return next_state.replace(

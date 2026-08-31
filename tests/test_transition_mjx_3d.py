@@ -1,6 +1,7 @@
 """Real JIT contract tests, skipped when the cloud training stack is absent."""
 
 import importlib.util
+import json
 import unittest
 
 import numpy as np
@@ -22,7 +23,7 @@ class TransitionMJXTest(unittest.TestCase):
         from curl_robot_2d_mjx.environment_transition_3d import TRANSITION_MODEL_PATH_3D
         from scripts.train_mjx_3d_transition_ppo import make_transition_networks
         from scripts.export_transition_rtneural import convert_transition
-        from scripts.export_rtneural import _run_layers
+        from scripts.export_rtneural import _activation, _dense_layers, _run_layers
         sizes = {"state": 720, "privileged_state": 86}
         nets = make_transition_networks(sizes, 12, running_statistics.normalize,
                                         hidden_layers=(16, 16))
@@ -32,13 +33,61 @@ class TransitionMJXTest(unittest.TestCase):
         normalizer = running_statistics.update(normalizer, obs)
         actor = nets.policy_network.init(jax.random.PRNGKey(10))
         params = (normalizer, actor)
-        expected, _ = jax.jit(ppo_networks.make_inference_fn(nets)(
-            params, deterministic=True))(obs, jax.random.PRNGKey(20))
+        policy = ppo_networks.make_inference_fn(nets)(params, deterministic=True)
+        key = jax.random.PRNGKey(20)
+        configured_precision = jax.config.jax_default_matmul_precision
+        # Diagnostic only: a GPU's default/high matmul may use reduced
+        # precision for float32 inputs. That is not an FP32 export reference.
+        configured_output = np.asarray(jax.jit(policy)(obs, key)[0])
+        # The scope must cover JIT tracing AND execution, not just creating the
+        # Python callable. Do not change global training/MJX precision or relax
+        # the tolerance to hide a wrong normalization/activation/export.
+        with jax.default_matmul_precision("highest"):
+            expected = np.asarray(jax.jit(policy)(obs, key)[0])
+            normalized_jax = np.asarray(
+                jax.jit(running_statistics.normalize)(obs, normalizer)["state"])
+        self.assertEqual(jax.config.jax_default_matmul_precision, configured_precision)
+
+        raw = np.asarray(obs["state"], dtype=np.float32)
+        normalized_numpy = (
+            raw - np.asarray(normalizer.mean["state"], dtype=np.float32)
+        ) / np.asarray(normalizer.std["state"], dtype=np.float32)
+        # Independent unfused reference: normalize -> original dense layers ->
+        # ELU -> tanh(location). This isolates exporter folding from Brax math.
+        dense = _dense_layers(actor)
+        unfused = normalized_numpy
+        for index, (_, kernel, bias) in enumerate(dense):
+            unfused = unfused @ kernel + bias
+            unfused = (np.tanh(unfused[..., :12]) if index == len(dense) - 1
+                       else _activation("elu", unfused))
         model = mujoco.MjModel.from_xml_path(str(TRANSITION_MODEL_PATH_3D))
         config = transition_controller_metadata_3d(model, Transition3DConfig())
         exported = convert_transition(params, config)
-        actual = _run_layers(np.asarray(obs["state"]), exported["layers"])
-        np.testing.assert_allclose(actual, expected, atol=2e-5, rtol=2e-5)
+        actual = _run_layers(raw, exported["layers"])
+        comparisons = {
+            "normalization": (normalized_numpy, normalized_jax),
+            "unfused_numpy_vs_brax_fp32": (unfused, expected),
+            "export_vs_unfused_numpy": (actual, unfused),
+            "export_vs_brax_fp32": (actual, expected),
+        }
+        diagnostics = {
+            "jax_version": jax.__version__,
+            "backend": jax.default_backend(),
+            "devices": [str(device) for device in jax.devices()],
+            "configured_matmul_precision": configured_precision,
+            "reference_matmul_precision": "highest",
+            "configured_vs_fp32_max_abs": float(np.max(np.abs(configured_output - expected))),
+            "export_vs_configured_max_abs": float(np.max(np.abs(actual - configured_output))),
+            **{name + "_max_abs": float(np.max(np.abs(left - right)))
+               for name, (left, right) in comparisons.items()},
+        }
+        print("\n[transition export parity] " + json.dumps(diagnostics, sort_keys=True), flush=True)
+        for name, (left, right) in comparisons.items():
+            with self.subTest(comparison=name):
+                self.assertTrue(np.isfinite(left).all() and np.isfinite(right).all(),
+                                f"nonfinite {name}: {diagnostics}")
+                np.testing.assert_allclose(left, right, atol=2e-5, rtol=2e-5,
+                                           err_msg=f"{name}: {diagnostics}")
 
     def test_reset_step_and_live_takeover(self):
         import jax

@@ -9,6 +9,7 @@ from pathlib import Path
 import numpy as np
 
 CONTRACT = "autonomous_stand_to_roll_v1"
+AUTONOMOUS_STARTUP_OBSERVATION_SIZE = 53
 
 
 @dataclass(frozen=True)
