@@ -37,6 +37,10 @@ from curl_robot_2d_mjx.config_3d import (
     physics_profile_3d,
 )
 from curl_robot_2d_mjx.environment_3d import apply_physics_options_3d
+from curl_robot_2d_mjx.startup_rolling_3d import (
+    add_stand_startup_arguments, reset_pose_arrays_3d, rolling_elapsed_3d,
+    stand_startup_action_3d, with_stand_startup,
+)
 
 
 def parse_args(argv=None):
@@ -56,6 +60,7 @@ def parse_args(argv=None):
         default="reference",
     )
     parser.add_argument("--duration", type=float, default=10.0)
+    add_stand_startup_arguments(parser)
     parser.add_argument("--control-dt", type=float, default=0.02)
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
@@ -184,7 +189,11 @@ def run(argv=None):
         args.foot_gap_tracking_margin_mm,
     )
     model = mujoco.MjModel.from_xml_path(str(args.xml))
-    task = physics_profile_3d(args.physics_profile, Rolling3DConfig())
+    task = physics_profile_3d(args.physics_profile, Rolling3DConfig(
+        episode_length=max(1, round(args.duration / 0.02)),
+        reference_ramp_start_scale=args.startup_target_scale,
+    ))
+    task = with_stand_startup(task, args)
     apply_physics_options_3d(model, task)
     data = mujoco.MjData(model)
     joint_ids = np.asarray([model.joint(name).id for name in JOINT_NAMES_3D])
@@ -214,7 +223,12 @@ def run(argv=None):
         ctrl_low,
         ctrl_high,
     )
-    _reset(model, data, qpos_indices, actuator_ids, initial_ctrl)
+    _, stand_action = reset_pose_arrays_3d(model, task)
+    if task.reset_pose == "stand":
+        mujoco.mj_resetDataKeyframe(model, data, model.key("stand").id)
+        mujoco.mj_forward(model, data)
+    else:
+        _reset(model, data, qpos_indices, actuator_ids, initial_ctrl)
     start_x = float(data.qpos[0])
     start_y = float(data.qpos[1])
     torso_id = model.body("torso").id
@@ -226,6 +240,8 @@ def run(argv=None):
     phase_rate_values = []
     frames = []
     next_frame_time = 0.0
+    startup_handoff = None
+    peak_torque_nm = 0.0
     renderer = None
     render_camera = None
     render_option = mujoco.MjvOption()
@@ -269,7 +285,16 @@ def run(argv=None):
             wall_start = time.perf_counter()
             for _ in range(control_repeat):
                 previous_phase = phase
-                if not args.linear_phase:
+                rolling_active = float(data.time) >= task.rolling_start_time_s
+                if task.reset_pose == "stand" and rolling_active and startup_handoff is None:
+                    startup_handoff = {
+                        "time_s": float(data.time), "qpos": data.qpos.tolist(),
+                        "qvel": data.qvel.tolist(),
+                        "compact_joint_error_max_rad": float(np.max(np.abs(
+                            data.qpos[qpos_indices] - model.key("compact").ctrl[actuator_ids]
+                        ))),
+                    }
+                if not args.linear_phase and rolling_active:
                     phase = float(
                         advance_oscillator(
                             np,
@@ -288,15 +313,22 @@ def run(argv=None):
                     args.target_ramp_duration_s,
                     args.startup_target_boost,
                     args.startup_target_boost_duration_s,
-                    float(data.time),
+                    float(rolling_elapsed_3d(np, data.time, task)),
                     ctrl_low,
                     ctrl_high,
                 )
+                if task.reset_pose == "stand":
+                    ctrl = np.clip(ctrl + stand_startup_action_3d(
+                        np, data.time, stand_action, task
+                    ) * np.asarray(task.action_scales), ctrl_low, ctrl_high)
                 data.ctrl[actuator_ids] = ctrl
                 mujoco.mj_step(model, data)
+                if not (np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all()):
+                    raise RuntimeError(f"nonfinite physics at {data.time}s")
+                peak_torque_nm = max(peak_torque_nm, float(np.max(np.abs(data.actuator_force))))
                 rolling_phase += float(data.qvel[4]) * float(model.opt.timestep)
                 phase_rate_values.append(
-                    args.phase_rate_scale * config.oscillator_rate_rad_s
+                    (args.phase_rate_scale * config.oscillator_rate_rad_s if rolling_active else 0.0)
                     if args.linear_phase
                     else (phase - previous_phase) / float(model.opt.timestep)
                 )
@@ -310,7 +342,7 @@ def run(argv=None):
                     )
                 )
             )
-            if args.linear_phase:
+            if args.linear_phase and rolling_active:
                 phase += (
                     args.phase_rate_scale
                     * config.oscillator_rate_rad_s
@@ -355,6 +387,15 @@ def run(argv=None):
         "shell_contact_radius_m": geometry_parameters.shell_contact_radius,
         "solver": task.solver_name,
         "elapsed_s": float(elapsed),
+        "reset_pose": task.reset_pose,
+        "stand_hold_s": task.stand_hold_s,
+        "stand_to_compact_s": task.stand_to_compact_s,
+        "rolling_start_time_s": task.rolling_start_time_s,
+        "startup_handoff": startup_handoff,
+        "startup_included_in_elapsed": True,
+        "state_overwritten_after_reset": False,
+        "peak_torque_nm": peak_torque_nm,
+        "mujoco_warning_counts": [int(w.number) for w in data.warning],
         "distance_x_m": float(data.qpos[0] - start_x),
         "distance_y_m": float(data.qpos[1] - start_y),
         "distance_as_shell_turns": float(

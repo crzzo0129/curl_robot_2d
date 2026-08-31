@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import time
+from pathlib import Path
 
 from curl_robot_2d_mjx.config_transition_3d import (
     TRANSITION_CURRICULUM_STAGE_NAMES_3D,
@@ -21,8 +22,10 @@ def parse_args(argv=None):
     parser.add_argument(
         "--stage",
         choices=TRANSITION_CURRICULUM_STAGE_NAMES_3D,
-        default="deploy_near_stand",
+        default="walking_start",
     )
+    parser.add_argument("--roll-snapshots", type=Path)
+    parser.add_argument("--snapshot-tail-fraction", type=float, default=1.0)
     parser.add_argument(
         "--physics-profile",
         choices=TRANSITION_PHYSICS_PROFILE_NAMES_3D,
@@ -40,6 +43,8 @@ def main(argv=None) -> None:
     args = parse_args(argv)
     if args.batch_size < 1 or args.steps < 1:
         raise SystemExit("--batch-size and --steps must be positive")
+    if args.stage.startswith("brake_") and not args.roll_snapshots:
+        raise SystemExit("BRAKE smoke requires --roll-snapshots")
     configure_cloud_runtime(
         memory_fraction=args.memory_fraction,
         mujoco_gl=args.mujoco_gl,
@@ -53,7 +58,12 @@ def main(argv=None) -> None:
     )
 
     task = transition_curriculum_config_3d(
-        args.stage, Transition3DConfig(curriculum_stage=args.stage)
+        args.stage, Transition3DConfig(
+            curriculum_stage=args.stage,
+            roll_snapshots_path=str(args.roll_snapshots.resolve())
+            if args.roll_snapshots else None,
+            snapshot_tail_fraction=args.snapshot_tail_fraction,
+        )
     )
     task = transition_physics_profile_3d(args.physics_profile, task)
     env = make_brax_transition_env_3d(task, seed=args.seed)
@@ -93,6 +103,8 @@ def main(argv=None) -> None:
         "status": "ok",
         "runtime": describe_runtime(),
         "stage": args.stage,
+        "geometry": task.geometry,
+        "model_path": str(env.model_path),
         "physics_profile": args.physics_profile,
         "batch_size": args.batch_size,
         "steps": args.steps,
@@ -113,4 +125,3 @@ def main(argv=None) -> None:
 
 if __name__ == "__main__":
     main()
-

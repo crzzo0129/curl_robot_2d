@@ -23,7 +23,6 @@ from curl_robot_2d_mjx.config_transition_3d import (
 )
 from curl_robot_2d_mjx.environment_3d import (
     apply_physics_options_3d,
-    configure_pupper_shell_collisions_3d,
     geometry_parameters_3d,
     model_path_3d,
 )
@@ -37,50 +36,29 @@ from curl_robot_2d_mjx.reward_transition_3d import (
     Transition3DRewardConfig,
     reward_terms_transition_3d,
 )
+from curl_robot_2d_mjx.transition_initialization_3d import (
+    walking_start_state_3d,
+    load_roll_snapshots_3d,
+    transition_target_ctrl_3d,
+)
+from curl_robot_2d_mjx.deployment_transition_3d import (
+    transition_controller_frame_3d,
+    initial_transition_history_3d,
+    push_transition_frame_3d,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-TRANSITION_MODEL_PATH_3D = (
-    PROJECT_ROOT
-    / "assets"
-    / "curl_robot_3d_pupper_r127p5_open60_width120.xml"
-)
-TRANSITION_KEYFRAME_NAMES_3D = ("compact", "park", "stand")
+TRANSITION_MODEL_PATH_3D = model_path_3d("rollingquad_2")
+TRANSITION_KEYFRAME_NAMES_3D = ("compact", "stand")
 
 
 def transition_reference_ctrl_3d(
     xp,
-    compact_ctrl,
-    park_ctrl,
     stand_ctrl,
-    mode,
-    progress,
-    *,
-    park_fraction=0.55,
 ):
-    """Mode-conditioned reference center for the residual policy."""
-
-    progress = xp.clip(progress, 0.0, 1.0)
-    before_park = xp.clip(progress / park_fraction, 0.0, 1.0)
-    after_park = xp.clip(
-        (progress - park_fraction) / (1.0 - park_fraction), 0.0, 1.0
-    )
-    before_park = before_park * before_park * (3.0 - 2.0 * before_park)
-    after_park = after_park * after_park * (3.0 - 2.0 * after_park)
-    deploy_reference = xp.where(
-        progress < park_fraction,
-        compact_ctrl + before_park * (park_ctrl - compact_ctrl),
-        park_ctrl + after_park * (stand_ctrl - park_ctrl),
-    )
-    return xp.where(
-        mode == int(TransitionMode3D.BRAKE),
-        compact_ctrl,
-        xp.where(
-            mode == int(TransitionMode3D.DEPLOY),
-            deploy_reference,
-            stand_ctrl,
-        ),
-    )
+    """Walking startup is the sole action center, independent of mode/time."""
+    return xp.asarray(stand_ctrl)
 
 
 def _load_transition_dependencies_3d():
@@ -110,15 +88,17 @@ def make_brax_transition_env_3d(
 ):
     """Create the 12-DoF transition task.
 
-    This first version synthesizes reset states around compact/park/stand.
-    Cloud training should replace the ``brake_full`` synthetic distribution
-    with terminal snapshots collected from the frozen learned ROLL policy.
-    The policy observation/action contract does not change when that dataset is
-    introduced.
+    Reverse curriculum starts at the exact Walking startup state, expands its
+    neighborhood, then resets from complete frozen-ROLL snapshots. Braking is
+    performed solely by this policy's actuator outputs, never by editing qvel.
     """
 
-    task = config or transition_curriculum_config_3d("deploy_near_stand")
+    task = config or transition_curriculum_config_3d("walking_start")
     validate_transition_config_3d(task)
+    use_roll_snapshots = task.curriculum_stage in ("brake_low", "brake_full")
+    if use_roll_snapshots and not task.roll_snapshots_path:
+        raise ValueError("BRAKE training requires --roll-snapshots from a frozen "
+                         "rollingquad_2 ROLL policy (qpos, qvel and ctrl)")
     rewards = reward_config or Transition3DRewardConfig()
     jax, jp, mujoco, mjx, Env, State = _load_transition_dependencies_3d()
 
@@ -130,11 +110,9 @@ def make_brax_transition_env_3d(
             self.model_path = model_path_3d(task.geometry)
             self.geometry_parameters = geometry_parameters_3d(task.geometry)
             self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
-            # The shell remains physical while braking/deploying.  It is the
-            # expected rolling contact, not an illegal walking collision.
-            configure_pupper_shell_collisions_3d(self.mj_model, enabled=True)
+            # Preserve rollingquad_2's CAD mesh collisions in every mode.
             validate_walking_morphology_3d(
-                self.mj_model, self.geometry_parameters
+                self.mj_model, self.geometry_parameters, geometry_name=task.geometry
             )
             apply_physics_options_3d(self.mj_model, task)
             self.cpu_data = mujoco.MjData(self.mj_model)
@@ -185,19 +163,23 @@ def make_brax_transition_env_3d(
             self.joint_high = jp.asarray(
                 [self.mj_model.jnt_range[index, 1] for index in joint_ids]
             )
-            self.action_scales = jp.asarray(task.action_scales)
-
-            keyframes = {}
-            for name in TRANSITION_KEYFRAME_NAMES_3D:
-                key_id = object_id(mujoco.mjtObj.mjOBJ_KEY, name)
-                keyframes[name] = (
-                    jp.asarray(self.mj_model.key_qpos[key_id]),
-                    jp.asarray(self.mj_model.key_ctrl[key_id]),
-                )
-            self.compact_qpos, self.compact_ctrl = keyframes["compact"]
-            self.park_qpos, self.park_ctrl = keyframes["park"]
-            self.stand_qpos, self.stand_ctrl = keyframes["stand"]
-            self.stand_root_height = self.stand_qpos[2]
+            walking_start = walking_start_state_3d(self.mj_model, task)
+            self.stand_qpos = jp.asarray(walking_start["qpos"])
+            self.stand_ctrl = jp.asarray(walking_start["ctrl"])
+            self.stand_root_height = (
+                self.stand_qpos[2] - task.walking_start_height_offset_m
+            )
+            compact_id = object_id(mujoco.mjtObj.mjOBJ_KEY, "compact")
+            self.compact_qpos = jp.asarray(self.mj_model.key_qpos[compact_id])
+            self.compact_ctrl = jp.asarray(self.mj_model.key_ctrl[compact_id])
+            self.roll_snapshots = None
+            if use_roll_snapshots:
+                self.roll_snapshots = {
+                    key: jp.asarray(value)
+                    for key, value in load_roll_snapshots_3d(
+                        task.roll_snapshots_path, self.mj_model, task
+                    ).items()
+                }
 
             self.deploy_gate_steps = _duration_steps(
                 task.deploy_gate_hold_s, task.control_timestep
@@ -312,7 +294,7 @@ def make_brax_transition_env_3d(
 
         def _mode_progress(self, mode, mode_steps):
             deploy_progress = jp.clip(
-                mode_steps * task.control_timestep / task.deploy_duration_s,
+                mode_steps * task.control_timestep / task.deploy_timeout_s,
                 0.0,
                 1.0,
             )
@@ -333,20 +315,8 @@ def make_brax_transition_env_3d(
             )
 
         def _reference(self, mode, mode_steps):
-            deploy_progress = jp.clip(
-                mode_steps * task.control_timestep / task.deploy_duration_s,
-                0.0,
-                1.0,
-            )
-            return transition_reference_ctrl_3d(
-                jp,
-                self.compact_ctrl,
-                self.park_ctrl,
-                self.stand_ctrl,
-                mode,
-                deploy_progress,
-                park_fraction=task.deploy_park_fraction,
-            )
+            del mode, mode_steps
+            return transition_reference_ctrl_3d(jp, self.stand_ctrl)
 
         def _gates(self, data, contacts, kinematics, reference):
             joint_position = data.qpos[self.joint_qpos_indices]
@@ -399,6 +369,7 @@ def make_brax_transition_env_3d(
             policy_action,
             reference,
             noise_key,
+            actor_history,
         ):
             joint_position = data.qpos[self.joint_qpos_indices]
             joint_velocity = data.qvel[self.joint_dof_indices]
@@ -414,7 +385,7 @@ def make_brax_transition_env_3d(
                 jp.square(kinematics["linear_speed"])
                 + 0.04 * jp.square(kinematics["angular_speed"])
             )
-            actor = jp.concatenate(
+            critic_core = jp.concatenate(
                 (
                     kinematics["linear_velocity"],
                     kinematics["angular_velocity"],
@@ -439,20 +410,6 @@ def make_brax_transition_env_3d(
                     ),
                 )
             )
-            if task.observation_noise_enabled:
-                scales = task.observation_noise_level * jp.concatenate(
-                    (
-                        jp.full((3,), task.observation_noise_velocity),
-                        jp.full((3,), task.observation_noise_velocity),
-                        jp.full((3,), task.observation_noise_gravity),
-                        jp.full((12,), task.observation_noise_joint_position),
-                        jp.full((12,), task.observation_noise_joint_velocity),
-                        jp.zeros((33,)),
-                    )
-                )
-                actor = actor + scales * jax.random.normal(
-                    noise_key, shape=actor.shape
-                )
             privileged_extra = jp.concatenate(
                 (
                     data.qpos[:3],
@@ -461,8 +418,28 @@ def make_brax_transition_env_3d(
                     jp.asarray((contacts["nonfoot_count"],)),
                 )
             )
-            actor = jp.nan_to_num(actor)
-            critic = jp.nan_to_num(jp.concatenate((actor, privileged_extra)))
+            critic = jp.nan_to_num(jp.concatenate((critic_core, privileged_extra)))
+            # Actor sees ONLY the real-controller sensor/command ABI. The
+            # gyro is body angular velocity, not measured joint qvel.
+            frame = transition_controller_frame_3d(
+                jp, angular_velocity_body=kinematics["angular_velocity"],
+                projected_gravity=kinematics["gravity"],
+                joint_position_offset=joint_position - self.stand_ctrl,
+                last_action=policy_action,
+            )
+            if task.observation_noise_enabled:
+                scales = task.observation_noise_level * jp.concatenate((
+                    jp.full((3,), task.observation_noise_velocity),
+                    jp.full((3,), task.observation_noise_gravity),
+                    jp.zeros((6,)),
+                    jp.full((12,), task.observation_noise_joint_position),
+                    jp.zeros((12,)),
+                ))
+                frame = frame + scales * jax.random.normal(noise_key, frame.shape)
+            # Noise is sampled once per acquired frame; stored history is not
+            # re-noised on every inference. Last action remains raw output.
+            actor = push_transition_frame_3d(
+                jp, actor_history, jp.nan_to_num(frame), task.observation_limit)
             return {"state": actor, "privileged_state": critic}
 
         def reset(self, rng):
@@ -521,25 +498,61 @@ def make_brax_transition_env_3d(
             velocity = velocity.at[3:6].multiply(
                 task.reset_angular_speed_rad_s
             )
-            velocity = velocity.at[6:].multiply(0.20)
+            velocity = velocity.at[6:].multiply(task.reset_joint_velocity_rad_s)
             mode = jp.asarray(task.reset_start_mode, dtype=jp.int32)
-            mode_steps = jp.asarray(
-                jp.where(
-                    mode == int(TransitionMode3D.DEPLOY),
-                    (1.0 - compact_fraction)
-                    * task.deploy_duration_s
-                    / task.control_timestep,
-                    0.0,
-                ),
-                dtype=jp.int32,
-            )
-            reference = self._reference(mode, mode_steps)
-            data = self.base_data.replace(qpos=qpos, qvel=velocity, ctrl=reference)
+            ctrl = joints
+            if self.roll_snapshots is not None:
+                index = jax.random.randint(fraction_key, (), 0,
+                                           self.roll_snapshots["qpos"].shape[0])
+                qpos = self.roll_snapshots["qpos"][index]
+                velocity = self.roll_snapshots["qvel"][index]
+                ctrl = self.roll_snapshots["ctrl"][index]
+            data = self.base_data.replace(qpos=qpos, qvel=velocity, ctrl=ctrl)
             data = mjx.forward(self.sys, data)
+            # Neighborhood perturbations may rotate a CAD mesh into the floor.
+            # Only synthetic states are lifted. Never alter real takeover data
+            # or the exact Walking-start anchor.
+            if not use_roll_snapshots and task.curriculum_stage != "walking_start":
+                g1, g2, dist = self._contact_arrays(data)
+                ground = (g1 == self.floor_geom_id) | (g2 == self.floor_geom_id)
+                lift = jp.max(jp.where(ground, jp.maximum(-dist, 0.0), 0.0),
+                              initial=0.0)
+                data = mjx.forward(self.sys, data.replace(
+                    qpos=data.qpos.at[2].add(lift)))
+            return self._initial_state(data, rng, mode)
+
+        def reset_from_roll_state(self, data, rng, actor_history=None, last_action=None):
+            """Live ROLL -> Transition handoff on the SAME MJX model.
+
+            Preserve full simulator state and last servo command; no velocity
+            reset, warm-up, hidden rollout or external braking controller.
+            actor_history is the PREVIOUS inference input (newest first), not
+            the C++ post-inference rotated scratch buffer. last_action is the
+            previous raw output in this policy's action convention. Omission
+            intentionally cold-initializes only the observation buffer, never
+            the simulator or motors; training snapshot resets use this path.
+            """
+            return self._initial_state(
+                data, rng, jp.asarray(int(TransitionMode3D.BRAKE), dtype=jp.int32),
+                actor_history=actor_history, last_action=last_action,
+            )
+
+        def _initial_state(self, data, rng, mode, actor_history=None, last_action=None):
+            mode_steps = jp.asarray(0, dtype=jp.int32)
+            reference = self._reference(mode, mode_steps)
             contacts = self._contacts(data)
             kinematics = self._kinematics(data)
             gates = self._gates(data, contacts, kinematics, reference)
-            zero_action = jp.zeros((TRANSITION_ACTION_SIZE_3D,))
+            # Default cold history matches on_activate without moving motors.
+            # Hot carry-over is explicit and requires identical obs/action ABI.
+            previous_action = (jp.zeros((12,), dtype=data.qpos.dtype)
+                               if last_action is None else last_action)
+            actor_history = (initial_transition_history_3d(jp, dtype=data.qpos.dtype)
+                             if actor_history is None else actor_history)
+            if actor_history.shape != (TRANSITION_ACTOR_OBSERVATION_SIZE_3D,):
+                raise ValueError("Transition actor_history must contain 720 values")
+            if previous_action.shape != (12,):
+                raise ValueError("Transition last_action must contain 12 values")
             info = {
                 "rng": rng,
                 "step_count": jp.asarray(0, dtype=jp.int32),
@@ -547,7 +560,7 @@ def make_brax_transition_env_3d(
                 "mode_steps": mode_steps,
                 "deploy_gate_steps": jp.asarray(0, dtype=jp.int32),
                 "ready_steps": jp.asarray(0, dtype=jp.int32),
-                "last_action": zero_action,
+                "last_action": previous_action,
                 "last_foot_position": data.site_xpos[self.foot_site_ids],
                 "previous_combined_speed": jp.sqrt(
                     jp.square(kinematics["linear_speed"])
@@ -555,6 +568,7 @@ def make_brax_transition_env_3d(
                 ),
                 "previous_reference_error": gates["reference_error"],
                 "time_out": jp.asarray(0.0),
+                "actor_history": actor_history,
             }
             obs = self._observation(
                 data,
@@ -564,10 +578,12 @@ def make_brax_transition_env_3d(
                 mode=mode,
                 mode_steps=mode_steps,
                 ready_steps=info["ready_steps"],
-                policy_action=zero_action,
+                policy_action=previous_action,
                 reference=reference,
                 noise_key=jax.random.fold_in(rng, 99),
+                actor_history=actor_history,
             )
+            info["actor_history"] = obs["state"]
             return State(
                 data,
                 obs,
@@ -583,12 +599,11 @@ def make_brax_transition_env_3d(
             reference = self._reference(mode, mode_steps)
             action_finite = jp.all(jp.isfinite(action))
             policy_action = jp.nan_to_num(
-                jp.clip(action, -1.0, 1.0), nan=0.0, posinf=1.0, neginf=-1.0
+                action, nan=0.0, posinf=1.0, neginf=-1.0
             )
-            target = jp.clip(
-                reference + self.action_scales * policy_action,
-                self.joint_low,
-                self.joint_high,
+            target = transition_target_ctrl_3d(
+                jp, policy_action, reference, self.joint_low, self.joint_high,
+                task.action_range_fraction,
             )
             data = state.pipeline_state.replace(ctrl=target)
 
@@ -614,12 +629,9 @@ def make_brax_transition_env_3d(
             )
             deploy_complete = (
                 (mode == int(TransitionMode3D.DEPLOY))
-                & (
-                    mode_steps * task.control_timestep
-                    >= task.deploy_duration_s
-                )
                 & (gates["stand_error"] <= 0.45)
                 & (contacts["foot_count"] >= 2)
+                & (kinematics["upright_tilt"] <= task.deploy_gate_tilt_rad)
             )
             next_mode = jp.where(
                 enter_deploy,
@@ -641,7 +653,7 @@ def make_brax_transition_env_3d(
             next_ready_steps = jp.where(
                 ready_gate_active, state.info["ready_steps"] + 1, 0
             )
-            newly_ready = next_ready_steps >= self.ready_hold_steps
+            newly_ready = (next_ready_steps >= self.ready_hold_steps) & action_finite
             next_mode = jp.where(
                 newly_ready, int(TransitionMode3D.READY), next_mode
             ).astype(jp.int32)
@@ -658,6 +670,12 @@ def make_brax_transition_env_3d(
                 | (
                     (mode == int(TransitionMode3D.BRAKE))
                     & (mode_steps >= self.brake_timeout_steps)
+                    & (~enter_deploy)
+                )
+                | (
+                    (mode == int(TransitionMode3D.DEPLOY))
+                    & (mode_steps * task.control_timestep >= task.deploy_timeout_s)
+                    & (~deploy_complete)
                 )
             )
             next_step_count = state.info["step_count"] + 1
@@ -754,7 +772,9 @@ def make_brax_transition_env_3d(
                 noise_key=jax.random.fold_in(
                     state.info["rng"], next_step_count + 99
                 ),
+                actor_history=state.info["actor_history"],
             )
+            next_info["actor_history"] = obs["state"]
             metrics = {
                 "reward": reward,
                 "reward_total": reward,

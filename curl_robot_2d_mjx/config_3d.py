@@ -53,6 +53,10 @@ class Rolling3DConfig:
         1.2,
     )
     startup_action_ramp_s: float = 0.25
+    # Opt-in physical startup; compact remains the action origin in both modes.
+    reset_pose: str = "compact"
+    stand_hold_s: float = 0.2
+    stand_to_compact_s: float = 1.0
     reset_joint_noise_rad: float = 0.005
     reset_velocity_noise: float = 0.005
     reset_root_velocity_noise: float = 0.0
@@ -93,8 +97,26 @@ class Rolling3DConfig:
     def control_timestep(self) -> float:
         return self.physics_timestep * self.action_repeat
 
+    @property
+    def rolling_start_time_s(self) -> float:
+        return (
+            self.stand_hold_s + self.stand_to_compact_s
+            if self.reset_pose == "stand" else 0.0
+        )
+
 
 def validate_3d_config(config: Rolling3DConfig) -> None:
+    if config.reset_pose not in ("compact", "stand"):
+        raise ValueError("reset_pose must be compact or stand")
+    if not math.isfinite(config.stand_hold_s) or config.stand_hold_s < 0.0:
+        raise ValueError("stand_hold_s must be finite and nonnegative")
+    _validate_positive_duration(config.stand_to_compact_s, "stand_to_compact_s")
+    if config.reset_pose == "stand":
+        if config.reference_ramp_start_scale != 0.0:
+            raise ValueError("stand startup requires reference_ramp_start_scale=0")
+        _validate_positive_duration(config.startup_action_ramp_s, "startup_action_ramp_s")
+        if config.rolling_start_time_s >= config.episode_length * config.control_timestep:
+            raise ValueError("episode must extend beyond the stand startup")
     if config.geometry not in GEOMETRY_NAMES_3D:
         raise ValueError(
             f"unknown 3-D geometry: {config.geometry!r}; "

@@ -1,83 +1,170 @@
-# 3D ROLL → BRAKE → DEPLOY → STAND 第一版
+# rollingquad_2：ROLL → Transition → READY TO WALK
 
-## 结论
+## 当前实现范围
 
-第一版采用三个独立策略和一个确定性监督器：
+保留两个已有的 ROLL/WALK policy，新增一个 12 自由度 Transition policy，
+统一学习减速、展开和站稳。高层只选择策略，不生成减速或展开轨迹。
+
+模型固定为 `assets/rollingquad_description_2/mjcf/rollingquad.xml`。
+不再读取或使用 `park`；它即使仍在原始 XML 中，也不参与任务。
+课程锚点取自当前 `scripts/train_ppo_deploy.py` 的 Walking 启动状态：
+关节按策略顺序为 `[0, 0.9, 1.15] × 4`，机身高度为
+`0.1580029248 + 0.0005 m`，单位四元数，零速度。
+新模型的 qpos 排列与 actuator 排列不同，代码全部按关节名称取索引。
+
+本版已完成训练环境、课程、真实 ROLL 快照接口、观测/动作契约和 Actor 导出代码。
+本地 CPU 检查通过不等于已训练出成功策略；MJX/JIT、PPO 收敛、真实 checkpoint
+导出验证及三策略连续闭环仍需云端验证。没有修改实机控制器或安全配置。
+
+## Actor 与实机保持相同的 36 × 20 观察
+
+接口依据工作区内 `pupperv3-monorepo/ros2_ws/src/neural_controller` 的实际
+`neural_controller.cpp/.hpp` 和 `launch/config_rollingquad_2.yaml`，不是仅对齐总维度。
+每帧均为原始值，顺序如下（零起点、左闭右开）：
+
+| 索引 | 维度 | 内容 |
+| --- | --- | --- |
+| 0:3 | 3 | IMU 机身坐标系角速度，rad/s |
+| 3:6 | 3 | 投影到机身坐标系的单位重力方向 |
+| 6:9 | 3 | vx、vy、yaw 速度指令；Transition 固定为零 |
+| 9:12 | 3 | 期望 world-z 在机身系的方向；本任务固定 `[0,0,1]` |
+| 12:24 | 12 | 关节角减 Walking default_joint_pos，rad |
+| 24:36 | 12 | 上一推理周期的原始 policy 输出 |
+
+关节顺序为 FL/FR/RL/RR，每腿 abduction/hip/knee，对应硬件 `_2/_1/_3`。
+没有关节 qvel、机身线速度、足接触、高度、阶段标志、计时器或仿真滚动相位。
+角速度来自 IMU，不是新增关节速度传感器。20 帧历史能提供运动趋势信息，
+但不能保证恢复所有真实速度，尤其不能把“角速度小”当作“平移已停止”。
+
+Actor 采用 720 输入的历史 MLP。Critic 单独使用 86 维仿真特权状态，
+包括速度、接触和课程阶段；两者经各自归一化，不共享输入拼接。
+因此推荐先直接训练非对称 Actor/Critic PPO，不必先改实机 observation 或增加
+速度估计器。若受限观测确实造成学习困难，再考虑特权 teacher → 720 维 student
+蒸馏；不是当前第一版的额外依赖。
+
+### 历史、时间和切换语义
+
+- 最新帧在前。每次策略推理更新一帧，不在每个 ROS 控制循环都推进历史。
+- 冷初始化的每帧全零，但 gravity-z 为 -1、desired-z 为 +1；插入当前帧后推理。
+- 上次动作是原始输出，不是关节目标、裁剪后的目标或 fade-in 后的动作。
+- 推理前 observation 裁剪到 ±100；只给新采集的传感器帧加噪，旧帧不重复加噪。
+- 默认按配置名义频率 `520 / 10 = 52 Hz` 训练，物理子步为 `1/(52×20) s`。
+  配置注释期望实际约 50 Hz；必须用实机时间戳测量后统一最终频率，不能把
+  IMU 的 260 Hz 当作 policy 频率。20 帧在名义频率下覆盖约 0.38 s。
+- Transition 接管期间速度指令必须归零、姿态指令固定；现有 C++ 不会因为换
+  模型自动完成这件事，后续策略调度器需明确处理，不能沿用非零摇杆指令。
+
+`reset_from_roll_state(data, rng, actor_history=None, last_action=None)` 保留完整
+MJX data（含 qpos/qvel/ctrl），不执行归位、暖机或外部制动。
+默认只冷初始化观测缓冲区，与快照课程一致，不重置物理状态或电机目标。
+可选 actor_history 是**上次推理前的完整输入**，不是 C++ 推理后已旋转的内部
+scratch buffer；接口会再插入当前帧。last_action 是相同动作约定下的原始输出。
+
+同为 720 维不代表可无条件继承历史：当前 ROLL student 使用 compact 默认姿态，
+Transition 使用 Walking 默认姿态，动作 scale 也不同。若希望热继承历史，
+必须按目标策略重建关节偏差及动作通道，并在训练中覆盖这种初始化；尚未默认
+启用该路线。最简第一版是在已激活控制器内切换模型、只重建观测缓冲区。
+
+## 动作与导出
+
+所有阶段使用同一个固定 Walking 中心，不随阶段/时间改变：
 
 ```text
-ROLL policy --stop request--> Transition policy --READY hold--> WALK policy
-                              BRAKE -> DEPLOY -> STABILIZE
+scale = action_range_fraction * max(joint_high - default, default - joint_low)
+target = clip(default + raw_action * scale, joint_low, joint_high)
 ```
 
-ROLL 和 WALK 保持已有的两个训练策略。新增的 Transition policy 是一个 12
-自由度策略，统一学习 BRAKE、DEPLOY 和 STABILIZE；高层不直接生成关节轨迹，
-只负责不可逆地切换策略，并对 READY TO WALK 做连续时间消抖。
+这是 C++ 在 fade-in 完成后的固定逐关节 scale 映射。默认 fraction=1，使得
+单个策略的动作范围能覆盖 compact、Walking 初态和关节限位；不是“已经减速后
+只做小残差展开”。训练输出采用 tanh-normal，确定性推理为 tanh(location)。
+已从旧的按正负方向分别缩放改成固定 scale；旧 66 维或旧映射的权重不能直接复用。
 
-## 为什么 DEPLOY 不是直接到 park
+训练输出 `deployment_config.json`：36×20、默认姿态、逐关节 scale、限位、
+均匀标量 kp/kd、硬件关节顺序、名义频率等。当前 C++ 只接受标量 kp/kd，
+不接受每关节不同的增益数组；导出配置对此做显式检查。
+部分字段（频率、joint_names、observation_limit、Transition 指令等）是契约记录，
+**当前 C++ 不会全部从 JSON 自动应用**，部署前还必须核对 ROS 参数和调度逻辑。
 
-最终 Pupper 模型同时包含 `compact`、`park` 和 `stand` 关键帧。CPU MuJoCo
-检查表明 `park` 可作为接触捕获中间姿态，但 WALK policy 的训练初态是
-`stand`。因此参考中心采用：
+Actor 隐层用 ELU，沿用已有 Walking RTNeural 导出格式。导出器只提取
+`state` 的归一化统计，并折入首层；保留高斯 location 的 12 个通道，末层 tanh。
+Critic、特权归一化和训练分布的 scale 输出均不进入实机文件。
 
-1. BRAKE：`compact`；
-2. DEPLOY 前段：`compact → park`；
-3. DEPLOY 后段：`park → stand`；
-4. STABILIZE：`stand`。
+## 从 Walking 初态向后扩展的课程
 
-策略输出不是这条轨迹本身，而是围绕参考中心的 12 维关节目标残差。这样既
-保留了容易训练的姿态先验，也允许策略根据碰撞、速度和姿态误差主动调整。
+| 阶段 | 初始分布 | 学习任务 |
+| --- | --- | --- |
+| walking_start | 精确 Walking 初态 | 稳定保持并满足 READY |
+| deploy_near_stand | 小幅关节/姿态/速度扰动，少量 compact 混合 | 回到 Walking 可接管状态 |
+| deploy_capture | 扩大紧凑程度、倾角和初速度 | 展开、捕获支撑、稳定 |
+| brake_low | 真实 ROLL 快照中原本低速的样本 | 策略自己减速并完成展开 |
+| brake_full | 真实 ROLL 快照，不设课程速度筛选上限 | 覆盖采集分布内的完整接管 |
 
-## 训练课程
+这是手工分阶段扩展的反向初始状态课程，不是时间倒放或自动生成反向动力学。
+compact 仅用于合成 reset 邻域插值，没有 compact→park→stand 动作播放器。
+BRAKE/DEPLOY/STABILIZE 是奖励、诊断和 Critic 的内部阶段标签，Actor 不依赖标签。
+减速奖励、直立/姿态捕获奖励、稳定/READY 奖励共同作用于同一网络。
 
-训练按反向课程逐阶段热启动：
+冻结当前 ROLL policy 后可调用 `collect_roll_snapshots_3d(env, policy, path,
+source_policy=...)`；policy 仍用自己的原生观察和动作接口。采集器只跑 ROLL，
+不会主动刹车；保存完整 qpos、qvel、12 维 ctrl、时间、episode ID、来源标识、
+模型 XML 摘要及关节/执行器顺序。也可由已有轨迹记录器调用 `save_roll_snapshots_3d`。
+单有视频/姿态不足以生成合格的接管状态。
 
-1. `deploy_near_stand`：在接近站立的小扰动状态学习稳定和 READY；
-2. `deploy_capture`：扩大到 compact/park/stand 之间并加入中等速度和倾角；
-3. `brake_low`：从低速蜷缩滚动态学习 BRAKE 后接入 DEPLOY；
-4. `brake_full`：覆盖完整滚动相位和目标速度范围。
+`--snapshot-tail-fraction` 按每条轨迹的时间选择后段，“后段”不等于“已经停止”。
+brake_low 只筛选原本线速度 ≤0.35 m/s、角速度 ≤3.5 rad/s 的状态，不缩放 qvel；
+brake_full 不施加这些课程上限。筛选为空就报错，不制造低速状态。
+离线 NPZ 重建不保留求解器 warm-start；连续同模型接管应使用 full-data 接口。
 
-前三阶段可以直接使用代码中的合成 reset 分布。正式 `brake_full` 训练前，应
-冻结已经训练好的 ROLL policy，在相同 12 自由度 Pupper 模型中采集终止快照，
-然后用这些快照替换合成分布。Actor 的 66 维观测和 12 维动作接口无需改变。
+## READY 和实机安全边界
 
-## READY TO WALK 门限
+仿真 READY 需连续满足约 0.40 s：线速度 ≤0.12 m/s、角速度 ≤0.45 rad/s、
+倾角 ≤0.22 rad、关节 RMS 误差 ≤0.20 rad、高度 0.1280029248–0.1930029248 m、
+至少三足接触、数值有限。任一条件失效清零保持时间。监督器只向前切换策略。
 
-只有以下条件连续满足 0.40 s，监督器才允许切换到 WALK：
+这套 READY 是**仿真验收条件**，不是已实现的实机门控。现有 36 维 observation
+没有绝对线速度、高度和接触；不能把仿真真值传给实机，也不能静默删掉条件后
+声称等价。后续需要经验证的状态估计器，或用仿真 READY 标签训练历史判别器，
+结合可测姿态/关节保持条件做保守门控；必须单独验证滑移、冲击等误判情形。
 
-- 线速度不高于 0.12 m/s；
-- 角速度不高于 0.45 rad/s；
-- 机身倾角不高于 0.22 rad；
-- 相对 `stand` 的关节 RMS 误差不高于 0.20 rad；
-- 根节点高度位于 0.145–0.235 m；
-- 至少 3 足接触；
-- 状态均为有限值。
+实机当前激活流程会先归位 3 s、再淡入 2 s，倾角超过 1.5 rad 会急停。
+不能通过停用/重新激活 neural_controller 在滚动中切策略；应在已激活控制器
+内部管理三个模型。当前代码没有实现这个 ROS 热切换调度器，也没有关闭或修改
+倾倒/急停保护。滚动工况的安全机制需要独立设计验证，不应直接提高阈值绕过。
 
-任意一项失效都会清零 READY 累计时间。收到 stop 后不会自动退回 ROLL，
-切到 WALK 后也不会因单帧噪声退回 Transition。
+## 本地检查与云端命令
 
-## 本地检查
-
-无需 JAX 的检查：
+以下从 `curl_robot_2d` 目录运行；本地无 JAX 时自动跳过真实 MJX 测试：
 
 ```powershell
-python -m unittest tests.test_transition_3d -v
-python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --dry-run
+python -m unittest tests.test_transition_3d tests.test_transition_deployment_3d tests.test_transition_mjx_3d -v
+python -m scripts.train_mjx_3d_transition_ppo --stage walking_start --dry-run
 ```
 
-## 云端顺序
-
-每一阶段先 smoke，再正式训练，并把上一阶段 checkpoint 作为下一阶段的恢复点：
+云端按 `requirements-mjx.txt` 准备 Linux GPU 环境，先跑上述测试及 smoke：
 
 ```bash
-python -m scripts.mjx_3d_transition_smoke --stage deploy_near_stand
-python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --preset h200
-
-python -m scripts.mjx_3d_transition_smoke --stage deploy_capture
-python -m scripts.train_mjx_3d_transition_ppo --stage deploy_capture --preset h200 \
-  --restore-checkpoint results/mjx_3d_transition_ppo/deploy_near_stand/ppo_checkpoint
+python -m scripts.mjx_3d_transition_smoke --stage walking_start --physics-profile newton4
+python -m scripts.train_mjx_3d_transition_ppo --stage walking_start --preset smoke
+python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --preset h200 \
+  --restore-checkpoint results/mjx_3d_transition_ppo/walking_start/ppo_checkpoint
 ```
 
-随后以相同方式训练 `brake_low` 和 `brake_full`。第一轮验收重点是成功率、失败
-率、READY 连续保持时间、切换时速度/倾角/关节误差，以及 WALK policy 接管后
-前 1 秒是否仍保持站立。
+随后以同样方式训练 deploy_capture、brake_low、brake_full。每阶段先评估通过，
+再以最新恢复 checkpoint 热启动下一阶段；后两个阶段必须增加
+`--roll-snapshots <真实采集的bank.npz>`。`params_final` 用于推理导出，
+`ppo_checkpoint` 用于训练恢复，不要混用。阶段不会未经评估自动推进。
 
+训练成功后导出（以下输入必须是真实产出的 checkpoint，而非占位文件）：
+
+```bash
+python -m scripts.export_transition_rtneural \
+  results/mjx_3d_transition_ppo/brake_full/params_final \
+  results/mjx_3d_transition_ppo/brake_full/transition.json \
+  --config results/mjx_3d_transition_ppo/brake_full/deployment_config.json
+```
+
+本地测试覆盖 Walking CPU 稳定性、关节映射、快照保真、逐帧 C++ 历史语义、
+动作映射、合成权重导出数值一致性。云端还需验证真实 Brax checkpoint、
+批量 JIT、学习成功率、延迟/噪声鲁棒性和 WALK 接管后至少 1 s 的稳定性。
+当前 `contact_force_peak_n` 奖励输入仍为零，未测量冲击峰值；不能据此声称
+已验证实机接触安全或完整 ROLL→WALK 成功率。

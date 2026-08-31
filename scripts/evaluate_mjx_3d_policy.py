@@ -20,6 +20,7 @@ from curl_robot_2d_mjx.config_3d import (
 )
 from curl_robot_2d_mjx.environment_3d import cem_controller_path_3d
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
+from curl_robot_2d_mjx.startup_rolling_3d import add_stand_startup_arguments, with_stand_startup
 from scripts.train_mjx_ppo import _network_factory
 from scripts.train_mjx_3d_residual_ppo import (
     TANH_NORMAL_MIN_STD,
@@ -338,6 +339,7 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument("--episode-length", type=int, default=500)
+    add_stand_startup_arguments(parser)
     parser.add_argument("--batch-size", type=int, default=1024)
     parser.add_argument("--chunk-size", type=int, default=512)
     parser.add_argument("--progress-every", type=int, default=100)
@@ -586,6 +588,9 @@ def main(argv=None) -> None:
         ),
     )
     task = _apply_physics_overrides(task, args)
+    task = with_stand_startup(task, args)
+    print(f"[startup] reset={task.reset_pose} rolling_start={task.rolling_start_time_s:g}s; "
+          "startup INCLUDED in episode", flush=True)
     reference = load_cem_reference(
         args.controller,
         reference_weight=args.reference_weight,

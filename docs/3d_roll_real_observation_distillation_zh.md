@@ -1,5 +1,9 @@
 # 3D rolling 实机观测蒸馏
 
+站立起滚的新训练入口见 [从站立启动 3D rolling](3d_stand_to_roll_startup_zh.md)。
+启用时先验证带启动段的教师，再把同样的 `--reset-pose stand` 等参数传给蒸馏；
+学生闭环没有隐藏的启动控制器。
+
 ## 频率约定
 
 实机 `controller_manager` 运行在 520 Hz，`neural_controller.repeat_action=10`，

@@ -43,6 +43,7 @@ from curl_robot_2d_mjx.runtime import (
     configure_cloud_runtime,
     describe_runtime,
 )
+from curl_robot_2d_mjx.startup_rolling_3d import add_stand_startup_arguments, with_stand_startup
 from scripts.train_mjx_ppo import (
     _float,
     _network_factory,
@@ -1619,6 +1620,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--batch-size", type=int)
     parser.add_argument("--num-minibatches", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
+    add_stand_startup_arguments(parser)
     parser.add_argument("--reset-joint-noise-rad", type=float, default=0.005)
     parser.add_argument("--reset-velocity-noise", type=float, default=0.005)
     parser.add_argument("--reset-root-velocity-noise", type=float, default=0.0)
@@ -2113,6 +2115,9 @@ def main(argv=None) -> None:
             ),
         ),
     )
+    task = with_stand_startup(task, args)
+    print(f"[startup] reset={task.reset_pose} rolling_start={task.rolling_start_time_s:g}s; "
+          "startup INCLUDED in episode, compact action origin unchanged", flush=True)
     reward_config = _reward_config_from_args(args)
     reference = load_cem_reference(
         args.controller,

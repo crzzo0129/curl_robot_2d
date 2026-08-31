@@ -8,6 +8,7 @@ from dataclasses import dataclass
 TRANSITION_REWARD_TERM_NAMES_3D = (
     "brake_speed",
     "brake_progress",
+    "brake_capture",
     "deploy_pose",
     "deploy_progress",
     "upright",
@@ -30,6 +31,7 @@ class Transition3DRewardConfig:
     brake_speed: float = 2.5
     brake_speed_sigma: float = 1.25
     brake_progress: float = 1.0
+    brake_capture: float = 1.5
     deploy_pose: float = 2.0
     deploy_pose_sigma_rad: float = 0.35
     deploy_progress: float = 1.5
@@ -88,6 +90,8 @@ def reward_terms_transition_3d(
     return {
         "brake_speed": config.brake_speed * brake * brake_score,
         "brake_progress": config.brake_progress * brake * brake_delta,
+        # Low speed alone could reward stopping upside-down indefinitely.
+        "brake_capture": config.brake_capture * brake * brake_score * upright_score,
         "deploy_pose": config.deploy_pose * deploy * deploy_score,
         "deploy_progress": config.deploy_progress * deploy * deploy_delta,
         "upright": config.upright * (deploy + stabilize) * upright_score,
@@ -115,4 +119,3 @@ def reward_terms_transition_3d(
         ),
         "termination": -config.termination * inputs["failed"],
     }
-

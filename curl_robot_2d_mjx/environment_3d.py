@@ -32,6 +32,13 @@ from curl_robot_2d_mjx.reward_3d import (
     reward_terms_3d,
     stability_error_cost_3d,
 )
+from curl_robot_2d_mjx.startup_rolling_3d import (
+    compose_startup_action_3d,
+    reset_pose_arrays_3d,
+    residual_elapsed_3d,
+    rolling_elapsed_3d,
+    stand_startup_action_3d,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -687,6 +694,9 @@ def make_brax_env_3d(
                 self.mj_model.key_ctrl[compact_key_id]
             )
             self.action_scales = jp.asarray(task.action_scales)
+            reset_qpos, stand_action = reset_pose_arrays_3d(self.mj_model, task)
+            self.reset_qpos = jp.asarray(reset_qpos)
+            self.stand_action = jp.asarray(stand_action)
             self.planar_compact = jp.asarray(
                 (
                     self.geometry_parameters.compact_hip_angle,
@@ -884,6 +894,8 @@ def make_brax_env_3d(
                 "action_rms": zero,
                 "action_rate_rms": zero,
                 "startup_action_ramp": zero,
+                "stand_startup_active": jp.asarray(task.reset_pose == "stand", dtype=jp.float32),
+                "rolling_elapsed_s": zero,
                 "normalized_torque_rms": zero,
                 "reference_action_rms": zero,
                 "residual_action_rms": zero,
@@ -1058,7 +1070,7 @@ def make_brax_env_3d(
                 self.joint_low,
                 self.joint_high,
             )
-            qpos = self.compact_qpos.at[self.joint_qpos_indices].set(
+            qpos = self.reset_qpos.at[self.joint_qpos_indices].set(
                 noisy_start_ctrl
             )
             qpos = qpos.at[0].set(0.0)
@@ -1066,7 +1078,7 @@ def make_brax_env_3d(
             qpos = qpos.at[3:7].set(
                 axis_tilted_quaternion_3d(
                     jp,
-                    self.compact_qpos[3:7],
+                    self.reset_qpos[3:7],
                     axis_tilt_noise[0],
                     axis_tilt_noise[1],
                 )
@@ -1165,6 +1177,11 @@ def make_brax_env_3d(
                     task.residual_pair_differential_scale,
                 )
             )
+            # Optional autonomous-startup wrapper control. Ordinary rolling
+            # states have neither override: preserve their original path.
+            if "direct_action_override" in state.info:
+                policy_action = jp.where(state.info["direct_action_override"],
+                                         raw_policy_action, policy_action)
             residual_left = policy_action[jp.asarray((0, 1, 4, 5))]
             residual_right = policy_action[jp.asarray((2, 3, 6, 7))]
             residual_common_rms = jp.sqrt(
@@ -1222,6 +1239,9 @@ def make_brax_env_3d(
 
             def reference_physics_step(carry, _):
                 current_data, current_phase, current_rolling_phase = carry
+                controller_time = current_data.time
+                if "reference_time_offset" in state.info:
+                    controller_time = controller_time + state.info["reference_time_offset"]
                 next_phase = advance_oscillator(
                     jp,
                     current_rolling_phase,
@@ -1230,27 +1250,32 @@ def make_brax_env_3d(
                     reference_settings,
                     rate_scale=task.reference_phase_rate_scale,
                 )
+                if task.reset_pose == "stand":
+                    next_phase = jp.where(
+                        current_data.time < task.rolling_start_time_s,
+                        current_phase, next_phase,
+                    )
                 current_reference_action = self._scaled_reference_action_8d(
                     next_phase,
-                    current_data.time,
+                    controller_time,
                 )
                 current_ramp = smoothstep_ramp(
                     jp,
-                    current_data.time,
+                    residual_elapsed_3d(jp, controller_time, task),
                     task.startup_action_ramp_s,
                 )
-                current_action = (
-                    jp.clip(policy_action, -1.0, 1.0)
-                    if task.direct_effective_action
-                    else jp.clip(
-                        reference_weight_value * current_reference_action
-                        + current_ramp
-                        * residual_gain_value
-                        * policy_action,
-                        -1.0,
-                        1.0,
-                    )
+                current_action = compose_startup_action_3d(
+                    jp, current_reference_action,
+                    stand_startup_action_3d(jp, controller_time, self.stand_action, task),
+                    policy_action,
+                    reference_weight=reference_weight_value,
+                    residual_gain=residual_gain_value,
+                    ramp=current_ramp,
+                    direct=task.direct_effective_action,
                 )
+                if "direct_action_override" in state.info:
+                    current_action = jp.where(state.info["direct_action_override"],
+                                              raw_policy_action, current_action)
                 current_target = rolling_target_ctrl_3d(
                     jp,
                     self.compact_ctrl,
@@ -1652,6 +1677,10 @@ def make_brax_env_3d(
                 "action_rms": jp.sqrt(jp.mean(jp.square(effective_action))),
                 "action_rate_rms": jp.sqrt(action_rate),
                 "startup_action_ramp": action_ramp,
+                "stand_startup_active": (
+                    data.time < task.rolling_start_time_s
+                ).astype(jp.float32),
+                "rolling_elapsed_s": rolling_elapsed_3d(jp, data.time, task),
                 "normalized_torque_rms": jp.sqrt(torque_cost),
                 "reference_action_rms": jp.sqrt(
                     jp.mean(jp.square(cem_action))
@@ -1742,9 +1771,12 @@ def make_brax_env_3d(
             return duplicate_planar_action_3d(jp, planar_action)
 
         def _scaled_reference_action_8d(self, oscillator_phase, elapsed_s):
-            scale = reference_startup_scale_3d(jp, elapsed_s, task)
+            scale = reference_startup_scale_3d(
+                jp, rolling_elapsed_3d(jp, elapsed_s, task), task
+            )
             return jp.clip(
-                scale * self._reference_action_8d(oscillator_phase),
+                stand_startup_action_3d(jp, elapsed_s, self.stand_action, task)
+                + scale * self._reference_action_8d(oscillator_phase),
                 -1.0,
                 1.0,
             )

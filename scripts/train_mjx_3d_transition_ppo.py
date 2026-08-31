@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import inspect
 import json
 from pathlib import Path
 import time
 
 from curl_robot_2d_mjx.config_transition_3d import (
+    TRANSITION_ACTOR_OBSERVATION_SIZE_3D,
+    TRANSITION_CRITIC_OBSERVATION_SIZE_3D,
     TRANSITION_CURRICULUM_STAGE_NAMES_3D,
+    TRANSITION_GEOMETRY_NAMES_3D,
     TRANSITION_PHYSICS_PROFILE_NAMES_3D,
     Transition3DConfig,
     transition_curriculum_config_3d,
@@ -53,8 +56,12 @@ def parse_args(argv=None):
     parser.add_argument(
         "--stage",
         choices=TRANSITION_CURRICULUM_STAGE_NAMES_3D,
-        default="deploy_near_stand",
+        default="walking_start",
     )
+    parser.add_argument("--geometry", choices=TRANSITION_GEOMETRY_NAMES_3D,
+                        default="rollingquad_2")
+    parser.add_argument("--roll-snapshots", type=Path)
+    parser.add_argument("--snapshot-tail-fraction", type=float, default=1.0)
     parser.add_argument("--preset", choices=tuple(PRESETS_TRANSITION_3D), default="smoke")
     parser.add_argument(
         "--physics-profile",
@@ -80,7 +87,12 @@ def parse_args(argv=None):
 
 def build_task(args) -> Transition3DConfig:
     task = transition_curriculum_config_3d(
-        args.stage, Transition3DConfig(curriculum_stage=args.stage)
+        args.stage, Transition3DConfig(
+            geometry=args.geometry, curriculum_stage=args.stage,
+            roll_snapshots_path=str(args.roll_snapshots.resolve())
+            if args.roll_snapshots else None,
+            snapshot_tail_fraction=args.snapshot_tail_fraction,
+        )
     )
     return transition_physics_profile_3d(args.physics_profile, task)
 
@@ -92,6 +104,21 @@ def _float(value):
         return float(value.item())
 
 
+def make_transition_networks(observation_size, action_size,
+                             preprocess_observations_fn, *, hidden_layers=(256, 256, 128)):
+    """One shared actor architecture for PPO and cloud export parity tests."""
+    from brax.training.agents.ppo import networks as ppo_networks
+    import jax.nn as jnn
+    return ppo_networks.make_ppo_networks(
+        observation_size, action_size,
+        preprocess_observations_fn=preprocess_observations_fn,
+        policy_hidden_layer_sizes=tuple(hidden_layers),
+        value_hidden_layer_sizes=tuple(hidden_layers),
+        activation=jnn.elu,
+        policy_obs_key="state", value_obs_key="privileged_state",
+    )
+
+
 def main(argv=None) -> None:
     args = parse_args(argv)
     if args.learning_rate <= 0.0:
@@ -100,10 +127,21 @@ def main(argv=None) -> None:
         raise SystemExit("rollout and update lengths must be positive")
 
     task = build_task(args)
+    if args.stage.startswith("brake_") and not args.roll_snapshots and not args.dry_run:
+        raise SystemExit("BRAKE stages require --roll-snapshots; no synthetic "
+                         "or artificially slowed fallback is used")
     reward = Transition3DRewardConfig()
     preset = PRESETS_TRANSITION_3D[args.preset]
     stage_out = args.out / args.stage
     payload = {
+        "contract_version": "transition_neural_controller_36x20_v3",
+        "actor_observation_size": TRANSITION_ACTOR_OBSERVATION_SIZE_3D,
+        "critic_observation_size": TRANSITION_CRITIC_OBSERVATION_SIZE_3D,
+        "actor_activation": "elu",
+        "actor_distribution": "default_tanh_normal",
+        "control": "one policy; fixed Walking action center; no external brake",
+        "reset_source": "roll_snapshots" if args.stage.startswith("brake_")
+                        else "walking_start_neighborhood",
         "task": asdict(task),
         "reward": asdict(reward),
         "training": {
@@ -140,9 +178,7 @@ def main(argv=None) -> None:
         verbose=True,
     )
     from brax.io import model as model_io
-    from brax.training.agents.ppo import networks as ppo_networks
     from brax.training.agents.ppo import train as ppo
-    import jax.nn as jnn
 
     from curl_robot_2d_mjx.environment_transition_3d import (
         make_brax_transition_env_3d,
@@ -155,20 +191,18 @@ def main(argv=None) -> None:
     )
     train_env = make_brax_transition_env_3d(task, reward_config=reward, seed=args.seed)
     eval_env = make_brax_transition_env_3d(
-        task, reward_config=reward, seed=args.seed + 10_000
+        replace(task, observation_noise_enabled=False),
+        reward_config=reward, seed=args.seed + 10_000
     )
+    from curl_robot_2d_mjx.deployment_transition_3d import transition_controller_metadata_3d
+    (stage_out / "deployment_config.json").write_text(
+        json.dumps(transition_controller_metadata_3d(train_env.mj_model, task),
+                   indent=2) + "\n", encoding="utf-8")
 
     def network_factory(observation_size, action_size, preprocess_observations_fn):
-        return ppo_networks.make_ppo_networks(
-            observation_size,
-            action_size,
-            preprocess_observations_fn=preprocess_observations_fn,
-            policy_hidden_layer_sizes=tuple(args.hidden_layers),
-            value_hidden_layer_sizes=tuple(args.hidden_layers),
-            activation=jnn.swish,
-            policy_obs_key="state",
-            value_obs_key="privileged_state",
-        )
+        return make_transition_networks(
+            observation_size, action_size, preprocess_observations_fn,
+            hidden_layers=args.hidden_layers)
 
     history = []
 

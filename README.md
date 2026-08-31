@@ -155,18 +155,22 @@ python -m scripts.run_roll_to_walk
 
 ## 3D Transition policy 第一版
 
-面向最终 12 自由度 Pupper 模型，现已增加独立的 Transition policy 代码，
-由同一个策略学习 `BRAKE -> DEPLOY -> STABILIZE`，并通过 READY 连续门限从
-已有 ROLL policy 切换到已有 WALK policy。展开参考中心采用
-`compact -> park -> stand`，最终状态与 WALK 的 `stand` 初态对齐。
+面向 `assets/rollingquad_description_2` 中的 12 自由度 `rollingquad_2`，
+由一个 Transition policy 学习减速、展开和稳定；反向课程从 Walking 的
+实际启动初态开始，不使用 `park`，不播放预设减速或展开轨迹。
+BRAKE 课程必须提供真实 ROLL 轨迹的完整状态快照，不修改其速度。
+
+Actor 已按现有 ROS2 `neural_controller` 对齐为 `36 × 20 = 720` 维：
+IMU 角速度、重力方向、速度/姿态指令、12 维关节位置偏差、12 维上次原始动作，
+不输入关节速度。86 维特权 Critic 只用于训练；支持仅导出 Actor 的 RTNeural JSON。
 
 本地可运行不依赖 JAX 的契约测试和训练配置检查；MJX 编译与 PPO 训练留到
 Linux GPU 云端执行：
 
 ```powershell
-python -m unittest tests.test_transition_3d -v
-python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --dry-run
+python -m unittest tests.test_transition_3d tests.test_transition_deployment_3d tests.test_transition_mjx_3d -v
+python -m scripts.train_mjx_3d_transition_ppo --stage walking_start --dry-run
 ```
 
-完整设计、四阶段课程和云端命令见
+完整设计、五阶段课程、导出命令，以及实机热切换/READY 判断尚需完成的边界见
 [`docs/3d_transition_policy_zh.md`](docs/3d_transition_policy_zh.md)。

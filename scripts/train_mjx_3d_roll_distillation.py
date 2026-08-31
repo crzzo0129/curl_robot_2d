@@ -36,6 +36,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
 )
 from curl_robot_2d_mjx.environment_3d import cem_controller_path_3d
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
+from curl_robot_2d_mjx.startup_rolling_3d import add_stand_startup_arguments, with_stand_startup
 from curl_robot_2d_mjx.rolling_diagnostics_3d import (
     lateral_state_features_3d,
     save_lateral_trace,
@@ -128,6 +129,7 @@ def parse_args(argv=None):
     parser.add_argument("--dagger-steps", type=int)
     parser.add_argument("--eval-envs", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
+    add_stand_startup_arguments(parser)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--dagger-learning-rate", type=float, default=1e-4)
     parser.add_argument(
@@ -318,7 +320,10 @@ def main(argv=None):
         reference_weight=1.0,
         minimum_residual_gain=0.15,
     )
-    teacher_task = _task(episode_length=args.episode_length)
+    teacher_task = with_stand_startup(_task(episode_length=args.episode_length), args)
+    print(f"[startup] reset={teacher_task.reset_pose} "
+          f"rolling_start={teacher_task.rolling_start_time_s:g}s; "
+          "student must produce ALL startup actions (no reference assistance)", flush=True)
     teacher_env = make_brax_env_3d(
         teacher_task,
         cem_reference=reference,
@@ -365,6 +370,8 @@ def main(argv=None):
         )
     controller_qpos_indices = jp.asarray(controller_qpos_indices)
     config = student_controller_config(teacher_env.mj_model)
+    config["training_reset_pose"] = teacher_task.reset_pose
+    config["startup_actions_provided_by"] = "student_network"
     compact_position = jp.asarray(config["default_joint_pos"])
     frame_sigma = jp.concatenate(
         (
@@ -660,6 +667,7 @@ def main(argv=None):
         episode_length=args.episode_length,
         direct_effective_action=True,
     )
+    direct_task = with_stand_startup(direct_task, args)
     direct_env = make_brax_env_3d(
         direct_task,
         cem_reference=reference,

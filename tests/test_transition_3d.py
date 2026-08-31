@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 from pathlib import Path
 import sys
+import tempfile
 import unittest
 
 import numpy as np
@@ -25,9 +27,19 @@ from curl_robot_2d_mjx.config_transition_3d import (
     validate_transition_config_3d,
 )
 from curl_robot_2d_mjx.environment_transition_3d import (
+    TRANSITION_KEYFRAME_NAMES_3D,
     TRANSITION_MODEL_PATH_3D,
     transition_reference_ctrl_3d,
 )
+from curl_robot_2d_mjx.transition_initialization_3d import (
+    walking_start_state_3d, transition_target_ctrl_3d,
+    transition_action_from_ctrl_3d, save_roll_snapshots_3d,
+    load_roll_snapshots_3d,
+)
+from curl_robot_2d_mjx.environment_walking_3d import (
+    WALKING_JOINT_NAMES_3D, validate_walking_morphology_3d,
+)
+from curl_robot_2d_mjx.environment_3d import apply_physics_options_3d
 from curl_robot_2d_mjx.reward_transition_3d import (
     TRANSITION_REWARD_TERM_NAMES_3D,
     Transition3DRewardConfig,
@@ -48,47 +60,27 @@ from scripts.train_mjx_3d_transition_ppo import (
 class Transition3DConfigTests(unittest.TestCase):
     def test_all_curriculum_stages_validate(self):
         modes = []
-        angular_speeds = []
         for stage in TRANSITION_CURRICULUM_STAGE_NAMES_3D:
             task = transition_curriculum_config_3d(stage)
             validate_transition_config_3d(task)
             modes.append(task.reset_start_mode)
-            angular_speeds.append(task.reset_angular_speed_rad_s)
-        self.assertEqual(modes[:2], [int(TransitionMode3D.DEPLOY)] * 2)
-        self.assertEqual(modes[2:], [int(TransitionMode3D.BRAKE)] * 2)
-        self.assertEqual(angular_speeds, sorted(angular_speeds))
+        self.assertEqual(modes, [int(TransitionMode3D.STABILIZE),
+                                int(TransitionMode3D.DEPLOY),
+                                int(TransitionMode3D.DEPLOY),
+                                int(TransitionMode3D.BRAKE),
+                                int(TransitionMode3D.BRAKE)])
+        self.assertEqual(TRANSITION_CURRICULUM_STAGE_NAMES_3D[0], "walking_start")
 
     def test_observation_and_action_contract(self):
         self.assertEqual(TRANSITION_ACTION_SIZE_3D, 12)
-        self.assertEqual(TRANSITION_ACTOR_OBSERVATION_SIZE_3D, 66)
+        self.assertEqual(TRANSITION_ACTOR_OBSERVATION_SIZE_3D, 720)
         self.assertEqual(TRANSITION_CRITIC_OBSERVATION_SIZE_3D, 86)
 
-    def test_reference_passes_through_compact_park_stand(self):
-        compact = np.full(12, -1.0)
-        park = np.zeros(12)
+    def test_reference_is_only_walking_target(self):
         stand = np.full(12, 1.0)
-        brake = transition_reference_ctrl_3d(
-            np, compact, park, stand, int(TransitionMode3D.BRAKE), 0.8
-        )
-        at_park = transition_reference_ctrl_3d(
-            np,
-            compact,
-            park,
-            stand,
-            int(TransitionMode3D.DEPLOY),
-            0.55,
-        )
-        stable = transition_reference_ctrl_3d(
-            np,
-            compact,
-            park,
-            stand,
-            int(TransitionMode3D.STABILIZE),
-            0.0,
-        )
-        np.testing.assert_allclose(brake, compact)
-        np.testing.assert_allclose(at_park, park)
-        np.testing.assert_allclose(stable, stand)
+        np.testing.assert_array_equal(
+            transition_reference_ctrl_3d(np, stand), stand)
+        self.assertNotIn("park", TRANSITION_KEYFRAME_NAMES_3D)
 
 
 class Transition3DSupervisorTests(unittest.TestCase):
@@ -133,6 +125,10 @@ class Transition3DSupervisorTests(unittest.TestCase):
 
     def test_ready_gate_scalar_contract(self):
         self.assertTrue(is_ready_to_walk_3d(self.ready, self.config))
+
+    def test_nonfinite_measurement_cannot_pass_ready(self):
+        self.assertFalse(is_ready_to_walk_3d(
+            replace(self.ready, linear_speed_m_s=float("nan")), self.config))
 
     def test_three_policy_controller_routes_native_observations(self):
         calls = []
@@ -226,11 +222,12 @@ class Transition3DModelAndCliTests(unittest.TestCase):
             self.skipTest("MuJoCo is unavailable")
         model = mujoco.MjModel.from_xml_path(str(TRANSITION_MODEL_PATH_3D))
         self.assertEqual((model.nq, model.nv, model.nu), (19, 18, 12))
+        validate_walking_morphology_3d(model, geometry_name="rollingquad_2")
         keys = {
             mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_KEY, index)
             for index in range(model.nkey)
         }
-        self.assertTrue({"compact", "park", "stand"}.issubset(keys))
+        self.assertTrue({"compact", "stand"}.issubset(keys))
 
     def test_stand_terminal_state_satisfies_ready_gate_on_cpu(self):
         try:
@@ -254,10 +251,12 @@ class Transition3DModelAndCliTests(unittest.TestCase):
             )
             for leg in ("front_left", "front_right", "rear_left", "rear_right")
         }
-        data.qpos[:] = model.key_qpos[key_id]
-        data.ctrl[:] = model.key_ctrl[key_id]
+        initial = walking_start_state_3d(model, Transition3DConfig())
+        data.qpos[:] = initial["qpos"]
+        data.qvel[:] = initial["qvel"]
+        data.ctrl[:] = initial["ctrl"]
         mujoco.mj_forward(model, data)
-        for _ in range(1000):
+        for _ in range(round(1.0 / model.opt.timestep)):
             mujoco.mj_step(model, data)
         rotation = data.xmat[torso_id].reshape(3, 3)
         contacts = set()
@@ -272,12 +271,48 @@ class Transition3DModelAndCliTests(unittest.TestCase):
                 np.arccos(np.clip(rotation[2, 2], -1.0, 1.0))
             ),
             joint_error_rad=float(
-                np.sqrt(np.mean(np.square(data.qpos[7:] - model.key_ctrl[key_id])))
+                np.sqrt(np.mean(np.square(data.qpos[[
+                    model.jnt_qposadr[model.joint(name).id]
+                    for name in WALKING_JOINT_NAMES_3D
+                ]] - model.key_ctrl[key_id])))
             ),
             root_height_m=float(data.qpos[2]),
             foot_contacts=len(contacts),
         )
-        self.assertTrue(is_ready_to_walk_3d(sample))
+        self.assertTrue(is_ready_to_walk_3d(sample), str(sample))
+
+    def test_named_walking_start_matches_current_deploy_env(self):
+        import mujoco
+        model = mujoco.MjModel.from_xml_path(str(TRANSITION_MODEL_PATH_3D))
+        initial = walking_start_state_3d(model, Transition3DConfig())
+        indices = [model.jnt_qposadr[model.joint(name).id]
+                   for name in WALKING_JOINT_NAMES_3D]
+        self.assertNotEqual(indices, list(range(7, 19)))
+        np.testing.assert_allclose(initial["qpos"][indices], [0.0, .90, 1.15] * 4)
+        np.testing.assert_array_equal(initial["qvel"], np.zeros(18))
+        self.assertAlmostEqual(initial["qpos"][2], 0.1580029248 + .0005)
+
+    def test_transition_physics_options_match_shared_model_api(self):
+        import mujoco
+        model = mujoco.MjModel.from_xml_path(str(TRANSITION_MODEL_PATH_3D))
+        apply_physics_options_3d(model, Transition3DConfig())
+        self.assertEqual(model.opt.iterations, 4)
+        np.testing.assert_allclose(model.actuator_gainprm[:, 0], 5.0)
+
+    def test_action_covers_new_model_compact_and_stand(self):
+        import mujoco
+        model = mujoco.MjModel.from_xml_path(str(TRANSITION_MODEL_PATH_3D))
+        ids = [model.joint(name).id for name in WALKING_JOINT_NAMES_3D]
+        low, high = model.jnt_range[ids].T
+        stand = model.key_ctrl[model.key("stand").id]
+        compact = model.key_ctrl[model.key("compact").id]
+        for target in (stand, compact, low, high):
+            action = transition_action_from_ctrl_3d(np, target, stand, low, high)
+            self.assertTrue(np.all(np.abs(action) <= 1.0))
+            np.testing.assert_allclose(
+                transition_target_ctrl_3d(np, action, stand, low, high), target)
+        np.testing.assert_array_equal(
+            transition_target_ctrl_3d(np, np.zeros(12), stand, low, high), stand)
 
     def test_training_dry_configuration_requires_no_jax(self):
         args = parse_train_args(
@@ -286,6 +321,66 @@ class Transition3DModelAndCliTests(unittest.TestCase):
         task = build_task(args)
         self.assertEqual(task.curriculum_stage, "brake_low")
         self.assertEqual(task.reset_start_mode, int(TransitionMode3D.BRAKE))
+        self.assertEqual(task.geometry, "rollingquad_2")
+
+    def test_default_cli_starts_from_walking(self):
+        self.assertEqual(build_task(parse_train_args([])).curriculum_stage, "walking_start")
+        self.assertEqual(parse_smoke_args([]).stage, "walking_start")
+
+
+class TransitionRollSnapshotTests(unittest.TestCase):
+    def setUp(self):
+        import mujoco
+        self.model = mujoco.MjModel.from_xml_path(str(TRANSITION_MODEL_PATH_3D))
+        self.config = Transition3DConfig()
+        self.directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.directory.cleanup)
+        self.path = Path(self.directory.name) / "roll.npz"
+        initial = walking_start_state_3d(self.model, self.config)
+        self.qpos = np.tile(initial["qpos"], (4, 1))
+        self.qvel = np.zeros((4, 18))
+        self.qvel[:, 0] = [.1, .2, .3, .4]
+        self.qvel[:, 4] = [1., 2., 3., 4.]
+        self.ctrl = np.tile(initial["ctrl"], (4, 1))
+        save_roll_snapshots_3d(
+            self.path, self.model, self.config, qpos=self.qpos,
+            qvel=self.qvel, ctrl=self.ctrl, time_s=np.arange(4.),
+            episode_id=np.zeros(4), source_policy="unit-test fixture, not trained",
+        )
+
+    def test_tail_filter_retains_original_velocity_not_slowed(self):
+        task = replace(self.config, snapshot_tail_fraction=.5)
+        bank = load_roll_snapshots_3d(self.path, self.model, task)
+        np.testing.assert_array_equal(bank["qpos"], self.qpos[2:])
+        np.testing.assert_array_equal(bank["qvel"], self.qvel[2:])
+        np.testing.assert_array_equal(bank["ctrl"], self.ctrl[2:])
+
+    def test_low_speed_course_filters_without_scaling(self):
+        task = transition_curriculum_config_3d("brake_low", self.config)
+        bank = load_roll_snapshots_3d(self.path, self.model, task)
+        np.testing.assert_array_equal(bank["qvel"], self.qvel[:3])
+        full = load_roll_snapshots_3d(
+            self.path, self.model, transition_curriculum_config_3d("brake_full"))
+        np.testing.assert_array_equal(full["qvel"], self.qvel)
+
+    def test_empty_filter_raises_instead_of_modifying_velocities(self):
+        task = replace(self.config, snapshot_max_linear_speed_m_s=.01)
+        with self.assertRaisesRegex(ValueError, "no ROLL snapshots"):
+            load_roll_snapshots_3d(self.path, self.model, task)
+
+    def test_wrong_model_and_pose_only_banks_rejected(self):
+        with np.load(self.path) as data:
+            arrays = dict(data)
+        arrays["geometry"] = np.asarray("pupper_open60")
+        wrong = Path(self.directory.name) / "wrong.npz"
+        np.savez(wrong, **arrays)
+        with self.assertRaisesRegex(ValueError, "model/order mismatch"):
+            load_roll_snapshots_3d(wrong, self.model, self.config)
+        arrays["geometry"] = np.asarray("rollingquad_2")
+        del arrays["qvel"]
+        np.savez(wrong, **arrays)
+        with self.assertRaisesRegex(ValueError, "qvel"):
+            load_roll_snapshots_3d(wrong, self.model, self.config)
 
     def test_smoke_parser_requires_no_jax(self):
         args = parse_smoke_args(["--stage", "deploy_capture", "--steps", "2"])
