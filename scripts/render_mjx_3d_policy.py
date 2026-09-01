@@ -196,6 +196,10 @@ def render_rollout(
     differential_rms = _optional_series(
         rollout, "differential_residual_rms", qpos.shape[0]
     )
+    gate_error = _optional_series(rollout, "gate_error", qpos.shape[0])
+    teacher_active = _optional_series(
+        rollout, "teacher_active", qpos.shape[0]
+    )
     mode = _scalar_text(rollout, "mode")
     seed_index = _scalar_text(rollout, "seed_index")
     title_parts = [
@@ -238,7 +242,8 @@ def render_rollout(
             translation_turns = x_displacement / max(turn_radius, 1e-9)
             pitch_turns = float((pitch[index] - pitch[0]) / (2.0 * math.pi))
             failure = _failure_at(rollout, index)
-            panel_bottom = 148 if residual_rms is not None else 126
+            extra_rows = int(residual_rms is not None) + int(gate_error is not None)
+            panel_bottom = 126 + 22 * extra_rows
             draw.rectangle((12, 10, 470, panel_bottom), fill=(18, 22, 30))
             if title:
                 draw.text((22, 16), title, fill=(244, 247, 251))
@@ -278,6 +283,12 @@ def render_rollout(
                     f"differential {differential:.4f}",
                     fill=(206, 216, 228),
                 )
+            if gate_error is not None:
+                stage = "teacher" if teacher_active is not None and teacher_active[index] > .5 else "startup"
+                row = first_row + 88 + 22 * int(residual_rms is not None)
+                draw.text((22, row),
+                    f"gate max {gate_error[index]:.3f}  stage {stage}",
+                    fill=(206, 216, 228))
             if failure:
                 draw.text(
                     (300, first_row),
