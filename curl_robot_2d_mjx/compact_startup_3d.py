@@ -5,7 +5,7 @@ import numpy as np
 
 from curl_robot_2d_mjx.autonomous_startup_3d import AutonomousStartupConfig
 
-COMPACT_STARTUP_CONTRACT = "stand_to_low_speed_compact_v2"
+COMPACT_STARTUP_CONTRACT = "stand_to_low_speed_compact_v3_anti_ballistic"
 
 
 @dataclass(frozen=True)
@@ -29,6 +29,18 @@ class CompactStartupConfig(AutonomousStartupConfig):
     settling_linear_sigma_m_s: float = .05
     settling_angular_sigma_rad_s: float = .20
     settling_pose_sigma_rad: float = .20
+    potential_root_height_sigma_m: float = .03
+    potential_orientation_sigma_rad: float = .20
+    max_joint_target_step_rad: float = .05
+    upward_velocity_weight: float = .05
+    upward_velocity_sigma_m_s: float = .15
+    excess_height_weight: float = .05
+    excess_height_margin_m: float = .02
+    excess_height_sigma_m: float = .02
+    angular_velocity_weight: float = .02
+    angular_velocity_sigma_rad_s: float = .50
+    axis_tilt_weight: float = .05
+    axis_tilt_sigma_rad: float = .15
 
 
 def compact_target(model):
@@ -46,12 +58,45 @@ def compact_target(model):
 def compact_potential(xp, qpos, qvel, target, cfg):
     # Pose attraction must remain useful while moving: small velocity gates
     # must not flatten the reward far from compact. Slow down near the target.
-    error = (qpos[7:] - target["qpos"][0, 7:]) / cfg.settling_pose_sigma_rad
-    pose = xp.exp(-.5 * xp.mean(xp.square(error)))
+    target_qpos = target["qpos"][0]
+    error = (qpos[7:] - target_qpos[7:]) / cfg.settling_pose_sigma_rad
+    joint_cost = xp.mean(xp.square(error))
+    height_cost = xp.square((qpos[2] - target_qpos[2])
+                            / cfg.potential_root_height_sigma_m)
+    quaternion = qpos[3:7] / xp.sqrt(xp.maximum(xp.sum(xp.square(qpos[3:7])), 1e-12))
+    target_quaternion = target_qpos[3:7] / xp.sqrt(
+        xp.maximum(xp.sum(xp.square(target_qpos[3:7])), 1e-12))
+    dot_squared = xp.clip(xp.square(xp.sum(quaternion * target_quaternion)), 0., 1.)
+    # 4*(1-dot^2) is a smooth sign-invariant small-angle approximation to
+    # squared quaternion distance, with no acos gradient singularity at zero.
+    orientation_cost = 4. * (1. - dot_squared) / cfg.potential_orientation_sigma_rad**2
+    pose = xp.exp(-.5 * (joint_cost + height_cost + orientation_cost) / 3.)
     speed_cost = (xp.mean(xp.square(qvel[6:] / cfg.settling_joint_sigma_rad_s))
                   + xp.mean(xp.square(qvel[:3] / cfg.settling_linear_sigma_m_s))
                   + xp.mean(xp.square(qvel[3:6] / cfg.settling_angular_sigma_rad_s))) / 3
     return pose, pose * xp.log1p(speed_cost)
+
+
+def limit_startup_action(xp, requested, previous, action_scales, max_joint_step_rad):
+    """Slew-limit physical joint targets while keeping all 8 actions independent."""
+    normalized_step = max_joint_step_rad / xp.maximum(xp.abs(action_scales), 1e-8)
+    delta = xp.clip(requested - previous, -normalized_step, normalized_step)
+    return xp.clip(previous + delta, -1., 1.)
+
+
+def startup_stability_costs(xp, qpos, qvel, axis_tilt, *, stand_z, compact_z, cfg):
+    """Dense anti-ballistic costs; no foot-count or left/right symmetry term."""
+    upward = xp.square(xp.maximum(qvel[2], 0.) / cfg.upward_velocity_sigma_m_s)
+    height_limit = xp.maximum(stand_z, compact_z) + cfg.excess_height_margin_m
+    excess_height = xp.square(xp.maximum(qpos[2] - height_limit, 0.)
+                              / cfg.excess_height_sigma_m)
+    angular = xp.mean(xp.square(qvel[3:6] / cfg.angular_velocity_sigma_rad_s))
+    tilt = xp.square(axis_tilt / cfg.axis_tilt_sigma_rad)
+    penalties = (cfg.upward_velocity_weight * upward,
+                 cfg.excess_height_weight * excess_height,
+                 cfg.angular_velocity_weight * angular,
+                 cfg.axis_tilt_weight * tilt)
+    return penalties, sum(penalties)
 
 
 def contact_slip(xp, geom1, geom2, distance, position, normal, *, geom_bodyid,

@@ -6,7 +6,8 @@ import unittest
 import numpy as np
 
 from curl_robot_2d_mjx.compact_startup_3d import (
-    CompactStartupConfig, compact_potential, compact_target, contact_slip,
+    COMPACT_STARTUP_CONTRACT, CompactStartupConfig, compact_potential,
+    compact_target, contact_slip, limit_startup_action, startup_stability_costs,
 )
 from curl_robot_2d_mjx.autonomous_startup_3d import gate_errors
 
@@ -70,6 +71,39 @@ class CompactStartupTest(unittest.TestCase):
         far_pose, _ = compact_potential(np, stand, v, target, cfg)
         self.assertGreater(far_pose, 0.)
         self.assertLess(far_pose, pose)
+        high = q.copy()
+        high[2] += .10
+        tilted = q.copy()
+        tilted[3:7] = (np.cos(.25), np.sin(.25), 0., 0.)
+        self.assertLess(compact_potential(np, high, v * 0, target, cfg)[0], pose)
+        self.assertLess(compact_potential(np, tilted, v * 0, target, cfg)[0], pose)
+
+    def test_slew_limit_is_in_joint_radians_and_keeps_independent_actions(self):
+        previous = np.array((-.5, .2, .4))
+        requested = np.array((1., -1., .41))
+        scales = np.array((.5, .25, 1.))
+        applied = limit_startup_action(np, requested, previous, scales, .05)
+        np.testing.assert_allclose(applied, (-.4, 0., .41))
+        self.assertLessEqual(np.max(np.abs((applied - previous) * scales)), .05 + 1e-12)
+
+    def test_dense_stability_costs_penalize_jump_spin_height_and_tilt(self):
+        cfg = CompactStartupConfig()
+        q = np.zeros(19)
+        q[2] = .16
+        v = np.zeros(18)
+        parts, total = startup_stability_costs(np, q, v, 0., stand_z=.158,
+                                               compact_z=.166, cfg=cfg)
+        np.testing.assert_allclose(parts, 0.)
+        self.assertEqual(total, 0.)
+        v[2] = -.5
+        self.assertEqual(startup_stability_costs(
+            np, q, v, 0., stand_z=.158, compact_z=.166, cfg=cfg)[0][0], 0.)
+        v[2], v[3], q[2] = .3, 1., .21
+        parts, total = startup_stability_costs(np, q, v, .3, stand_z=.158,
+                                               compact_z=.166, cfg=cfg)
+        self.assertTrue(np.all(np.asarray(parts) > 0.))
+        self.assertAlmostEqual(total, sum(parts))
+        self.assertIn("anti_ballistic", COMPACT_STARTUP_CONTRACT)
 
     def test_dynamic_bank_cli_is_rejected(self):
         from scripts.train_mjx_3d_startup_ppo import parse_args

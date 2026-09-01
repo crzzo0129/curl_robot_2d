@@ -1,7 +1,7 @@
-# stand → 低速 compact 启动 PPO（v2）
+# stand → 低速 compact 启动 PPO（v3，防弹跳）
 
 入口仍为 `python -m scripts.train_mjx_3d_startup_ppo`，但默认任务已替换。
-不再追逐动态候选点，不再使用 `--candidate-bank`，不能续训旧 v1 启动参数。
+不再追逐动态候选点，不再使用 `--candidate-bank`，不能续训旧 v1/v2 启动参数。
 滚动教师参数保持冻结，作为接管后的实际验收；本次交付是训练代码，不是已训练成功的策略。
 
 ## 学习过程
@@ -23,6 +23,21 @@
 compact 并非已验证可长期静态保持的平衡姿态：原生 MuJoCo 固定 compact 目标测试中，
 机器人先落地，随后逐渐向负 X 倾倒。所以目标是主动控制到一个近 compact、低余速的
 短暂接管窗口，不要求长期停住，也不通过清零速度制造成功。
+
+## 防止“跳起—空中旋转”捷径
+
+v2 的失败策略会突然给出大幅关节目标，利用 3 Nm 饱和力矩跳起。离地期间原本的
+接触点滑动自然为零，而机体稳定惩罚在远离 compact 时太弱，于是128条 best eval
+全部最终触发 `axis_tilt`，没有一次接管。v3 做以下修改：
+
+- 启动阶段每个关节目标每20 ms最多改变 `0.05 rad`；8个动作仍完全独立。
+- 全启动阶段密集惩罚正向根部 `vz`、超过姿态高度包络、三轴角速度和轴倾角。
+- compact势函数除12个关节角外，也包含根部高度及完整四元数姿态。
+- handoff不是episode终点，势函数在接管帧保持实际值，不再突然清零产生约`-5`的台阶。
+- `axis_tilt=0.5 rad` 持续0.1 s的原终止条件不放宽。
+
+按讨论，不增加足端接触数量/离地惩罚，不修改滑动平均定义，也不限制左右对称。
+训练直接使用完整10 s教师验收，没有分阶段课程。
 
 ## 足端拖动惩罚
 
@@ -65,11 +80,11 @@ CUDA_VISIBLE_DEVICES=0 python -m scripts.train_mjx_3d_startup_ppo \
   --teacher results/rollingquad2_floor_mass_gain_v3_h200_seed0/params_best \
   --preset h200 --max-devices 1 \
   --foot-slip-weight 0.05 \
-  --out results/rollingquad2_stand_compact_v2_seed0
+  --out results/rollingquad2_stand_compact_v3_seed0
 ```
 
 教师目录需有对应 `training_config.json`，否则另传 `--teacher-config`。
-使用新的输出目录；不要传旧 candidate bank，也不要恢复旧 v1 startup checkpoint。
+使用新的输出目录；不要传旧 candidate bank，也不要恢复旧 v1/v2 startup checkpoint。
 默认 2000 万训练步、1024 环境、128 eval 环境，名义物理，不做模型域随机化。
 启动 actor 仍使用 53 维特权观测，不是可以直接部署的实机学生。
 

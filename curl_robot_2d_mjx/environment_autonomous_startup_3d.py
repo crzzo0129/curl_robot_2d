@@ -20,7 +20,10 @@ from curl_robot_2d_mjx.environment_3d import (
 from curl_robot_2d_mjx.cem_reference import advance_oscillator
 from curl_robot_2d_mjx.startup_rolling_3d import reset_pose_arrays_3d
 from curl_robot_2d_mjx.handoff_probe_3d import FAILURES
-from curl_robot_2d_mjx.compact_startup_3d import CompactStartupConfig, compact_target, compact_potential
+from curl_robot_2d_mjx.compact_startup_3d import (
+    CompactStartupConfig, compact_target, compact_potential,
+    limit_startup_action, startup_stability_costs,
+)
 
 
 def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, teacher_payload,
@@ -95,7 +98,10 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                 names += ("foot_slip_squared_integral", "foot_slip_distance_m", "reward_foot_slip",
                           "reward_settling", "terminal_foot_slip_peak_m_s",
                           "handoff_joint_speed_rad_s", "handoff_root_linear_speed_m_s",
-                          "handoff_root_angular_speed_rad_s")
+                          "handoff_root_angular_speed_rad_s", "joint_target_step_rad",
+                          "reward_upward_velocity", "reward_excess_height",
+                          "reward_angular_velocity", "reward_axis_tilt",
+                          "reward_startup_stability")
             return {name: jp.zeros((), dtype=jp.float32) for name in names}
 
         def _unpack(self, state):
@@ -206,7 +212,10 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             active = old["teacher_active"]
             b = self._unpack(state)
             teacher_action = policy(b.obs, jax.random.PRNGKey(0))[0]
-            control = jp.where(active, teacher_action, action)
+            startup_action = (limit_startup_action(jp, jp.clip(action, -1., 1.),
+                b.info["last_action"], base.action_scales, cfg.max_joint_target_step_rad)
+                if compact_mode else action)
+            control = jp.where(active, teacher_action, startup_action)
             bi = {**b.info, "direct_action_override": ~active}
             next_b = base.step(b.replace(info=bi), control)
             d = next_b.pipeline_state
@@ -243,7 +252,10 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             failed = terminal & ~success
             change = jp.mean(jp.square(next_b.info["last_action"] - b.info["last_action"]))
             torque = jp.mean(jp.square(d.actuator_force[base.actuator_ids] / base.force_limits))
-            shaping = cfg.potential_weight * (cfg.discounting * jp.where(handoff | terminal, 0., potential)
+            # Handoff is not terminal. Keeping its actual potential here avoids
+            # an artificial -potential_weight reward cliff exactly when the
+            # actor reaches the requested state.
+            shaping = cfg.potential_weight * (cfg.discounting * jp.where(terminal, 0., potential)
                                               - old["potential"])
             shaping = jp.where(active, 0., shaping)
             tail_reward = jp.where(active, cfg.turn_reward * (turns - old["tail_turns"]), 0.)
@@ -257,7 +269,12 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                 slip_penalty = cfg.foot_slip_weight * slip_squared / cfg.foot_slip_sigma_m_s**2
                 settling = compact_potential(jp, d.qpos, d.qvel, targets, cfg)[1]
                 settling_penalty = jp.where(active, 0., cfg.settling_velocity_weight * settling)
-                reward_value -= slip_penalty + settling_penalty
+                stability_parts, stability_penalty = startup_stability_costs(jp,
+                    d.qpos, d.qvel, base._rolling_axis_tilt(d),
+                    stand_z=stand_qpos[2], compact_z=targets["qpos"][0, 2], cfg=cfg)
+                stability_parts = tuple(jp.where(active, 0., value) for value in stability_parts)
+                stability_penalty = jp.where(active, 0., stability_penalty)
+                reward_value -= slip_penalty + settling_penalty + stability_penalty
             reward_value = jp.nan_to_num(reward_value, nan=-cfg.failure_cost,
                                          posinf=-cfg.failure_cost, neginf=-cfg.failure_cost)
             max_y = jp.maximum(old["max_abs_y"], jp.abs(y))
@@ -293,7 +310,14 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                     terminal_foot_slip_peak_m_s=jp.where(terminal, peak_slip, 0.),
                     handoff_joint_speed_rad_s=jp.where(handoff, jp.max(jp.abs(d.qvel[6:])), 0.),
                     handoff_root_linear_speed_m_s=jp.where(handoff, jp.max(jp.abs(d.qvel[:3])), 0.),
-                    handoff_root_angular_speed_rad_s=jp.where(handoff, jp.max(jp.abs(d.qvel[3:6])), 0.))
+                    handoff_root_angular_speed_rad_s=jp.where(handoff, jp.max(jp.abs(d.qvel[3:6])), 0.),
+                    joint_target_step_rad=jp.where(active, 0., jp.max(jp.abs(
+                        (startup_action - b.info["last_action"]) * base.action_scales))),
+                    reward_upward_velocity=-stability_parts[0],
+                    reward_excess_height=-stability_parts[1],
+                    reward_angular_velocity=-stability_parts[2],
+                    reward_axis_tilt=-stability_parts[3],
+                    reward_startup_stability=-stability_penalty)
             metrics = jax.tree_util.tree_map(lambda x: jp.nan_to_num(x), metrics)
             return State(d, self._obs(d, info), reward_value, terminal.astype(jp.float32),
                          metrics=metrics, info=info)

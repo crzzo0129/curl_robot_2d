@@ -41,7 +41,7 @@ def parse_args(argv=None):
     p.add_argument("--teacher", type=Path, required=True)
     p.add_argument("--teacher-config", type=Path)
     p.add_argument("--candidate-bank", type=Path,
-                   help="obsolete: v2 generates its compact target from the model and rejects dynamic banks")
+                   help="obsolete: compact startup generates its target from the model and rejects dynamic banks")
     p.add_argument("--out", type=Path, required=True)
     p.add_argument("--preset", choices=PRESETS, default="smoke")
     for key in PRESETS["smoke"]:
@@ -57,7 +57,13 @@ def parse_args(argv=None):
     compact_defaults = CompactStartupConfig()
     for field in ("foot_slip_weight", "foot_slip_sigma_m_s", "settling_velocity_weight",
                   "joint_position_rad", "joint_velocity_rad_s", "root_z_m",
-                  "root_linear_velocity_m_s", "root_angular_velocity_rad_s", "orientation_rad"):
+                  "root_linear_velocity_m_s", "root_angular_velocity_rad_s", "orientation_rad",
+                  "potential_root_height_sigma_m", "potential_orientation_sigma_rad",
+                  "max_joint_target_step_rad", "upward_velocity_weight",
+                  "upward_velocity_sigma_m_s", "excess_height_weight",
+                  "excess_height_margin_m", "excess_height_sigma_m",
+                  "angular_velocity_weight", "angular_velocity_sigma_rad_s",
+                  "axis_tilt_weight", "axis_tilt_sigma_rad"):
         p.add_argument("--" + field.replace("_", "-"), type=float, default=getattr(compact_defaults, field))
     p.add_argument("--unroll-length", type=int, default=20)
     p.add_argument("--updates-per-batch", type=int, default=4)
@@ -80,7 +86,7 @@ def parse_args(argv=None):
     if args.teacher_config is None:
         args.teacher_config = args.teacher.parent / "training_config.json"
     if args.candidate_bank is not None:
-        p.error("stand-to-compact v2 no longer uses --candidate-bank; remove it and use a new output directory")
+        p.error("stand-to-compact no longer uses --candidate-bank; remove it and use a new output directory")
     for key in ("teacher", "teacher_config"):
         if not getattr(args, key).is_file():
             p.error(f"missing {key}: {getattr(args, key)}")
@@ -119,7 +125,13 @@ def build_inputs(args):
         **{field: getattr(args, field) for field in (
             "foot_slip_weight", "foot_slip_sigma_m_s", "settling_velocity_weight",
             "joint_position_rad", "joint_velocity_rad_s", "root_z_m",
-            "root_linear_velocity_m_s", "root_angular_velocity_rad_s", "orientation_rad")})
+            "root_linear_velocity_m_s", "root_angular_velocity_rad_s", "orientation_rad",
+            "potential_root_height_sigma_m", "potential_orientation_sigma_rad",
+            "max_joint_target_step_rad", "upward_velocity_weight",
+            "upward_velocity_sigma_m_s", "excess_height_weight",
+            "excess_height_margin_m", "excess_height_sigma_m",
+            "angular_velocity_weight", "angular_velocity_sigma_rad_s",
+            "axis_tilt_weight", "axis_tilt_sigma_rad")})
     cfg.validate(task.control_timestep)
     import mujoco
     bank = compact_target(mujoco.MjModel.from_xml_path(str(model_path_3d(task.geometry))))
@@ -200,7 +212,17 @@ def evaluate_startup(env, policy, *, count, seed):
             maximum_startup_foot_slip_m_s=float(totals["terminal_foot_slip_peak_m_s"].max()),
             mean_handoff_joint_speed_rad_s=float(totals["handoff_joint_speed_rad_s"][handoff].mean()) if handoff.any() else None,
             mean_handoff_root_linear_speed_m_s=float(totals["handoff_root_linear_speed_m_s"][handoff].mean()) if handoff.any() else None,
-            mean_handoff_root_angular_speed_rad_s=float(totals["handoff_root_angular_speed_rad_s"][handoff].mean()) if handoff.any() else None)
+            mean_handoff_root_angular_speed_rad_s=float(totals["handoff_root_angular_speed_rad_s"][handoff].mean()) if handoff.any() else None,
+            mean_startup_stability_penalty_per_step=float(
+                -totals["reward_startup_stability"].sum() / max(totals["startup_control_step"].sum(), 1.)),
+            mean_upward_velocity_penalty_per_step=float(
+                -totals["reward_upward_velocity"].sum() / max(totals["startup_control_step"].sum(), 1.)),
+            mean_excess_height_penalty_per_step=float(
+                -totals["reward_excess_height"].sum() / max(totals["startup_control_step"].sum(), 1.)),
+            mean_angular_velocity_penalty_per_step=float(
+                -totals["reward_angular_velocity"].sum() / max(totals["startup_control_step"].sum(), 1.)),
+            mean_axis_tilt_penalty_per_step=float(
+                -totals["reward_axis_tilt"].sum() / max(totals["startup_control_step"].sum(), 1.)))
     return report, {**totals, **{f"{key}_first_episodes": np.stack(value) for key, value in traces.items()}}
 
 
@@ -226,6 +248,9 @@ def main(argv=None):
         "startup_target": "compact pose and low velocity, not a moving candidate",
         "teacher_handoff": "cold start: zero reference age/oscillator phase; rebase controller phase only",
         "foot_slip": "startup-only tangential velocity at foot-mesh/floor contact points; every physics substep",
+        "anti_ballistic": "startup target slew limit plus dense upward velocity, excess height, angular velocity and axis-tilt costs",
+        "contact_count_penalty": False, "left_right_symmetry_constraint": False,
+        "curriculum": False,
         "teacher_tail_actions": "ignored startup actor actions; same-episode rewards/values carry downstream credit",
     }
     if args.restore_startup:
@@ -317,7 +342,8 @@ def main(argv=None):
         try_save(int(step))
         print(f"[startup PPO] step={step} handoff={handoff:.1%} success={success:.1%} "
               f"failed={failed:.1%} timeout={clean.get('eval/episode_startup_timeout', 0.):.1%} "
-              f"slip_distance={clean.get('eval/episode_foot_slip_distance_m', 0.):.4f}m", flush=True)
+              f"slip_distance={clean.get('eval/episode_foot_slip_distance_m', 0.):.4f}m "
+              f"stability={clean.get('eval/episode_reward_startup_stability', 0.):.3f}", flush=True)
     print(f"[startup PPO] {args.envs} envs, budget={cfg.startup_budget_s}s, "
           f"teacher cold-start tail={cfg.continuation_s}s, target=compact, "
           f"foot_slip_weight={cfg.foot_slip_weight}", flush=True)
