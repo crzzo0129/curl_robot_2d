@@ -1285,6 +1285,16 @@ def make_brax_env_3d(
                     self.joint_low,
                     self.joint_high,
                 )
+                # Deploy DR stores a fixed encoder-zero calibration error in
+                # actuator order.  It is added after the policy target is
+                # composed so even the four policy-locked abduction motors see
+                # the same zero-offset uncertainty as the real controller.
+                if "motor_zero_bias_ctrl" in state.info:
+                    current_target = jp.clip(
+                        current_target + state.info["motor_zero_bias_ctrl"],
+                        self.mjx_model.actuator_ctrlrange[:, 0],
+                        self.mjx_model.actuator_ctrlrange[:, 1],
+                    )
                 next_data = mjx.step(
                     self.mjx_model,
                     current_data.replace(ctrl=current_target),

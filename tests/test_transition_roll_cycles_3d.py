@@ -67,6 +67,12 @@ class RollCycleSelectionTests(unittest.TestCase):
                 selected = (self.turns >= low) & (self.turns < high)
                 for name in ("qpos", "qvel", "ctrl", "time_s", "episode_id"):
                     np.testing.assert_array_equal(bank[name], self.arrays[name][selected])
+                directed = self.turns[selected]
+                np.testing.assert_array_equal(bank["source_cycle"], np.floor(directed))
+                np.testing.assert_array_equal(
+                    bank["source_phase_bin"],
+                    np.floor((directed - np.floor(directed)) * 8),
+                )
                 self.assertTrue(report["coverage_complete"])
                 self.assertFalse(report["velocities_modified"])
                 self.assertGreater(report["linear_speed_m_s"]["min"], .35)

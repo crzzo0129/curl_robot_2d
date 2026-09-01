@@ -4,7 +4,7 @@ import math
 from pathlib import Path
 
 
-TRANSITION_TRAINING_REVISION = "v5_failure_breakdown"
+TRANSITION_TRAINING_REVISION = "v6_stratified_diagnostics"
 TRANSITION_INITIAL_POLICY_STD = 0.05  # Pre-tanh Gaussian std; action ABI unchanged.
 
 

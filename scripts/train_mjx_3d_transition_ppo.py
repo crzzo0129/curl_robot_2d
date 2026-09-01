@@ -10,6 +10,8 @@ import math
 from pathlib import Path
 import time
 
+import numpy as np
+
 from curl_robot_2d_mjx.config_transition_3d import (
     TRANSITION_ACTOR_OBSERVATION_SIZE_3D,
     TRANSITION_CRITIC_OBSERVATION_SIZE_3D,
@@ -22,7 +24,10 @@ from curl_robot_2d_mjx.config_transition_3d import (
 )
 from curl_robot_2d_mjx.reward_transition_3d import Transition3DRewardConfig
 from curl_robot_2d_mjx.failure_transition_3d import (
-    TRANSITION_FAILURE_CAUSE_NAMES_3D, transition_failure_breakdown_3d,
+    TRANSITION_FAILURE_CAUSE_NAMES_3D,
+    transition_failure_breakdown_3d,
+    transition_failure_mode_breakdown_3d,
+    transition_source_breakdown_3d,
 )
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 from curl_robot_2d_mjx.training_transition_3d import (
@@ -85,6 +90,16 @@ def parse_args(argv=None):
         "--out", type=Path, default=Path("results/mjx_3d_transition_ppo")
     )
     parser.add_argument("--restore-checkpoint", type=Path, default=None)
+    parser.add_argument(
+        "--eval-only", action="store_true",
+        help="load frozen Transition weights and run independent episodes without PPO updates",
+    )
+    parser.add_argument(
+        "--eval-params", type=Path, default=None,
+        help="params_final/params_best file for --eval-only (alternative to an Orbax checkpoint)",
+    )
+    parser.add_argument("--eval-envs", type=int, default=256)
+    parser.add_argument("--eval-seed", type=int, default=None)
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--learning-rate", type=float, default=2.0e-4)
     parser.add_argument("--entropy-cost", type=float, default=3.0e-4)
@@ -145,6 +160,84 @@ def make_transition_networks(observation_size, action_size,
     return replace(nets, policy_network=replace(nets.policy_network, init=init))
 
 
+def evaluate_transition_policy(env, policy, *, count, seed):
+    """Evaluate frozen weights in independent raw-environment episodes.
+
+    This deliberately bypasses PPO training and its auto-reset wrapper.  Every
+    terminal metric is accumulated once per lane, which makes phase/cycle
+    conditional rates auditable from the saved arrays.
+    """
+    import jax
+
+    keys = jax.random.split(jax.random.PRNGKey(seed), count)
+    state = jax.jit(jax.vmap(env.reset))(keys)
+
+    def one_step(single_state, key):
+        action = policy(single_state.obs, key)[0]
+        return env.step(single_state, action)
+
+    batched_step = jax.jit(jax.vmap(one_step))
+    totals = {name: np.zeros(count, dtype=np.float64)
+              for name in env._zero_metrics()}
+    active = np.ones(count, dtype=bool)
+    terminal_step = np.zeros(count, dtype=np.int32)
+    for step_index in range(env.config.episode_length):
+        step_keys = jax.random.split(
+            jax.random.fold_in(jax.random.PRNGKey(seed + 1), step_index), count
+        )
+        next_state = batched_step(state, step_keys)
+        metrics = jax.device_get(next_state.metrics)
+        for name in totals:
+            values = np.asarray(metrics[name], dtype=np.float64)
+            totals[name] += values * active
+        done = np.asarray(jax.device_get(next_state.done)) > 0
+        newly_done = active & done
+        terminal_step[newly_done] = step_index + 1
+        active &= ~done
+        state = next_state
+        if step_index % 50 == 49:
+            print(
+                f"[transition eval-only] step={step_index + 1}/"
+                f"{env.config.episode_length} active={int(active.sum())}/{count}",
+                flush=True,
+            )
+        if not active.any():
+            break
+
+    means = {
+        "eval/episode_" + name: float(values.mean())
+        for name, values in totals.items()
+    }
+    success = totals["transition_success"] > 0
+    failed = totals["failed"] > 0
+    timeout = totals["timeout"] > 0
+    report = {
+        "episodes": count,
+        "seed": seed,
+        "success_rate": float(success.mean()),
+        "failure_rate": float(failed.mean()),
+        "timeout_rate": float(timeout.mean()),
+        "outcome_consistency_error": float(
+            success.mean() + failed.mean() + timeout.mean() - 1.0
+        ),
+        "mean_episode_length": float(terminal_step.mean()),
+        "incomplete_episodes": int(active.sum()),
+        "failure_breakdown": transition_failure_breakdown_3d(means),
+        "failure_mode_breakdown": transition_failure_mode_breakdown_3d(means),
+        "source_breakdown": transition_source_breakdown_3d(
+            means, phase_bins=env.source_phase_bins, cycles=env.source_cycles,
+            episode_count=count,
+        ),
+        "passes_nominal_curriculum_thresholds": bool(
+            success.mean() >= 0.9 and failed.mean() <= 0.05
+            and timeout.mean() <= 0.05 and not active.any()
+        ),
+        "policy_updates": 0,
+    }
+    arrays = {**totals, "terminal_step": terminal_step}
+    return report, arrays
+
+
 def main(argv=None) -> None:
     args = parse_args(argv)
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
@@ -154,6 +247,15 @@ def main(argv=None) -> None:
     transition_scale_logit(args.initial_policy_std)
     if args.unroll_length < 1 or args.updates_per_batch < 1:
         raise SystemExit("rollout and update lengths must be positive")
+    if args.eval_envs < 1:
+        raise SystemExit("--eval-envs must be positive")
+    if args.eval_only:
+        if (args.restore_checkpoint is None) == (args.eval_params is None):
+            raise SystemExit(
+                "--eval-only requires exactly one of --restore-checkpoint or --eval-params"
+            )
+    elif args.eval_params is not None:
+        raise SystemExit("--eval-params is only valid with --eval-only")
 
     task = build_task(args)
     if args.stage.startswith("brake_") and not args.roll_snapshots and not args.dry_run:
@@ -186,6 +288,13 @@ def main(argv=None) -> None:
             "actor_init": "zero_location_fixed_small_initial_scale",
             "episode_reset": "full_task_state_with_fresh_rng",
         },
+        "run_mode": "evaluation_only" if args.eval_only else "training",
+        "eval_only": {
+            "episodes": args.eval_envs,
+            "seed": args.eval_seed if args.eval_seed is not None else args.seed + 20_000,
+            "params": str(args.eval_params.resolve()) if args.eval_params else None,
+            "policy_updates": 0,
+        } if args.eval_only else None,
         "restore_checkpoint": (
             str(args.restore_checkpoint.resolve())
             if args.restore_checkpoint is not None
@@ -211,6 +320,11 @@ def main(argv=None) -> None:
         payload["restore_checkpoint_requested"] = str(requested.resolve())
         payload["restore_checkpoint"] = str(args.restore_checkpoint)
         print(f"[restore Transition] {args.restore_checkpoint}", flush=True)
+    if args.eval_params is not None:
+        args.eval_params = args.eval_params.resolve()
+        if not args.eval_params.is_file():
+            raise ValueError(f"evaluation params file does not exist: {args.eval_params}")
+        payload["eval_only"]["params"] = str(args.eval_params)
 
     if stage_out.exists() and any(stage_out.iterdir()):
         raise SystemExit(f"Output directory is not empty: {stage_out}. "
@@ -229,14 +343,15 @@ def main(argv=None) -> None:
         verbose=True,
     )
     from brax.io import model as model_io
-    from brax.training.agents.ppo import train as ppo
 
     from curl_robot_2d_mjx.environment_transition_3d import (
         make_brax_transition_env_3d,
     )
-    from curl_robot_2d_mjx.wrappers_transition_3d import wrap_transition_3d
-    if "wrap_env_fn" not in inspect.signature(ppo.train).parameters:
-        raise SystemExit("Installed Brax must support wrap_env_fn for full Transition resets")
+    if not args.eval_only:
+        from brax.training.agents.ppo import train as ppo
+        from curl_robot_2d_mjx.wrappers_transition_3d import wrap_transition_3d
+        if "wrap_env_fn" not in inspect.signature(ppo.train).parameters:
+            raise SystemExit("Installed Brax must support wrap_env_fn for full Transition resets")
 
     payload["runtime"] = describe_runtime()
     stage_out.mkdir(parents=True, exist_ok=True)
@@ -246,20 +361,56 @@ def main(argv=None) -> None:
     if "snapshot_selection" in payload:
         (stage_out / "snapshot_selection.json").write_text(
             json.dumps(payload["snapshot_selection"], indent=2) + "\n", encoding="utf-8")
-    train_env = make_brax_transition_env_3d(task, reward_config=reward, seed=args.seed)
     eval_env = make_brax_transition_env_3d(
         replace(task, observation_noise_enabled=False),
         reward_config=reward, seed=args.seed + 10_000
     )
+    train_env = None if args.eval_only else make_brax_transition_env_3d(
+        task, reward_config=reward, seed=args.seed
+    )
     from curl_robot_2d_mjx.deployment_transition_3d import transition_controller_metadata_3d
     (stage_out / "deployment_config.json").write_text(
-        json.dumps(transition_controller_metadata_3d(train_env.mj_model, task),
+        json.dumps(transition_controller_metadata_3d(eval_env.mj_model, task),
                    indent=2) + "\n", encoding="utf-8")
 
     def network_factory(observation_size, action_size, preprocess_observations_fn):
         return make_transition_networks(
             observation_size, action_size, preprocess_observations_fn,
             hidden_layers=args.hidden_layers, initial_std=args.initial_policy_std)
+
+    if args.eval_only:
+        from brax.training.acme import running_statistics
+        from brax.training.agents.ppo import networks as ppo_networks
+        networks = network_factory(
+            eval_env.observation_size, eval_env.action_size,
+            running_statistics.normalize,
+        )
+        if args.eval_params is not None:
+            params = model_io.load_params(args.eval_params)
+            parameter_source = str(args.eval_params)
+        else:
+            from brax.training.agents.ppo import checkpoint as ppo_checkpoint
+            params = ppo_checkpoint.load(str(args.restore_checkpoint))
+            parameter_source = str(args.restore_checkpoint)
+        policy = ppo_networks.make_inference_fn(networks)(params, deterministic=True)
+        eval_seed = args.eval_seed if args.eval_seed is not None else args.seed + 20_000
+        started = time.perf_counter()
+        report, arrays = evaluate_transition_policy(
+            eval_env, policy, count=args.eval_envs, seed=eval_seed
+        )
+        report.update(
+            stage=args.stage,
+            training_revision=TRANSITION_TRAINING_REVISION,
+            parameter_source=parameter_source,
+            elapsed_s=time.perf_counter() - started,
+            snapshot_selection=payload.get("snapshot_selection"),
+        )
+        (stage_out / "evaluation.json").write_text(
+            json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        np.savez_compressed(stage_out / "evaluation_arrays.npz", **arrays)
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return report
 
     history = []
 
@@ -273,10 +424,33 @@ def main(argv=None) -> None:
                          for name in TRANSITION_FAILURE_CAUSE_NAMES_3D),
                         key=lambda item: item[1], reverse=True)
         cause_text = ",".join(f"{name}={value:.3f}" for name, value in causes if value > 0)
+        mode_report = transition_failure_mode_breakdown_3d(clean)
+        mode_text = ",".join(
+            f"{mode}={row['rates']['root_height_low']:.3f}"
+            for mode, row in mode_report["by_mode"].items()
+            if row["rates"]["root_height_low"] > 0
+        )
+        source_report = transition_source_breakdown_3d(
+            clean, phase_bins=eval_env.source_phase_bins,
+            cycles=eval_env.source_cycles, episode_count=preset["eval_envs"],
+        )
+        phase_rows = [
+            (label, row["failed_rate"])
+            for label, row in source_report["by_phase_bin"].items()
+            if row["failed_rate"] is not None
+        ]
+        worst_phase = (
+            max(phase_rows, key=lambda item: item[1]) if phase_rows else None
+        )
+        worst_phase_text = (
+            "none" if worst_phase is None
+            else f"{worst_phase[0]}:{worst_phase[1]:.3f}"
+        )
         print(
             f"[transition eval] stage={args.stage} step={int(step)} "
             f"success={success:.3f} failure={failed:.3f} timeout={timeout:.3f} "
-            f"causes=[{cause_text}]",
+            f"causes=[{cause_text}] root_low_modes=[{mode_text}] "
+            f"worst_phase_failure={worst_phase_text}",
             flush=True,
         )
 
@@ -339,6 +513,13 @@ def main(argv=None) -> None:
         "params": str((stage_out / "params_final").resolve()),
         "final_metrics": clean_final_metrics,
         "failure_breakdown": transition_failure_breakdown_3d(clean_final_metrics),
+        "failure_mode_breakdown": transition_failure_mode_breakdown_3d(
+            clean_final_metrics
+        ),
+        "source_breakdown": transition_source_breakdown_3d(
+            clean_final_metrics, phase_bins=eval_env.source_phase_bins,
+            cycles=eval_env.source_cycles, episode_count=preset["eval_envs"],
+        ),
         "curriculum_next_stage": payload["curriculum_next_stage"],
         "stage_passed": acceptance["passed"],
         "snapshot_selection": payload.get("snapshot_selection"),

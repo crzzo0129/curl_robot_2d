@@ -83,6 +83,10 @@ def select_roll_cycle_snapshots(arrays, config, *, require_coverage=True):
     cdf[-1] = 1.0
     keys = ("qpos", "qvel", "ctrl", "time_s", "episode_id", *ROLL_PROGRESS_FIELDS)
     bank = {key: arrays[key][keep].copy() for key in keys}
+    # Immutable reset-source labels are diagnostics only.  They never enter
+    # the actor observation or alter the sampled simulator state.
+    bank["source_phase_bin"] = phase_bin.copy()
+    bank["source_cycle"] = cycle.copy()
     bank["sampling_cdf"] = cdf
     linear = np.linalg.norm(bank["qvel"][:, :3], axis=1)
     angular = np.linalg.norm(bank["qvel"][:, 3:6], axis=1)

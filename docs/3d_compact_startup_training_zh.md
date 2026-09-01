@@ -89,6 +89,10 @@ CUDA_VISIBLE_DEVICES=0 python -m scripts.train_mjx_3d_startup_ppo \
 启动 actor 仍使用 53 维特权观测，不是可以直接部署的实机学生。
 
 关注训练输出的 `handoff`、`success`、`timeout`、`slip_distance`。
+每次eval还会单独打印一行 `[startup failure]`，按发生率从高到低列出非零终止原因，
+例如 `reasons=[axis_tilt=75.0%, startup_timeout=25.0%]`。原因包含轴倾、横漂、
+根部过高/过低、非法接触/穿透、非有限数、启动超时和教师续滚不足；若总失败率非零
+却没有匹配到已知指标，会显示 `unclassified_failure`，避免静默失败。
 最终独立验收在 `evaluation_best.json`：
 
 - `handoff_rate`：到达接管窗口的比例。

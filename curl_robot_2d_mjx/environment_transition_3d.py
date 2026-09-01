@@ -48,7 +48,12 @@ from curl_robot_2d_mjx.deployment_transition_3d import (
     push_transition_frame_3d,
 )
 from curl_robot_2d_mjx.failure_transition_3d import (
-    TRANSITION_FAILURE_CAUSE_NAMES_3D, transition_failure_causes_3d,
+    TRANSITION_FAILURE_CAUSE_NAMES_3D,
+    TRANSITION_FAILURE_MODE_NAMES_3D,
+    TRANSITION_SOURCE_OUTCOME_NAMES_3D,
+    transition_failure_causes_3d,
+    transition_failure_mode_metrics_3d,
+    transition_source_metrics_3d,
 )
 
 
@@ -189,9 +194,15 @@ def make_brax_transition_env_3d(
             self.compact_ctrl = jp.asarray(self.mj_model.key_ctrl[compact_id])
             self.roll_snapshots = None
             self.snapshot_selection_report = None
+            self.source_phase_bins = 0
+            self.source_cycles = ()
             if use_roll_snapshots:
                 bank, self.snapshot_selection_report = load_roll_snapshots_3d(
                     task.roll_snapshots_path, self.mj_model, task, return_report=True)
+                self.source_phase_bins = task.snapshot_phase_bins
+                self.source_cycles = tuple(
+                    int(value) for value in np.unique(bank["source_cycle"])
+                )
                 self.roll_snapshots = {
                     key: jp.asarray(value)
                     for key, value in bank.items()
@@ -259,6 +270,21 @@ def make_brax_transition_env_3d(
                 "failed_stabilize": zero,
                 **{f"failure_{name}": zero
                    for name in TRANSITION_FAILURE_CAUSE_NAMES_3D},
+                **{
+                    f"failure_{cause}_mode_{mode}": zero
+                    for cause in TRANSITION_FAILURE_CAUSE_NAMES_3D
+                    for mode in TRANSITION_FAILURE_MODE_NAMES_3D
+                },
+                **{
+                    f"source_phase_bin_{phase_bin}_{outcome}": zero
+                    for phase_bin in range(self.source_phase_bins)
+                    for outcome in TRANSITION_SOURCE_OUTCOME_NAMES_3D
+                },
+                **{
+                    f"source_cycle_{cycle}_{outcome}": zero
+                    for cycle in self.source_cycles
+                    for outcome in TRANSITION_SOURCE_OUTCOME_NAMES_3D
+                },
                 "timeout": zero,
             })
 
@@ -520,6 +546,8 @@ def make_brax_transition_env_3d(
             velocity = velocity.at[6:].multiply(task.reset_joint_velocity_rad_s)
             mode = jp.asarray(task.reset_start_mode, dtype=jp.int32)
             ctrl = joints
+            source_phase_bin = jp.asarray(-1, dtype=jp.int32)
+            source_cycle = jp.asarray(-1, dtype=jp.int32)
             if self.roll_snapshots is not None:
                 index = jp.minimum(jp.searchsorted(
                     self.roll_snapshots["sampling_cdf"], jax.random.uniform(fraction_key),
@@ -527,6 +555,8 @@ def make_brax_transition_env_3d(
                 qpos = self.roll_snapshots["qpos"][index]
                 velocity = self.roll_snapshots["qvel"][index]
                 ctrl = self.roll_snapshots["ctrl"][index]
+                source_phase_bin = self.roll_snapshots["source_phase_bin"][index]
+                source_cycle = self.roll_snapshots["source_cycle"][index]
             data = self.base_data.replace(qpos=qpos, qvel=velocity, ctrl=ctrl)
             data = mjx.forward(self.sys, data)
             # Neighborhood perturbations may rotate a CAD mesh into the floor.
@@ -539,7 +569,10 @@ def make_brax_transition_env_3d(
                               initial=0.0)
                 data = mjx.forward(self.sys, data.replace(
                     qpos=data.qpos.at[2].add(lift)))
-            return self._initial_state(data, rng, mode)
+            return self._initial_state(
+                data, rng, mode, source_phase_bin=source_phase_bin,
+                source_cycle=source_cycle,
+            )
 
         def reset_from_roll_state(self, data, rng, actor_history=None, last_action=None):
             """Live ROLL -> Transition handoff on the SAME MJX model.
@@ -557,7 +590,10 @@ def make_brax_transition_env_3d(
                 actor_history=actor_history, last_action=last_action,
             )
 
-        def _initial_state(self, data, rng, mode, actor_history=None, last_action=None):
+        def _initial_state(
+            self, data, rng, mode, actor_history=None, last_action=None,
+            source_phase_bin=None, source_cycle=None,
+        ):
             mode_steps = jp.asarray(0, dtype=jp.int32)
             reference = self._reference(mode, mode_steps)
             contacts = self._contacts(data)
@@ -590,6 +626,14 @@ def make_brax_transition_env_3d(
                 "previous_reference_error": gates["reference_error"],
                 "time_out": jp.asarray(0.0),
                 "actor_history": actor_history,
+                "source_phase_bin": (
+                    jp.asarray(-1, dtype=jp.int32)
+                    if source_phase_bin is None else jp.asarray(source_phase_bin, dtype=jp.int32)
+                ),
+                "source_cycle": (
+                    jp.asarray(-1, dtype=jp.int32)
+                    if source_cycle is None else jp.asarray(source_cycle, dtype=jp.int32)
+                ),
             }
             obs = self._observation(
                 data,
@@ -717,6 +761,9 @@ def make_brax_transition_env_3d(
                 deploy_timeout=failed_deploy_timeout,
                 stabilize_guard=failed_stabilize,
             )
+            failure_modes = transition_failure_mode_metrics_3d(
+                jp, failure_causes, mode
+            )
             # Terminal outcomes are mutually exclusive: invalid physics or
             # lost support cannot be counted as a simultaneous READY success.
             newly_ready = newly_ready & (~failed)
@@ -726,6 +773,14 @@ def make_brax_transition_env_3d(
             next_step_count = state.info["step_count"] + 1
             timeout = (next_step_count >= task.episode_length) & (~failed) & (~newly_ready)
             done = failed | newly_ready | timeout
+            source_metrics = transition_source_metrics_3d(
+                jp, done=done, success=newly_ready, failed=failed,
+                timeout=timeout,
+                root_height_low=failure_causes["root_height_low"],
+                source_phase_bin=state.info["source_phase_bin"],
+                source_cycle=state.info["source_cycle"],
+                phase_bins=self.source_phase_bins, cycles=self.source_cycles,
+            )
 
             foot_position = data.site_xpos[self.foot_site_ids]
             foot_velocity = (
@@ -858,6 +913,10 @@ def make_brax_transition_env_3d(
                 "failed_stabilize": failed_stabilize.astype(jp.float32),
                 **{f"failure_{name}": value.astype(jp.float32)
                    for name, value in failure_causes.items()},
+                **{name: value.astype(jp.float32)
+                   for name, value in failure_modes.items()},
+                **{name: value.astype(jp.float32)
+                   for name, value in source_metrics.items()},
                 "timeout": timeout.astype(jp.float32),
             }
             return State(

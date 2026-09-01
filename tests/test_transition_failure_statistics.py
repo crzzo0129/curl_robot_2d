@@ -6,6 +6,10 @@ from curl_robot_2d_mjx.failure_transition_3d import (
     TRANSITION_FAILURE_CAUSE_NAMES_3D,
     transition_failure_breakdown_3d,
     transition_failure_causes_3d,
+    transition_failure_mode_breakdown_3d,
+    transition_failure_mode_metrics_3d,
+    transition_source_breakdown_3d,
+    transition_source_metrics_3d,
 )
 
 
@@ -75,6 +79,55 @@ class FailureCauseTests(unittest.TestCase):
         self.assertAlmostEqual(report["consistency_error"], 0.)
         self.assertEqual(report["dominant_cause"], "root_height_low")
         self.assertTrue(report["mutually_exclusive"])
+
+    def test_failure_mode_uses_action_mode_and_preserves_exclusivity(self):
+        causes = self.classify(root_height_low=True, stabilize_guard=True)
+        metrics = transition_failure_mode_metrics_3d(np, causes, np.asarray(0))
+        self.assertTrue(metrics["failure_root_height_low_mode_brake"])
+        self.assertEqual(sum(bool(value) for value in metrics.values()), 1)
+        eval_metrics = {
+            "eval/episode_failed": .25,
+            "eval/episode_failure_root_height_low_mode_brake": .20,
+            "eval/episode_failure_stabilize_guard_mode_stabilize": .05,
+        }
+        report = transition_failure_mode_breakdown_3d(eval_metrics)
+        self.assertAlmostEqual(report["sum"], .25)
+        self.assertAlmostEqual(report["consistency_error"], 0.)
+        self.assertEqual(report["dominant_cell"], "root_height_low@brake")
+
+    def test_source_pulses_and_conditional_rates(self):
+        pulses = transition_source_metrics_3d(
+            np, done=np.asarray(True), success=np.asarray(False),
+            failed=np.asarray(True), timeout=np.asarray(False),
+            root_height_low=np.asarray(True), source_phase_bin=np.asarray(3),
+            source_cycle=np.asarray(1), phase_bins=8, cycles=(1,),
+        )
+        self.assertTrue(pulses["source_phase_bin_3_episodes"])
+        self.assertTrue(pulses["source_phase_bin_3_failed"])
+        self.assertTrue(pulses["source_cycle_1_root_height_low"])
+        self.assertFalse(pulses["source_phase_bin_2_episodes"])
+        metrics = {
+            "eval/episode_source_phase_bin_3_episodes": .125,
+            "eval/episode_source_phase_bin_3_success": .075,
+            "eval/episode_source_phase_bin_3_failed": .05,
+            "eval/episode_source_phase_bin_3_timeout": 0.,
+            "eval/episode_source_phase_bin_3_root_height_low": .04,
+            "eval/episode_source_cycle_1_episodes": 1.,
+            "eval/episode_source_cycle_1_success": .6,
+            "eval/episode_source_cycle_1_failed": .4,
+        }
+        report = transition_source_breakdown_3d(
+            metrics, phase_bins=8, cycles=(1,), episode_count=200
+        )
+        phase = report["by_phase_bin"]["3"]
+        self.assertAlmostEqual(phase["success_rate"], .6)
+        self.assertAlmostEqual(phase["failed_rate"], .4)
+        self.assertAlmostEqual(phase["root_height_low_rate"], .32)
+        self.assertAlmostEqual(phase["outcome_consistency_error"], 0.)
+        self.assertEqual(phase["episodes"], 25)
+        self.assertIsNone(report["by_phase_bin"]["0"]["success_rate"])
+        self.assertAlmostEqual(report["phase_evaluation_fraction_sum"], .125)
+        self.assertAlmostEqual(report["cycle_coverage_consistency_error"], 0.)
 
 
 if __name__ == "__main__":

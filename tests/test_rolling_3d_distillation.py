@@ -23,6 +23,10 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     ROLLING_CONTROLLER_ACTION_MASK_3D,
 )
 from scripts import train_mjx_3d_roll_distillation
+from curl_robot_2d_mjx.randomization_3d import (
+    RollingStudentDeployDomainRandomization,
+    validate_student_deploy_domain_randomization_3d,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -36,6 +40,24 @@ MODEL_PATH = (
 
 
 class Rolling3DDistillationContractTest(unittest.TestCase):
+    def test_deploy_dr_curriculum_contracts_toward_nominal(self):
+        full = RollingStudentDeployDomainRandomization()
+        quarter = full.scaled(0.25)
+
+        self.assertEqual(quarter.sliding_friction, (0.9, 1.1))
+        self.assertEqual(quarter.motor_kp_scale, (0.9625, 1.0375))
+        self.assertEqual(quarter.motor_kd_scale, (0.95, 1.05))
+        self.assertEqual(
+            quarter.action_latency_probabilities,
+            (0.9, 0.075, 0.025),
+        )
+        self.assertAlmostEqual(
+            quarter.control_deadline_miss_probability, 0.0125
+        )
+        self.assertAlmostEqual(quarter.motor_zero_bias_rad, 0.005)
+        self.assertAlmostEqual(quarter.encoder_fixed_bias_rad, 0.0025)
+        validate_student_deploy_domain_randomization_3d(quarter)
+
     def test_dagger_teacher_probability_reaches_both_endpoints(self):
         probability = (
             train_mjx_3d_roll_distillation.dagger_teacher_probability
@@ -219,6 +241,39 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
                         str(root / "output"),
                     ]
                 )
+
+    def test_deploy_dr_requires_and_reuses_existing_student(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            teacher = root / "params_best"
+            teacher.write_bytes(b"placeholder")
+            student = root / "student_params"
+            student.write_bytes(b"placeholder")
+            controller = root / "controller.json"
+            controller.write_text("{}", encoding="utf-8")
+            base = [
+                str(teacher),
+                "--controller",
+                str(controller),
+                "--out",
+                str(root / "output"),
+                "--deploy-dr",
+            ]
+
+            with self.assertRaises(SystemExit):
+                train_mjx_3d_roll_distillation.parse_args(base)
+            args = train_mjx_3d_roll_distillation.parse_args(
+                base
+                + [
+                    "--restore-student",
+                    str(student),
+                    "--deploy-dr-strength",
+                    "0.25",
+                ]
+            )
+
+        self.assertTrue(args.deploy_dr)
+        self.assertEqual(args.deploy_dr_strength, 0.25)
 
 
 if __name__ == "__main__":

@@ -113,6 +113,22 @@ class CompactStartupTest(unittest.TestCase):
                         "--candidate-bank", "old-bank.json"])
         self.assertIn("no longer uses --candidate-bank", stderr.getvalue())
 
+    def test_failure_reason_terminal_format_is_sorted_and_complete(self):
+        from scripts.train_mjx_3d_startup_ppo import (
+            format_startup_failure_reasons, startup_failure_reasons,
+        )
+        metrics = {"eval/episode_failed": 1.,
+                   "eval/episode_failure_axis_tilt": .75,
+                   "eval/episode_startup_timeout": .25,
+                   "eval/episode_failure_root_high": 0.}
+        self.assertEqual(startup_failure_reasons(metrics),
+                         [("axis_tilt", .75), ("startup_timeout", .25)])
+        self.assertEqual(format_startup_failure_reasons(metrics),
+                         "axis_tilt=75.0%, startup_timeout=25.0%")
+        self.assertEqual(format_startup_failure_reasons({}), "none")
+        self.assertEqual(startup_failure_reasons({"eval/episode_failed": .5}),
+                         [("unclassified_failure", .5)])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -238,6 +238,19 @@ collect_roll_snapshots_3d(
 这些分项。要诊断当前 brake_early 权重，需从其 `ppo_checkpoint` 恢复到一个新的
 输出目录并重新评估/训练，不能根据总失败率反推原因。
 
+v6 进一步记录两组不进入 actor observation 的诊断标签：
+
+- `failure_mode_breakdown` 将每个互斥失败原因按 BRAKE、DEPLOY、STABILIZE
+  再分组。模式定义为“产生终止物理步的动作所属模式”，避免同一步刚切换模式时
+  归因错位；矩阵总和仍应等于总失败率。
+- `source_breakdown` 按重置快照的 8 个圈内相位及整数圈数给出条件成功、失败、
+  超时和低高度失败率。`episodes` 是该组回合数，`evaluation_fraction` 是该组占全部评估回合的比例，其他率
+  均以该组自身回合数为分母。空组输出 `null`，不会伪装成 0% 失败。BRAKE
+  评估中的 phase/cycle `coverage_consistency_error` 都应接近零。
+
+上述字段只存在于环境 `info`/metrics 和 JSON 报告中，实机兼容的 36×20=720 维
+actor 输入、86 维 critic 输入、12 维动作以及网络结构均未改变。
+
 ## READY 和实机安全边界
 
 仿真 READY 需连续满足约 0.40 s：线速度 ≤0.12 m/s、角速度 ≤0.45 rad/s、
@@ -290,6 +303,23 @@ python -m scripts.train_mjx_3d_transition_ppo --stage deploy_near_stand --preset
 v5 恢复入口接受具体数字步数目录，也接受 `ppo_checkpoint` 父目录；后者自动
 选择同时存在 `_METADATA` 和 `ppo_network_config.json` 的最大数字步数，
 忽略未完成/临时目录。会打印实际恢复路径；没有合格存档则报错，不改用随机权重。
+
+只诊断现有权重、不做 PPO 更新时，优先读取训练目录中的 `params_final`：
+
+```bash
+python -m scripts.train_mjx_3d_transition_ppo \
+  --eval-only --eval-params results/mjx_3d_transition_ppo_v5_failure_stats/brake_early/params_final \
+  --stage brake_early --roll-snapshots results/roll_cycle_snapshots_v2.npz \
+  --eval-envs 2048 --eval-seed 51031 \
+  --out results/mjx_3d_transition_ppo_v6_diagnostics
+```
+
+也可把 `--eval-params .../params_final` 替换成
+`--restore-checkpoint .../ppo_checkpoint`；程序会自动选择最新完整数字目录并读取
+Orbax 权重。两种来源必须且只能指定一种。输出为
+`brake_early/evaluation.json` 和逐回合 `evaluation_arrays.npz`。评估使用关闭观察噪声
+的独立固定回合，`policy_updates=0`，不会继续训练或覆盖原 checkpoint。使用非默认
+隐藏层训练的权重必须同时传入原来的 `--hidden-layers`。
 
 **已经训练完 deploy_capture 的用户不需要重训前面的阶段。** 按上一轮
 `v4_retry` 输出位置，在云端先检查新库、跑 MJX smoke，再恢复训练：

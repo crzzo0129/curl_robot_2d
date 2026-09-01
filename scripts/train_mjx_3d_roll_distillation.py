@@ -41,6 +41,9 @@ from curl_robot_2d_mjx.rolling_diagnostics_3d import (
     lateral_state_features_3d,
     save_lateral_trace,
 )
+from curl_robot_2d_mjx.randomization_3d import (
+    RollingStudentDeployDomainRandomization,
+)
 
 
 PRESETS = {
@@ -147,6 +150,23 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--observation-noise-scale", type=float, default=1.0)
     parser.add_argument(
+        "--deploy-dr",
+        action="store_true",
+        help=(
+            "continue an existing Student with deploy-style physics, "
+            "calibration, latency and deadline randomization"
+        ),
+    )
+    parser.add_argument(
+        "--deploy-dr-strength",
+        type=float,
+        default=1.0,
+        help=(
+            "fraction of the train_ppo_deploy.py DR envelope; use "
+            "0.25, 0.50 and 1.0 as a continuation curriculum"
+        ),
+    )
+    parser.add_argument(
         "--minimum-closed-loop-turns",
         type=float,
         default=5.0,
@@ -200,6 +220,13 @@ def parse_args(argv=None):
         or args.observation_noise_scale < 0.0
     ):
         parser.error("--observation-noise-scale must be finite and nonnegative")
+    if (
+        not math.isfinite(args.deploy_dr_strength)
+        or not 0.0 <= args.deploy_dr_strength <= 1.0
+    ):
+        parser.error("--deploy-dr-strength must be between zero and one")
+    if args.deploy_dr and args.restore_student is None:
+        parser.error("--deploy-dr requires --restore-student")
     if (
         not math.isfinite(args.minimum_closed_loop_turns)
         or args.minimum_closed_loop_turns < 0.0
@@ -303,12 +330,16 @@ def main(argv=None):
     import jax
     import jax.numpy as jp
     from brax.io import model as model_io
+    from brax.envs.wrappers import training as brax_training_wrappers
     from brax.training.acme import running_statistics
     from brax.training.agents.ppo import networks as ppo_networks
     import flax.linen as linen
     import optax
 
     from curl_robot_2d_mjx.environment_3d import make_brax_env_3d
+    from curl_robot_2d_mjx.randomization_3d import (
+        make_student_deploy_domain_randomization_fn_3d,
+    )
     from scripts.export_rtneural import convert as convert_rtneural
     from scripts.train_mjx_3d_residual_ppo import (
         _zero_centered_residual_network_factory,
@@ -383,11 +414,15 @@ def main(argv=None):
         )
     )
     initial_history = initial_rolling_deploy_history_3d(jp)
+    zero_encoder_bias = jp.zeros(
+        (args.envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
+    )
 
     def deployment_observation(
         state,
         history,
         previous_controller_action,
+        encoder_bias,
         noise_key,
         noise_scale,
     ):
@@ -404,6 +439,7 @@ def main(argv=None):
         )
         joint_offset = (
             data.qpos[:, controller_qpos_indices] - compact_position
+            + encoder_bias
         )
         frame = rolling_deploy_frame_3d(
             jp,
@@ -419,7 +455,7 @@ def main(argv=None):
         return push_rolling_deploy_frame_3d(jp, history, frame)
 
     deployment_observation = jax.jit(
-        deployment_observation, static_argnums=(4,)
+        deployment_observation, static_argnums=(5,)
     )
 
     class StudentPolicy(linen.Module):
@@ -489,6 +525,7 @@ def main(argv=None):
             state,
             history,
             previous_controller_action,
+            zero_encoder_bias,
             noise_key,
             args.observation_noise_scale,
         )
@@ -617,6 +654,7 @@ def main(argv=None):
             state,
             history,
             previous_controller_action,
+            zero_encoder_bias,
             noise_key,
             args.observation_noise_scale,
         )
@@ -679,23 +717,170 @@ def main(argv=None):
             f"teacher's {teacher_env.observation_size}-D observation, got "
             f"{direct_env.observation_size}"
         )
-    direct_reset_batch = jax.jit(jax.vmap(direct_env.reset))
-    direct_step_raw_batch = jax.jit(jax.vmap(direct_env.step))
-
-    def direct_step_if_active(single_state, single_action, single_active):
-        return jax.lax.cond(
-            single_active,
-            lambda operands: direct_env.step(*operands),
-            lambda operands: operands[0],
-            (single_state, single_action),
+    deploy_dr_settings = (
+        RollingStudentDeployDomainRandomization().scaled(
+            args.deploy_dr_strength
+        )
+        if args.deploy_dr
+        else None
+    )
+    if deploy_dr_settings is not None:
+        print(
+            "[deploy DR]\n"
+            f"  strength={args.deploy_dr_strength:g} "
+            f"friction={deploy_dr_settings.sliding_friction} "
+            f"torso_mass={deploy_dr_settings.torso_mass_scale} "
+            f"leg_mass={deploy_dr_settings.leg_mass_scale}\n"
+            f"  inertia={deploy_dr_settings.inertia_scale} "
+            f"kp={deploy_dr_settings.motor_kp_scale} "
+            f"kd={deploy_dr_settings.motor_kd_scale} "
+            f"torque={deploy_dr_settings.motor_torque_scale}\n"
+            f"  latency={deploy_dr_settings.action_latency_probabilities} "
+            "for 0/20/40ms; "
+            f"deadline_miss="
+            f"{deploy_dr_settings.control_deadline_miss_probability:.1%} "
+            f"motor_zero=±{deploy_dr_settings.motor_zero_bias_rad:.4f}rad "
+            f"encoder=±{deploy_dr_settings.encoder_fixed_bias_rad:.4f}rad",
+            flush=True,
         )
 
-    direct_step_batch = jax.jit(jax.vmap(direct_step_if_active))
+    def batched_direct_environment(env, batch_size, model_seed):
+        """Create nominal vmap or per-environment randomized MJX calls."""
+
+        if deploy_dr_settings is None:
+            return (
+                None,
+                jax.jit(jax.vmap(env.reset)),
+                jax.jit(jax.vmap(env.step)),
+            )
+        randomization_fn = make_student_deploy_domain_randomization_fn_3d(
+            deploy_dr_settings,
+            torso_body_id=env.torso_body_id,
+        )
+        model_keys = jax.random.split(
+            jax.random.PRNGKey(model_seed), batch_size
+        )
+        wrapper = brax_training_wrappers.DomainRandomizationVmapWrapper(
+            env,
+            lambda model: randomization_fn(model, model_keys),
+        )
+        return wrapper, jax.jit(wrapper.reset), jax.jit(wrapper.step)
+
+    (
+        direct_train_wrapper,
+        direct_reset_batch,
+        direct_step_raw_batch,
+    ) = batched_direct_environment(
+        direct_env, args.envs, args.seed + 60_000
+    )
+
+    def make_active_batch_step(raw_step):
+        @jax.jit
+        def step_if_active(state, action, active):
+            candidate = raw_step(state, action)
+
+            def choose(current, next_value):
+                mask = jp.reshape(
+                    active,
+                    active.shape + (1,) * (next_value.ndim - active.ndim),
+                )
+                return jp.where(mask, next_value, current)
+
+            return jax.tree_util.tree_map(choose, state, candidate)
+
+        return step_if_active
+
     student_policy_batch = jax.jit(
         lambda params, observation: student.apply(
             params,
             (observation - observation_mean) / observation_std,
         )
+    )
+
+    def make_episode_randomization(batch_size):
+        if deploy_dr_settings is None:
+            @jax.jit
+            def attach_nominal(state, key):
+                del key
+                return state
+
+            @jax.jit
+            def transport_nominal(state, action, key):
+                del key
+                return state, action, jp.zeros((), dtype=jp.float32)
+
+            return attach_nominal, transport_nominal
+
+        probabilities = jp.asarray(
+            deploy_dr_settings.action_latency_probabilities
+        )
+
+        @jax.jit
+        def attach_randomization(state, key):
+            latency_key, motor_key, encoder_key = jax.random.split(key, 3)
+            info = {
+                **state.info,
+                "deploy_action_queue": jp.zeros(
+                    (batch_size, 3, ROLLING_CONTROLLER_ACTION_SIZE_3D)
+                ),
+                "deploy_applied_action": jp.zeros(
+                    (batch_size, ROLLING_CONTROLLER_ACTION_SIZE_3D)
+                ),
+                "deploy_latency_steps": jax.random.choice(
+                    latency_key,
+                    3,
+                    shape=(batch_size,),
+                    p=probabilities,
+                ),
+                "motor_zero_bias_ctrl": jax.random.uniform(
+                    motor_key,
+                    (batch_size, ROLLING_CONTROLLER_ACTION_SIZE_3D),
+                    minval=-deploy_dr_settings.motor_zero_bias_rad,
+                    maxval=deploy_dr_settings.motor_zero_bias_rad,
+                ),
+                "encoder_bias": jax.random.uniform(
+                    encoder_key,
+                    (batch_size, ROLLING_CONTROLLER_ACTION_SIZE_3D),
+                    minval=-deploy_dr_settings.encoder_fixed_bias_rad,
+                    maxval=deploy_dr_settings.encoder_fixed_bias_rad,
+                ),
+            }
+            return state.replace(info=info)
+
+        @jax.jit
+        def transport_randomized(state, action, key):
+            queue = jp.concatenate(
+                (action[:, None, :], state.info["deploy_action_queue"][:, :-1]),
+                axis=1,
+            )
+            delayed = jp.take_along_axis(
+                queue,
+                state.info["deploy_latency_steps"][:, None, None],
+                axis=1,
+            )[:, 0, :]
+            deadline_missed = jax.random.uniform(
+                key, (batch_size,)
+            ) < deploy_dr_settings.control_deadline_miss_probability
+            applied = jp.where(
+                deadline_missed[:, None],
+                state.info["deploy_applied_action"],
+                delayed,
+            )
+            info = {
+                **state.info,
+                "deploy_action_queue": queue,
+                "deploy_applied_action": applied,
+            }
+            return (
+                state.replace(info=info),
+                applied,
+                jp.mean(deadline_missed.astype(jp.float32)),
+            )
+
+        return attach_randomization, transport_randomized
+
+    attach_train_episode_randomization, transport_train_action = (
+        make_episode_randomization(args.envs)
     )
 
     @jax.jit
@@ -746,9 +931,11 @@ def main(argv=None):
         dagger_optimizer = optax.adam(args.dagger_learning_rate)
         dagger_optimizer_state = dagger_optimizer.init(student_params)
         dagger_train_step = make_train_step(dagger_optimizer)
-        rng, dagger_reset_key = jax.random.split(rng)
+        rng, dagger_reset_key, dagger_episode_key = jax.random.split(rng, 3)
         dagger_reset_keys = jax.random.split(dagger_reset_key, args.envs)
-        dagger_state = direct_reset_batch(dagger_reset_keys)
+        dagger_state = attach_train_episode_randomization(
+            direct_reset_batch(dagger_reset_keys), dagger_episode_key
+        )
         dagger_history = jp.broadcast_to(
             initial_history,
             (args.envs, ROLLING_DEPLOY_OBSERVATION_SIZE_3D),
@@ -765,18 +952,31 @@ def main(argv=None):
             f"  steps={args.dagger_steps} lr={args.dagger_learning_rate:g} "
             "teacher_intervention="
             f"{args.dagger_teacher_start_probability:.1%}->"
-            f"{args.dagger_teacher_end_probability:.1%}", flush=True,
+            f"{args.dagger_teacher_end_probability:.1%}\n"
+            f"  deploy_dr={args.deploy_dr} "
+            f"strength={args.deploy_dr_strength:g}", flush=True,
         )
 
     for step in range(0 if args.eval_only else args.dagger_steps):
-        rng, policy_key, noise_key, mixture_key, reset_key = (
-            jax.random.split(rng, 5)
+        (
+            rng,
+            policy_key,
+            noise_key,
+            mixture_key,
+            transport_key,
+            reset_key,
+            reset_episode_key,
+        ) = (
+            jax.random.split(rng, 7)
         )
         policy_keys = jax.random.split(policy_key, args.envs)
         dagger_history = deployment_observation(
             dagger_state,
             dagger_history,
             dagger_previous_controller_action,
+            dagger_state.info.get(
+                "encoder_bias", zero_encoder_bias
+            ),
             noise_key,
             args.observation_noise_scale,
         )
@@ -826,10 +1026,15 @@ def main(argv=None):
             teacher_controller_action,
             student_controller_action,
         )
-        behavior_effective_action = (
-            controller_action_to_effective_action_3d(
-                jp, behavior_controller_action
-            )
+        (
+            dagger_state,
+            applied_controller_action,
+            deadline_miss_rate,
+        ) = transport_train_action(
+            dagger_state, behavior_controller_action, transport_key
+        )
+        behavior_effective_action = controller_action_to_effective_action_3d(
+            jp, applied_controller_action
         )
         dagger_state = direct_step_raw_batch(
             dagger_state, behavior_effective_action
@@ -837,7 +1042,9 @@ def main(argv=None):
         dagger_previous_controller_action = behavior_controller_action
 
         reset_keys = jax.random.split(reset_key, args.envs)
-        reset_state = direct_reset_batch(reset_keys)
+        reset_state = attach_train_episode_randomization(
+            direct_reset_batch(reset_keys), reset_episode_key
+        )
         (
             dagger_state,
             dagger_history,
@@ -859,6 +1066,7 @@ def main(argv=None):
                 "action_max_abs": float(diagnostics[1]),
                 "teacher_probability": float(teacher_probability),
                 "teacher_fraction": float(jp.mean(use_teacher)),
+                "deadline_miss_rate": float(deadline_miss_rate),
                 "reset_rate": float(reset_rate),
             }
             dagger_loss_history.append(record)
@@ -869,15 +1077,39 @@ def main(argv=None):
                 f"rmse={record['action_rmse']:.5f} "
                 f"max={record['action_max_abs']:.5f} "
                 f"expert={record['teacher_fraction']:.1%} "
+                f"miss={record['deadline_miss_rate']:.1%} "
                 f"reset={record['reset_rate']:.1%}",
                 flush=True,
             )
 
+    direct_eval_env = make_brax_env_3d(
+        direct_task,
+        cem_reference=reference,
+        seed=args.seed + 70_000,
+    )
+    (
+        direct_eval_wrapper,
+        direct_eval_reset_batch,
+        direct_eval_step_raw_batch,
+    ) = batched_direct_environment(
+        direct_eval_env,
+        args.eval_envs,
+        args.eval_seed if args.eval_seed is not None else args.seed + 80_000,
+    )
+    direct_eval_step_batch = make_active_batch_step(
+        direct_eval_step_raw_batch
+    )
+    attach_eval_episode_randomization, transport_eval_action = (
+        make_episode_randomization(args.eval_envs)
+    )
     rng, eval_reset_key = jax.random.split(rng)
     if args.eval_seed is not None:
         eval_reset_key = jax.random.PRNGKey(args.eval_seed)
+    eval_reset_key, eval_episode_key = jax.random.split(eval_reset_key)
     eval_reset_keys = jax.random.split(eval_reset_key, args.eval_envs)
-    eval_state = direct_reset_batch(eval_reset_keys)
+    eval_state = attach_eval_episode_randomization(
+        direct_eval_reset_batch(eval_reset_keys), eval_episode_key
+    )
     eval_history = jp.broadcast_to(
         initial_history,
         (args.eval_envs, ROLLING_DEPLOY_OBSERVATION_SIZE_3D),
@@ -897,6 +1129,7 @@ def main(argv=None):
     abduction_sample_count = jp.asarray(0, dtype=jp.int32)
     abduction_max_abs = jp.asarray(0.0)
     abduction_indices = jp.asarray((0, 3, 6, 9))
+    eval_deadline_miss_sum = jp.asarray(0.0)
     diagnostic_frames = []
     diagnostic_rng = jax.random.PRNGKey(args.seed + 200_000)
 
@@ -930,15 +1163,22 @@ def main(argv=None):
         )
 
     for eval_step in range(args.episode_length):
-        # No synthetic sensor noise in acceptance: this measures whether the
-        # student itself can close the loop through the deployable ABI.
-        rng, eval_noise_key = jax.random.split(rng)
+        # Nominal acceptance remains noise-free.  A deploy-DR evaluation uses
+        # the same observation corruption that the continuation stage sees.
+        rng, eval_noise_key, eval_transport_key = jax.random.split(rng, 3)
+        eval_encoder_bias = eval_state.info.get(
+            "encoder_bias",
+            jp.zeros(
+                (args.eval_envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
+            ),
+        )
         eval_history = deployment_observation(
             eval_state,
             eval_history,
             eval_previous_controller_action,
+            eval_encoder_bias,
             eval_noise_key,
-            0.0,
+            args.observation_noise_scale if args.deploy_dr else 0.0,
         )
         controller_action = student_policy_batch(
             student_params, eval_history
@@ -955,7 +1195,7 @@ def main(argv=None):
             abduction_max_abs,
             jp.max(jp.abs(active_abduction)),
         )
-        effective_action = controller_action_to_effective_action_3d(
+        raw_effective_action = controller_action_to_effective_action_3d(
             jp, controller_action
         )
         if args.record_diagnostics:
@@ -968,8 +1208,19 @@ def main(argv=None):
             label_action = label_state.info["last_action"]
             label_valid = label_state.metrics["failure_nonfinite"] < 0.5
         was_active = eval_active
-        next_eval_state = direct_step_batch(
-            eval_state, effective_action, was_active
+        (
+            eval_state,
+            eval_applied_controller_action,
+            eval_deadline_miss_rate,
+        ) = transport_eval_action(
+            eval_state, controller_action, eval_transport_key
+        )
+        eval_deadline_miss_sum += eval_deadline_miss_rate
+        applied_effective_action = controller_action_to_effective_action_3d(
+            jp, eval_applied_controller_action
+        )
+        next_eval_state = direct_eval_step_batch(
+            eval_state, applied_effective_action, was_active
         )
         eval_roll_progress += jp.where(
             was_active,
@@ -978,7 +1229,7 @@ def main(argv=None):
         )
         if args.record_diagnostics:
             diagnostic_frames.append(jax.device_get(diagnostic_frame(
-                eval_state, next_eval_state, was_active, effective_action,
+                eval_state, next_eval_state, was_active, raw_effective_action,
                 label_action, label_valid, eval_roll_progress / (2.0 * math.pi),
             )))
         eval_steps += was_active.astype(jp.int32)
@@ -1025,6 +1276,14 @@ def main(argv=None):
         "episodes": args.eval_envs,
         "episode_length": args.episode_length,
         "duration_s": args.episode_length * direct_task.control_timestep,
+        "deploy_dr": args.deploy_dr,
+        "deploy_dr_strength": args.deploy_dr_strength if args.deploy_dr else 0.0,
+        "observation_noise_scale": (
+            args.observation_noise_scale if args.deploy_dr else 0.0
+        ),
+        "mean_deadline_miss_rate": float(
+            eval_deadline_miss_sum / args.episode_length
+        ),
         "minimum_success_turns": args.minimum_closed_loop_turns,
         "failure_free_rate": float(1.0 - np.mean(eval_failed_np)),
         "success_rate": float(np.mean(movement_success)),
@@ -1083,7 +1342,14 @@ def main(argv=None):
             "eval_reset_keys": np.asarray(jax.device_get(eval_reset_keys)).tolist(),
             "closed_loop_task": asdict(direct_task),
             "teacher_task": asdict(teacher_task),
-            "observation_noise_scale": 0.0,
+            "deploy_domain_randomization": (
+                asdict(deploy_dr_settings)
+                if deploy_dr_settings is not None
+                else None
+            ),
+            "observation_noise_scale": (
+                args.observation_noise_scale if args.deploy_dr else 0.0
+            ),
             "closed_loop_evaluation": closed_loop_evaluation,
             "lateral_diagnostics": lateral_diagnostics,
         }
@@ -1127,6 +1393,11 @@ def main(argv=None):
         "runtime": describe_runtime(),
         "teacher_task": asdict(teacher_task),
         "closed_loop_task": asdict(direct_task),
+        "deploy_domain_randomization": (
+            asdict(deploy_dr_settings)
+            if deploy_dr_settings is not None
+            else None
+        ),
         "student_observation_size": ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
         "student_action_size": ROLLING_CONTROLLER_ACTION_SIZE_3D,
         "hardware_policy_frequency_hz": HARDWARE_POLICY_FREQUENCY_HZ_3D,

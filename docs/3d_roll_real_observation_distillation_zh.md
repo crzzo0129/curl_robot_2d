@@ -106,6 +106,37 @@ python -m scripts.train_mjx_3d_roll_distillation \
 smoke 的目标只是验证数据流、显存和导出，不代表策略已蒸馏成功。正式模型至少要确认
 闭环 `success_rate` 和圈数接近教师，再进入实机吊绳/急停保护测试。
 
+## 在现有 Student 上继续做 deploy DR
+
+`--deploy-dr` 只允许和 `--restore-student` 一起使用：它保留现有 Student 的 720 维
+归一化统计，跳过 BC，并在随机化后的学生闭环状态上继续 DAgger。随机化类型与
+`train_ppo_deploy.py` 对齐：滑动摩擦、躯干/腿质量、惯量、躯干 COM、逐电机
+KP/KD/力矩上限、0/20/40 ms 动作延迟、5% 控制 deadline miss、电机零偏、编码器
+固定偏置，以及原有的 gyro/重力/关节观测噪声。没有加入 random shove 或动作低通。
+
+不要直接从 nominal Student 跳到完整范围。建议每一级都从上一级输出继续：
+
+```bash
+# 第一级：25% deploy DR
+python -m scripts.train_mjx_3d_roll_distillation \
+  results/rollingquad2_floor_mass_gain_v3_h200_seed0/params_best \
+  --restore-student results/rollingquad2_roll_dagger_h200_seed0/student_params \
+  --deploy-dr --deploy-dr-strength 0.25 \
+  --preset h200 \
+  --out results/rollingquad2_roll_student_dr025_seed0 \
+  --mujoco-gl disable --memory-fraction 0.80
+
+# 第二级把 restore-student 换成 dr025 的输出，strength 改为 0.50；
+# 第三级再换成 dr050 的输出，strength 改为 1.00。
+```
+
+强度会把所有模型范围、COM/零偏幅值、deadline miss 概率以及非零延迟概率一起从
+nominal 线性扩展到完整 deploy 范围。每个并行环境拥有独立的固定随机模型；零偏、
+编码器偏置和延迟在 episode reset 时重新采样。DR 评估也使用一批独立随机模型，并在
+`closed_loop_evaluation` 中记录 `mean_deadline_miss_rate`。由于教师本身没有在完整
+deploy 范围上训练，升档依据应同时看圈数、非横向故障和教师标签误差，不能只看当前
+较严格的 lateral-drift success gate。
+
 ## 只评估现有 DAgger checkpoint：横向漂移诊断
 
 Actuator-gain 教师的平均圈数约为 8.8 圈；不要再用早期 reference 约 6.7 圈作为这个

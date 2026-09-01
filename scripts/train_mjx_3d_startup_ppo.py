@@ -35,6 +35,35 @@ PRESETS = {
     "h200": dict(steps=20_000_000, envs=1024, eval_envs=128, num_evals=30, batch_size=256, num_minibatches=8),
 }
 
+STARTUP_TERMINAL_REASONS = (
+    ("axis_tilt", "eval/episode_failure_axis_tilt"),
+    ("lateral_drift", "eval/episode_failure_lateral_drift"),
+    ("root_low", "eval/episode_failure_root_low"),
+    ("root_high", "eval/episode_failure_root_high"),
+    ("forbidden_depth", "eval/episode_failure_forbidden_depth"),
+    ("forbidden_contact", "eval/episode_failure_forbidden_contact"),
+    ("nonfinite", "eval/episode_failure_nonfinite"),
+    ("startup_timeout", "eval/episode_startup_timeout"),
+    ("tail_insufficient_progress", "eval/episode_tail_insufficient_progress"),
+)
+
+
+def startup_failure_reasons(metrics):
+    """Nonzero terminal cause rates, sorted for compact human-readable logging."""
+    reasons = [(name, float(metrics.get(key, 0.)))
+               for name, key in STARTUP_TERMINAL_REASONS]
+    reasons = [(name, value) for name, value in reasons if value > 1e-7]
+    reasons.sort(key=lambda item: item[1], reverse=True)
+    failed = float(metrics.get("eval/episode_failed", 0.))
+    if failed > 1e-7 and not reasons:
+        reasons.append(("unclassified_failure", failed))
+    return reasons
+
+
+def format_startup_failure_reasons(metrics):
+    reasons = startup_failure_reasons(metrics)
+    return ", ".join(f"{name}={value:.1%}" for name, value in reasons) if reasons else "none"
+
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
@@ -344,6 +373,9 @@ def main(argv=None):
               f"failed={failed:.1%} timeout={clean.get('eval/episode_startup_timeout', 0.):.1%} "
               f"slip_distance={clean.get('eval/episode_foot_slip_distance_m', 0.):.4f}m "
               f"stability={clean.get('eval/episode_reward_startup_stability', 0.):.3f}", flush=True)
+        print(f"[startup failure] step={step} reasons=[{format_startup_failure_reasons(clean)}] "
+              f"terminal_gate={clean.get('eval/episode_terminal_gate_error', 0.):.3f} "
+              f"tail_turns={clean.get('eval/episode_terminal_tail_turns', 0.):.3f}", flush=True)
     print(f"[startup PPO] {args.envs} envs, budget={cfg.startup_budget_s}s, "
           f"teacher cold-start tail={cfg.continuation_s}s, target=compact, "
           f"foot_slip_weight={cfg.foot_slip_weight}", flush=True)

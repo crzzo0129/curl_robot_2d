@@ -185,6 +185,24 @@ class CurriculumAcceptanceTests(unittest.TestCase):
             with self.assertRaisesRegex(SystemExit, "not be overwritten"):
                 main(["--out", directory])
 
+    def test_eval_only_requires_exactly_one_weight_source_before_jax(self):
+        with self.assertRaisesRegex(SystemExit, "exactly one"):
+            main(["--eval-only", "--dry-run"])
+        with self.assertRaisesRegex(SystemExit, "exactly one"):
+            main(["--eval-only", "--restore-checkpoint", "a",
+                  "--eval-params", "b", "--dry-run"])
+        with self.assertRaisesRegex(SystemExit, "only valid"):
+            main(["--eval-params", "weights", "--dry-run"])
+
+    def test_eval_only_dry_run_preserves_actor_abi_and_has_zero_updates(self):
+        stream = io.StringIO()
+        with contextlib.redirect_stdout(stream):
+            main(["--eval-only", "--eval-params", "params_final", "--dry-run"])
+        config = json.loads(stream.getvalue())
+        self.assertEqual(config["run_mode"], "evaluation_only")
+        self.assertEqual(config["actor_observation_size"], 720)
+        self.assertEqual(config["eval_only"]["policy_updates"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
