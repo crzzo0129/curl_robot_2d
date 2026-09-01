@@ -106,7 +106,52 @@ python -m scripts.train_mjx_3d_roll_distillation \
 smoke 的目标只是验证数据流、显存和导出，不代表策略已蒸馏成功。正式模型至少要确认
 闭环 `success_rate` 和圈数接近教师，再进入实机吊绳/急停保护测试。
 
-## 在现有 Student 上继续做 deploy DR
+## 在现有 Student 上做 reward-driven deploy DR PPO（推荐）
+
+现有 Student 已经完成模仿学习后，后续 DR 应由环境奖励驱动，而不是继续让随机化后的
+Student 模仿教师。新入口将现有 Student 权重直接复制为 PPO Actor 初值：Actor 只读取
+实机可用的 720 维历史观测，Critic 读取 65 维特权状态。PPO 只输出 8 个 hip/knee
+动作，四个 abduction 通道在结构上锁为零；导出时再扩回实机控制器要求的 12 通道。
+
+建议按 25% → 50% → 100% 三档推进，并逐档减小原 Student 的行为约束：
+
+```bash
+# 第一级：现有 Student 初始化 Actor，25% DR
+python -m scripts.train_mjx_3d_roll_student_dr_ppo \
+  results/rollingquad2_roll_dagger_h200_seed0/student_params \
+  --dr-strength 0.25 --student-anchor-weight 0.02 \
+  --preset h200 --max-devices 4 \
+  --out results/rollingquad2_roll_student_reward_dr025_seed0 \
+  --mujoco-gl disable --memory-fraction 0.80
+
+# 第二级：恢复完整 PPO（Actor、特权 Critic 和归一化统计），50% DR
+python -m scripts.train_mjx_3d_roll_student_dr_ppo \
+  results/rollingquad2_roll_dagger_h200_seed0/student_params \
+  --restore-ppo results/rollingquad2_roll_student_reward_dr025_seed0/params_final \
+  --dr-strength 0.50 --student-anchor-weight 0.005 \
+  --preset h200 --max-devices 4 \
+  --out results/rollingquad2_roll_student_reward_dr050_seed0 \
+  --mujoco-gl disable --memory-fraction 0.80
+
+# 第三级：完整 DR，解除行为约束
+python -m scripts.train_mjx_3d_roll_student_dr_ppo \
+  results/rollingquad2_roll_dagger_h200_seed0/student_params \
+  --restore-ppo results/rollingquad2_roll_student_reward_dr050_seed0/params_final \
+  --dr-strength 1.00 --student-anchor-weight 0 \
+  --preset h200 --max-devices 4 \
+  --out results/rollingquad2_roll_student_reward_dr100_seed0 \
+  --mujoco-gl disable --memory-fraction 0.80
+```
+
+每次评估会打印 `turns`、`success`、`failed`、横向漂移失败率和相对原 Student 的
+逐步动作 RMSE。这里 `success` 表示无故障且至少完成 5 圈。每一级输出的
+`params_final` 用于下一档继续 PPO；`student_rtneural.json` 是已扩为 12 通道且锁定
+abduction 的实机模型。
+
+## 在现有 Student 上继续做 deploy-DR DAgger（保留的旧方案）
+
+下面的入口仍然可用于实验对照，但它本质上还是模仿学习，不是推荐的 Student DR
+微调路径。
 
 `--deploy-dr` 只允许和 `--restore-student` 一起使用：它保留现有 Student 的 720 维
 归一化统计，跳过 BC，并在随机化后的学生闭环状态上继续 DAgger。随机化类型与

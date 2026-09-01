@@ -84,13 +84,16 @@ PUPPER_OPEN60_CEM_CONTROLLER = (
     / "03_strict_forbidden_collision"
     / "best_phase_controller.json"
 )
+ROLLINGQUAD_2_CEM_CONTROLLER = (
+    PROJECT_ROOT / "assets" / "rollingquad_2_3d_self_collision_cem_reference.json"
+)
 CEM_CONTROLLER_PATHS_3D = {
     "baseline": BASELINE_3D_CEM_CONTROLLER,
     "real": REAL_3D_CEM_CONTROLLER,
     "pupper_open60": PUPPER_OPEN60_CEM_CONTROLLER,
-    "rollingquad_2": PUPPER_OPEN60_CEM_CONTROLLER,
+    "rollingquad_2": ROLLINGQUAD_2_CEM_CONTROLLER,
 }
-DEFAULT_3D_CEM_CONTROLLER = PUPPER_OPEN60_CEM_CONTROLLER
+DEFAULT_3D_CEM_CONTROLLER = ROLLINGQUAD_2_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
 OBSERVATION_SIZE_3D = 61
 PHASE_FEEDBACK_SIZE_3D = 4
@@ -206,6 +209,68 @@ def configure_pupper_shell_collisions_3d(model, *, enabled: bool) -> None:
         if "_shell_" in name:
             model.geom_contype[geom_id] = contype
             model.geom_conaffinity[geom_id] = conaffinity
+
+
+ROLLINGQUAD_SELF_COLLISION_MASKS_3D = {
+    "torso_mesh": (16, 7),
+    "front_left_hip_link_geom": (2, 29),
+    "front_left_thigh_geom": (2, 29),
+    "front_right_hip_link_geom": (2, 29),
+    "front_right_thigh_geom": (2, 29),
+    "rear_left_hip_link_geom": (4, 27),
+    "rear_left_thigh_geom": (4, 27),
+    "rear_right_hip_link_geom": (4, 27),
+    "rear_right_thigh_geom": (4, 27),
+    "front_left_foot_proxy": (8, 15),
+    "front_right_foot_proxy": (8, 15),
+    "rear_left_foot_proxy": (8, 15),
+    "rear_right_foot_proxy": (8, 15),
+}
+ROLLINGQUAD_FRONT_LEG_GEOM_NAMES_3D = (
+    "front_left_hip_link_geom",
+    "front_left_thigh_geom",
+    "front_right_hip_link_geom",
+    "front_right_thigh_geom",
+)
+ROLLINGQUAD_REAR_LEG_GEOM_NAMES_3D = (
+    "rear_left_hip_link_geom",
+    "rear_left_thigh_geom",
+    "rear_right_hip_link_geom",
+    "rear_right_thigh_geom",
+)
+
+
+def validate_rollingquad_self_collision_contract_3d(model) -> None:
+    """Require the selective CAD self-collision ABI used by ROLL training."""
+
+    actual_names = {
+        model.geom(geom_id).name
+        for geom_id in range(model.ngeom)
+        if int(model.geom_bodyid[geom_id]) != 0
+    }
+    expected_names = set(ROLLINGQUAD_SELF_COLLISION_MASKS_3D)
+    if actual_names != expected_names:
+        raise ValueError(
+            "rollingquad_2 collision geoms do not match the selective "
+            "self-collision contract"
+        )
+    for name, expected in ROLLINGQUAD_SELF_COLLISION_MASKS_3D.items():
+        geom_id = model.geom(name).id
+        actual = (
+            int(model.geom_contype[geom_id]),
+            int(model.geom_conaffinity[geom_id]),
+        )
+        if actual != expected:
+            raise ValueError(
+                f"rollingquad_2 collision mask mismatch for {name}: "
+                f"expected {expected}, got {actual}"
+            )
+    floor_id = model.geom("floor").id
+    if (
+        int(model.geom_contype[floor_id]),
+        int(model.geom_conaffinity[floor_id]),
+    ) != (1, 0):
+        raise ValueError("rollingquad_2 floor collision mask must be (1, 0)")
 
 
 def configure_floor_contact_friction_3d(
@@ -326,6 +391,8 @@ def validate_rolling_morphology_3d(model, geometry: str) -> None:
 
     import mujoco
 
+    if geometry == "rollingquad_2":
+        validate_rollingquad_self_collision_contract_3d(model)
     expected_names = (
         PUPPER_JOINT_NAMES_3D
         if geometry in ("pupper_open60", "rollingquad_2")
@@ -769,6 +836,29 @@ def make_brax_env_3d(
                 foot_geom_ids,
                 dtype=jp.int32,
             )
+            self.front_leg_geom_ids = jp.asarray(
+                [
+                    object_id(mujoco.mjtObj.mjOBJ_GEOM, name)
+                    for name in ROLLINGQUAD_FRONT_LEG_GEOM_NAMES_3D
+                ]
+                if task.geometry == "rollingquad_2"
+                else [],
+                dtype=jp.int32,
+            )
+            self.rear_leg_geom_ids = jp.asarray(
+                [
+                    object_id(mujoco.mjtObj.mjOBJ_GEOM, name)
+                    for name in ROLLINGQUAD_REAR_LEG_GEOM_NAMES_3D
+                ]
+                if task.geometry == "rollingquad_2"
+                else [],
+                dtype=jp.int32,
+            )
+            self.torso_geom_id = (
+                object_id(mujoco.mjtObj.mjOBJ_GEOM, "torso_mesh")
+                if task.geometry == "rollingquad_2"
+                else -1
+            )
 
             joint_ids = [
                 object_id(mujoco.mjtObj.mjOBJ_JOINT, name)
@@ -891,6 +981,14 @@ def make_brax_env_3d(
                 "forbidden_penetration_m": zero,
                 "forbidden_contact_step_count": zero,
                 "cross_side_foot_contact_count": zero,
+                "front_rear_leg_contact_count": zero,
+                "front_rear_leg_penetration_m": zero,
+                "leg_torso_contact_count": zero,
+                "leg_torso_penetration_m": zero,
+                "foot_leg_contact_count": zero,
+                "foot_leg_penetration_m": zero,
+                "foot_foot_contact_count": zero,
+                "foot_foot_penetration_m": zero,
                 "action_rms": zero,
                 "action_rate_rms": zero,
                 "startup_action_ramp": zero,
@@ -1692,6 +1790,18 @@ def make_brax_env_3d(
                 "cross_side_foot_contact_count": (
                     contacts["cross_side_foot_count"]
                 ),
+                "front_rear_leg_contact_count": (
+                    contacts["front_rear_leg_count"]
+                ),
+                "front_rear_leg_penetration_m": (
+                    contacts["front_rear_leg_depth"]
+                ),
+                "leg_torso_contact_count": contacts["leg_torso_count"],
+                "leg_torso_penetration_m": contacts["leg_torso_depth"],
+                "foot_leg_contact_count": contacts["foot_leg_count"],
+                "foot_leg_penetration_m": contacts["foot_leg_depth"],
+                "foot_foot_contact_count": contacts["foot_foot_count"],
+                "foot_foot_penetration_m": contacts["foot_foot_depth"],
                 "action_rms": jp.sqrt(jp.mean(jp.square(effective_action))),
                 "action_rate_rms": jp.sqrt(action_rate),
                 "startup_action_ramp": action_ramp,
@@ -1819,7 +1929,32 @@ def make_brax_env_3d(
             geom2_foot = self._geom_in_ids(geom2, self.foot_geom_ids)
             geom1_shell = self._geom_in_ids(geom1, self.shell_geom_ids)
             geom2_shell = self._geom_in_ids(geom2, self.shell_geom_ids)
+            geom1_front_leg = self._geom_in_ids(
+                geom1, self.front_leg_geom_ids
+            )
+            geom2_front_leg = self._geom_in_ids(
+                geom2, self.front_leg_geom_ids
+            )
+            geom1_rear_leg = self._geom_in_ids(
+                geom1, self.rear_leg_geom_ids
+            )
+            geom2_rear_leg = self._geom_in_ids(
+                geom2, self.rear_leg_geom_ids
+            )
+            geom1_leg = geom1_front_leg | geom1_rear_leg
+            geom2_leg = geom2_front_leg | geom2_rear_leg
             foot_foot = valid & geom1_foot & geom2_foot
+            front_rear_leg = valid & (
+                (geom1_front_leg & geom2_rear_leg)
+                | (geom1_rear_leg & geom2_front_leg)
+            )
+            leg_torso = valid & (
+                (geom1_leg & (geom2 == self.torso_geom_id))
+                | (geom2_leg & (geom1 == self.torso_geom_id))
+            )
+            foot_leg = valid & (
+                (geom1_foot & geom2_leg) | (geom2_foot & geom1_leg)
+            )
             same_side_foot = valid & (
                 _pair_matches(
                     geom1,
@@ -1853,6 +1988,24 @@ def make_brax_env_3d(
                 ),
                 "cross_side_foot_count": jp.sum(cross_side_foot).astype(
                     jp.float32
+                ),
+                "front_rear_leg_count": jp.sum(front_rear_leg).astype(
+                    jp.float32
+                ),
+                "front_rear_leg_depth": jp.max(
+                    jp.where(front_rear_leg, -distance, 0.0)
+                ),
+                "leg_torso_count": jp.sum(leg_torso).astype(jp.float32),
+                "leg_torso_depth": jp.max(
+                    jp.where(leg_torso, -distance, 0.0)
+                ),
+                "foot_leg_count": jp.sum(foot_leg).astype(jp.float32),
+                "foot_leg_depth": jp.max(
+                    jp.where(foot_leg, -distance, 0.0)
+                ),
+                "foot_foot_count": jp.sum(foot_foot).astype(jp.float32),
+                "foot_foot_depth": jp.max(
+                    jp.where(foot_foot, -distance, 0.0)
                 ),
             }
 

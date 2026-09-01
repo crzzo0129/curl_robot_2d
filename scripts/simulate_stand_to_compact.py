@@ -39,8 +39,10 @@ def training_constants():
                     result[target.id] = ast.literal_eval(node.value)
     if result.keys() != wanted:
         raise ValueError(f"missing training constants: {wanted - result.keys()}")
-    if result["SELF_COLLISION"] or result["WALK_COLLISION_PROXIES"]:
-        raise ValueError("This test expects the current full-CAD, floor-only profile")
+    if not result["SELF_COLLISION"] or result["WALK_COLLISION_PROXIES"]:
+        raise ValueError(
+            "This test expects full CAD with the selective self-collision profile"
+        )
     return result
 
 
@@ -131,7 +133,7 @@ def draw_frame(renderer, model, data, phase, blend, error, tau, elapsed, duratio
               font=font(16), fill=(110, 210, 233))
     draw.text((14, 386), f"root z={data.qpos[2]:.4f}m   |tau|max={tau:.3f}/3Nm   max target error={error:.4f}rad",
               font=font(17), fill="white")
-    draw.text((14, 414), "Full CAD / floor contact | self-collision OFF | gravity ON | no root or joint pose forcing",
+    draw.text((14, 414), "Full CAD / selective self-collision | gravity ON | no root or joint pose forcing",
               font=font(14), fill=(174, 187, 201))
     return canvas
 
@@ -226,7 +228,7 @@ def simulate(duration, args, render):
         "qpos_overwrite_after_reset": False,
         "policy_inference": False,
         "randomization": False,
-        "contact_scope": "full CAD convex mesh / floor; robot self-collision disabled, as in training",
+        "contact_scope": "full CAD / floor with selective robot self-collision, as in training",
         "joint_order": names,
         "stand_target_rad": poses["stand"].tolist(),
         "compact_target_rad": poses["compact"].tolist(),

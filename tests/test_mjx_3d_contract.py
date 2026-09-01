@@ -19,7 +19,9 @@ from curl_robot_2d_mjx.environment_3d import (
     MODEL_PATH_3D,
     PUPPER_OPEN60_MODEL_PATH_3D,
     PUPPER_OPEN60_CEM_CONTROLLER,
+    ROLLINGQUAD_2_CEM_CONTROLLER,
     ROLLINGQUAD_2_MODEL_PATH_3D,
+    ROLLINGQUAD_SELF_COLLISION_MASKS_3D,
     REAL_3D_CEM_CONTROLLER,
     REAL_MODEL_PATH_3D,
     OBSERVATION_SIZE_3D,
@@ -40,6 +42,7 @@ from curl_robot_2d_mjx.environment_3d import (
     configure_pupper_shell_collisions_3d,
     model_path_3d,
     validate_rolling_morphology_3d,
+    validate_rollingquad_self_collision_contract_3d,
 )
 from curl_robot_2d_mjx.randomization_3d import (
     Rolling3DDomainRandomization,
@@ -73,9 +76,7 @@ class MJX3DContractTest(unittest.TestCase):
         )
         self.assertAlmostEqual(geometry_parameters_3d("real").edge_length, 0.18)
         self.assertAlmostEqual(geometry_parameters_3d("real").foot_radius, 0.03)
-        self.assertEqual(
-            DEFAULT_3D_CEM_CONTROLLER, PUPPER_OPEN60_CEM_CONTROLLER
-        )
+        self.assertEqual(DEFAULT_3D_CEM_CONTROLLER, ROLLINGQUAD_2_CEM_CONTROLLER)
         self.assertEqual(
             cem_controller_path_3d("baseline"),
             BASELINE_3D_CEM_CONTROLLER,
@@ -89,12 +90,13 @@ class MJX3DContractTest(unittest.TestCase):
         )
         self.assertEqual(
             cem_controller_path_3d("rollingquad_2"),
-            PUPPER_OPEN60_CEM_CONTROLLER,
+            ROLLINGQUAD_2_CEM_CONTROLLER,
         )
         for controller in (
             BASELINE_3D_CEM_CONTROLLER,
             REAL_3D_CEM_CONTROLLER,
             PUPPER_OPEN60_CEM_CONTROLLER,
+            ROLLINGQUAD_2_CEM_CONTROLLER,
         ):
             self.assertTrue(controller.exists())
         self.assertEqual(len(JOINT_NAMES_3D), ACTION_SIZE_3D)
@@ -276,6 +278,68 @@ class MJX3DContractTest(unittest.TestCase):
         validate_rolling_morphology_3d(model, "rollingquad_2")
         self.assertEqual((model.nq, model.nv, model.nu), (19, 18, 12))
         self.assertEqual(Rolling3DConfig().geometry, "rollingquad_2")
+
+    def test_rollingquad_uses_selective_self_collision_whitelist(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))
+        validate_rollingquad_self_collision_contract_3d(model)
+
+        for name, expected in ROLLINGQUAD_SELF_COLLISION_MASKS_3D.items():
+            geom_id = model.geom(name).id
+            self.assertEqual(
+                (
+                    int(model.geom_contype[geom_id]),
+                    int(model.geom_conaffinity[geom_id]),
+                ),
+                expected,
+            )
+
+        def compatible(first, second):
+            first_id, second_id = model.geom(first).id, model.geom(second).id
+            return bool(
+                int(model.geom_contype[first_id])
+                & int(model.geom_conaffinity[second_id])
+                or int(model.geom_contype[second_id])
+                & int(model.geom_conaffinity[first_id])
+            )
+
+        self.assertTrue(
+            compatible("front_left_thigh_geom", "rear_right_thigh_geom")
+        )
+        self.assertTrue(compatible("front_left_thigh_geom", "torso_mesh"))
+        self.assertTrue(
+            compatible("front_left_foot_proxy", "rear_right_thigh_geom")
+        )
+        self.assertTrue(
+            compatible("front_left_foot_proxy", "rear_right_foot_proxy")
+        )
+        self.assertFalse(
+            compatible("front_left_thigh_geom", "front_right_thigh_geom")
+        )
+        self.assertFalse(
+            compatible("rear_left_thigh_geom", "rear_right_thigh_geom")
+        )
+        self.assertFalse(compatible("front_left_foot_proxy", "torso_mesh"))
+
+    def test_rollingquad_keyframes_start_without_self_penetration(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))
+        floor_id = model.geom("floor").id
+        for key_name in (
+            "open",
+            "stand",
+            "stand_previous",
+            "park",
+            "compact",
+            "extended",
+        ):
+            data = mujoco.MjData(model)
+            mujoco.mj_resetDataKeyframe(model, data, model.key(key_name).id)
+            mujoco.mj_forward(model, data)
+            contacts = [
+                contact
+                for contact in data.contact
+                if floor_id not in (contact.geom1, contact.geom2)
+            ]
+            self.assertEqual(contacts, [], msg=key_name)
 
     def test_rolling_phase_integrates_signed_local_y_velocity(self) -> None:
         forward = advance_rolling_phase_3d(np, 0.2, 3.0, 0.01)

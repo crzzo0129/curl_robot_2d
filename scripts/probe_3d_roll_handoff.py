@@ -233,8 +233,7 @@ class CPUReference:
 
     def contacts(self, d):
         penetration = max((max(0, -float(c.dist)) for c in d.contact), default=0.0)
-        # The corrected model is floor-only. Do not claim self-collision
-        # coverage if its contact masks do not produce robot-robot contacts.
+        # The corrected model uses a selective robot self-collision whitelist.
         forbidden = [c for c in d.contact if self.floor not in c.geom and c.dist <= 0]
         return penetration, len(forbidden), max((float(-c.dist) for c in forbidden), default=0.0)
 

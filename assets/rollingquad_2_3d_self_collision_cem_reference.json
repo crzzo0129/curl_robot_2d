@@ -1,0 +1,98 @@
+{
+  "controller": "phase_locked_oscillator",
+  "oscillator_rate_rad_s": 3.5891104772899927,
+  "oscillator_period_s": 1.750624659490502,
+  "oscillator_coupling_per_s": 7.305609618402127,
+  "minimum_foot_surface_gap_m": 0.005240776407804772,
+  "nominal_knee_bias_rad": -0.023456641175956694,
+  "foot_gap_tracking_margin_m": 0.004,
+  "raw_coefficients": {
+    "front_hip_sin": 0.10162073615710732,
+    "front_hip_cos": 0.07771722022360099,
+    "front_knee_sin": -0.8445130484373127,
+    "front_knee_cos": 0.34024381315521696,
+    "rear_hip_sin": -0.2902710989499688,
+    "rear_hip_cos": 0.2277112921351302,
+    "rear_knee_sin": -0.6183820123152299,
+    "rear_knee_cos": -0.7290509277980208
+  },
+  "optimization": {
+    "method": "three_stage_3d_cem",
+    "stage": "03_strict_10s",
+    "source_controller": "results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json",
+    "parameters": [
+      "front_hip_sin",
+      "front_hip_cos",
+      "front_knee_sin",
+      "front_knee_cos",
+      "rear_hip_sin",
+      "rear_hip_cos",
+      "rear_knee_sin",
+      "rear_knee_cos",
+      "oscillator_rate_rad_s",
+      "oscillator_coupling_per_s",
+      "minimum_foot_surface_gap_m"
+    ],
+    "stage_config": {
+      "name": "03_strict_10s",
+      "description": "Strict 10 s selection with progress gating and collision cost",
+      "generations": 12,
+      "population": 48,
+      "elite_count": 8,
+      "duration_s": 10.0,
+      "minimum_turns": 5.0,
+      "progress_reward_margin_turns": 0.5,
+      "progress_weight": 14.0,
+      "contact_time_weight": 4.0,
+      "penetration_integral_weight": 2400.0,
+      "maximum_penetration_weight": 300.0,
+      "lateral_weight": 5.0,
+      "tilt_rms_weight": 3.0,
+      "tilt_max_weight": 2.0,
+      "phase_error_weight": 1.5,
+      "saturation_weight": 12.0,
+      "seed": 43
+    }
+  },
+  "collision_objective": {
+    "physics": "rollingquad_2 selective self-collision",
+    "all_enabled_self_contact_penalized": true,
+    "contact_time_weight": 4.0,
+    "penetration_integral_weight": 2400.0,
+    "maximum_penetration_weight": 300.0
+  },
+  "rollout_summary": {
+    "score": 72.80863055938973,
+    "duration_s": 10.0,
+    "rolling_turns": 5.5370775822023885,
+    "distance_turns": 5.980433395989108,
+    "conservative_rolling_turns": 5.5370775822023885,
+    "absolute_rotation_turns": 5.5492368965161845,
+    "reference_turns": 5.501417748165109,
+    "distance_x_m": 4.790961833641222,
+    "distance_y_m": -0.15892411072073548,
+    "minimum_required_turns": 5.0,
+    "progress_reward_cap_turns": 5.5,
+    "rewarded_turns": 5.5,
+    "progress_deficit_turns": 0.0,
+    "self_contact_fraction": 0.0496,
+    "self_contact_total_s": 0.496,
+    "self_penetration_integral_m_s": 0.00016502721346518248,
+    "maximum_self_penetration_m": 0.0013857755015863713,
+    "rolling_axis_tilt_rms_rad": 0.037231034931162366,
+    "rolling_axis_tilt_max_rad": 0.062170036479398554,
+    "phase_error_rms_rad": 0.218878497641303,
+    "torque_saturation_fraction": 0.00305,
+    "nonfinite": false,
+    "self_contact_pairs": {
+      "front_left_foot_proxy__rear_left_foot_proxy": {
+        "duration_s": 0.445,
+        "maximum_penetration_m": 0.0013388847652280513
+      },
+      "front_right_foot_proxy__rear_right_foot_proxy": {
+        "duration_s": 0.443,
+        "maximum_penetration_m": 0.0013857755015863713
+      }
+    }
+  }
+}

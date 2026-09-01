@@ -89,10 +89,8 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
         self.assertEqual(
             bridge.DEFAULT_CONTROLLER_PATH,
             project_root
-            / "results"
-            / "pupper_r127p5_open60_shell150_45_three_stage_cem"
-            / "03_strict_forbidden_collision"
-            / "best_phase_controller.json",
+            / "assets"
+            / "rollingquad_2_3d_self_collision_cem_reference.json",
         )
         self.assertEqual(
             bridge.DEFAULT_XML_PATH,

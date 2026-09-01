@@ -1010,6 +1010,14 @@ PER_STEP_EVAL_METRICS_3D = (
     "forbidden_penetration_m",
     "forbidden_contact_step_count",
     "cross_side_foot_contact_count",
+    "front_rear_leg_contact_count",
+    "front_rear_leg_penetration_m",
+    "leg_torso_contact_count",
+    "leg_torso_penetration_m",
+    "foot_leg_contact_count",
+    "foot_leg_penetration_m",
+    "foot_foot_contact_count",
+    "foot_foot_penetration_m",
     "action_rms",
     "action_rate_rms",
     "startup_action_ramp",
@@ -1287,6 +1295,17 @@ def _format_eval_report_3d(
             f"{_metric(metrics, 'eval/avg_forbidden_contact_count'):.2f} "
             f"depth="
             f"{1e3 * _metric(metrics, 'eval/avg_forbidden_penetration_m'):.3f}mm"
+        ),
+        (
+            "  self    "
+            f"front-rear="
+            f"{_metric(metrics, 'eval/avg_front_rear_leg_contact_count'):.3f} "
+            f"leg-torso="
+            f"{_metric(metrics, 'eval/avg_leg_torso_contact_count'):.3f} "
+            f"foot-leg="
+            f"{_metric(metrics, 'eval/avg_foot_leg_contact_count'):.3f} "
+            f"foot-foot="
+            f"{_metric(metrics, 'eval/avg_foot_foot_contact_count'):.3f}"
         ),
         (
             "  action  "

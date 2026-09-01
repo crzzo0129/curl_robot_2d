@@ -164,7 +164,8 @@ def simulate(policy_path: Path, model_path: Path, out_dir: Path) -> None:
     data = mujoco.MjData(model)
     compact_key = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_KEY, "compact")
     torso_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "torso")
-    if min(compact_key, torso_id) < 0:
+    floor_geom_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_GEOM, "floor")
+    if min(compact_key, torso_id, floor_geom_id) < 0:
         raise ValueError("model must contain compact keyframe and torso body")
 
     actuator_ids = np.asarray(
@@ -193,15 +194,63 @@ def simulate(policy_path: Path, model_path: Path, out_dir: Path) -> None:
     rolling_phase = 0.0
     policy_steps = int(round(DURATION_S / CONTROL_DT))
     records: list[dict[str, float]] = []
+    self_pair_stats: dict[tuple[str, str], dict[str, float | int]] = {}
+    previous_self_pairs: set[tuple[str, str]] = set()
+
+    def self_contact_state() -> tuple[int, float, dict[tuple[str, str], float]]:
+        contact_points = 0
+        maximum_penetration = 0.0
+        active_pairs: dict[tuple[str, str], float] = {}
+        for contact_index in range(data.ncon):
+            contact = data.contact[contact_index]
+            geom_1 = int(contact.geom1)
+            geom_2 = int(contact.geom2)
+            if floor_geom_id in (geom_1, geom_2):
+                continue
+            body_1 = int(model.geom_bodyid[geom_1])
+            body_2 = int(model.geom_bodyid[geom_2])
+            if body_1 == body_2:
+                continue
+            name_1 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_1) or f"body_{body_1}"
+            name_2 = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_BODY, body_2) or f"body_{body_2}"
+            pair = tuple(sorted((name_1, name_2)))
+            contact_points += 1
+            penetration = max(-float(contact.dist), 0.0)
+            maximum_penetration = max(maximum_penetration, penetration)
+            active_pairs[pair] = max(active_pairs.get(pair, 0.0), penetration)
+        return contact_points, maximum_penetration, active_pairs
 
     def append_record(action: np.ndarray, target: np.ndarray) -> None:
+        nonlocal previous_self_pairs
+        self_points, self_penetration, active_pairs = self_contact_state()
         record = {"time_s": float(data.time), **state_values(data, torso_id, rolling_phase)}
+        record["self_contact_count"] = float(self_points)
+        record["self_penetration_max_m"] = self_penetration
         for index, name in enumerate(JOINT_NAMES):
             record[f"torque_{name}_Nm"] = float(data.actuator_force[actuator_ids[index]])
             record[f"position_{name}_rad"] = float(data.qpos[joint_qpos_ids[index]])
             record[f"target_{name}_rad"] = float(target[index])
             record[f"action_{name}"] = float(action[index])
         records.append(record)
+        for pair, pair_penetration in active_pairs.items():
+            stats = self_pair_stats.setdefault(
+                pair,
+                {
+                    "active_steps": 0,
+                    "onsets": 0,
+                    "first_time_s": float(data.time),
+                    "last_time_s": float(data.time),
+                    "maximum_penetration_m": 0.0,
+                },
+            )
+            stats["active_steps"] = int(stats["active_steps"]) + 1
+            stats["last_time_s"] = float(data.time)
+            stats["maximum_penetration_m"] = max(
+                float(stats["maximum_penetration_m"]), pair_penetration
+            )
+            if pair not in previous_self_pairs:
+                stats["onsets"] = int(stats["onsets"]) + 1
+        previous_self_pairs = set(active_pairs)
 
     append_record(previous_action, compact)
     for _ in range(policy_steps):
@@ -256,6 +305,25 @@ def simulate(policy_path: Path, model_path: Path, out_dir: Path) -> None:
         )
 
     settled = arrays["time_s"] >= 1.0
+    self_contact_active = arrays["self_contact_count"][active] > 0.0
+    self_collision_enabled = bool(
+        np.any(
+            np.asarray(model.geom_contype)[np.arange(model.ngeom) != floor_geom_id]
+            & np.asarray(model.geom_conaffinity)[np.arange(model.ngeom) != floor_geom_id]
+        )
+    )
+    self_pairs = [
+        {
+            "body_1": pair[0],
+            "body_2": pair[1],
+            **stats,
+            "active_fraction": int(stats["active_steps"]) / (policy_steps * SUBSTEPS),
+        }
+        for pair, stats in sorted(
+            self_pair_stats.items(),
+            key=lambda item: (-int(item[1]["active_steps"]), item[0]),
+        )
+    ]
     summary = {
         "run": {
             "duration_s": DURATION_S,
@@ -266,6 +334,7 @@ def simulate(policy_path: Path, model_path: Path, out_dir: Path) -> None:
             "reset": "nominal compact keyframe; no reset noise",
             "action_start": "full direct student output from first policy update; no fade-in",
             "physics_profile": "cg20, implicitfast, elliptic cone, dense Jacobian",
+            "self_collision_enabled": self_collision_enabled,
             "policy_sha256": hashlib.sha256(policy_path.read_bytes()).hexdigest(),
             "model": str(model_path.resolve()),
         },
@@ -323,6 +392,14 @@ def simulate(policy_path: Path, model_path: Path, out_dir: Path) -> None:
             "root_z_max_m": float(np.max(arrays["root_z_m"])),
             "axis_tilt_max_deg": float(np.degrees(np.max(arrays["axis_tilt_rad"]))),
             "action_saturation_fraction": float(np.mean(np.abs(action[active]) >= 0.99)),
+        },
+        "self_collision": {
+            "enabled": self_collision_enabled,
+            "compact_initial_contact_points": int(arrays["self_contact_count"][0]),
+            "active_step_fraction": float(np.mean(self_contact_active)),
+            "maximum_simultaneous_contact_points": int(np.max(arrays["self_contact_count"])),
+            "maximum_penetration_m": float(np.max(arrays["self_penetration_max_m"])),
+            "pairs": self_pairs,
         },
     }
     (out_dir / "rolling_student_5s_summary.json").write_text(
@@ -454,36 +531,69 @@ def plot(out_dir: Path) -> None:
     ax.legend(frameon=False, ncol=2, loc="upper left")
 
     ax = figure.add_subplot(grid[2, 1])
-    phase_mod = np.mod(phase, 2.0 * math.pi)
-    bins = np.linspace(0.0, 2.0 * math.pi, 49)
-    centers = 0.5 * (bins[:-1] + bins[1:])
-    bin_index = np.clip(np.digitize(phase_mod, bins) - 1, 0, len(centers) - 1)
-    for joint_index, name in enumerate(JOINT_NAMES):
-        joint = name.split("_")[1]
-        if joint == "abd":
-            continue
-        means = np.full(len(centers), np.nan)
-        for index in range(len(centers)):
-            mask = bin_index == index
-            if np.any(mask):
-                means[index] = np.mean(torque[mask, joint_index])
-        leg = name.split("_")[0]
-        ax.plot(
-            centers / (2.0 * math.pi),
-            means,
-            color=leg_colors[leg],
-            linestyle=joint_styles[joint],
-            linewidth=1.0,
-            label=f"{leg} {joint}" if joint == "hip" else None,
+    self_collision_enabled = bool(summary.get("self_collision", {}).get("enabled", False))
+    if self_collision_enabled:
+        contact_count = values["self_contact_count"]
+        penetration_mm = 1000.0 * values["self_penetration_max_m"]
+        ax.fill_between(time, 0.0, contact_count, color="#D55E00", alpha=0.30, step="mid")
+        ax.plot(time, contact_count, color="#D55E00", linewidth=0.8, label="Contact points")
+        ax.set(
+            xlabel="Time (s)",
+            ylabel="Self-contact points",
+            title="e  Self-collision onset and penetration",
         )
-    ax.axhline(0.0, color="#8A94A6", linewidth=0.6)
-    ax.set(xlim=(0, 1), xlabel="Rolling phase (cycle)", ylabel="Mean torque (N m)", title="e  Phase-locked torque pattern")
-    style_axis(ax)
-    handles, labels = ax.get_legend_handles_labels()
-    ax.legend(handles, labels, frameon=False, ncol=2, title="solid hip; dashed knee")
+        style_axis(ax)
+        ax_right = ax.twinx()
+        ax_right.plot(time, penetration_mm, color="#0072B2", linewidth=0.8, label="Penetration")
+        ax_right.set_ylabel("Maximum penetration (mm)", color="#0072B2")
+        ax_right.tick_params(axis="y", colors="#0072B2", width=0.7, length=3)
+        ax_right.spines["top"].set_visible(False)
+        first_contact = next(
+            (pair["first_time_s"] for pair in summary["self_collision"]["pairs"]),
+            None,
+        )
+        if first_contact is not None:
+            ax.axvline(first_contact, color="#202A44", linestyle=":", linewidth=1.0)
+            ax.text(
+                first_contact + 0.06,
+                0.95,
+                f"first contact {first_contact:.3f} s",
+                transform=ax.get_xaxis_transform(),
+                va="top",
+                color="#202A44",
+            )
+    else:
+        phase_mod = np.mod(phase, 2.0 * math.pi)
+        bins = np.linspace(0.0, 2.0 * math.pi, 49)
+        centers = 0.5 * (bins[:-1] + bins[1:])
+        bin_index = np.clip(np.digitize(phase_mod, bins) - 1, 0, len(centers) - 1)
+        for joint_index, name in enumerate(JOINT_NAMES):
+            joint = name.split("_")[1]
+            if joint == "abd":
+                continue
+            means = np.full(len(centers), np.nan)
+            for index in range(len(centers)):
+                mask = bin_index == index
+                if np.any(mask):
+                    means[index] = np.mean(torque[mask, joint_index])
+            leg = name.split("_")[0]
+            ax.plot(
+                centers / (2.0 * math.pi),
+                means,
+                color=leg_colors[leg],
+                linestyle=joint_styles[joint],
+                linewidth=1.0,
+                label=f"{leg} {joint}" if joint == "hip" else None,
+            )
+        ax.axhline(0.0, color="#8A94A6", linewidth=0.6)
+        ax.set(xlim=(0, 1), xlabel="Rolling phase (cycle)", ylabel="Mean torque (N m)", title="e  Phase-locked torque pattern")
+        style_axis(ax)
+        handles, labels = ax.get_legend_handles_labels()
+        ax.legend(handles, labels, frameon=False, ncol=2, title="solid hip; dashed knee")
 
     figure.suptitle(
-        "Rolling STUDENT — nominal 5 s closed-loop simulation",
+        "Rolling STUDENT — 5 s closed-loop simulation "
+        f"({'self-collision ON' if self_collision_enabled else 'self-collision OFF'})",
         fontsize=11.0,
         fontweight="semibold",
     )
