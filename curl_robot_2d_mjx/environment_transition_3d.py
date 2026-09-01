@@ -47,6 +47,9 @@ from curl_robot_2d_mjx.deployment_transition_3d import (
     initial_transition_history_3d,
     push_transition_frame_3d,
 )
+from curl_robot_2d_mjx.failure_transition_3d import (
+    TRANSITION_FAILURE_CAUSE_NAMES_3D, transition_failure_causes_3d,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -254,6 +257,8 @@ def make_brax_transition_env_3d(
                 "action_rate_rms": zero,
                 "failed": zero,
                 "failed_stabilize": zero,
+                **{f"failure_{name}": zero
+                   for name in TRANSITION_FAILURE_CAUSE_NAMES_3D},
                 "timeout": zero,
             })
 
@@ -682,22 +687,35 @@ def make_brax_transition_env_3d(
                 jp.all(jp.isfinite(data.qpos))
                 & jp.all(jp.isfinite(data.qvel))
             )
+            failed_root_height_low = data.qpos[2] < task.failure_root_height_min_m
+            failed_root_height_high = data.qpos[2] > task.failure_root_height_max_m
+            failed_brake_timeout = (
+                (mode == int(TransitionMode3D.BRAKE))
+                & (mode_steps >= self.brake_timeout_steps)
+                & (~enter_deploy)
+            )
+            failed_deploy_timeout = (
+                (mode == int(TransitionMode3D.DEPLOY))
+                & (mode_steps * task.control_timestep >= task.deploy_timeout_s)
+                & (~deploy_complete)
+            )
             failed = (
                 (~action_finite)
                 | (~physics_finite)
                 | failed_stabilize
-                | (data.qpos[2] < task.failure_root_height_min_m)
-                | (data.qpos[2] > task.failure_root_height_max_m)
-                | (
-                    (mode == int(TransitionMode3D.BRAKE))
-                    & (mode_steps >= self.brake_timeout_steps)
-                    & (~enter_deploy)
-                )
-                | (
-                    (mode == int(TransitionMode3D.DEPLOY))
-                    & (mode_steps * task.control_timestep >= task.deploy_timeout_s)
-                    & (~deploy_complete)
-                )
+                | failed_root_height_low
+                | failed_root_height_high
+                | failed_brake_timeout
+                | failed_deploy_timeout
+            )
+            failure_causes = transition_failure_causes_3d(
+                jp, failed=failed, action_finite=action_finite,
+                physics_finite=physics_finite,
+                root_height_low=failed_root_height_low,
+                root_height_high=failed_root_height_high,
+                brake_timeout=failed_brake_timeout,
+                deploy_timeout=failed_deploy_timeout,
+                stabilize_guard=failed_stabilize,
             )
             # Terminal outcomes are mutually exclusive: invalid physics or
             # lost support cannot be counted as a simultaneous READY success.
@@ -838,6 +856,8 @@ def make_brax_transition_env_3d(
                 ),
                 "failed": failed.astype(jp.float32),
                 "failed_stabilize": failed_stabilize.astype(jp.float32),
+                **{f"failure_{name}": value.astype(jp.float32)
+                   for name, value in failure_causes.items()},
                 "timeout": timeout.astype(jp.float32),
             }
             return State(

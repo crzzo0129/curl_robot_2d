@@ -21,6 +21,9 @@ from curl_robot_2d_mjx.config_transition_3d import (
     transition_physics_profile_3d,
 )
 from curl_robot_2d_mjx.reward_transition_3d import Transition3DRewardConfig
+from curl_robot_2d_mjx.failure_transition_3d import (
+    TRANSITION_FAILURE_CAUSE_NAMES_3D, transition_failure_breakdown_3d,
+)
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 from curl_robot_2d_mjx.training_transition_3d import (
     TRANSITION_INITIAL_POLICY_STD, TRANSITION_TRAINING_REVISION,
@@ -266,9 +269,14 @@ def main(argv=None) -> None:
         success = clean.get("eval/episode_transition_success", 0.0)
         failed = clean.get("eval/episode_failed", 0.0)
         timeout = clean.get("eval/episode_timeout", 0.0)
+        causes = sorted(((name, clean.get(f"eval/episode_failure_{name}", 0.0))
+                         for name in TRANSITION_FAILURE_CAUSE_NAMES_3D),
+                        key=lambda item: item[1], reverse=True)
+        cause_text = ",".join(f"{name}={value:.3f}" for name, value in causes if value > 0)
         print(
             f"[transition eval] stage={args.stage} step={int(step)} "
-            f"success={success:.3f} failure={failed:.3f} timeout={timeout:.3f}",
+            f"success={success:.3f} failure={failed:.3f} timeout={timeout:.3f} "
+            f"causes=[{cause_text}]",
             flush=True,
         )
 
@@ -321,14 +329,16 @@ def main(argv=None) -> None:
         json.dumps(history, indent=2) + "\n", encoding="utf-8"
     )
     acceptance = transition_curriculum_acceptance(history)
+    clean_final_metrics = {
+        name: _float(value) for name, value in (final_metrics or {}).items()
+    }
     summary = {
         "stage": args.stage,
         "training_revision": TRANSITION_TRAINING_REVISION,
         "elapsed_s": time.perf_counter() - started,
         "params": str((stage_out / "params_final").resolve()),
-        "final_metrics": {
-            name: _float(value) for name, value in (final_metrics or {}).items()
-        },
+        "final_metrics": clean_final_metrics,
+        "failure_breakdown": transition_failure_breakdown_3d(clean_final_metrics),
         "curriculum_next_stage": payload["curriculum_next_stage"],
         "stage_passed": acceptance["passed"],
         "snapshot_selection": payload.get("snapshot_selection"),

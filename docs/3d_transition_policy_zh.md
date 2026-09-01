@@ -222,6 +222,22 @@ collect_roll_snapshots_3d(
 不建议用于早期周期课程；若它删除了目标圈或相位，程序会报错，不回退到起步样本。
 离线 NPZ 重建不保留求解器 warm-start；连续同模型接管应使用 full-data 接口。
 
+### 失败原因统计
+
+训练评估把每个失败回合唯一归到以下一种原因，并写入 `summary.json` 的
+`failure_breakdown`：`action_nonfinite`、`physics_nonfinite`、
+`root_height_low`、`root_height_high`、`brake_timeout`、`deploy_timeout`、
+`stabilize_guard`、`other`。各项是互斥的回合终止脉冲，其和应等于
+`eval/episode_failed`；`consistency_error` 应接近零。若多个条件同一步发生，
+按上述顺序归类。例如已经跌破最低高度并同时触发 STABILIZE 守护时记为
+`root_height_low`，以保留最直接的物理失败解释。旧的 `failed_stabilize` 原始诊断
+仍保留，因此它可能和高度原因重叠，不能再与其他项相加。
+
+训练期间 `[transition eval]` 会直接打印非零原因率。旧 checkpoint 的网络、
+720/86 维观察和动作接口没有变化，可以恢复继续训练；但旧日志无法追溯生成
+这些分项。要诊断当前 brake_early 权重，需从其 `ppo_checkpoint` 恢复到一个新的
+输出目录并重新评估/训练，不能根据总失败率反推原因。
+
 ## READY 和实机安全边界
 
 仿真 READY 需连续满足约 0.40 s：线速度 ≤0.12 m/s、角速度 ≤0.45 rad/s、
