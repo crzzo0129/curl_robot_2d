@@ -461,10 +461,13 @@ def build(args: argparse.Namespace) -> dict[str, object]:
         geom.set("rgba", "0.55 0.78 0.95 0.60")
         parent.append(geom)
 
-    # Add a solid torso core box (the "body"), colliding as the torso category.
+    # Add a solid torso core (the "body"), colliding as the torso category.
+    # MJX does not implement cylinder-vs-box collision, so the core is an
+    # ellipsoid (a rounded box) rather than a box; ellipsoid-vs-cylinder and
+    # ellipsoid-vs-capsule are both supported.
     torso_box = ET.Element("geom")
     torso_box.set("name", "torso_box_proxy")
-    torso_box.set("type", "box")
+    torso_box.set("type", "ellipsoid")
     torso_box.set("pos", " ".join(f"{v:.8g}" for v in TORSO_BOX_POS))
     torso_box.set("size", " ".join(f"{v:.8g}" for v in TORSO_BOX_HALF))
     torso_box.set("contype", str(SHELL_CONTYPE))
