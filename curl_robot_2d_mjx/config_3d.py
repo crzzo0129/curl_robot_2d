@@ -19,6 +19,7 @@ GEOMETRY_NAMES_3D = (
     "real",
     "pupper_open60",
     "rollingquad_2",
+    "rollingquad_2_simple_convex",
 )
 
 

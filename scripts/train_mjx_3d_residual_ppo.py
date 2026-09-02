@@ -1577,10 +1577,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--geometry",
         choices=GEOMETRY_NAMES_3D,
-        default="rollingquad_2",
+        default="rollingquad_2_simple_convex",
         help=(
             "Select the corrected 12-joint RollingQuad geometry, the older "
-            "Pupper geometry, or a legacy 8-joint rolling geometry."
+            "Pupper geometry, or a legacy 8-joint rolling geometry. The "
+            "default rollingquad_2_simple_convex uses simplified convex-hull "
+            "collision meshes for faster large-scale training; "
+            "rollingquad_2 uses the full STL collision meshes."
         ),
     )
     parser.add_argument(

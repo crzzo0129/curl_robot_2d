@@ -1,0 +1,169 @@
+<mujoco model="rollingquad_2">
+  <!--
+    Trainable MJCF derived from ../urdf/rollingquad_description_2.urdf.
+
+    The four non-cardinal hip hinge axes are intentionally preserved from
+    the URDF.  Meshes, link frames, joint origins, limits, masses and
+    inertias below come from the exported robot model.  Servo gains and force
+    limits follow curl_robot_3d_pupper_r127p5_open60_width120.xml.
+  -->
+  <compiler angle="radian" autolimits="true" />
+  <option timestep="0.001" gravity="0 0 -9.81" integrator="implicitfast" cone="elliptic" iterations="20" ls_iterations="10" />
+  <visual>
+    <global azimuth="120" elevation="-18" offwidth="960" offheight="720" />
+    <headlight ambient="0.35 0.35 0.35" diffuse="0.65 0.65 0.65" specular="0.20 0.20 0.20" />
+  </visual>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".18 .23 .30" rgb2=".02 .03 .05" width="512" height="512" />
+    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".18 .22 .27" rgb2=".10 .13 .17" />
+    <material name="ground" texture="grid" texrepeat="1 1" texuniform="true" reflectance="0.05" />
+    <mesh name="torso_2__simple_hull" file="../meshes_simple_convex/torso_2_simple_hull.obj" />
+    <mesh name="abduction_mirror_1__simple_hull" file="../meshes_simple_convex/abduction_mirror_1_simple_hull.obj" />
+    <mesh name="Upperleg_with_motor_1_2__simple_hull" file="../meshes_simple_convex/Upperleg_with_motor_1_2_simple_hull.obj" />
+    <mesh name="Lower_leg_with_foot_1_2__simple_hull" file="../meshes_simple_convex/Lower_leg_with_foot_1_2_simple_hull.obj" />
+    <mesh name="abduction_mirror_1_2__simple_hull" file="../meshes_simple_convex/abduction_mirror_1_2_simple_hull.obj" />
+    <mesh name="Upperleg_with_motor_1__simple_hull" file="../meshes_simple_convex/Upperleg_with_motor_1_simple_hull.obj" />
+    <mesh name="Lower_leg_with_foot_1__simple_hull" file="../meshes_simple_convex/Lower_leg_with_foot_1_simple_hull.obj" />
+    <mesh name="abduction_1__simple_hull" file="../meshes_simple_convex/abduction_1_simple_hull.obj" />
+    <mesh name="Upperleg_with_motor_mirror_1__simple_hull" file="../meshes_simple_convex/Upperleg_with_motor_mirror_1_simple_hull.obj" />
+    <mesh name="Lower_leg_with_foot_mirror_1__simple_hull" file="../meshes_simple_convex/Lower_leg_with_foot_mirror_1_simple_hull.obj" />
+    <mesh name="abduction_1_2__simple_hull" file="../meshes_simple_convex/abduction_1_2_simple_hull.obj" />
+    <mesh name="Upperleg_with_motor_mirror_1_2__simple_hull" file="../meshes_simple_convex/Upperleg_with_motor_mirror_1_2_simple_hull.obj" />
+    <mesh name="Lower_leg_with_foot_mirror_1_2__simple_hull" file="../meshes_simple_convex/Lower_leg_with_foot_mirror_1_2_simple_hull.obj" />
+  </asset>
+  <default>
+    <joint limited="true" damping="0.01" armature="0.0016" />
+    <!-- Individual robot geoms override these masks with the self-collision
+         whitelist below.  Bit 1 remains the floor category. -->
+    <geom contype="0" conaffinity="1" condim="3" friction="0.8 0.02 0.01" solref="0.01 1" solimp="0.9 0.95 0.001" />
+    <!-- Position servo: kp=5, kd=0.1, torque limited to +/-3 N m. -->
+    <default class="single_servo">
+      <general forcelimited="true" forcerange="-3 3" ctrllimited="true" gainprm="5 0 0" biastype="affine" biasprm="0 -5 -0.1" />
+    </default>
+  </default>
+  <worldbody>
+    <light name="key" directional="true" castshadow="true" pos="-1 -2 4" dir="0.25 0.15 -1" diffuse="0.85 0.85 0.82" specular="0.20 0.20 0.20" />
+    <camera name="tracking" mode="targetbody" target="torso" pos="0.55 -0.65 0.40" />
+    <geom name="floor" type="plane" size="12 6 0.05" contype="1" conaffinity="0" material="ground" />
+    <body name="torso" pos="0 0 0.21">
+      <freejoint name="root" />
+      <inertial pos="-0.000349048829 -2.267291516e-05 -0.0168232962" mass="1.47556" fullinertia="0.00473904 0.00838848 0.00826464 1.23727e-08 7.69713e-05 -7.00545e-07" />
+      <!-- Collision bits: 2=front leg, 4=rear leg, 8=foot/shank,
+           16=torso.  Enabled pairs: front-rear leg, leg-torso,
+           foot-leg and foot-foot. -->
+      <geom name="torso_mesh" type="mesh" contype="16" conaffinity="7" rgba="0.749 0.749 0.749 1" mesh="torso_2__simple_hull" />
+      <body name="front_right_hip_abduction_body" pos="0.0752002 -0.0650008 -3.15437e-07" quat="0.707105 0.707108 1.28657e-06 5.65589e-07">
+        <inertial pos="0.00310332 -0.00189648 -0.160009" quat="0.969701 -0.00815916 0.0210186 -0.243253" mass="0.179903" diaginertia="7.15749e-05 5.16423e-05 4.28065e-05" />
+        <joint name="front_right_hip" range="-1.745329252 1.902408885" actuatorfrcrange="-3 3" axis="0 0 1" />
+        <geom name="front_right_hip_link_geom" type="mesh" contype="2" conaffinity="29" rgba="0.749 0.749 0.749 1" mesh="abduction_mirror_1__simple_hull" />
+        <body name="front_right_thigh" pos="0.0146072 -0.00819716 -0.162001">
+          <inertial pos="-0.0101991 -0.0708564 0.000226941" quat="0.617317 0.345769 -0.618182 0.342365" mass="0.18907" diaginertia="0.000132232 0.000106686 4.49875e-05" />
+          <joint name="front_right_hip_abduction" range="-0.5236 3.66519" actuatorfrcrange="-3 3" axis="0.872069 -0.489382 0" />
+          <geom name="front_right_thigh_geom" type="mesh" contype="2" conaffinity="29" rgba="0.749 0.749 0.749 1" mesh="Upperleg_with_motor_1_2__simple_hull" />
+          <body name="front_right_shank" pos="-0.0137759 -0.0767678 0.01075">
+            <inertial pos="0.00457242 -0.0602669 -0.0272819" quat="0.439984 0.532687 -0.48053 0.540139" mass="0.046425" diaginertia="6.03771e-05 5.63949e-05 8.99449e-06" />
+            <joint name="front_right_knee" range="0.1745329252 2.094395102" actuatorfrcrange="-3 3" axis="0 0 -1" />
+            <geom name="front_right_foot_proxy" type="mesh" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" mesh="Lower_leg_with_foot_1_2__simple_hull" />
+            <site name="front_right_foot_site" pos="0.00001796 -0.08776548 -0.02669029" size="0.004" />
+          </body>
+        </body>
+      </body>
+      <body name="rear_left_hip_abduction_body" pos="-0.0752002 0.0650008 3.15437e-07" quat="0.707105 0.707108 1.28657e-06 5.65589e-07">
+        <inertial pos="-0.00310332 -0.00189648 0.160009" quat="0.969701 0.00815916 0.0210186 0.243253" mass="0.179903" diaginertia="7.15749e-05 5.16423e-05 4.28065e-05" />
+        <joint name="rear_left_hip" range="-1.745329252 1.902408885" actuatorfrcrange="-3 3" axis="0 0 -1" />
+        <geom name="rear_left_hip_link_geom" type="mesh" contype="4" conaffinity="27" rgba="0.749 0.749 0.749 1" mesh="abduction_mirror_1_2__simple_hull" />
+        <body name="rear_left_thigh" pos="-0.0156536 -0.00878442 0.162001">
+          <inertial pos="0.0112456 -0.0702691 -0.000226941" quat="0.345769 0.617317 -0.342365 0.618182" mass="0.18907" diaginertia="0.000132232 0.000106686 4.49875e-05" />
+          <joint name="rear_left_hip_abduction" range="-0.5236 3.66519" actuatorfrcrange="-3 3" axis="-0.872069 -0.489382 0" />
+          <geom name="rear_left_thigh_geom" type="mesh" contype="4" conaffinity="27" rgba="0.749 0.749 0.749 1" mesh="Upperleg_with_motor_1__simple_hull" />
+          <body name="rear_left_shank" pos="0.0148224 -0.0761805 0.014">
+            <inertial pos="-0.00457242 -0.0602669 0.0025319" quat="0.532687 0.439984 -0.540139 0.48053" mass="0.046425" diaginertia="6.03771e-05 5.63949e-05 8.99449e-06" />
+            <joint name="rear_left_knee" range="0.1745329252 2.094395102" actuatorfrcrange="-3 3" axis="0 0 1" />
+            <geom name="rear_left_foot_proxy" type="mesh" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" mesh="Lower_leg_with_foot_1__simple_hull" />
+            <site name="rear_left_foot_site" pos="-0.00001796 -0.08776548 0.00194029" size="0.004" />
+          </body>
+        </body>
+      </body>
+      <body name="front_left_hip_abduction_body" pos="0.0751998 0.0650012 1.62087e-07" quat="0.707105 0.707108 1.28657e-06 5.65589e-07">
+        <inertial pos="0.00284687 -0.00174682 0.15995" quat="0.969271 -0.0133055 -0.0221507 -0.244634" mass="0.179903" diaginertia="7.23188e-05 5.20415e-05 4.37798e-05" />
+        <joint name="front_left_hip" range="-1.74533 1.90241" actuatorfrcrange="-3 3" />
+        <geom name="front_left_hip_link_geom" type="mesh" contype="2" conaffinity="29" rgba="0.749 0.749 0.749 1" mesh="abduction_1__simple_hull" />
+        <body name="front_left_thigh" pos="0.0146072 -0.00819716 0.162001">
+          <inertial pos="-0.0103691 -0.0707641 0.000638364" quat="0.614246 0.344453 -0.621362 0.343458" mass="0.18907" diaginertia="0.000132245 0.000106711 4.4972e-05" />
+          <joint name="front_left_hip_abduction" range="-0.5236 3.66519" actuatorfrcrange="-3 3" axis="-0.872069 0.489382 0" />
+          <geom name="front_left_thigh_geom" type="mesh" contype="2" conaffinity="29" rgba="0.749 0.749 0.749 1" mesh="Upperleg_with_motor_mirror_1__simple_hull" />
+          <body name="front_left_shank" pos="-0.0139503 -0.0766699 -0.00975">
+            <inertial pos="0.00457242 -0.0602669 0.0272819" quat="0.48053 0.540139 -0.439984 0.532687" mass="0.046425" diaginertia="6.03771e-05 5.63949e-05 8.99449e-06" />
+            <joint name="front_left_knee" range="0.17453 2.0944" actuatorfrcrange="-3 3" axis="0 0 -1" />
+            <geom name="front_left_foot_proxy" type="mesh" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" mesh="Lower_leg_with_foot_mirror_1__simple_hull" />
+            <site name="front_left_foot_site" pos="0.00002256 -0.08782371 0.02672838" size="0.004" />
+          </body>
+        </body>
+      </body>
+      <body name="rear_right_hip_abduction_body" pos="-0.0751998 -0.0650012 -1.62087e-07" quat="0.707105 0.707108 1.28657e-06 5.65589e-07">
+        <inertial pos="-0.00284687 -0.00174682 -0.15995" quat="0.969271 0.0133055 -0.0221507 0.244634" mass="0.179903" diaginertia="7.23188e-05 5.20415e-05 4.37798e-05" />
+        <joint name="rear_right_hip" range="-1.74533 1.90241" actuatorfrcrange="-3 3" axis="0 0 -1" />
+        <geom name="rear_right_hip_link_geom" type="mesh" contype="4" conaffinity="27" rgba="0.749 0.749 0.749 1" mesh="abduction_1_2__simple_hull" />
+        <body name="rear_right_thigh" pos="-0.0146072 -0.00819716 -0.162001">
+          <inertial pos="0.0103691 -0.0707641 -0.000638364" quat="0.344453 0.614246 -0.343458 0.621362" mass="0.18907" diaginertia="0.000132245 0.000106711 4.4972e-05" />
+          <joint name="rear_right_hip_abduction" range="-0.5236 3.66519" actuatorfrcrange="-3 3" axis="0.872069 0.489382 0" />
+          <geom name="rear_right_thigh_geom" type="mesh" contype="4" conaffinity="27" rgba="0.749 0.749 0.749 1" mesh="Upperleg_with_motor_mirror_1_2__simple_hull" />
+          <body name="rear_right_shank" pos="0.0139503 -0.0766699 0.00975">
+            <inertial pos="-0.00457242 -0.0602669 -0.0272819" quat="0.540139 0.48053 -0.532687 0.439984" mass="0.046425" diaginertia="6.03771e-05 5.63949e-05 8.99449e-06" />
+            <joint name="rear_right_knee" range="0.17453 2.0944" actuatorfrcrange="-3 3" />
+            <geom name="rear_right_foot_proxy" type="mesh" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" mesh="Lower_leg_with_foot_mirror_1_2__simple_hull" />
+            <site name="rear_right_foot_site" pos="-0.00002256 -0.08782371 -0.02672838" size="0.004" />
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <actuator>
+    <!-- Canonical policy order: FL, FR, RL, RR; each abduction, hip, knee. -->
+    <general name="front_left_hip_abduction_servo" joint="front_left_hip_abduction" class="single_servo" ctrlrange="-0.5236 3.66519" />
+    <general name="front_left_hip_servo" joint="front_left_hip" class="single_servo" ctrlrange="-1.74533 1.90241" />
+    <general name="front_left_knee_servo" joint="front_left_knee" class="single_servo" ctrlrange="0.17453 2.0944" />
+    <general name="front_right_hip_abduction_servo" joint="front_right_hip_abduction" class="single_servo" ctrlrange="-0.5236 3.66519" />
+    <general name="front_right_hip_servo" joint="front_right_hip" class="single_servo" ctrlrange="-1.745329252 1.902408885" />
+    <general name="front_right_knee_servo" joint="front_right_knee" class="single_servo" ctrlrange="0.1745329252 2.094395102" />
+    <general name="rear_left_hip_abduction_servo" joint="rear_left_hip_abduction" class="single_servo" ctrlrange="-0.5236 3.66519" />
+    <general name="rear_left_hip_servo" joint="rear_left_hip" class="single_servo" ctrlrange="-1.745329252 1.902408885" />
+    <general name="rear_left_knee_servo" joint="rear_left_knee" class="single_servo" ctrlrange="0.1745329252 2.094395102" />
+    <general name="rear_right_hip_abduction_servo" joint="rear_right_hip_abduction" class="single_servo" ctrlrange="-0.5236 3.66519" />
+    <general name="rear_right_hip_servo" joint="rear_right_hip" class="single_servo" ctrlrange="-1.74533 1.90241" />
+    <general name="rear_right_knee_servo" joint="rear_right_knee" class="single_servo" ctrlrange="0.17453 2.0944" />
+  </actuator>
+  <sensor>
+    <framequat name="base_quat" objtype="body" objname="torso" />
+    <framepos name="base_position" objtype="body" objname="torso" />
+    <framelinvel name="base_linear_velocity" objtype="body" objname="torso" />
+    <frameangvel name="base_angular_velocity" objtype="body" objname="torso" />
+    <jointpos name="front_right_hip_position" joint="front_right_hip" />
+    <jointpos name="front_right_hip_abduction_position" joint="front_right_hip_abduction" />
+    <jointpos name="front_right_knee_position" joint="front_right_knee" />
+    <jointpos name="rear_left_hip_position" joint="rear_left_hip" />
+    <jointpos name="rear_left_hip_abduction_position" joint="rear_left_hip_abduction" />
+    <jointpos name="rear_left_knee_position" joint="rear_left_knee" />
+    <jointpos name="front_left_hip_position" joint="front_left_hip" />
+    <jointpos name="front_left_hip_abduction_position" joint="front_left_hip_abduction" />
+    <jointpos name="front_left_knee_position" joint="front_left_knee" />
+    <jointpos name="rear_right_hip_position" joint="rear_right_hip" />
+    <jointpos name="rear_right_hip_abduction_position" joint="rear_right_hip_abduction" />
+    <jointpos name="rear_right_knee_position" joint="rear_right_knee" />
+  </sensor>
+  <keyframe>
+    <!--
+      Ported from curl_robot_3d_pupper_r127p5_open60_width120.xml.
+      Source triplets (abduction, hip, knee) are reordered here to the URDF
+      kinematic qpos order (hip, abduction, knee), with leg order FR, RL,
+      FL, RR.  ctrl follows the policy's FL, FR, RL, RR actuator order.
+    -->
+    <key name="open" qpos="0 0 0.1934653619 1 0 0 0                0 0 0                0 0 0                0 0 0                0 0 0" ctrl="0 0 0                0 0 0                0 0 0                0 0 0" />
+    <key name="stand" qpos="0 0 0.1580029248 1 0 0 0                0.90 0 1.15                0.90 0 1.15                0.90 0 1.15                0.90 0 1.15" ctrl="0 0.90 1.15                0 0.90 1.15                0 0.90 1.15                0 0.90 1.15" />
+    <key name="stand_previous" qpos="0 0 0.1867435755 1 0 0 0                0.33532733 0 0.53234438                0.33532733 0 0.53234438                0.33532733 0 0.53234438                0.33532733 0 0.53234438" ctrl="0 0.33532733 0.53234438                0 0.33532733 0.53234438                0 0.33532733 0.53234438                0 0.33532733 0.53234438" />
+    <key name="park" qpos="0 0 0.1817521174 1 0 0 0                0.4983797927 0 0.3491569025                0.434095281 0 0.0107701707                0.4983797927 0 0.3491569025                0.434095281 0 0.0107701707" ctrl="0 0.4983797927 0.3491569025                0 0.4983797927 0.3491569025                0 0.434095281 0.0107701707                0 0.434095281 0.0107701707" />
+    <key name="compact" qpos="0 0 0.1662524149 1 0 0 0                0.1108283051 0 0.9092586986                0.1108283051 0 0.9092586986                0.1108283051 0 0.9092586986                0.1108283051 0 0.9092586986" ctrl="0 0.1108283051 0.9092586986                0 0.1108283051 0.9092586986                0 0.1108283051 0.9092586986                0 0.1108283051 0.9092586986" />
+    <!-- Valid-limit reset pose; unlike open, its knee values are in range. -->
+    <key name="extended" qpos="0 0 0.1921257790 1 0 0 0  0 0 0.1745329252  0 0 0.1745329252  0 0 0.1745329252  0 0 0.1745329252" ctrl="0 0 0.1745329252  0 0 0.1745329252  0 0 0.1745329252  0 0 0.1745329252" />
+  </keyframe>
+</mujoco>

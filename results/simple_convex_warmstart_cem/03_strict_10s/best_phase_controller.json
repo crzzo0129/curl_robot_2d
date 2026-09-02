@@ -1,0 +1,98 @@
+{
+  "controller": "phase_locked_oscillator",
+  "oscillator_rate_rad_s": 3.2438223361253873,
+  "oscillator_period_s": 1.9369696167406607,
+  "oscillator_coupling_per_s": 6.695390876267462,
+  "minimum_foot_surface_gap_m": 0.005778728043623542,
+  "nominal_knee_bias_rad": -0.025836993867265345,
+  "foot_gap_tracking_margin_m": 0.004,
+  "raw_coefficients": {
+    "front_hip_sin": 0.222541711991841,
+    "front_hip_cos": -0.05541218245088307,
+    "front_knee_sin": -0.9533707782717229,
+    "front_knee_cos": 0.18877619356968148,
+    "rear_hip_sin": -0.2651865232202442,
+    "rear_hip_cos": 0.18261463565825156,
+    "rear_knee_sin": -0.5721092194839345,
+    "rear_knee_cos": -0.6241292934798195
+  },
+  "optimization": {
+    "method": "three_stage_3d_cem",
+    "stage": "03_strict_10s",
+    "source_controller": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\assets\\rollingquad_2_3d_self_collision_cem_reference.json",
+    "parameters": [
+      "front_hip_sin",
+      "front_hip_cos",
+      "front_knee_sin",
+      "front_knee_cos",
+      "rear_hip_sin",
+      "rear_hip_cos",
+      "rear_knee_sin",
+      "rear_knee_cos",
+      "oscillator_rate_rad_s",
+      "oscillator_coupling_per_s",
+      "minimum_foot_surface_gap_m"
+    ],
+    "stage_config": {
+      "name": "03_strict_10s",
+      "description": "Strict 10 s selection with progress gating and collision cost",
+      "generations": 12,
+      "population": 48,
+      "elite_count": 8,
+      "duration_s": 10.0,
+      "minimum_turns": 5.0,
+      "progress_reward_margin_turns": 0.5,
+      "progress_weight": 14.0,
+      "contact_time_weight": 4.0,
+      "penetration_integral_weight": 2400.0,
+      "maximum_penetration_weight": 300.0,
+      "lateral_weight": 5.0,
+      "tilt_rms_weight": 3.0,
+      "tilt_max_weight": 2.0,
+      "phase_error_weight": 1.5,
+      "saturation_weight": 12.0,
+      "seed": 43
+    }
+  },
+  "collision_objective": {
+    "physics": "rollingquad_2 selective self-collision",
+    "all_enabled_self_contact_penalized": true,
+    "contact_time_weight": 4.0,
+    "penetration_integral_weight": 2400.0,
+    "maximum_penetration_weight": 300.0
+  },
+  "rollout_summary": {
+    "score": 72.64023861574594,
+    "duration_s": 10.0,
+    "rolling_turns": 5.591310013354033,
+    "distance_turns": 5.842378412305921,
+    "conservative_rolling_turns": 5.591310013354033,
+    "absolute_rotation_turns": 5.596094424848966,
+    "reference_turns": 5.5386815295492955,
+    "distance_x_m": 4.68036514039593,
+    "distance_y_m": -0.049826747719193654,
+    "minimum_required_turns": 5.0,
+    "progress_reward_cap_turns": 5.5,
+    "rewarded_turns": 5.5,
+    "progress_deficit_turns": 0.0,
+    "self_contact_fraction": 0.049,
+    "self_contact_total_s": 0.49,
+    "self_penetration_integral_m_s": 0.0003630874795952406,
+    "maximum_self_penetration_m": 0.0023966372744120192,
+    "rolling_axis_tilt_rms_rad": 0.014257500737294022,
+    "rolling_axis_tilt_max_rad": 0.038370896166638434,
+    "phase_error_rms_rad": 0.26890814517382977,
+    "torque_saturation_fraction": 0.0031125,
+    "nonfinite": false,
+    "self_contact_pairs": {
+      "front_left_foot_proxy__rear_left_foot_proxy": {
+        "duration_s": 0.462,
+        "maximum_penetration_m": 0.00230687915143409
+      },
+      "front_right_foot_proxy__rear_right_foot_proxy": {
+        "duration_s": 0.456,
+        "maximum_penetration_m": 0.0023966372744120192
+      }
+    }
+  }
+}

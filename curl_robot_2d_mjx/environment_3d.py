@@ -58,11 +58,25 @@ ROLLINGQUAD_2_MODEL_PATH_3D = (
     / "mjcf"
     / "rollingquad.xml"
 )
+ROLLINGQUAD_2_SIMPLE_CONVEX_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "rollingquad_description_2"
+    / "mjcf"
+    / "rollingquad_simple_convex.xml"
+)
+# Geometries that share the corrected 12-joint RollingQuad CAD contract and
+# differ only in collision-mesh resolution (full STL vs simplified convex hull).
+ROLLINGQUAD_GEOMETRIES_3D = (
+    "rollingquad_2",
+    "rollingquad_2_simple_convex",
+)
 MODEL_PATHS_3D = {
     "baseline": MODEL_PATH_3D,
     "real": REAL_MODEL_PATH_3D,
     "pupper_open60": PUPPER_OPEN60_MODEL_PATH_3D,
     "rollingquad_2": ROLLINGQUAD_2_MODEL_PATH_3D,
+    "rollingquad_2_simple_convex": ROLLINGQUAD_2_SIMPLE_CONVEX_MODEL_PATH_3D,
 }
 BASELINE_3D_CEM_CONTROLLER = (
     PROJECT_ROOT
@@ -87,11 +101,19 @@ PUPPER_OPEN60_CEM_CONTROLLER = (
 ROLLINGQUAD_2_CEM_CONTROLLER = (
     PROJECT_ROOT / "assets" / "rollingquad_2_3d_self_collision_cem_reference.json"
 )
+ROLLINGQUAD_2_SIMPLE_CONVEX_CEM_CONTROLLER = (
+    PROJECT_ROOT
+    / "results"
+    / "simple_convex_warmstart_cem"
+    / "03_strict_10s"
+    / "best_phase_controller.json"
+)
 CEM_CONTROLLER_PATHS_3D = {
     "baseline": BASELINE_3D_CEM_CONTROLLER,
     "real": REAL_3D_CEM_CONTROLLER,
     "pupper_open60": PUPPER_OPEN60_CEM_CONTROLLER,
     "rollingquad_2": ROLLINGQUAD_2_CEM_CONTROLLER,
+    "rollingquad_2_simple_convex": ROLLINGQUAD_2_SIMPLE_CONVEX_CEM_CONTROLLER,
 }
 DEFAULT_3D_CEM_CONTROLLER = ROLLINGQUAD_2_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
@@ -179,7 +201,7 @@ def geometry_parameters_3d(name: str):
         return FIXED_PARAMETERS
     if name == "real":
         return REAL_GEOMETRY_PARAMETERS
-    if name in ("pupper_open60", "rollingquad_2"):
+    if name in ("pupper_open60", *ROLLINGQUAD_GEOMETRIES_3D):
         return PUPPER_ORIGINAL_SHELL_60_PARAMETERS
     raise ValueError(f"unknown 3-D geometry: {name!r}")
 
@@ -391,11 +413,11 @@ def validate_rolling_morphology_3d(model, geometry: str) -> None:
 
     import mujoco
 
-    if geometry == "rollingquad_2":
+    if geometry in ROLLINGQUAD_GEOMETRIES_3D:
         validate_rollingquad_self_collision_contract_3d(model)
     expected_names = (
         PUPPER_JOINT_NAMES_3D
-        if geometry in ("pupper_open60", "rollingquad_2")
+        if geometry in ("pupper_open60", *ROLLINGQUAD_GEOMETRIES_3D)
         else JOINT_NAMES_3D
     )
     if model.nu != len(expected_names):
@@ -821,7 +843,7 @@ def make_brax_env_3d(
                 self.rear_left_foot_geom_id,
                 self.rear_right_foot_geom_id,
             )
-            if task.geometry == "rollingquad_2" and not shell_geom_ids:
+            if task.geometry in ROLLINGQUAD_GEOMETRIES_3D and not shell_geom_ids:
                 # The corrected URDF integrates the rolling surfaces into the
                 # CAD link meshes instead of naming separate analytic shells.
                 # Classify non-foot dynamic geoms as shell/body surfaces for
@@ -841,7 +863,7 @@ def make_brax_env_3d(
                     object_id(mujoco.mjtObj.mjOBJ_GEOM, name)
                     for name in ROLLINGQUAD_FRONT_LEG_GEOM_NAMES_3D
                 ]
-                if task.geometry == "rollingquad_2"
+                if task.geometry in ROLLINGQUAD_GEOMETRIES_3D
                 else [],
                 dtype=jp.int32,
             )
@@ -850,13 +872,13 @@ def make_brax_env_3d(
                     object_id(mujoco.mjtObj.mjOBJ_GEOM, name)
                     for name in ROLLINGQUAD_REAR_LEG_GEOM_NAMES_3D
                 ]
-                if task.geometry == "rollingquad_2"
+                if task.geometry in ROLLINGQUAD_GEOMETRIES_3D
                 else [],
                 dtype=jp.int32,
             )
             self.torso_geom_id = (
                 object_id(mujoco.mjtObj.mjOBJ_GEOM, "torso_mesh")
-                if task.geometry == "rollingquad_2"
+                if task.geometry in ROLLINGQUAD_GEOMETRIES_3D
                 else -1
             )
 
@@ -884,7 +906,7 @@ def make_brax_env_3d(
                         "rear_right",
                     )
                 ]
-                if task.geometry in ("pupper_open60", "rollingquad_2")
+                if task.geometry in ("pupper_open60", *ROLLINGQUAD_GEOMETRIES_3D)
                 else []
             )
             self.locked_joint_dof_indices = jp.asarray(

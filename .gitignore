@@ -34,6 +34,9 @@ results/**
 !results/pupper_r127p5_open60_shell150_45_three_stage_cem/
 !results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/
 !results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json
+!results/simple_convex_warmstart_cem/
+!results/simple_convex_warmstart_cem/03_strict_10s/
+!results/simple_convex_warmstart_cem/03_strict_10s/best_phase_controller.json
 
 # Version the validated rolling-reset dataset required by stopping PPO.
 # Other rolling-stop searches, reports, and generated terminal states remain local.
