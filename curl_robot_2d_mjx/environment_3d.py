@@ -65,11 +65,20 @@ ROLLINGQUAD_2_SIMPLE_CONVEX_MODEL_PATH_3D = (
     / "mjcf"
     / "rollingquad_simple_convex.xml"
 )
+ROLLINGQUAD_2_PRIMITIVE_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "rollingquad_description_2"
+    / "mjcf"
+    / "rollingquad_primitive.xml"
+)
 # Geometries that share the corrected 12-joint RollingQuad CAD contract and
-# differ only in collision-mesh resolution (full STL vs simplified convex hull).
+# differ only in collision-surface representation (STL mesh, convex hull, or
+# analytic primitives).
 ROLLINGQUAD_GEOMETRIES_3D = (
     "rollingquad_2",
     "rollingquad_2_simple_convex",
+    "rollingquad_2_primitive",
 )
 MODEL_PATHS_3D = {
     "baseline": MODEL_PATH_3D,
@@ -77,6 +86,7 @@ MODEL_PATHS_3D = {
     "pupper_open60": PUPPER_OPEN60_MODEL_PATH_3D,
     "rollingquad_2": ROLLINGQUAD_2_MODEL_PATH_3D,
     "rollingquad_2_simple_convex": ROLLINGQUAD_2_SIMPLE_CONVEX_MODEL_PATH_3D,
+    "rollingquad_2_primitive": ROLLINGQUAD_2_PRIMITIVE_MODEL_PATH_3D,
 }
 BASELINE_3D_CEM_CONTROLLER = (
     PROJECT_ROOT
@@ -108,12 +118,20 @@ ROLLINGQUAD_2_SIMPLE_CONVEX_CEM_CONTROLLER = (
     / "03_strict_10s"
     / "best_phase_controller.json"
 )
+ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER = (
+    PROJECT_ROOT
+    / "results"
+    / "rollingquad_primitive_warmstart_cem"
+    / "03_strict_10s"
+    / "best_phase_controller.json"
+)
 CEM_CONTROLLER_PATHS_3D = {
     "baseline": BASELINE_3D_CEM_CONTROLLER,
     "real": REAL_3D_CEM_CONTROLLER,
     "pupper_open60": PUPPER_OPEN60_CEM_CONTROLLER,
     "rollingquad_2": ROLLINGQUAD_2_CEM_CONTROLLER,
     "rollingquad_2_simple_convex": ROLLINGQUAD_2_SIMPLE_CONVEX_CEM_CONTROLLER,
+    "rollingquad_2_primitive": ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
 }
 DEFAULT_3D_CEM_CONTROLLER = ROLLINGQUAD_2_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
@@ -248,6 +266,39 @@ ROLLINGQUAD_SELF_COLLISION_MASKS_3D = {
     "rear_left_foot_proxy": (8, 15),
     "rear_right_foot_proxy": (8, 15),
 }
+# Primitive-collision variant: the torso shell becomes a capsule arc and each
+# thigh splits into a link capsule + hip-motor cylinder while each lower leg
+# splits into a shank capsule + foot sphere.  Leg masks stay identical to the
+# mesh model so the selective ABI (front/rear leg, leg-torso, foot-leg,
+# foot-foot) is preserved.
+SHELL_MASK_3D = (16, 7)
+ROLLINGQUAD_PRIMITIVE_LEG_MASKS_3D = {
+    "front_left_hip_link_geom": (2, 29),
+    "front_right_hip_link_geom": (2, 29),
+    "rear_left_hip_link_geom": (4, 27),
+    "rear_right_hip_link_geom": (4, 27),
+    "front_left_thigh_geom": (2, 29),
+    "front_left_thigh_motor": (2, 29),
+    "front_right_thigh_geom": (2, 29),
+    "front_right_thigh_motor": (2, 29),
+    "rear_left_thigh_geom": (4, 27),
+    "rear_left_thigh_motor": (4, 27),
+    "rear_right_thigh_geom": (4, 27),
+    "rear_right_thigh_motor": (4, 27),
+    "front_left_foot_proxy": (8, 15),
+    "front_left_shank_geom": (8, 15),
+    "front_right_foot_proxy": (8, 15),
+    "front_right_shank_geom": (8, 15),
+    "rear_left_foot_proxy": (8, 15),
+    "rear_left_shank_geom": (8, 15),
+    "rear_right_foot_proxy": (8, 15),
+    "rear_right_shank_geom": (8, 15),
+}
+SELF_COLLISION_MASKS_BY_GEOMETRY_3D = {
+    "rollingquad_2": ROLLINGQUAD_SELF_COLLISION_MASKS_3D,
+    "rollingquad_2_simple_convex": ROLLINGQUAD_SELF_COLLISION_MASKS_3D,
+    "rollingquad_2_primitive": ROLLINGQUAD_PRIMITIVE_LEG_MASKS_3D,
+}
 ROLLINGQUAD_FRONT_LEG_GEOM_NAMES_3D = (
     "front_left_hip_link_geom",
     "front_left_thigh_geom",
@@ -262,37 +313,90 @@ ROLLINGQUAD_REAR_LEG_GEOM_NAMES_3D = (
 )
 
 
-def validate_rollingquad_self_collision_contract_3d(model) -> None:
+def _expected_rollingquad_geom_mask(name: str):
+    """Return the required (contype, conaffinity) for a RollingQuad geom name."""
+
+    if name in ("torso_mesh", "torso_box_proxy") or "_shell_" in name:
+        return SHELL_MASK_3D
+    if any(
+        suffix in name
+        for suffix in ("_hip_link_geom", "_thigh_geom", "_thigh_motor")
+    ):
+        return (2, 29) if "front" in name else (4, 27)
+    if "_foot_proxy" in name or "_shank_geom" in name:
+        return (8, 15)
+    return None
+
+
+def detect_rollingquad_geometry_3d(model) -> str | None:
+    """Return the RollingQuad geometry whose collision contract matches ``model``."""
+
+    actual = {
+        model.geom(geom_id).name
+        for geom_id in range(model.ngeom)
+        if int(model.geom_bodyid[geom_id]) != 0
+    }
+    if actual == set(ROLLINGQUAD_SELF_COLLISION_MASKS_3D):
+        return "rollingquad_2"
+    leg_names = {
+        name
+        for name in actual
+        if "_shell_" not in name and name != "torso_box_proxy"
+    }
+    if leg_names == set(ROLLINGQUAD_PRIMITIVE_LEG_MASKS_3D):
+        return "rollingquad_2_primitive"
+    return None
+
+
+def validate_rollingquad_self_collision_contract_3d(model, geometry=None) -> None:
     """Require the selective CAD self-collision ABI used by ROLL training."""
+
+    if geometry is None:
+        geometry = detect_rollingquad_geometry_3d(model)
+    if geometry not in SELF_COLLISION_MASKS_BY_GEOMETRY_3D:
+        raise ValueError(
+            "model collision geoms do not match any rollingquad "
+            "self-collision contract"
+        )
 
     actual_names = {
         model.geom(geom_id).name
         for geom_id in range(model.ngeom)
         if int(model.geom_bodyid[geom_id]) != 0
     }
-    expected_names = set(ROLLINGQUAD_SELF_COLLISION_MASKS_3D)
-    if actual_names != expected_names:
+    leg_names = {
+        name
+        for name in actual_names
+        if "_shell_" not in name and name != "torso_box_proxy"
+    }
+    expected_leg_names = set(SELF_COLLISION_MASKS_BY_GEOMETRY_3D[geometry])
+    if leg_names != expected_leg_names:
         raise ValueError(
-            "rollingquad_2 collision geoms do not match the selective "
+            f"{geometry} collision geoms do not match the selective "
             "self-collision contract"
         )
-    for name, expected in ROLLINGQUAD_SELF_COLLISION_MASKS_3D.items():
+
+    for name in actual_names:
         geom_id = model.geom(name).id
         actual = (
             int(model.geom_contype[geom_id]),
             int(model.geom_conaffinity[geom_id]),
         )
+        expected = _expected_rollingquad_geom_mask(name)
+        if expected is None:
+            raise ValueError(f"unexpected collision geom: {name}")
         if actual != expected:
             raise ValueError(
-                f"rollingquad_2 collision mask mismatch for {name}: "
+                f"{geometry} collision mask mismatch for {name}: "
                 f"expected {expected}, got {actual}"
             )
+
     floor_id = model.geom("floor").id
     if (
         int(model.geom_contype[floor_id]),
         int(model.geom_conaffinity[floor_id]),
     ) != (1, 0):
-        raise ValueError("rollingquad_2 floor collision mask must be (1, 0)")
+        raise ValueError(f"{geometry} floor collision mask must be (1, 0)")
 
 
 def configure_floor_contact_friction_3d(
@@ -414,7 +518,7 @@ def validate_rolling_morphology_3d(model, geometry: str) -> None:
     import mujoco
 
     if geometry in ROLLINGQUAD_GEOMETRIES_3D:
-        validate_rollingquad_self_collision_contract_3d(model)
+        validate_rollingquad_self_collision_contract_3d(model, geometry)
     expected_names = (
         PUPPER_JOINT_NAMES_3D
         if geometry in ("pupper_open60", *ROLLINGQUAD_GEOMETRIES_3D)
@@ -858,10 +962,21 @@ def make_brax_env_3d(
                 foot_geom_ids,
                 dtype=jp.int32,
             )
+            front_leg_names = list(ROLLINGQUAD_FRONT_LEG_GEOM_NAMES_3D)
+            rear_leg_names = list(ROLLINGQUAD_REAR_LEG_GEOM_NAMES_3D)
+            if task.geometry == "rollingquad_2_primitive":
+                front_leg_names += [
+                    "front_left_thigh_motor",
+                    "front_right_thigh_motor",
+                ]
+                rear_leg_names += [
+                    "rear_left_thigh_motor",
+                    "rear_right_thigh_motor",
+                ]
             self.front_leg_geom_ids = jp.asarray(
                 [
                     object_id(mujoco.mjtObj.mjOBJ_GEOM, name)
-                    for name in ROLLINGQUAD_FRONT_LEG_GEOM_NAMES_3D
+                    for name in front_leg_names
                 ]
                 if task.geometry in ROLLINGQUAD_GEOMETRIES_3D
                 else [],
@@ -870,17 +985,35 @@ def make_brax_env_3d(
             self.rear_leg_geom_ids = jp.asarray(
                 [
                     object_id(mujoco.mjtObj.mjOBJ_GEOM, name)
-                    for name in ROLLINGQUAD_REAR_LEG_GEOM_NAMES_3D
+                    for name in rear_leg_names
                 ]
                 if task.geometry in ROLLINGQUAD_GEOMETRIES_3D
                 else [],
                 dtype=jp.int32,
             )
-            self.torso_geom_id = (
-                object_id(mujoco.mjtObj.mjOBJ_GEOM, "torso_mesh")
-                if task.geometry in ROLLINGQUAD_GEOMETRIES_3D
-                else -1
-            )
+            if task.geometry == "rollingquad_2_primitive":
+                self.torso_shell_geom_ids = jp.asarray(
+                    [
+                        int(geom_id)
+                        for geom_id in range(self.mj_model.ngeom)
+                        if "torso_shell_" in (
+                            mujoco.mj_id2name(
+                                self.mj_model,
+                                mujoco.mjtObj.mjOBJ_GEOM,
+                                geom_id,
+                            )
+                            or ""
+                        )
+                    ],
+                    dtype=jp.int32,
+                )
+            elif task.geometry in ROLLINGQUAD_GEOMETRIES_3D:
+                self.torso_shell_geom_ids = jp.asarray(
+                    [object_id(mujoco.mjtObj.mjOBJ_GEOM, "torso_mesh")],
+                    dtype=jp.int32,
+                )
+            else:
+                self.torso_shell_geom_ids = jp.asarray([], dtype=jp.int32)
 
             joint_ids = [
                 object_id(mujoco.mjtObj.mjOBJ_JOINT, name)
@@ -1971,8 +2104,14 @@ def make_brax_env_3d(
                 | (geom1_rear_leg & geom2_front_leg)
             )
             leg_torso = valid & (
-                (geom1_leg & (geom2 == self.torso_geom_id))
-                | (geom2_leg & (geom1 == self.torso_geom_id))
+                (
+                    geom1_leg
+                    & self._geom_in_ids(geom2, self.torso_shell_geom_ids)
+                )
+                | (
+                    geom2_leg
+                    & self._geom_in_ids(geom1, self.torso_shell_geom_ids)
+                )
             )
             foot_leg = valid & (
                 (geom1_foot & geom2_leg) | (geom2_foot & geom1_leg)

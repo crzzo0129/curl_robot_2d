@@ -1,0 +1,122 @@
+{
+  "controller": "phase_locked_oscillator",
+  "oscillator_rate_rad_s": 2.8611228993402174,
+  "oscillator_period_s": 2.196055719461931,
+  "oscillator_coupling_per_s": 7.407276056662468,
+  "minimum_foot_surface_gap_m": 0.0037379486981751727,
+  "nominal_knee_bias_rad": -0.016780389457158318,
+  "foot_gap_tracking_margin_m": 0.004,
+  "raw_coefficients": {
+    "front_hip_sin": 0.12343476917248564,
+    "front_hip_cos": -0.049179587199542525,
+    "front_knee_sin": -0.8158983731625663,
+    "front_knee_cos": 0.13032184425397494,
+    "rear_hip_sin": -0.24926614412104056,
+    "rear_hip_cos": 0.3764644876669943,
+    "rear_knee_sin": -0.9327551903667887,
+    "rear_knee_cos": -0.6404757592406759
+  },
+  "optimization": {
+    "method": "three_stage_3d_cem",
+    "stage": "03_strict_10s",
+    "source_controller": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\results\\simple_convex_warmstart_cem\\03_strict_10s\\best_phase_controller.json",
+    "parameters": [
+      "front_hip_sin",
+      "front_hip_cos",
+      "front_knee_sin",
+      "front_knee_cos",
+      "rear_hip_sin",
+      "rear_hip_cos",
+      "rear_knee_sin",
+      "rear_knee_cos",
+      "oscillator_rate_rad_s",
+      "oscillator_coupling_per_s",
+      "minimum_foot_surface_gap_m"
+    ],
+    "stage_config": {
+      "name": "03_strict_10s",
+      "description": "Strict 10 s selection with progress gating and collision cost",
+      "generations": 12,
+      "population": 48,
+      "elite_count": 8,
+      "duration_s": 10.0,
+      "minimum_turns": 5.0,
+      "progress_reward_margin_turns": 0.5,
+      "progress_weight": 14.0,
+      "contact_time_weight": 4.0,
+      "penetration_integral_weight": 2400.0,
+      "maximum_penetration_weight": 300.0,
+      "lateral_weight": 5.0,
+      "tilt_rms_weight": 3.0,
+      "tilt_max_weight": 2.0,
+      "phase_error_weight": 1.5,
+      "saturation_weight": 12.0,
+      "seed": 43
+    }
+  },
+  "collision_objective": {
+    "physics": "rollingquad_2 selective self-collision",
+    "all_enabled_self_contact_penalized": true,
+    "contact_time_weight": 4.0,
+    "penetration_integral_weight": 2400.0,
+    "maximum_penetration_weight": 300.0
+  },
+  "rollout_summary": {
+    "score": 70.90336282244739,
+    "duration_s": 10.0,
+    "rolling_turns": 5.576769221398971,
+    "distance_turns": 6.47477934763914,
+    "conservative_rolling_turns": 5.576769221398971,
+    "absolute_rotation_turns": 5.631907290689954,
+    "reference_turns": 5.541584837688979,
+    "distance_x_m": 5.1869854042003,
+    "distance_y_m": 0.10179267747739784,
+    "minimum_required_turns": 5.0,
+    "progress_reward_cap_turns": 5.5,
+    "rewarded_turns": 5.5,
+    "progress_deficit_turns": 0.0,
+    "self_contact_fraction": 0.0915,
+    "self_contact_total_s": 0.915,
+    "self_penetration_integral_m_s": 0.0003055858656063028,
+    "maximum_self_penetration_m": 0.0013010419857248101,
+    "rolling_axis_tilt_rms_rad": 0.051861902681420165,
+    "rolling_axis_tilt_max_rad": 0.15335534727861874,
+    "phase_error_rms_rad": 0.20677247626104325,
+    "torque_saturation_fraction": 0.002625,
+    "nonfinite": false,
+    "self_contact_pairs": {
+      "front_left_foot_proxy__rear_left_foot_proxy": {
+        "duration_s": 0.253,
+        "maximum_penetration_m": 0.0013010419857248101
+      },
+      "front_left_foot_proxy__rear_left_shank_geom": {
+        "duration_s": 0.517,
+        "maximum_penetration_m": 0.0008693609238002026
+      },
+      "front_left_shank_geom__rear_left_foot_proxy": {
+        "duration_s": 0.052000000000000005,
+        "maximum_penetration_m": 0.0012355583580819438
+      },
+      "front_left_thigh_geom__torso_box_proxy": {
+        "duration_s": 0.124,
+        "maximum_penetration_m": 0.0004963723393659678
+      },
+      "front_right_foot_proxy__rear_right_foot_proxy": {
+        "duration_s": 0.27,
+        "maximum_penetration_m": 0.0012786735605175917
+      },
+      "front_right_foot_proxy__rear_right_shank_geom": {
+        "duration_s": 0.466,
+        "maximum_penetration_m": 0.0007619699740065086
+      },
+      "front_right_shank_geom__rear_right_foot_proxy": {
+        "duration_s": 0.05,
+        "maximum_penetration_m": 0.0011209170182207434
+      },
+      "front_right_thigh_geom__torso_box_proxy": {
+        "duration_s": 0.009000000000000001,
+        "maximum_penetration_m": 4.088980048478838e-05
+      }
+    }
+  }
+}

@@ -65,7 +65,14 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertTrue(PUPPER_OPEN60_MODEL_PATH_3D.exists())
         self.assertEqual(
             GEOMETRY_NAMES_3D,
-            ("baseline", "real", "pupper_open60", "rollingquad_2"),
+            (
+                "baseline",
+                "real",
+                "pupper_open60",
+                "rollingquad_2",
+                "rollingquad_2_simple_convex",
+                "rollingquad_2_primitive",
+            ),
         )
         self.assertEqual(model_path_3d("real"), REAL_MODEL_PATH_3D)
         self.assertEqual(

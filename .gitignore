@@ -37,6 +37,9 @@ results/**
 !results/simple_convex_warmstart_cem/
 !results/simple_convex_warmstart_cem/03_strict_10s/
 !results/simple_convex_warmstart_cem/03_strict_10s/best_phase_controller.json
+!results/rollingquad_primitive_warmstart_cem/
+!results/rollingquad_primitive_warmstart_cem/03_strict_10s/
+!results/rollingquad_primitive_warmstart_cem/03_strict_10s/best_phase_controller.json
 
 # Version the validated rolling-reset dataset required by stopping PPO.
 # Other rolling-stop searches, reports, and generated terminal states remain local.

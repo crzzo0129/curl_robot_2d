@@ -1,0 +1,206 @@
+{
+  "source_xml": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\assets\\rollingquad_description_2\\mjcf\\rollingquad.xml",
+  "output_xml": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\assets\\rollingquad_description_2\\mjcf\\rollingquad_primitive.xml",
+  "shell_outer_radius": 0.1275,
+  "shell_capsule_radius": 0.003,
+  "shell_segments": 48,
+  "shell_geoms": 100,
+  "shell_counts": {
+    "front_left_thigh": 6,
+    "front_right_thigh": 6,
+    "torso": 60,
+    "rear_left_thigh": 6,
+    "rear_right_thigh": 6,
+    "rear_left_shank": 4,
+    "rear_right_shank": 4,
+    "front_left_shank": 4,
+    "front_right_shank": 4
+  },
+  "leg_geoms": {
+    "torso_mesh": {
+      "mesh": "torso_2",
+      "kind": "torso",
+      "primitives": []
+    },
+    "front_right_hip_link_geom": {
+      "mesh": "abduction_mirror_1",
+      "kind": "hip",
+      "primitives": [
+        {
+          "type": "cylinder",
+          "size": "0.03 0.0315",
+          "pos": "0.0041383029 -0.0042852449 -0.15880149",
+          "quat": "0.7071067811865476 0 0.7071067811865476 0"
+        }
+      ]
+    },
+    "front_right_thigh_geom": {
+      "mesh": "Upperleg_with_motor_1_2",
+      "kind": "thigh",
+      "primitives": [
+        {
+          "type": "capsule",
+          "size": "0.023",
+          "fromto": "-0.0039743073 -0.015540544 -0.0032586879 -0.0137759 -0.0767678 0.01075"
+        },
+        {
+          "type": "cylinder",
+          "size": "0.03 0.0165",
+          "pos": "-0.0039743073 0.00095945588 -0.0032586879",
+          "quat": "0.7071067811865476 0 0.7071067811865476 0"
+        }
+      ]
+    },
+    "front_right_foot_proxy": {
+      "mesh": "Lower_leg_with_foot_1_2",
+      "kind": "foot",
+      "primitives": [
+        {
+          "type": "sphere",
+          "size": "0.0195",
+          "pos": "1.796e-05 -0.08776548 -0.02669029"
+        },
+        {
+          "type": "capsule",
+          "size": "0.0195",
+          "fromto": "0.0021300607 0.018498501 -0.026470547 1.796e-05 -0.06826548 -0.02669029"
+        }
+      ]
+    },
+    "rear_left_hip_link_geom": {
+      "mesh": "abduction_mirror_1_2",
+      "kind": "hip",
+      "primitives": [
+        {
+          "type": "cylinder",
+          "size": "0.03 0.0315",
+          "pos": "-0.0041383029 -0.0042852449 0.15880149",
+          "quat": "0.7071067811865476 0 0.7071067811865476 0"
+        }
+      ]
+    },
+    "rear_left_thigh_geom": {
+      "mesh": "Upperleg_with_motor_1",
+      "kind": "thigh",
+      "primitives": [
+        {
+          "type": "capsule",
+          "size": "0.023",
+          "fromto": "0.0050197324 -0.014953284 0.0032551564 0.0148224 -0.0761805 0.014"
+        },
+        {
+          "type": "cylinder",
+          "size": "0.03 0.0165",
+          "pos": "0.0050197324 0.0015467162 0.0032551564",
+          "quat": "0.7071067811865476 0 0.7071067811865476 0"
+        }
+      ]
+    },
+    "rear_left_foot_proxy": {
+      "mesh": "Lower_leg_with_foot_1",
+      "kind": "foot",
+      "primitives": [
+        {
+          "type": "sphere",
+          "size": "0.0195",
+          "pos": "-1.796e-05 -0.08776548 0.00194029"
+        },
+        {
+          "type": "capsule",
+          "size": "0.0195",
+          "fromto": "-0.0021300606 0.018498501 0.0017205471 -1.796e-05 -0.06826548 0.00194029"
+        }
+      ]
+    },
+    "front_left_hip_link_geom": {
+      "mesh": "abduction_1",
+      "kind": "hip",
+      "primitives": [
+        {
+          "type": "cylinder",
+          "size": "0.03 0.0315",
+          "pos": "0.0041243067 -0.0042493257 0.15847315",
+          "quat": "0.7071067811865476 0 0.7071067811865476 0"
+        }
+      ]
+    },
+    "front_left_thigh_geom": {
+      "mesh": "Upperleg_with_motor_mirror_1",
+      "kind": "thigh",
+      "primitives": [
+        {
+          "type": "capsule",
+          "size": "0.023",
+          "fromto": "-0.0043240375 -0.015442675 0.0039704566 -0.0139503 -0.0766699 -0.00975"
+        },
+        {
+          "type": "cylinder",
+          "size": "0.03 0.0165",
+          "pos": "-0.0043240375 0.0010573248 0.0039704566",
+          "quat": "0.7071067811865476 0 0.7071067811865476 0"
+        }
+      ]
+    },
+    "front_left_foot_proxy": {
+      "mesh": "Lower_leg_with_foot_mirror_1",
+      "kind": "foot",
+      "primitives": [
+        {
+          "type": "sphere",
+          "size": "0.0195",
+          "pos": "2.256e-05 -0.08782371 0.02672838"
+        },
+        {
+          "type": "capsule",
+          "size": "0.0195",
+          "fromto": "0.002221409 0.018498555 0.026729771 2.256e-05 -0.06832371 0.02672838"
+        }
+      ]
+    },
+    "rear_right_hip_link_geom": {
+      "mesh": "abduction_1_2",
+      "kind": "hip",
+      "primitives": [
+        {
+          "type": "cylinder",
+          "size": "0.03 0.0315",
+          "pos": "-0.0041243068 -0.0042493257 -0.15847315",
+          "quat": "0.7071067811865476 0 0.7071067811865476 0"
+        }
+      ]
+    },
+    "rear_right_thigh_geom": {
+      "mesh": "Upperleg_with_motor_mirror_1_2",
+      "kind": "thigh",
+      "primitives": [
+        {
+          "type": "capsule",
+          "size": "0.023",
+          "fromto": "0.0043240377 -0.015442675 -0.0039704566 0.0139503 -0.0766699 0.00975"
+        },
+        {
+          "type": "cylinder",
+          "size": "0.03 0.0165",
+          "pos": "0.0043240377 0.0010573248 -0.0039704566",
+          "quat": "0.7071067811865476 0 0.7071067811865476 0"
+        }
+      ]
+    },
+    "rear_right_foot_proxy": {
+      "mesh": "Lower_leg_with_foot_mirror_1_2",
+      "kind": "foot",
+      "primitives": [
+        {
+          "type": "sphere",
+          "size": "0.0195",
+          "pos": "-2.256e-05 -0.08782371 -0.02672838"
+        },
+        {
+          "type": "capsule",
+          "size": "0.0195",
+          "fromto": "-0.0022214094 0.018498555 -0.026729771 -2.256e-05 -0.06832371 -0.02672838"
+        }
+      ]
+    }
+  }
+}
