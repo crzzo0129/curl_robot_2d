@@ -661,6 +661,8 @@ RECIPES_3D = {
             "axis_tilt": 10.0,
             "action_rate": 0.02,
             "residual_action": 0.05,
+            "foot_contact_event": 20.0,
+            "foot_contact_time": 1.0,
             "failure_progress_clawback": 4.0,
             "termination": 40.0,
             "severe_extra_termination": 40.0,
