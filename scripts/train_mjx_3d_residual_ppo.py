@@ -632,7 +632,7 @@ RECIPES_3D = {
         ),
         "args": {
             "reference_weight": 1.0,
-            "minimum_residual_gain": 0.15,
+            "minimum_residual_gain": 0.30,
             "phase_rate_scale": 1.0,
             "residual_pair_differential_scale": 0.25,
             "lateral_reflex_gain": 0.0,
