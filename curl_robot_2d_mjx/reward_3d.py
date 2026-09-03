@@ -23,6 +23,7 @@ REWARD_3D_TERM_NAMES = (
     "residual_action",
     "torque",
     "collision",
+    "foot_gap",
     "failure_progress_clawback",
     "termination",
     "early_termination",
@@ -65,6 +66,8 @@ class Rolling3DRewardConfig:
     forbidden_penetration_integral: float = 20000.0
     maximum_forbidden_penetration: float = 2500.0
     cross_side_foot_contact: float = 30.0
+    foot_gap_weight: float = 0.0
+    foot_gap_min_m: float = 0.005
 
     failure_progress_clawback: float = 0.0
     termination: float = 20.0
@@ -200,6 +203,8 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         ),
         "torque": -config.torque * inputs["torque_cost"],
         "collision": -collision_cost,
+        "foot_gap": config.foot_gap_weight
+        * xp.maximum(inputs["same_side_foot_gap"] - config.foot_gap_min_m, 0.0),
         "failure_progress_clawback": (
             -config.failure_progress_clawback
             * inputs["roll_potential_positive"]

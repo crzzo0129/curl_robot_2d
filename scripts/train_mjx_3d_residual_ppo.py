@@ -663,6 +663,7 @@ RECIPES_3D = {
             "residual_action": 0.05,
             "foot_contact_event": 20.0,
             "foot_contact_time": 1.0,
+            "foot_gap_weight": 5.0,
             "failure_progress_clawback": 4.0,
             "termination": 40.0,
             "severe_extra_termination": 40.0,

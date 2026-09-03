@@ -1832,6 +1832,7 @@ def make_brax_env_3d(
                     "same_side_foot_max_increment": (
                         same_side_foot_max_increment
                     ),
+                    "same_side_foot_gap": contacts["same_side_foot_gap"],
                     "cross_side_foot_contact": (
                         cross_side_foot_active.astype(jp.float32)
                     ),
@@ -2134,6 +2135,19 @@ def make_brax_env_3d(
             shell_floor = ground & (geom1_shell | geom2_shell)
             foot_floor = ground & (geom1_foot | geom2_foot)
             forbidden = valid & (~ground) & (~same_side_foot)
+            foot_diameter = 2.0 * float(self.geometry_parameters.foot_radius)
+            same_side_foot_gap = jp.minimum(
+                jp.linalg.norm(
+                    data.geom_xpos[self.front_left_foot_geom_id]
+                    - data.geom_xpos[self.rear_left_foot_geom_id]
+                )
+                - foot_diameter,
+                jp.linalg.norm(
+                    data.geom_xpos[self.front_right_foot_geom_id]
+                    - data.geom_xpos[self.rear_right_foot_geom_id]
+                )
+                - foot_diameter,
+            )
             return {
                 "shell_floor_count": jp.sum(shell_floor).astype(jp.float32),
                 "foot_floor_count": jp.sum(foot_floor).astype(jp.float32),
@@ -2143,6 +2157,7 @@ def make_brax_env_3d(
                 "same_side_foot_depth": jp.max(
                     jp.where(same_side_foot, -distance, 0.0)
                 ),
+                "same_side_foot_gap": same_side_foot_gap,
                 "forbidden_count": jp.sum(forbidden).astype(jp.float32),
                 "forbidden_depth": jp.max(
                     jp.where(forbidden, -distance, 0.0)
