@@ -259,6 +259,16 @@
     <jointpos name="rear_right_hip_abduction_position" joint="rear_right_hip_abduction" />
     <jointpos name="rear_right_knee_position" joint="rear_right_knee" />
   </sensor>
+  <contact>
+    <pair name="front_left_foot_proxy_vs_rear_left_foot_proxy" geom1="front_left_foot_proxy" geom2="rear_left_foot_proxy" condim="3" friction="0.8 0.02 0.01" solref="0.002 1" solimp="0.97 0.995 0.001" />
+    <pair name="front_left_foot_proxy_vs_rear_left_shank_geom" geom1="front_left_foot_proxy" geom2="rear_left_shank_geom" condim="3" friction="0.8 0.02 0.01" solref="0.002 1" solimp="0.97 0.995 0.001" />
+    <pair name="front_left_shank_geom_vs_rear_left_foot_proxy" geom1="front_left_shank_geom" geom2="rear_left_foot_proxy" condim="3" friction="0.8 0.02 0.01" solref="0.002 1" solimp="0.97 0.995 0.001" />
+    <pair name="front_left_shank_geom_vs_rear_left_shank_geom" geom1="front_left_shank_geom" geom2="rear_left_shank_geom" condim="3" friction="0.8 0.02 0.01" solref="0.002 1" solimp="0.97 0.995 0.001" />
+    <pair name="front_right_foot_proxy_vs_rear_right_foot_proxy" geom1="front_right_foot_proxy" geom2="rear_right_foot_proxy" condim="3" friction="0.8 0.02 0.01" solref="0.002 1" solimp="0.97 0.995 0.001" />
+    <pair name="front_right_foot_proxy_vs_rear_right_shank_geom" geom1="front_right_foot_proxy" geom2="rear_right_shank_geom" condim="3" friction="0.8 0.02 0.01" solref="0.002 1" solimp="0.97 0.995 0.001" />
+    <pair name="front_right_shank_geom_vs_rear_right_foot_proxy" geom1="front_right_shank_geom" geom2="rear_right_foot_proxy" condim="3" friction="0.8 0.02 0.01" solref="0.002 1" solimp="0.97 0.995 0.001" />
+    <pair name="front_right_shank_geom_vs_rear_right_shank_geom" geom1="front_right_shank_geom" geom2="rear_right_shank_geom" condim="3" friction="0.8 0.02 0.01" solref="0.002 1" solimp="0.97 0.995 0.001" />
+  </contact>
   <keyframe>
     <!--
       Ported from curl_robot_3d_pupper_r127p5_open60_width120.xml.

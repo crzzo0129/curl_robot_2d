@@ -1,0 +1,114 @@
+{
+  "controller": "phase_locked_oscillator",
+  "oscillator_rate_rad_s": 3.195251776123095,
+  "oscillator_period_s": 1.9664132116697182,
+  "oscillator_coupling_per_s": 7.889912538100557,
+  "minimum_foot_surface_gap_m": 0.004576348163271882,
+  "nominal_knee_bias_rad": -0.020509785845576722,
+  "foot_gap_tracking_margin_m": 0.004,
+  "raw_coefficients": {
+    "front_hip_sin": 0.23341492841767505,
+    "front_hip_cos": -0.07931706385835827,
+    "front_knee_sin": -1.4,
+    "front_knee_cos": 0.18147317376904454,
+    "rear_hip_sin": -0.46106358308841827,
+    "rear_hip_cos": 0.2266576220333689,
+    "rear_knee_sin": -1.1274778796574991,
+    "rear_knee_cos": -0.417756538036289
+  },
+  "optimization": {
+    "method": "three_stage_3d_cem",
+    "stage": "03_strict_10s",
+    "source_controller": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\results\\rollingquad_primitive_warmstart_cem\\03_strict_10s\\best_phase_controller.json",
+    "parameters": [
+      "front_hip_sin",
+      "front_hip_cos",
+      "front_knee_sin",
+      "front_knee_cos",
+      "rear_hip_sin",
+      "rear_hip_cos",
+      "rear_knee_sin",
+      "rear_knee_cos",
+      "oscillator_rate_rad_s",
+      "oscillator_coupling_per_s",
+      "minimum_foot_surface_gap_m"
+    ],
+    "stage_config": {
+      "name": "03_strict_10s",
+      "description": "Strict 10 s selection with progress gating and collision cost",
+      "generations": 12,
+      "population": 48,
+      "elite_count": 8,
+      "duration_s": 10.0,
+      "minimum_turns": 5.0,
+      "progress_reward_margin_turns": 0.5,
+      "progress_weight": 14.0,
+      "contact_time_weight": 4.0,
+      "penetration_integral_weight": 2400.0,
+      "maximum_penetration_weight": 300.0,
+      "lateral_weight": 5.0,
+      "tilt_rms_weight": 3.0,
+      "tilt_max_weight": 2.0,
+      "phase_error_weight": 1.5,
+      "saturation_weight": 12.0,
+      "seed": 43
+    }
+  },
+  "collision_objective": {
+    "physics": "rollingquad_2 selective self-collision",
+    "all_enabled_self_contact_penalized": true,
+    "contact_time_weight": 4.0,
+    "penetration_integral_weight": 2400.0,
+    "maximum_penetration_weight": 300.0
+  },
+  "rollout_summary": {
+    "score": 72.44940519149394,
+    "duration_s": 10.0,
+    "rolling_turns": 6.703289545323799,
+    "distance_turns": 6.875495136710372,
+    "conservative_rolling_turns": 6.703289545323799,
+    "absolute_rotation_turns": 6.7036417007967355,
+    "reference_turns": 6.669750327253587,
+    "distance_x_m": 5.508001277876822,
+    "distance_y_m": 0.030744928716991346,
+    "minimum_required_turns": 5.0,
+    "progress_reward_cap_turns": 5.5,
+    "rewarded_turns": 5.5,
+    "progress_deficit_turns": 0.0,
+    "self_contact_fraction": 0.0885,
+    "self_contact_total_s": 0.885,
+    "self_penetration_integral_m_s": 4.197333328259497e-05,
+    "maximum_self_penetration_m": 0.0005000423211275196,
+    "rolling_axis_tilt_rms_rad": 0.015152210967681155,
+    "rolling_axis_tilt_max_rad": 0.04493267015522214,
+    "phase_error_rms_rad": 0.27176633032744035,
+    "torque_saturation_fraction": 0.0052625,
+    "nonfinite": false,
+    "self_contact_pairs": {
+      "front_left_foot_proxy__rear_left_foot_proxy": {
+        "duration_s": 0.40900000000000003,
+        "maximum_penetration_m": 0.0004242437616943165
+      },
+      "front_left_foot_proxy__rear_left_shank_geom": {
+        "duration_s": 0.077,
+        "maximum_penetration_m": 0.0004971306448483329
+      },
+      "front_left_shank_geom__rear_left_foot_proxy": {
+        "duration_s": 0.08700000000000001,
+        "maximum_penetration_m": 0.000296883926759868
+      },
+      "front_right_foot_proxy__rear_right_foot_proxy": {
+        "duration_s": 0.402,
+        "maximum_penetration_m": 0.000468623726849797
+      },
+      "front_right_foot_proxy__rear_right_shank_geom": {
+        "duration_s": 0.355,
+        "maximum_penetration_m": 0.0005000423211275196
+      },
+      "front_right_shank_geom__rear_right_foot_proxy": {
+        "duration_s": 0.083,
+        "maximum_penetration_m": 0.00031940016695387874
+      }
+    }
+  }
+}

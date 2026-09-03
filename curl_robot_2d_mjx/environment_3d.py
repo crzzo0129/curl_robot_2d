@@ -121,7 +121,7 @@ ROLLINGQUAD_2_SIMPLE_CONVEX_CEM_CONTROLLER = (
 ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER = (
     PROJECT_ROOT
     / "results"
-    / "rollingquad_primitive_warmstart_cem"
+    / "rollingquad_primitive_stiff_cem"
     / "03_strict_10s"
     / "best_phase_controller.json"
 )

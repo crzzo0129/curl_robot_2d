@@ -475,6 +475,38 @@ def build(args: argparse.Namespace) -> dict[str, object]:
     torso_box.set("rgba", "0.30 0.32 0.36 1")
     body_elements["torso"].append(torso_box)
 
+    # Stiffen (not disable) the front-vs-rear shank/foot contact.  At the
+    # compact pose the finite-size feet sit only 4 mm apart, so they do touch;
+    # the real robot also collides here.  Hard explicit pairs keep the contact
+    # clean -- minimal penetration, no "welding" -- instead of the soft default
+    # contact, matching the analytic shell model.
+    contact = root.find("contact")
+    if contact is None:
+        contact = ET.Element("contact")
+        sensor = root.find("sensor")
+        if sensor is not None:
+            root.insert(list(root).index(sensor) + 1, contact)
+        else:
+            root.append(contact)
+    for front, rear in (
+        ("front_left", "rear_left"),
+        ("front_right", "rear_right"),
+    ):
+        for geom_a, geom_b in (
+            (f"{front}_foot_proxy", f"{rear}_foot_proxy"),
+            (f"{front}_foot_proxy", f"{rear}_shank_geom"),
+            (f"{front}_shank_geom", f"{rear}_foot_proxy"),
+            (f"{front}_shank_geom", f"{rear}_shank_geom"),
+        ):
+            pair = ET.SubElement(contact, "pair")
+            pair.set("name", f"{geom_a}_vs_{geom_b}")
+            pair.set("geom1", geom_a)
+            pair.set("geom2", geom_b)
+            pair.set("condim", "3")
+            pair.set("friction", "0.8 0.02 0.01")
+            pair.set("solref", "0.002 1")
+            pair.set("solimp", "0.97 0.995 0.001")
+
     output_xml.parent.mkdir(parents=True, exist_ok=True)
     ET.indent(tree, space="  ")
     tree.write(output_xml, encoding="utf-8", xml_declaration=False)
