@@ -6,6 +6,7 @@ import numpy as np
 from curl_robot_2d_mjx.autonomous_startup_3d import AutonomousStartupConfig
 
 COMPACT_STARTUP_CONTRACT = "stand_to_low_speed_compact_v3_anti_ballistic"
+COMPACT_REACH_CONTRACT = "walking_stand_to_compact_only_v1"
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,16 @@ class CompactStartupConfig(AutonomousStartupConfig):
     angular_velocity_sigma_rad_s: float = .50
     axis_tilt_weight: float = .05
     axis_tilt_sigma_rad: float = .15
+
+
+@dataclass(frozen=True)
+class CompactReachConfig(CompactStartupConfig):
+    """Stage one: terminate at a confirmed compact window, without a teacher."""
+
+    confirmation_steps: int = 5
+
+    def episode_steps(self, dt):
+        return round(self.startup_budget_s / dt)
 
 
 def compact_target(model):

@@ -21,7 +21,7 @@ from curl_robot_2d_mjx.cem_reference import advance_oscillator
 from curl_robot_2d_mjx.startup_rolling_3d import reset_pose_arrays_3d
 from curl_robot_2d_mjx.handoff_probe_3d import FAILURES
 from curl_robot_2d_mjx.compact_startup_3d import (
-    CompactStartupConfig, compact_target, compact_potential,
+    CompactStartupConfig, CompactReachConfig, compact_target, compact_potential,
     limit_startup_action, startup_stability_costs,
 )
 
@@ -35,6 +35,7 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
 
     cfg = config or AutonomousStartupConfig()
     compact_mode = isinstance(cfg, CompactStartupConfig)
+    reach_only = isinstance(cfg, CompactReachConfig)
     dt = task.control_timestep
     cfg.validate(dt)
     if (task.geometry != "rollingquad_2" or task.reset_pose != "compact"
@@ -47,7 +48,8 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
     # No timeout inside the base physics env; wrapper owns startup/tail limits.
     task = replace(task, episode_length=cfg.episode_steps(dt) + 2)
     base = make_brax_env_3d(task, cem_reference=reference, reward_config=reward, seed=seed)
-    policy = teacher_policy or load_frozen_teacher(base, teacher_path, teacher_payload)
+    policy = (None if reach_only else
+              teacher_policy or load_frozen_teacher(base, teacher_path, teacher_payload))
     if compact_mode:
         expected = compact_target(base.mj_model)
         if bank is not None:
@@ -181,6 +183,11 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             q = stand_qpos.at[base.joint_qpos_indices].set(jp.clip(
                 stand_qpos[base.joint_qpos_indices] + noise, base.joint_low, base.joint_high))
             q = q.at[3:7].set(d.qpos[3:7])
+            if reach_only:
+                # Nominal walking reset: stand joints, identity heading, +5 mm
+                # spawn clearance, zero velocity. No walking reset randomization.
+                q = stand_qpos.at[2].add(.005)
+                d = d.replace(qvel=jp.zeros_like(d.qvel))
             d = mjx.forward(base.mjx_model, d.replace(qpos=q, ctrl=stand_ctrl))
             bi = {**b.info, "last_action": stand_action, "last_policy_action": stand_action,
                   "reference_time_offset": jp.zeros(()), "direct_action_override": jp.asarray(True)}
@@ -211,7 +218,8 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             old = state.info
             active = old["teacher_active"]
             b = self._unpack(state)
-            teacher_action = policy(b.obs, jax.random.PRNGKey(0))[0]
+            teacher_action = (jp.zeros(8) if reach_only else
+                              policy(b.obs, jax.random.PRNGKey(0))[0])
             startup_action = (limit_startup_action(jp, jp.clip(action, -1., 1.),
                 b.info["last_action"], base.action_scales, cfg.max_joint_target_step_rad)
                 if compact_mode else action)
@@ -223,8 +231,9 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             startup_count = old["startup_steps"] + (~active).astype(jp.int32)
             tail_count = old["tail_steps"] + active.astype(jp.int32)
             index, errors, potential = self.candidate_match(next_b)
-            prepared = self.prepare_teacher_context(next_b, index)
-            first_ctrl, teacher_finite = self.first_teacher_command(prepared)
+            prepared = next_b if reach_only else self.prepare_teacher_context(next_b, index)
+            first_ctrl, teacher_finite = ((d.ctrl, jp.asarray(True)) if reach_only else
+                                         self.first_teacher_command(prepared))
             jump = jp.max(jp.abs(first_ctrl - d.ctrl))
             y = d.qpos[1] - next_b.info["initial_root_y"]
             contacts = base._contact_metrics(d)
@@ -249,6 +258,9 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
             success = tail_complete & ~failed_physics & (turns >= cfg.minimum_turns) & (signed > 0)
             slow = tail_complete & ~failed_physics & ~success
             terminal = failed_physics | timeout | tail_complete
+            if reach_only:
+                success = handoff & ~failed_physics
+                terminal = failed_physics | timeout | success
             failed = terminal & ~success
             change = jp.mean(jp.square(next_b.info["last_action"] - b.info["last_action"]))
             torque = jp.mean(jp.square(d.actuator_force[base.actuator_ids] / base.force_limits))
@@ -286,6 +298,8 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                 "handoff_x": hx, "handoff_rotation": hr, "handoff_phase": hp,
                 "handoff_time": jp.where(handoff, d.time, old["handoff_time"]),
                 "tail_turns": turns, "max_abs_y": max_y, "terminal": terminal}, next_b)
+            if reach_only:
+                info["teacher_active"] = jp.asarray(False)
             metrics = {
                 "reward": reward_value, "handoff": handoff.astype(jp.float32),
                 "startup_success": success.astype(jp.float32), "failed": failed.astype(jp.float32),

@@ -1,5 +1,9 @@
 # stand → 低速 compact 启动 PPO（v3，防弹跳）
 
+仅训练“行走名义初始站姿 → compact”、暂不加载滚动教师时，使用新增的
+[`--compact-only` 第一阶段模式](3d_walking_stand_to_compact_stage1_zh.md)。
+下文仍描述原有带教师续滚验收的任务；两者使用不同 contract，不能混用成功率或权重。
+
 入口仍为 `python -m scripts.train_mjx_3d_startup_ppo`，但默认任务已替换。
 不再追逐动态候选点，不再使用 `--candidate-bank`，不能续训旧 v1/v2 启动参数。
 滚动教师参数保持冻结，作为接管后的实际验收；本次交付是训练代码，不是已训练成功的策略。

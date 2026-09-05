@@ -20,7 +20,8 @@ from curl_robot_2d_mjx.autonomous_startup_3d import (
     model_fingerprint, validate_model_fingerprint,
 )
 from curl_robot_2d_mjx.compact_startup_3d import (
-    COMPACT_STARTUP_CONTRACT as CONTRACT, CompactStartupConfig, compact_target,
+    COMPACT_STARTUP_CONTRACT as CONTRACT, COMPACT_REACH_CONTRACT,
+    CompactStartupConfig, CompactReachConfig, compact_target,
 )
 from curl_robot_2d_mjx.cem_reference import CEMReferenceConfig
 from curl_robot_2d_mjx.config_3d import Rolling3DConfig
@@ -67,7 +68,9 @@ def format_startup_failure_reasons(metrics):
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--teacher", type=Path, required=True)
+    p.add_argument("--teacher", type=Path)
+    p.add_argument("--compact-only", action="store_true",
+                   help="stage one: nominal walking stand to compact; no rolling teacher or continuation")
     p.add_argument("--teacher-config", type=Path)
     p.add_argument("--candidate-bank", type=Path,
                    help="obsolete: compact startup generates its target from the model and rejects dynamic banks")
@@ -78,7 +81,7 @@ def parse_args(argv=None):
     p.add_argument("--startup-budget-s", type=float, default=3)
     p.add_argument("--continuation-s", type=float, default=10)
     p.add_argument("--minimum-turns", type=float, default=5)
-    p.add_argument("--confirmation-steps", type=int, default=3)
+    p.add_argument("--confirmation-steps", type=int)
     p.add_argument("--gate-scale", type=float, default=1)
     p.add_argument("--learning-rate", type=float, default=2e-4)
     p.add_argument("--entropy-cost", type=float, default=0.001)
@@ -112,12 +115,18 @@ def parse_args(argv=None):
     for key, default in PRESETS[args.preset].items():
         if getattr(args, key) is None:
             setattr(args, key, default)
-    if args.teacher_config is None:
+    if args.confirmation_steps is None:
+        args.confirmation_steps = 5 if args.compact_only else 3
+    if not args.compact_only and args.teacher is None:
+        p.error("--teacher is required unless --compact-only is selected")
+    if args.compact_only and (args.teacher is not None or args.teacher_config is not None):
+        p.error("--compact-only uses its own nominal model configuration; omit teacher arguments")
+    if args.teacher_config is None and args.teacher is not None:
         args.teacher_config = args.teacher.parent / "training_config.json"
     if args.candidate_bank is not None:
         p.error("stand-to-compact no longer uses --candidate-bank; remove it and use a new output directory")
     for key in ("teacher", "teacher_config"):
-        if not getattr(args, key).is_file():
+        if not args.compact_only and not getattr(args, key).is_file():
             p.error(f"missing {key}: {getattr(args, key)}")
     if args.out.exists() and any(args.out.iterdir()):
         p.error("output directory is not empty; use a new directory, including for resuming")
@@ -143,11 +152,25 @@ def parse_args(argv=None):
 
 
 def build_inputs(args):
-    teacher = json.loads(args.teacher_config.read_text(encoding="utf-8"))
+    if args.compact_only:
+        from curl_robot_2d_mjx.config_3d import physics_profile_3d
+        task = physics_profile_3d("cg20", Rolling3DConfig(
+            explicit_phase_observation=True, reset_joint_noise_rad=0.,
+            reset_velocity_noise=0., reset_root_velocity_noise=0.,
+            reset_axis_tilt_noise_rad=0.))
+        # The base physics environment requires a reference configuration;
+        # direct startup actions bypass it throughout this entire episode.
+        ref = CEMReferenceConfig(coefficients=(0.,) * 8,
+            oscillator_rate_rad_s=1., oscillator_coupling_per_s=0.)
+        teacher = {"task": asdict(task), "reference": asdict(ref),
+                   "reward": asdict(Rolling3DRewardConfig())}
+    else:
+        teacher = json.loads(args.teacher_config.read_text(encoding="utf-8"))
     task = Rolling3DConfig(**teacher["task"])
     ref = CEMReferenceConfig(**teacher["reference"])
     reward = Rolling3DRewardConfig(**teacher["reward"])
-    cfg = CompactStartupConfig(startup_budget_s=args.startup_budget_s,
+    config_type = CompactReachConfig if args.compact_only else CompactStartupConfig
+    cfg = config_type(startup_budget_s=args.startup_budget_s,
         continuation_s=args.continuation_s, minimum_turns=args.minimum_turns,
         confirmation_steps=args.confirmation_steps, gate_scale=args.gate_scale,
         discounting=args.discounting,
@@ -164,7 +187,8 @@ def build_inputs(args):
     cfg.validate(task.control_timestep)
     import mujoco
     bank = compact_target(mujoco.MjModel.from_xml_path(str(model_path_3d(task.geometry))))
-    bank_payload = {"contract": CONTRACT, "source": "current model compact keyframe; zero target velocity",
+    bank_payload = {"contract": COMPACT_REACH_CONTRACT if args.compact_only else CONTRACT,
+                    "source": "current model compact keyframe; zero target velocity",
                     "target": {k: v.tolist() for k, v in bank.items()}}
     return task, ref, reward, cfg, bank, bank_payload, teacher
 
@@ -234,6 +258,14 @@ def evaluate_startup(env, policy, *, count, seed):
                                        "axis_tilt", "forbidden_depth", "forbidden_contact")},
         "scope": "startup actor plus frozen rolling teacher; NOT an independent distilled student",
     }
+    if isinstance(env.startup_config, CompactReachConfig):
+        report.update(scope="nominal walking stand to compact only; rolling continuation NOT evaluated",
+                      compact_reach_rate=report["success_rate"],
+                      compact_confirmation_s=env.startup_config.confirmation_steps * env.config.control_timestep,
+                      rolling_continuation_evaluated=False,
+                      conditional_success_after_handoff=None)
+        # Shared metric name means gate arrival here, never an executed handoff.
+        report["handoff_metric_meaning"] = "confirmed compact window; no teacher activated"
     if "foot_slip_distance_m" in totals:
         elapsed = totals["startup_control_step"] * env.config.control_timestep
         report.update(mean_startup_foot_slip_distance_m=float(totals["foot_slip_distance_m"].mean()),
@@ -262,8 +294,9 @@ def write_json(path, payload):
 def main(argv=None):
     args = parse_args(argv)
     task, ref, reward, cfg, bank, bank_payload, teacher = build_inputs(args)
-    payload = {"contract": CONTRACT, "task": asdict(task), "startup": asdict(cfg),
-        "teacher_config_payload": teacher, "teacher_sha256": sha256(args.teacher),
+    payload = {"contract": COMPACT_REACH_CONTRACT if args.compact_only else CONTRACT,
+        "task": asdict(task), "startup": asdict(cfg),
+        "teacher_config_payload": teacher, "teacher_sha256": None if args.compact_only else sha256(args.teacher),
         **model_fingerprint(model_path_3d(task.geometry)),
         "compact_target_sha256": hashlib.sha256(json.dumps(bank_payload, sort_keys=True).encode()).hexdigest(),
         "candidate_count": len(bank["time"]), "observation_size": AUTONOMOUS_STARTUP_OBSERVATION_SIZE, "action_size": 8,
@@ -282,6 +315,17 @@ def main(argv=None):
         "curriculum": False,
         "teacher_tail_actions": "ignored startup actor actions; same-episode rewards/values carry downstream credit",
     }
+    if args.compact_only:
+        payload.update(
+            reset_pose="nominal walking stand, +0.005 m spawn clearance, zero velocities; no randomization",
+            task_field_describes="base physics configuration; wrapper owns fixed stand reset and compact termination",
+            teacher_config_payload=None, teacher_handoff="none",
+            teacher_tail_actions="none; continuation_s and minimum_turns are unused in this mode",
+            rolling_continuation_evaluated=False,
+            success_definition="compact state gate continuously confirmed; not rolling success",
+            first_command_jump_gate_applied=False,
+            action_scope="8 hip/knee targets; 4 abduction servos hold compact zero positions",
+            collision_scope="full rollingquad_2 mesh with shell contact; not walking's shell-disabled profile")
     if args.restore_startup:
         source = json.loads((args.restore_startup.parent / "training_config.json").read_text(encoding="utf-8"))
         for key in ("contract", "observation_size", "action_size", "teacher_sha256",
@@ -314,7 +358,8 @@ def main(argv=None):
         import jax.numpy as jp
         state = jax.jit(env.reset)(jax.random.PRNGKey(args.seed))
         step_fn = jax.jit(env.step)
-        print("[smoke] compiling real-teacher startup env", flush=True)
+        print("[smoke] compiling compact-only env" if args.compact_only else
+              "[smoke] compiling real-teacher startup env", flush=True)
         for _ in range(args.smoke_steps):
             state = step_fn(state, env.stand_action)
         summary = {"mode": "interface_smoke_only", "steps_requested": args.smoke_steps,
@@ -377,7 +422,8 @@ def main(argv=None):
               f"terminal_gate={clean.get('eval/episode_terminal_gate_error', 0.):.3f} "
               f"tail_turns={clean.get('eval/episode_terminal_tail_turns', 0.):.3f}", flush=True)
     print(f"[startup PPO] {args.envs} envs, budget={cfg.startup_budget_s}s, "
-          f"teacher cold-start tail={cfg.continuation_s}s, target=compact, "
+          f"mode={'compact-only' if args.compact_only else 'teacher continuation'}, "
+          f"teacher tail={0 if args.compact_only else cfg.continuation_s}s, target=compact, "
           f"foot_slip_weight={cfg.foot_slip_weight}", flush=True)
     started = time.perf_counter()
     # No large nested rollout at the gate: each env advances one physical
