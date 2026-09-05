@@ -155,6 +155,7 @@ def build_inputs(args):
     if args.compact_only:
         from curl_robot_2d_mjx.config_3d import physics_profile_3d
         task = physics_profile_3d("cg20", Rolling3DConfig(
+            geometry="rollingquad_2_primitive",
             explicit_phase_observation=True, reset_joint_noise_rad=0.,
             reset_velocity_noise=0., reset_root_velocity_noise=0.,
             reset_axis_tilt_noise_rad=0.))
@@ -325,7 +326,7 @@ def main(argv=None):
             success_definition="compact state gate continuously confirmed; not rolling success",
             first_command_jump_gate_applied=False,
             action_scope="8 hip/knee targets; 4 abduction servos hold compact zero positions",
-            collision_scope="full rollingquad_2 mesh with shell contact; not walking's shell-disabled profile")
+            collision_scope="rollingquad_2_primitive analytic collisions with shell contact and existing self-collision whitelist; no mesh collision geoms")
     if args.restore_startup:
         source = json.loads((args.restore_startup.parent / "training_config.json").read_text(encoding="utf-8"))
         for key in ("contract", "observation_size", "action_size", "teacher_sha256",

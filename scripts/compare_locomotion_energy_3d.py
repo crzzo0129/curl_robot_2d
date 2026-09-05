@@ -83,11 +83,14 @@ def summarize(rows, start, dt, mass, gravity):
         cot_absolute=(positive + negative) / (mass * gravity * distance) if distance > .01 else None,
         min_height_m=min(r['height_m'] for r in selected),
         max_tilt_deg=max(r['tilt_deg'] for r in selected),
+        max_axis_tilt_deg=max(r['axis_tilt_deg'] for r in selected),
+        max_self_penetration_m=max(r['self_penetration_m'] for r in selected),
+        self_contact_fraction=np.mean([r['self_contact'] for r in selected]).item(),
         nonfoot_ground_fraction=np.mean([r['nonfoot_ground'] for r in selected]).item(),
         saturation_fraction=np.mean([r['saturation_fraction'] for r in selected]).item())
 
 
-def run_case(args, mode, speed, label):
+def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet=False):
     model = mj.MjModel.from_xml_path(str(args.xml))
     # Both modes retain exactly the same geometry, contacts, gains and solver.
     model.opt.timestep = args.dt
@@ -103,7 +106,7 @@ def run_case(args, mode, speed, label):
         data.qpos[policy.qids] = policy.pose
         data.qpos[2] += .0005  # deployment training reset clearance
     mj.mj_forward(model, data)
-    config = ref.load_cem_reference(args.controller)
+    config = config_override or ref.load_cem_reference(args.controller)
     ref.activate_planar_geometry(ref.PUPPER_ORIGINAL_SHELL_60_PARAMETERS)
     aids = [model.actuator(n + '_servo').id for n in ref.JOINT_NAMES_3D]
     phase = body_phase = 0.
@@ -132,6 +135,8 @@ def run_case(args, mode, speed, label):
         negative = float(np.maximum(-power, 0).sum())
         saturation = float(np.mean(np.abs(data.actuator_force) >= .99 * np.max(np.abs(model.actuator_forcerange), axis=1)))
         nonfoot = False
+        self_contact = False
+        self_penetration = 0.
         for contact in data.contact:
             names = [model.geom(int(i)).name or '' for i in (contact.geom1, contact.geom2)]
             bodies = model.geom_bodyid[[contact.geom1, contact.geom2]]
@@ -139,6 +144,9 @@ def run_case(args, mode, speed, label):
                 robot_name = names[1] if bodies[0] == 0 else names[0]
                 if not any(s in robot_name for s in ('foot', 'shank')):
                     nonfoot = True
+            elif contact.dist < 0:
+                self_contact = True
+                self_penetration = max(self_penetration, -float(contact.dist))
         mj.mj_step(model, data)
         body_phase += float(data.qvel[4]) * dt
         if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
@@ -150,11 +158,14 @@ def run_case(args, mode, speed, label):
             dy_m=float(data.qpos[1]-xy[1]), x_m=float(data.qpos[0]),
             y_m=float(data.qpos[1]), height_m=float(data.qpos[2]), tilt_deg=tilt,
             positive_power_w=positive, negative_power_w=negative,
+            axis_tilt_deg=float(np.degrees(np.arcsin(np.clip(abs(rotation[7]), 0, 1)))),
+            self_contact=int(self_contact), self_penetration_m=self_penetration,
             nonfoot_ground=int(nonfoot), saturation_fraction=saturation))
-    with (args.out / (label + '.csv')).open('w', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=rows[0])
-        writer.writeheader()
-        writer.writerows(rows)
+    if save:
+        with (args.out / (label + '.csv')).open('w', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=rows[0])
+            writer.writeheader()
+            writer.writerows(rows)
     mass = float(model.body_mass.sum())
     gravity = float(np.linalg.norm(model.opt.gravity))
     windows = {name: summarize(rows, start, dt, mass, gravity)
@@ -164,7 +175,8 @@ def run_case(args, mode, speed, label):
     result = dict(label=label, mode=mode, command_m_s=speed, mass_kg=mass,
         windows=windows, walking_post_startup_posture_ok=safe,
         power_identity_max_error_w=power_error, rolling_turns=body_phase/(2*np.pi) if not policy else None)
-    print(json.dumps(result), flush=True)
+    if not quiet:
+        print(json.dumps(result), flush=True)
     return result
 
 

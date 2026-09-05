@@ -40,7 +40,7 @@ class CompactReachTest(unittest.TestCase):
             args = parse_args(argv)
             self.assertIsNone(args.teacher)
             task, _, _, cfg, bank, _, _ = build_inputs(args)
-            self.assertEqual(task.geometry, 'rollingquad_2')
+            self.assertEqual(task.geometry, 'rollingquad_2_primitive')
             self.assertEqual(task.reset_velocity_noise, 0)
             self.assertEqual(cfg.confirmation_steps, 5)
             self.assertEqual(bank['qpos'].shape, (1, 19))
@@ -55,7 +55,7 @@ class CompactReachTest(unittest.TestCase):
     def test_velocity_gate_rejects_pose_only_completion(self):
         import mujoco
         from curl_robot_2d_mjx.environment_3d import model_path_3d
-        model = mujoco.MjModel.from_xml_path(str(model_path_3d('rollingquad_2')))
+        model = mujoco.MjModel.from_xml_path(str(model_path_3d('rollingquad_2_primitive')))
         bank = compact_target(model)
         q, v = bank['qpos'][0], bank['qvel'][0].copy()
         self.assertLess(gate_errors(np, q, v, 0., bank, CompactReachConfig()).max(), .01)

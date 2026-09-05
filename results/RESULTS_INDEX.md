@@ -2,6 +2,9 @@
 
 ## 2026-09-05 三维能耗对比
 
+- `energy_cem_3d_20260905/`：能耗目标 CEM，两个种子各 6 代、24 候选；最优控制器及全部候选记录。相对原滚动绝对功 J/m 降低约 6.6%–8.4%，未达到预设 10% 目标。详见 [`能耗 CEM 实验报告`](../docs/energy_cem_3d_20260905_zh.md)。
+- `energy_cem_3d_20260905_validation10s/`、`energy_cem_3d_20260905_validation1ms/`、`energy_cem_3d_20260905_validation20s/`：最优候选与同速行走的回放验证。
+
 - `energy_comparison_3d_20260905/`：同模型滚动与三档行走速度扫描。
 - `energy_comparison_3d_20260905_matched/`：相近实际速度（约 0.59 m/s）的 2 ms 对照。
 - `energy_comparison_3d_20260905_dt1ms/`：1 ms 步长复核。

@@ -38,7 +38,9 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
     reach_only = isinstance(cfg, CompactReachConfig)
     dt = task.control_timestep
     cfg.validate(dt)
-    if (task.geometry != "rollingquad_2" or task.reset_pose != "compact"
+    allowed_geometries = (("rollingquad_2", "rollingquad_2_primitive")
+                          if reach_only else ("rollingquad_2",))
+    if (task.geometry not in allowed_geometries or task.reset_pose != "compact"
             or task.direct_effective_action or not task.explicit_phase_observation
             or task.lateral_command_enabled or task.lateral_command_fixed not in (None, 0.0)
             or task.lateral_reflex_gain != 0):
