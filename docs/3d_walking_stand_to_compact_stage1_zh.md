@@ -2,6 +2,8 @@
 
 本阶段只验证固定站姿到 compact 的可达性。入口已实现，尚未完成 PPO 训练或收敛验收；不代表已能起滚或从行走中切换。
 
+若策略仍停留在 stand，先运行[固定机身与地面物理诊断](3d_compact_physics_diagnostic_zh.md)，检查关节跟踪、承重与末段倾倒，再决定是否重训。
+
 ## v2：持续姿态奖励
 
 当前 contract 为 `walking_stand_to_compact_only_v2_dense_pose`。针对 v1 的 best 全程输出 stand 的轨迹，新增每控制步的状态奖励：

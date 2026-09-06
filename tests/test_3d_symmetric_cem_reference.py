@@ -186,6 +186,30 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
         args = bridge.parse_args(["--phase-rate-scale", "-1.0"])
         self.assertEqual(args.phase_rate_scale, -1.0)
 
+    def test_abduction_offsets_are_exposed_for_collision_smokes(self) -> None:
+        args = bridge.parse_args(
+            [
+                "--front-abduction-deg",
+                "-5.0",
+                "--rear-abduction-deg",
+                "5.0",
+            ]
+        )
+
+        self.assertEqual(args.front_abduction_deg, -5.0)
+        self.assertEqual(args.rear_abduction_deg, 5.0)
+
+        viewer_args = viewer.parse_args(
+            [
+                "--front-abduction-deg",
+                "-5.0",
+                "--rear-abduction-deg",
+                "5.0",
+            ]
+        )
+        self.assertEqual(viewer_args.front_abduction_deg, -5.0)
+        self.assertEqual(viewer_args.rear_abduction_deg, 5.0)
+
     def test_startup_reference_boost_is_exposed_for_transfer_smokes(self) -> None:
         args = bridge.parse_args(
             [

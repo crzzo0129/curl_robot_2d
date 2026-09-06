@@ -227,7 +227,7 @@ def _point_segment_distance(
     return math.dist(point, closest)
 
 
-def _shell_capsules(model, data) -> list[dict]:
+def _shell_capsules(model, data, leg_center_z: dict[str, float] | None = None) -> list[dict]:
     """Return capsule specs for the shell arc, one per body local frame.
 
     Replicates model._pupper_shell_geoms' explicit 150/45/30 degree split (with
@@ -313,6 +313,15 @@ def _shell_capsules(model, data) -> list[dict]:
                 world_y = float(pos[1])
                 a_local = to_local(body_name, world_point(xa, za, world_y))
                 b_local = to_local(body_name, world_point(xb, zb, world_y))
+                # Align the shell segment with the leg's centreline: the FK
+                # transform lands on the body-origin plane, but the shank link
+                # (and foot) live at the mesh centroid's local z.  Shift the
+                # shell into that same lateral plane so it stays coplanar with
+                # the shank capsule and foot sphere.
+                if leg_center_z and body_name in leg_center_z:
+                    dz = leg_center_z[body_name]
+                    a_local[2] = dz
+                    b_local[2] = dz
                 capsules.append({
                     "body": body_name,
                     "fromto": np.array([*a_local, *b_local]),
@@ -345,15 +354,6 @@ def build(args: argparse.Namespace) -> dict[str, object]:
         if body.get("name") and body.get("pos")
     }
 
-    # Compute the shell arc from the compact keyframe via MuJoCo FK.
-    import mujoco
-
-    shell_model = mujoco.MjModel.from_xml_path(str(input_xml))
-    shell_data = mujoco.MjData(shell_model)
-    mujoco.mj_resetDataKeyframe(shell_model, shell_data, shell_model.key("compact").id)
-    mujoco.mj_forward(shell_model, shell_data)
-    shell_capsules = _shell_capsules(shell_model, shell_data)
-
     collision_geoms = [
         geom
         for geom in root.iter("geom")
@@ -361,11 +361,35 @@ def build(args: argparse.Namespace) -> dict[str, object]:
         and geom.get("mesh") in mesh_files
         and not (geom.get("contype") == "0" and geom.get("conaffinity") == "0")
     ]
+    parent_by_child = {child: parent for parent in root.iter() for child in parent}
+
+    # Leg centreline (mesh centroid) local z, used to keep the shell coplanar
+    # with the shank/thigh link capsules.
+    leg_center_z: dict[str, float] = {}
+    for geom in collision_geoms:
+        mesh_name = geom.get("mesh")
+        if _kind(mesh_name) not in ("thigh", "foot"):
+            continue
+        body = parent_by_child.get(geom)
+        body_name = body.get("name") if body is not None else None
+        if not body_name:
+            continue
+        leg_center_z[body_name] = float(
+            _load_stl(mesh_files[mesh_name]).mean(axis=0)[2]
+        )
+
+    # Compute the shell arc from the compact keyframe via MuJoCo FK.
+    import mujoco
+
+    shell_model = mujoco.MjModel.from_xml_path(str(input_xml))
+    shell_data = mujoco.MjData(shell_model)
+    mujoco.mj_resetDataKeyframe(shell_model, shell_data, shell_model.key("compact").id)
+    mujoco.mj_forward(shell_model, shell_data)
+    shell_capsules = _shell_capsules(shell_model, shell_data, leg_center_z)
 
     occupied_geom_names = {
         geom.get("name") for geom in root.iter("geom") if geom.get("name")
     }
-    parent_by_child = {child: parent for parent in root.iter() for child in parent}
     body_elements = {
         body.get("name"): body for body in root.iter("body") if body.get("name")
     }

@@ -309,6 +309,24 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--kd", type=float, default=0.1)
     parser.add_argument("--torque-limit", type=float, default=3.0)
     parser.add_argument(
+        "--front-abduction-deg",
+        type=float,
+        default=0.0,
+        help=(
+            "Fixed front-leg abduction target in degrees. Positive moves both "
+            "front feet outward; negative moves them inward."
+        ),
+    )
+    parser.add_argument(
+        "--rear-abduction-deg",
+        type=float,
+        default=0.0,
+        help=(
+            "Fixed rear-leg abduction target in degrees. Positive moves both "
+            "rear feet outward; negative moves them inward."
+        ),
+    )
+    parser.add_argument(
         "--diagnose-self-collision",
         action="store_true",
         help=(
@@ -349,6 +367,11 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         raise SystemExit("--duration and --control-dt must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
         raise SystemExit("--kp/--kd must be nonnegative and --torque-limit positive")
+    if not (
+        math.isfinite(args.front_abduction_deg)
+        and math.isfinite(args.rear_abduction_deg)
+    ):
+        raise SystemExit("abduction targets must be finite")
     if not math.isfinite(args.phase_rate_scale):
         raise SystemExit("--phase-rate-scale must be finite")
     if not math.isfinite(args.target_scale) or args.target_scale < 0.0:
@@ -396,6 +419,39 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     qpos_indices = np.asarray([model.jnt_qposadr[joint_id] for joint_id in joint_ids])
     actuator_ids = np.asarray(
         [model.actuator(f"{name}_servo").id for name in JOINT_NAMES_3D]
+    )
+    abduction_joint_names = (
+        "front_left_hip_abduction",
+        "front_right_hip_abduction",
+        "rear_left_hip_abduction",
+        "rear_right_hip_abduction",
+    )
+    abduction_joint_ids = np.asarray(
+        [model.joint(name).id for name in abduction_joint_names], dtype=np.int32
+    )
+    abduction_qpos_indices = np.asarray(
+        [model.jnt_qposadr[joint_id] for joint_id in abduction_joint_ids],
+        dtype=np.int32,
+    )
+    abduction_actuator_ids = np.asarray(
+        [model.actuator(f"{name}_servo").id for name in abduction_joint_names],
+        dtype=np.int32,
+    )
+    abduction_ctrl = np.deg2rad(
+        np.asarray(
+            [
+                args.front_abduction_deg,
+                args.front_abduction_deg,
+                args.rear_abduction_deg,
+                args.rear_abduction_deg,
+            ],
+            dtype=np.float64,
+        )
+    )
+    abduction_ctrl = np.clip(
+        abduction_ctrl,
+        model.actuator_ctrlrange[abduction_actuator_ids, 0],
+        model.actuator_ctrlrange[abduction_actuator_ids, 1],
     )
     measured_joint_ids = np.asarray(
         [
@@ -446,6 +502,11 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     model.actuator_biasprm[actuator_ids, 2] = -args.kd
     model.actuator_forcerange[actuator_ids, 0] = -args.torque_limit
     model.actuator_forcerange[actuator_ids, 1] = args.torque_limit
+    model.actuator_gainprm[abduction_actuator_ids, 0] = args.kp
+    model.actuator_biasprm[abduction_actuator_ids, 1] = -args.kp
+    model.actuator_biasprm[abduction_actuator_ids, 2] = -args.kd
+    model.actuator_forcerange[abduction_actuator_ids, 0] = -args.torque_limit
+    model.actuator_forcerange[abduction_actuator_ids, 1] = args.torque_limit
 
     initial_planar = planar_cem_target(
         args.initial_phase_rad,
@@ -469,6 +530,9 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         ctrl_high,
     )
     _reset_data(model, data, mujoco, qpos_indices, actuator_ids, initial_ctrl)
+    data.qpos[abduction_qpos_indices] = abduction_ctrl
+    data.ctrl[abduction_actuator_ids] = abduction_ctrl
+    mujoco.mj_forward(model, data)
 
     start_x = float(data.qpos[0])
     start_y = float(data.qpos[1])
@@ -530,6 +594,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
                 ctrl_high,
             )
             data.ctrl[actuator_ids] = ctrl
+            data.ctrl[abduction_actuator_ids] = abduction_ctrl
             mujoco.mj_step(model, data)
             rolling_increment = float(data.qvel[4]) * float(model.opt.timestep)
             rolling_phase += rolling_increment
@@ -737,6 +802,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         "elapsed_s": float(elapsed),
         "control_dt_s": float(control_dt),
         "physics_profile": args.physics_profile,
+        "front_abduction_deg": float(args.front_abduction_deg),
+        "rear_abduction_deg": float(args.rear_abduction_deg),
         "solver": task.solver_name,
         "phase_lock_enabled": not args.linear_phase,
         "reference_turns": float(

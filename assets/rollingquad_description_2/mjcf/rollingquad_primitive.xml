@@ -66,17 +66,17 @@
             <geom name="front_right_foot_proxy" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" type="sphere" size="0.0195" pos="1.796e-05 -0.08776548 -0.02669029" />
             <geom name="front_right_shank_geom" type="capsule" size="0.0195" fromto="0.0021300607 0.018498501 -0.026470547 1.796e-05 -0.06826548 -0.02669029" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" />
             <site name="front_right_foot_site" pos="0.00001796 -0.08776548 -0.02669029" size="0.004" />
-            <geom name="front_right_shank_shell_01" type="capsule" size="0.003" fromto="0.0289434 -0.060551526 2.0652774e-07 0.031912083 -0.044539015 2.0360974e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="front_right_shank_shell_02" type="capsule" size="0.003" fromto="0.031912083 -0.044539015 2.0360974e-07 0.032765316 -0.028276003 1.901248e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="front_right_shank_shell_03" type="capsule" size="0.003" fromto="0.032765316 -0.028276003 1.901248e-07 0.031488501 -0.012040754 1.6630364e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="front_right_shank_shell_04" type="capsule" size="0.003" fromto="0.031488501 -0.012040754 1.6630364e-07 0.028103484 0.0038889427 1.3255386e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="front_right_shank_shell_01" type="capsule" size="0.003" fromto="0.029688218 -0.062323795 -0.026470547 0.032737023 -0.04650192 -0.026470547" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="front_right_shank_shell_02" type="capsule" size="0.003" fromto="0.032737023 -0.04650192 -0.026470547 0.033676562 -0.030444254 -0.026470547" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="front_right_shank_shell_03" type="capsule" size="0.003" fromto="0.033676562 -0.030444254 -0.026470547 0.03249076 -0.014425551 -0.026470547" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="front_right_shank_shell_04" type="capsule" size="0.003" fromto="0.03249076 -0.014425551 -0.026470547 0.029199905 0.0012801057 -0.026470547" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
           </body>
-          <geom name="front_right_thigh_shell_01" type="capsule" size="0.003" fromto="0.030019914 -0.036530471 2.2868151e-07 0.030758649 -0.020261855 1.5694647e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_right_thigh_shell_02" type="capsule" size="0.003" fromto="0.030758649 -0.020261855 1.5694647e-07 0.029367584 -0.0040359961 8.0859034e-08" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_right_thigh_shell_03" type="capsule" size="0.003" fromto="0.0065575243 -0.096553764 4.4909579e-07 0.015331595 -0.082834098 4.0599484e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_right_thigh_shell_04" type="capsule" size="0.003" fromto="0.015331595 -0.082834098 4.0599484e-07 0.022239827 -0.068086559 3.5428021e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_right_thigh_shell_05" type="capsule" size="0.003" fromto="0.022239827 -0.068086559 3.5428021e-07 0.027164018 -0.052563482 2.9483673e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_right_thigh_shell_06" type="capsule" size="0.003" fromto="0.027164018 -0.052563482 2.9483673e-07 0.030019914 -0.036530471 2.2868151e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_right_thigh_shell_01" type="capsule" size="0.003" fromto="0.03014752 -0.03630308 -0.0032586879 0.030778093 -0.020227207 -0.0032586879" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_right_thigh_shell_02" type="capsule" size="0.003" fromto="0.030778093 -0.020227207 -0.0032586879 0.029286892 -0.0041797872 -0.0032586879" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_right_thigh_shell_03" type="capsule" size="0.003" fromto="0.00715965 -0.095480788 -0.0032586879 0.015812847 -0.081976517 -0.0032586879" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_right_thigh_shell_04" type="capsule" size="0.003" fromto="0.015812847 -0.081976517 -0.0032586879 0.022600329 -0.067444151 -0.0032586879" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_right_thigh_shell_05" type="capsule" size="0.003" fromto="0.022600329 -0.067444151 -0.0032586879 0.027405962 -0.052132342 -0.0032586879" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_right_thigh_shell_06" type="capsule" size="0.003" fromto="0.027405962 -0.052132342 -0.0032586879 0.03014752 -0.03630308 -0.0032586879" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
         </body>
       </body>
       <body name="rear_left_hip_abduction_body" pos="-0.0752002 0.0650008 3.15437e-07" quat="0.707105 0.707108 1.28657e-06 5.65589e-07">
@@ -94,17 +94,17 @@
             <geom name="rear_left_foot_proxy" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" type="sphere" size="0.0195" pos="-1.796e-05 -0.08776548 0.00194029" />
             <geom name="rear_left_shank_geom" type="capsule" size="0.0195" fromto="-0.0021300606 0.018498501 0.0017205471 -1.796e-05 -0.06826548 0.00194029" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" />
             <site name="rear_left_foot_site" pos="-0.00001796 -0.08776548 0.00194029" size="0.004" />
-            <geom name="rear_left_shank_shell_01" type="capsule" size="0.003" fromto="-0.028102982 0.003889377 1.5219883e-08 -0.031487967 -0.012040326 9.6367658e-08" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="rear_left_shank_shell_02" type="capsule" size="0.003" fromto="-0.031487967 -0.012040326 9.6367658e-08 -0.032764749 -0.028275578 1.7644033e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="rear_left_shank_shell_03" type="capsule" size="0.003" fromto="-0.032764749 -0.028275578 1.7644033e-07 -0.031911483 -0.044538589 2.5406783e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="rear_left_shank_shell_04" type="capsule" size="0.003" fromto="-0.031911483 -0.044538589 2.5406783e-07 -0.028942767 -0.060551093 3.2792193e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="rear_left_shank_shell_01" type="capsule" size="0.003" fromto="-0.029414791 0.00076822822 0.0017205471 -0.032705617 -0.014937443 0.0017205471" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="rear_left_shank_shell_02" type="capsule" size="0.003" fromto="-0.032705617 -0.014937443 0.0017205471 -0.03389139 -0.030956158 0.0017205471" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="rear_left_shank_shell_03" type="capsule" size="0.003" fromto="-0.03389139 -0.030956158 0.0017205471 -0.032951822 -0.047013832 0.0017205471" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="rear_left_shank_shell_04" type="capsule" size="0.003" fromto="-0.032951822 -0.047013832 0.0017205471 -0.029902988 -0.062835713 0.0017205471" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
           </body>
-          <geom name="rear_left_thigh_shell_01" type="capsule" size="0.003" fromto="-0.028321241 -0.0034480865 -7.3477381e-08 -0.029712273 -0.019673949 -1.4033903e-08" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_left_thigh_shell_02" type="capsule" size="0.003" fromto="-0.029712273 -0.019673949 -1.4033903e-08 -0.028973505 -0.035942563 5.2121319e-08" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_left_thigh_shell_03" type="capsule" size="0.003" fromto="-0.028973505 -0.035942563 5.2121319e-08 -0.026117577 -0.051975568 1.2385635e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_left_thigh_shell_04" type="capsule" size="0.003" fromto="-0.026117577 -0.051975568 1.2385635e-07 -0.021193354 -0.067498635 1.9994379e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_left_thigh_shell_05" type="capsule" size="0.003" fromto="-0.021193354 -0.067498635 1.9994379e-07 -0.014285092 -0.082246159 2.7908176e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_left_thigh_shell_06" type="capsule" size="0.003" fromto="-0.014285092 -0.082246159 2.7908176e-07 -0.0055109929 -0.095965808 3.5991618e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_left_thigh_shell_01" type="capsule" size="0.003" fromto="-0.028240558 -0.0035918627 0.0032551564 -0.029731727 -0.019639283 0.0032551564" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_left_thigh_shell_02" type="capsule" size="0.003" fromto="-0.029731727 -0.019639283 0.0032551564 -0.029101121 -0.035715153 0.0032551564" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_left_thigh_shell_03" type="capsule" size="0.003" fromto="-0.029101121 -0.035715153 0.0032551564 -0.026359531 -0.05154441 0.0032551564" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_left_thigh_shell_04" type="capsule" size="0.003" fromto="-0.026359531 -0.05154441 0.0032551564 -0.021553865 -0.066856211 0.0032551564" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_left_thigh_shell_05" type="capsule" size="0.003" fromto="-0.021553865 -0.066856211 0.0032551564 -0.01476635 -0.081388568 0.0032551564" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_left_thigh_shell_06" type="capsule" size="0.003" fromto="-0.01476635 -0.081388568 0.0032551564 -0.0061131219 -0.094892826 0.0032551564" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
         </body>
       </body>
       <body name="front_left_hip_abduction_body" pos="0.0751998 0.0650012 1.62087e-07" quat="0.707105 0.707108 1.28657e-06 5.65589e-07">
@@ -122,17 +122,17 @@
             <geom name="front_left_foot_proxy" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" type="sphere" size="0.0195" pos="2.256e-05 -0.08782371 0.02672838" />
             <geom name="front_left_shank_geom" type="capsule" size="0.0195" fromto="0.002221409 0.018498555 0.026729771 2.256e-05 -0.06832371 0.02672838" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" />
             <site name="front_left_foot_site" pos="0.00002256 -0.08782371 0.02672838" size="0.004" />
-            <geom name="front_left_shank_shell_01" type="capsule" size="0.003" fromto="0.029126931 -0.060473777 2.0733661e-07 0.032095614 -0.044461266 2.0441862e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="front_left_shank_shell_02" type="capsule" size="0.003" fromto="0.032095614 -0.044461266 2.0441862e-07 0.032948847 -0.028198254 1.9093367e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="front_left_shank_shell_03" type="capsule" size="0.003" fromto="0.032948847 -0.028198254 1.9093367e-07 0.031672032 -0.011963004 1.6711251e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="front_left_shank_shell_04" type="capsule" size="0.003" fromto="0.031672032 -0.011963004 1.6711251e-07 0.028287015 0.0039666922 1.3336273e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="front_left_shank_shell_01" type="capsule" size="0.003" fromto="0.029805586 -0.062088359 0.026729771 0.032854391 -0.046266484 0.026729771" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="front_left_shank_shell_02" type="capsule" size="0.003" fromto="0.032854391 -0.046266484 0.026729771 0.033793933 -0.030208823 0.026729771" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="front_left_shank_shell_03" type="capsule" size="0.003" fromto="0.033793933 -0.030208823 0.026729771 0.032608134 -0.014190128 0.026729771" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="front_left_shank_shell_04" type="capsule" size="0.003" fromto="0.032608134 -0.014190128 0.026729771 0.029317283 0.0015155182 0.026729771" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
           </body>
-          <geom name="front_left_thigh_shell_01" type="capsule" size="0.003" fromto="0.030019567 -0.03652953 2.2867652e-07 0.030758302 -0.020260914 1.5694149e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_left_thigh_shell_02" type="capsule" size="0.003" fromto="0.030758302 -0.020260914 1.5694149e-07 0.029367237 -0.0040350548 8.0854053e-08" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_left_thigh_shell_03" type="capsule" size="0.003" fromto="0.0065571776 -0.096552823 4.4909081e-07 0.015331249 -0.082833156 4.0598986e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_left_thigh_shell_04" type="capsule" size="0.003" fromto="0.015331249 -0.082833156 4.0598986e-07 0.022239481 -0.068085617 3.5427522e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_left_thigh_shell_05" type="capsule" size="0.003" fromto="0.022239481 -0.068085617 3.5427522e-07 0.027163672 -0.05256254 2.9483175e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="front_left_thigh_shell_06" type="capsule" size="0.003" fromto="0.027163672 -0.05256254 2.9483175e-07 0.030019567 -0.03652953 2.2867652e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_left_thigh_shell_01" type="capsule" size="0.003" fromto="0.030147207 -0.036302078 0.0039704566 0.030777768 -0.020226227 0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_left_thigh_shell_02" type="capsule" size="0.003" fromto="0.030777768 -0.020226227 0.0039704566 0.029286554 -0.0041788301 0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_left_thigh_shell_03" type="capsule" size="0.003" fromto="0.0071593748 -0.095479719 0.0039704566 0.015812564 -0.081975462 0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_left_thigh_shell_04" type="capsule" size="0.003" fromto="0.015812564 -0.081975462 0.0039704566 0.022600038 -0.067443111 0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_left_thigh_shell_05" type="capsule" size="0.003" fromto="0.022600038 -0.067443111 0.0039704566 0.027405661 -0.05213132 0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="front_left_thigh_shell_06" type="capsule" size="0.003" fromto="0.027405661 -0.05213132 0.0039704566 0.030147207 -0.036302078 0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
         </body>
       </body>
       <body name="rear_right_hip_abduction_body" pos="-0.0751998 -0.0650012 -1.62087e-07" quat="0.707105 0.707108 1.28657e-06 5.65589e-07">
@@ -150,17 +150,17 @@
             <geom name="rear_right_foot_proxy" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" type="sphere" size="0.0195" pos="-2.256e-05 -0.08782371 -0.02672838" />
             <geom name="rear_right_shank_geom" type="capsule" size="0.0195" fromto="-0.0022214094 0.018498555 -0.026729771 -2.256e-05 -0.06832371 -0.02672838" contype="8" conaffinity="15" rgba="0.749 0.749 0.749 1" />
             <site name="rear_right_foot_site" pos="-0.00002256 -0.08782371 -0.02672838" size="0.004" />
-            <geom name="rear_right_shank_shell_01" type="capsule" size="0.003" fromto="-0.028287611 0.0039658218 1.5073716e-08 -0.031672596 -0.011963882 9.6221492e-08" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="rear_right_shank_shell_02" type="capsule" size="0.003" fromto="-0.031672596 -0.011963882 9.6221492e-08 -0.032949378 -0.028199134 1.7629416e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="rear_right_shank_shell_03" type="capsule" size="0.003" fromto="-0.032949378 -0.028199134 1.7629416e-07 -0.032096111 -0.044462144 2.5392166e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-            <geom name="rear_right_shank_shell_04" type="capsule" size="0.003" fromto="-0.032096111 -0.044462144 2.5392166e-07 -0.029127396 -0.060474649 3.2777576e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="rear_right_shank_shell_01" type="capsule" size="0.003" fromto="-0.028025766 0.0045888012 -0.026729771 -0.031316581 -0.011116844 -0.026729771" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="rear_right_shank_shell_02" type="capsule" size="0.003" fromto="-0.031316581 -0.011116844 -0.026729771 -0.032502343 -0.027135534 -0.026729771" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="rear_right_shank_shell_03" type="capsule" size="0.003" fromto="-0.032502343 -0.027135534 -0.026729771 -0.031562764 -0.043193183 -0.026729771" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+            <geom name="rear_right_shank_shell_04" type="capsule" size="0.003" fromto="-0.031562764 -0.043193183 -0.026729771 -0.028513921 -0.05901504 -0.026729771" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
           </body>
-          <geom name="rear_right_thigh_shell_01" type="capsule" size="0.003" fromto="-0.029367096 -0.0040361885 -7.4381373e-08 -0.030758128 -0.020262051 -1.4937896e-08" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_right_thigh_shell_02" type="capsule" size="0.003" fromto="-0.030758128 -0.020262051 -1.4937896e-08 -0.03001936 -0.036530665 5.1217327e-08" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_right_thigh_shell_03" type="capsule" size="0.003" fromto="-0.03001936 -0.036530665 5.1217327e-08 -0.027163431 -0.05256367 1.2295236e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_right_thigh_shell_04" type="capsule" size="0.003" fromto="-0.027163431 -0.05256367 1.2295236e-07 -0.022239209 -0.068086736 1.990398e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_right_thigh_shell_05" type="capsule" size="0.003" fromto="-0.022239209 -0.068086736 1.990398e-07 -0.015330947 -0.082834261 2.7817776e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
-          <geom name="rear_right_thigh_shell_06" type="capsule" size="0.003" fromto="-0.015330947 -0.082834261 2.7817776e-07 -0.0065568478 -0.09655391 3.5901218e-07" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_right_thigh_shell_01" type="capsule" size="0.003" fromto="-0.029286408 -0.0041799733 -0.0039704566 -0.030777587 -0.020227375 -0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_right_thigh_shell_02" type="capsule" size="0.003" fromto="-0.030777587 -0.020227375 -0.0039704566 -0.030146993 -0.036303225 -0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_right_thigh_shell_03" type="capsule" size="0.003" fromto="-0.030146993 -0.036303225 -0.0039704566 -0.027405414 -0.052132461 -0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_right_thigh_shell_04" type="capsule" size="0.003" fromto="-0.027405414 -0.052132461 -0.0039704566 -0.022599761 -0.067444239 -0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_right_thigh_shell_05" type="capsule" size="0.003" fromto="-0.022599761 -0.067444239 -0.0039704566 -0.01581226 -0.081976571 -0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
+          <geom name="rear_right_thigh_shell_06" type="capsule" size="0.003" fromto="-0.01581226 -0.081976571 -0.0039704566 -0.0071590456 -0.095480806 -0.0039704566" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
         </body>
       </body>
       <geom name="torso_shell_01" type="capsule" size="0.003" fromto="0.12025777 -0.06 -0.0072940978 0.115023 -0.06 0.0081270184" contype="16" conaffinity="7" rgba="0.55 0.78 0.95 0.60" />
@@ -276,12 +276,12 @@
       kinematic qpos order (hip, abduction, knee), with leg order FR, RL,
       FL, RR.  ctrl follows the policy's FL, FR, RL, RR actuator order.
     -->
-    <key name="open" qpos="0 0 0.1934653619 1 0 0 0                0 0 0                0 0 0                0 0 0                0 0 0" ctrl="0 0 0                0 0 0                0 0 0                0 0 0" />
-    <key name="stand" qpos="0 0 0.1580029248 1 0 0 0                0.90 0 1.15                0.90 0 1.15                0.90 0 1.15                0.90 0 1.15" ctrl="0 0.90 1.15                0 0.90 1.15                0 0.90 1.15                0 0.90 1.15" />
-    <key name="stand_previous" qpos="0 0 0.1867435755 1 0 0 0                0.33532733 0 0.53234438                0.33532733 0 0.53234438                0.33532733 0 0.53234438                0.33532733 0 0.53234438" ctrl="0 0.33532733 0.53234438                0 0.33532733 0.53234438                0 0.33532733 0.53234438                0 0.33532733 0.53234438" />
-    <key name="park" qpos="0 0 0.1817521174 1 0 0 0                0.4983797927 0 0.3491569025                0.434095281 0 0.0107701707                0.4983797927 0 0.3491569025                0.434095281 0 0.0107701707" ctrl="0 0.4983797927 0.3491569025                0 0.4983797927 0.3491569025                0 0.434095281 0.0107701707                0 0.434095281 0.0107701707" />
-    <key name="compact" qpos="0 0 0.1662524149 1 0 0 0                0.1108283051 0 0.9092586986                0.1108283051 0 0.9092586986                0.1108283051 0 0.9092586986                0.1108283051 0 0.9092586986" ctrl="0 0.1108283051 0.9092586986                0 0.1108283051 0.9092586986                0 0.1108283051 0.9092586986                0 0.1108283051 0.9092586986" />
+    <key name="open" qpos="0 0 0.1934653619 1 0 0 0                0 -0.1745329252 0                0 0.1745329252 0                0 -0.1745329252 0                0 0.1745329252 0" ctrl="-0.1745329252 0 0                -0.1745329252 0 0                0.1745329252 0 0                0.1745329252 0 0" />
+    <key name="stand" qpos="0 0 0.1580029248 1 0 0 0                0.90 -0.1745329252 1.15                0.90 0.1745329252 1.15                0.90 -0.1745329252 1.15                0.90 0.1745329252 1.15" ctrl="-0.1745329252 0.90 1.15                -0.1745329252 0.90 1.15                0.1745329252 0.90 1.15                0.1745329252 0.90 1.15" />
+    <key name="stand_previous" qpos="0 0 0.1867435755 1 0 0 0                0.33532733 -0.1745329252 0.53234438                0.33532733 0.1745329252 0.53234438                0.33532733 -0.1745329252 0.53234438                0.33532733 0.1745329252 0.53234438" ctrl="-0.1745329252 0.33532733 0.53234438                -0.1745329252 0.33532733 0.53234438                0.1745329252 0.33532733 0.53234438                0.1745329252 0.33532733 0.53234438" />
+    <key name="park" qpos="0 0 0.1817521174 1 0 0 0                0.4983797927 -0.1745329252 0.3491569025                0.434095281 0.1745329252 0.0107701707                0.4983797927 -0.1745329252 0.3491569025                0.434095281 0.1745329252 0.0107701707" ctrl="-0.1745329252 0.4983797927 0.3491569025                -0.1745329252 0.4983797927 0.3491569025                0.1745329252 0.434095281 0.0107701707                0.1745329252 0.434095281 0.0107701707" />
+    <key name="compact" qpos="0 0 0.1662524149 1 0 0 0                0.1108283051 -0.1745329252 0.9092586986                0.1108283051 0.1745329252 0.9092586986                0.1108283051 -0.1745329252 0.9092586986                0.1108283051 0.1745329252 0.9092586986" ctrl="-0.1745329252 0.1108283051 0.9092586986                -0.1745329252 0.1108283051 0.9092586986                0.1745329252 0.1108283051 0.9092586986                0.1745329252 0.1108283051 0.9092586986" />
     <!-- Valid-limit reset pose; unlike open, its knee values are in range. -->
-    <key name="extended" qpos="0 0 0.1921257790 1 0 0 0  0 0 0.1745329252  0 0 0.1745329252  0 0 0.1745329252  0 0 0.1745329252" ctrl="0 0 0.1745329252  0 0 0.1745329252  0 0 0.1745329252  0 0 0.1745329252" />
+    <key name="extended" qpos="0 0 0.1921257790 1 0 0 0  0 -0.1745329252 0.1745329252  0 0.1745329252 0.1745329252  0 -0.1745329252 0.1745329252  0 0.1745329252 0.1745329252" ctrl="-0.1745329252 0 0.1745329252  -0.1745329252 0 0.1745329252  0.1745329252 0 0.1745329252  0.1745329252 0 0.1745329252" />
   </keyframe>
 </mujoco>

@@ -12,7 +12,7 @@ primitive CEM reference，避免把 primitive checkpoint 静默放进完整 mesh
 
 ```bash
 python -m scripts.train_mjx_3d_roll_distillation \
-  results/rollingquad2_floor_mass_gain_v3_h200_seed0/params_best \
+  results/primitive_stiff_mass_gain_v3_smoke_seed0/params_best \
   --geometry rollingquad_2_primitive \
   --lateral-drift-diagnostic-only \
   --preset h200 \

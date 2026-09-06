@@ -86,6 +86,18 @@ def parse_args(argv=None):
     parser.add_argument("--kp", type=float, default=5.0)
     parser.add_argument("--kd", type=float, default=0.1)
     parser.add_argument("--torque-limit", type=float, default=3.0)
+    parser.add_argument(
+        "--front-abduction-deg",
+        type=float,
+        default=0.0,
+        help="Fixed front-leg abduction angle; positive is outward.",
+    )
+    parser.add_argument(
+        "--rear-abduction-deg",
+        type=float,
+        default=0.0,
+        help="Fixed rear-leg abduction angle; positive is outward.",
+    )
     parser.add_argument("--realtime", type=float, default=1.0)
     parser.add_argument("--camera-distance", type=float, default=0.9)
     parser.add_argument("--azimuth", type=float, default=135.0)
@@ -157,6 +169,11 @@ def run(argv=None):
         raise SystemExit("--duration, --control-dt and --realtime must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
         raise SystemExit("--kp/--kd must be nonnegative and --torque-limit positive")
+    if not (
+        math.isfinite(args.front_abduction_deg)
+        and math.isfinite(args.rear_abduction_deg)
+    ):
+        raise SystemExit("abduction targets must be finite")
     if not math.isfinite(args.target_scale) or args.target_scale < 0.0:
         raise SystemExit("--target-scale must be nonnegative")
     if args.startup_target_scale is not None:
@@ -201,6 +218,39 @@ def run(argv=None):
     actuator_ids = np.asarray(
         [model.actuator(f"{name}_servo").id for name in JOINT_NAMES_3D]
     )
+    abduction_joint_names = (
+        "front_left_hip_abduction",
+        "front_right_hip_abduction",
+        "rear_left_hip_abduction",
+        "rear_right_hip_abduction",
+    )
+    abduction_joint_ids = np.asarray(
+        [model.joint(name).id for name in abduction_joint_names], dtype=np.int32
+    )
+    abduction_qpos_indices = np.asarray(
+        [model.jnt_qposadr[joint_id] for joint_id in abduction_joint_ids],
+        dtype=np.int32,
+    )
+    abduction_actuator_ids = np.asarray(
+        [model.actuator(f"{name}_servo").id for name in abduction_joint_names],
+        dtype=np.int32,
+    )
+    abduction_ctrl = np.deg2rad(
+        np.asarray(
+            [
+                args.front_abduction_deg,
+                args.front_abduction_deg,
+                args.rear_abduction_deg,
+                args.rear_abduction_deg,
+            ],
+            dtype=np.float64,
+        )
+    )
+    abduction_ctrl = np.clip(
+        abduction_ctrl,
+        model.actuator_ctrlrange[abduction_actuator_ids, 0],
+        model.actuator_ctrlrange[abduction_actuator_ids, 1],
+    )
     ctrl_low = np.asarray(model.actuator_ctrlrange[actuator_ids, 0], dtype=np.float64)
     ctrl_high = np.asarray(model.actuator_ctrlrange[actuator_ids, 1], dtype=np.float64)
     model.actuator_gainprm[actuator_ids, 0] = args.kp
@@ -208,6 +258,11 @@ def run(argv=None):
     model.actuator_biasprm[actuator_ids, 2] = -args.kd
     model.actuator_forcerange[actuator_ids, 0] = -args.torque_limit
     model.actuator_forcerange[actuator_ids, 1] = args.torque_limit
+    model.actuator_gainprm[abduction_actuator_ids, 0] = args.kp
+    model.actuator_biasprm[abduction_actuator_ids, 1] = -args.kp
+    model.actuator_biasprm[abduction_actuator_ids, 2] = -args.kd
+    model.actuator_forcerange[abduction_actuator_ids, 0] = -args.torque_limit
+    model.actuator_forcerange[abduction_actuator_ids, 1] = args.torque_limit
 
     phase = float(args.initial_phase_rad)
     rolling_phase = 0.0
@@ -229,6 +284,9 @@ def run(argv=None):
         mujoco.mj_forward(model, data)
     else:
         _reset(model, data, qpos_indices, actuator_ids, initial_ctrl)
+    data.qpos[abduction_qpos_indices] = abduction_ctrl
+    data.ctrl[abduction_actuator_ids] = abduction_ctrl
+    mujoco.mj_forward(model, data)
     start_x = float(data.qpos[0])
     start_y = float(data.qpos[1])
     torso_id = model.body("torso").id
@@ -322,6 +380,7 @@ def run(argv=None):
                         np, data.time, stand_action, task
                     ) * np.asarray(task.action_scales), ctrl_low, ctrl_high)
                 data.ctrl[actuator_ids] = ctrl
+                data.ctrl[abduction_actuator_ids] = abduction_ctrl
                 mujoco.mj_step(model, data)
                 if not (np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all()):
                     raise RuntimeError(f"nonfinite physics at {data.time}s")
