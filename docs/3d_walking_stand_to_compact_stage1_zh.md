@@ -2,6 +2,30 @@
 
 本阶段只验证固定站姿到 compact 的可达性。入口已实现，尚未完成 PPO 训练或收敛验收；不代表已能起滚或从行走中切换。
 
+## v2：持续姿态奖励
+
+当前 contract 为 `walking_stand_to_compact_only_v2_dense_pose`。针对 v1 的 best 全程输出 stand 的轨迹，新增每控制步的状态奖励：
+
+```text
+reward_pose = -0.10 × (1 - pose_quality)
+```
+
+`pose_quality` 是已有 compact 势函数的姿态部分（0–1），同时考虑全部关节位置、根部高度和机身姿态。它不乘速度门槛。该项每步直接计入，包括最后一步，不是势函数差分，因此中途收拢的收益不会在超时时被抵消。越接近目标扣分越少，目标处为零，避免为延迟成功退出提供正的存活收益。
+
+保留原有势函数塑形、余速、动作变化、力矩、拖地及防弹跳项，保留原严格成功门槛。物理失败提前结束时，追加 `剩余步数 × (0.10 + time_cost)` 的负奖励，防止提前结束逃掉新增的姿态代价和时间代价。正常超时与成功不追加此项。权重可用 `--pose-reward-weight` 调整，仅适用于 compact-only。
+
+日志新增 `reward_pose`、`terminal_pose_quality` 和七项终点 gate 比值（位置、关节速度、高度、线速度、角速度、姿态、相位）；比值大于 1 表示该项不达标。评估 JSON 同时保存平均姿态质量及各终点 gate 比值。best 仍先按成功率选取；均失败时总 reward 现在包含持续姿态代价。
+
+请使用新目录从头训练，不传旧 v1 的 `--restore-startup`；版本校验会拒绝将旧奖励任务当作新任务直接恢复。新增负奖励后，总 reward 的数值会下降，不能把 v1 的 −16 当作 v2 的对照门槛。应关注姿态质量上升、各 gate 误差下降以及最终成功率。
+
+```bash
+python -m scripts.train_mjx_3d_startup_ppo --compact-only \
+  --preset h200 --max-devices 1 --pose-reward-weight 0.10 \
+  --out results/walking_stand_compact_stage1_v2_seed0
+```
+
+本次验证：4 项新增奖励回归测试及 2 项已有配置测试通过，语法与 diff 检查通过。测试覆盖部分收拢比站立得分更高、同终点超时不抵消中途姿态收益、运动中仍有姿态收益及版本/门槛隔离；使用的是奖励数值测试，不是动力学可达性证明。尚未执行本版 MJX stepping 或 PPO 收敛验证。
+
 ## 起点、模型与动作
 
 - 使用 `rollingquad_2_primitive`（`rollingquad_primitive.xml`）的 stand keyframe，根部额外抬高 5 mm，关节速度和根部速度为零。沿用行走名义站姿的关节定义，不包含行走 reset 的随机偏航、关节噪声与额外高度噪声。

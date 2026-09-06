@@ -22,6 +22,7 @@ from curl_robot_2d_mjx.startup_rolling_3d import reset_pose_arrays_3d
 from curl_robot_2d_mjx.handoff_probe_3d import FAILURES
 from curl_robot_2d_mjx.compact_startup_3d import (
     CompactStartupConfig, CompactReachConfig, compact_target, compact_potential,
+    COMPACT_GATE_NAMES, compact_reach_pose_reward,
     limit_startup_action, startup_stability_costs,
 )
 
@@ -106,6 +107,10 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                           "reward_upward_velocity", "reward_excess_height",
                           "reward_angular_velocity", "reward_axis_tilt",
                           "reward_startup_stability")
+            if reach_only:
+                names += ("reward_pose", "pose_quality", "terminal_pose_quality",
+                          "reward_early_failure",
+                          *[f"terminal_gate_{name}" for name in COMPACT_GATE_NAMES])
             return {name: jp.zeros((), dtype=jp.float32) for name in names}
 
         def _unpack(self, state):
@@ -289,6 +294,15 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                 stability_parts = tuple(jp.where(active, 0., value) for value in stability_parts)
                 stability_penalty = jp.where(active, 0., stability_penalty)
                 reward_value -= slip_penalty + settling_penalty + stability_penalty
+            if reach_only:
+                pose_reward = compact_reach_pose_reward(jp, potential, cfg)
+                # A physical failure must not avoid the newly added state cost
+                # by ending early. Charge the remaining horizon at worst pose
+                # quality, including its otherwise avoided time cost.
+                remaining = jp.maximum(startup_steps - startup_count, 0)
+                early_failure_reward = -jp.where(failed_physics,
+                    remaining * (cfg.pose_reward_weight + cfg.time_cost), 0.)
+                reward_value += pose_reward + early_failure_reward
             reward_value = jp.nan_to_num(reward_value, nan=-cfg.failure_cost,
                                          posinf=-cfg.failure_cost, neginf=-cfg.failure_cost)
             max_y = jp.maximum(old["max_abs_y"], jp.abs(y))
@@ -334,6 +348,12 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                     reward_angular_velocity=-stability_parts[2],
                     reward_axis_tilt=-stability_parts[3],
                     reward_startup_stability=-stability_penalty)
+            if reach_only:
+                metrics.update(reward_pose=pose_reward, pose_quality=potential,
+                    terminal_pose_quality=jp.where(terminal, potential, 0.),
+                    reward_early_failure=early_failure_reward,
+                    **{f"terminal_gate_{name}": jp.where(terminal, errors[i], 0.)
+                       for i, name in enumerate(COMPACT_GATE_NAMES)})
             metrics = jax.tree_util.tree_map(lambda x: jp.nan_to_num(x), metrics)
             return State(d, self._obs(d, info), reward_value, terminal.astype(jp.float32),
                          metrics=metrics, info=info)

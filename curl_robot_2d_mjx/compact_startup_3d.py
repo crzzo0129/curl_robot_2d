@@ -6,7 +6,9 @@ import numpy as np
 from curl_robot_2d_mjx.autonomous_startup_3d import AutonomousStartupConfig
 
 COMPACT_STARTUP_CONTRACT = "stand_to_low_speed_compact_v3_anti_ballistic"
-COMPACT_REACH_CONTRACT = "walking_stand_to_compact_only_v1"
+COMPACT_REACH_CONTRACT = "walking_stand_to_compact_only_v2_dense_pose"
+COMPACT_GATE_NAMES = ("joint_position", "joint_velocity", "root_height",
+                      "linear_velocity", "angular_velocity", "orientation", "phase")
 
 
 @dataclass(frozen=True)
@@ -49,9 +51,19 @@ class CompactReachConfig(CompactStartupConfig):
     """Stage one: terminate at a confirmed compact window, without a teacher."""
 
     confirmation_steps: int = 5
+    pose_reward_weight: float = .10
 
     def episode_steps(self, dt):
         return round(self.startup_budget_s / dt)
+
+
+def compact_reach_pose_reward(xp, potential, cfg):
+    """Nonpositive state reward: approach matters even when every trial times out.
+
+    Unlike potential differences, this term does not telescope away. Zero at
+    the target avoids paying the actor to delay successful termination.
+    """
+    return -cfg.pose_reward_weight * (1. - xp.clip(potential, 0., 1.))
 
 
 def compact_target(model):

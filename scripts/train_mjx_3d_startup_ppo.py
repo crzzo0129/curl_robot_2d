@@ -86,6 +86,8 @@ def parse_args(argv=None):
     p.add_argument("--learning-rate", type=float, default=2e-4)
     p.add_argument("--entropy-cost", type=float, default=0.001)
     p.add_argument("--discounting", type=float, default=0.999)
+    p.add_argument("--pose-reward-weight", type=float,
+                   help="compact-only dense pose cost weight per control step (default 0.10)")
     compact_defaults = CompactStartupConfig()
     for field in ("foot_slip_weight", "foot_slip_sigma_m_s", "settling_velocity_weight",
                   "joint_position_rad", "joint_velocity_rad_s", "root_z_m",
@@ -112,6 +114,11 @@ def parse_args(argv=None):
     p.add_argument("--memory-fraction", type=float, default=0.80)
     p.add_argument("--mujoco-gl", default="disable")
     args = p.parse_args(argv)
+    if args.pose_reward_weight is not None:
+        if not args.compact_only:
+            p.error("--pose-reward-weight requires --compact-only")
+        if not math.isfinite(args.pose_reward_weight) or args.pose_reward_weight <= 0:
+            p.error("--pose-reward-weight must be finite and positive")
     for key, default in PRESETS[args.preset].items():
         if getattr(args, key) is None:
             setattr(args, key, default)
@@ -185,6 +192,8 @@ def build_inputs(args):
             "excess_height_margin_m", "excess_height_sigma_m",
             "angular_velocity_weight", "angular_velocity_sigma_rad_s",
             "axis_tilt_weight", "axis_tilt_sigma_rad")})
+    if args.compact_only and args.pose_reward_weight is not None:
+        cfg = replace(cfg, pose_reward_weight=args.pose_reward_weight)
     cfg.validate(task.control_timestep)
     import mujoco
     bank = compact_target(mujoco.MjModel.from_xml_path(str(model_path_3d(task.geometry))))
@@ -267,6 +276,12 @@ def evaluate_startup(env, policy, *, count, seed):
                       conditional_success_after_handoff=None)
         # Shared metric name means gate arrival here, never an executed handoff.
         report["handoff_metric_meaning"] = "confirmed compact window; no teacher activated"
+        report["mean_pose_quality"] = float(totals["pose_quality"].sum() /
+                                             max(totals["startup_control_step"].sum(), 1.))
+        report["mean_terminal_pose_quality"] = float(totals["terminal_pose_quality"].mean())
+        report["mean_terminal_gate_components"] = {
+            key.removeprefix("terminal_gate_"): float(value.mean())
+            for key, value in totals.items() if key.startswith("terminal_gate_") and key != "terminal_gate_error"}
     if "foot_slip_distance_m" in totals:
         elapsed = totals["startup_control_step"] * env.config.control_timestep
         report.update(mean_startup_foot_slip_distance_m=float(totals["foot_slip_distance_m"].mean()),
@@ -327,6 +342,7 @@ def main(argv=None):
             first_command_jump_gate_applied=False,
             action_scope="8 hip/knee targets; 4 abduction servos hold compact zero positions",
             collision_scope="rollingquad_2_primitive analytic collisions with shell contact and existing self-collision whitelist; no mesh collision geoms")
+        payload["dense_pose_reward"] = "-pose_reward_weight*(1-pose_quality), every step including terminal; physical failures charged remaining pose/time cost"
     if args.restore_startup:
         source = json.loads((args.restore_startup.parent / "training_config.json").read_text(encoding="utf-8"))
         for key in ("contract", "observation_size", "action_size", "teacher_sha256",
@@ -422,6 +438,13 @@ def main(argv=None):
         print(f"[startup failure] step={step} reasons=[{format_startup_failure_reasons(clean)}] "
               f"terminal_gate={clean.get('eval/episode_terminal_gate_error', 0.):.3f} "
               f"tail_turns={clean.get('eval/episode_terminal_tail_turns', 0.):.3f}", flush=True)
+        if args.compact_only:
+            from curl_robot_2d_mjx.compact_startup_3d import COMPACT_GATE_NAMES
+            gates = ", ".join(f"{name}={clean.get('eval/episode_terminal_gate_' + name, 0.):.2f}"
+                              for name in COMPACT_GATE_NAMES)
+            print(f"[compact pose] reward={clean.get('eval/episode_reward_pose', 0.):.3f} "
+                  f"terminal_quality={clean.get('eval/episode_terminal_pose_quality', 0.):.3f} "
+                  f"terminal_gates=[{gates}]", flush=True)
     print(f"[startup PPO] {args.envs} envs, budget={cfg.startup_budget_s}s, "
           f"mode={'compact-only' if args.compact_only else 'teacher continuation'}, "
           f"teacher tail={0 if args.compact_only else cfg.continuation_s}s, target=compact, "
