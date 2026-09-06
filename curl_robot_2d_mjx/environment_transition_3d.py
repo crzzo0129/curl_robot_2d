@@ -36,11 +36,13 @@ from curl_robot_2d_mjx.reward_transition_3d import (
     TRANSITION_REWARD_TERM_NAMES_3D,
     Transition3DRewardConfig,
     reward_terms_transition_3d,
+    reward_terms_roll_to_stand_3d,
 )
 from curl_robot_2d_mjx.transition_initialization_3d import (
     walking_start_state_3d,
     load_roll_snapshots_3d,
     transition_target_ctrl_3d,
+    transition_action_from_ctrl_3d,
 )
 from curl_robot_2d_mjx.deployment_transition_3d import (
     transition_controller_frame_3d,
@@ -130,7 +132,11 @@ def make_brax_transition_env_3d(
             self.model_path = model_path_3d(task.geometry)
             self.geometry_parameters = geometry_parameters_3d(task.geometry)
             self.mj_model = mujoco.MjModel.from_xml_path(str(self.model_path))
-            # Preserve rollingquad_2's CAD mesh collisions in every mode.
+            if task.geometry == "rollingquad_2_primitive":
+                active = (self.mj_model.geom_contype != 0) | (self.mj_model.geom_conaffinity != 0)
+                if np.any(active & (self.mj_model.geom_type == mujoco.mjtGeom.mjGEOM_MESH)):
+                    raise ValueError("primitive training model contains mesh collision geometry")
+            # Preserve the selected geometry and contact masks in every mode.
             validate_walking_morphology_3d(
                 self.mj_model, self.geometry_parameters, geometry_name=task.geometry
             )
@@ -215,7 +221,9 @@ def make_brax_transition_env_3d(
                 task.stabilize_min_s, task.control_timestep
             )
             self.ready_hold_steps = _duration_steps(
-                task.ready_hold_s, task.control_timestep
+                task.ready_hold_s + (task.stand_verification_s
+                                     if task.dynamic_roll_to_stand else 0.0),
+                task.control_timestep
             )
             self.brake_timeout_steps = _duration_steps(
                 task.brake_timeout_s, task.control_timestep
@@ -384,6 +392,7 @@ def make_brax_transition_env_3d(
                 & (data.qpos[2] >= task.ready_root_height_min_m)
                 & (data.qpos[2] <= task.ready_root_height_max_m)
                 & (contacts["foot_count"] >= task.ready_min_foot_contacts)
+                & (contacts["nonfoot_count"] == 0)
                 & jp.all(jp.isfinite(data.qpos))
                 & jp.all(jp.isfinite(data.qvel))
             )
@@ -545,6 +554,8 @@ def make_brax_transition_env_3d(
             )
             velocity = velocity.at[6:].multiply(task.reset_joint_velocity_rad_s)
             mode = jp.asarray(task.reset_start_mode, dtype=jp.int32)
+            if task.dynamic_roll_to_stand:
+                mode = jp.asarray(int(TransitionMode3D.DEPLOY), dtype=jp.int32)
             ctrl = joints
             source_phase_bin = jp.asarray(-1, dtype=jp.int32)
             source_cycle = jp.asarray(-1, dtype=jp.int32)
@@ -558,6 +569,8 @@ def make_brax_transition_env_3d(
                 source_phase_bin = self.roll_snapshots["source_phase_bin"][index]
                 source_cycle = self.roll_snapshots["source_cycle"][index]
             data = self.base_data.replace(qpos=qpos, qvel=velocity, ctrl=ctrl)
+            if self.roll_snapshots is not None:
+                data = data.replace(time=self.roll_snapshots["time_s"][index])
             data = mjx.forward(self.sys, data)
             # Neighborhood perturbations may rotate a CAD mesh into the floor.
             # Only synthetic states are lifted. Never alter real takeover data
@@ -586,7 +599,8 @@ def make_brax_transition_env_3d(
             the simulator or motors; training snapshot resets use this path.
             """
             return self._initial_state(
-                data, rng, jp.asarray(int(TransitionMode3D.BRAKE), dtype=jp.int32),
+                data, rng, jp.asarray(int(TransitionMode3D.DEPLOY if
+                    task.dynamic_roll_to_stand else TransitionMode3D.BRAKE), dtype=jp.int32),
                 actor_history=actor_history, last_action=last_action,
             )
 
@@ -603,6 +617,10 @@ def make_brax_transition_env_3d(
             # Hot carry-over is explicit and requires identical obs/action ABI.
             previous_action = (jp.zeros((12,), dtype=data.qpos.dtype)
                                if last_action is None else last_action)
+            if task.dynamic_roll_to_stand and last_action is None:
+                previous_action = transition_action_from_ctrl_3d(
+                    jp, data.ctrl, self.stand_ctrl, self.joint_low,
+                    self.joint_high, task.action_range_fraction)
             actor_history = (initial_transition_history_3d(jp, dtype=data.qpos.dtype)
                              if actor_history is None else actor_history)
             if actor_history.shape != (TRANSITION_ACTOR_OBSERVATION_SIZE_3D,):
@@ -708,6 +726,11 @@ def make_brax_transition_env_3d(
                 ),
             ).astype(jp.int32)
             changed_mode = next_mode != mode
+            if task.dynamic_roll_to_stand:
+                # One unrestricted recovery task: no brake/deploy gate or
+                # early standing guard. A lost stand resets the hold counter.
+                next_mode = jp.asarray(int(TransitionMode3D.DEPLOY), dtype=jp.int32)
+                changed_mode = jp.asarray(False)
             next_mode_steps = jp.where(changed_mode, 0, mode_steps + 1)
             next_bad_steps, failed_stabilize = stabilize_failure_update_3d(
                 jp, task, mode=next_mode, mode_steps=next_mode_steps,
@@ -722,6 +745,8 @@ def make_brax_transition_env_3d(
                 & (next_mode_steps >= self.stabilize_min_steps)
                 & gates["ready_gate"]
             )
+            if task.dynamic_roll_to_stand:
+                ready_gate_active = gates["ready_gate"]
             next_ready_steps = jp.where(
                 ready_gate_active, state.info["ready_steps"] + 1, 0
             )
@@ -743,6 +768,10 @@ def make_brax_transition_env_3d(
                 & (mode_steps * task.control_timestep >= task.deploy_timeout_s)
                 & (~deploy_complete)
             )
+            if task.dynamic_roll_to_stand:
+                failed_stabilize = jp.asarray(False)
+                failed_brake_timeout = jp.asarray(False)
+                failed_deploy_timeout = jp.asarray(False)
             failed = (
                 (~action_finite)
                 | (~physics_finite)
@@ -837,7 +866,11 @@ def make_brax_transition_env_3d(
                 ),
                 "failed": failed.astype(jp.float32),
             }
-            terms = reward_terms_transition_3d(jp, rewards, reward_inputs)
+            if task.dynamic_roll_to_stand:
+                reward_inputs["nonfoot_contact_count"] = contacts["nonfoot_count"]
+                terms = reward_terms_roll_to_stand_3d(jp, rewards, reward_inputs)
+            else:
+                terms = reward_terms_transition_3d(jp, rewards, reward_inputs)
             reward = jp.sum(jp.stack(tuple(terms.values())))
             reward = jp.nan_to_num(reward, nan=-rewards.termination)
 

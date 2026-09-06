@@ -12,7 +12,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
 )
 
 
-TRANSITION_GEOMETRY_NAMES_3D = ("rollingquad_2",)
+TRANSITION_GEOMETRY_NAMES_3D = ("rollingquad_2", "rollingquad_2_primitive")
 TRANSITION_PHYSICS_PROFILE_NAMES_3D = ("accurate", "newton4", "cg12")
 TRANSITION_CURRICULUM_STAGE_NAMES_3D = (
     "walking_start",
@@ -50,6 +50,8 @@ class Transition3DConfig:
     """
 
     geometry: str = "rollingquad_2"
+    dynamic_roll_to_stand: bool = False
+    stand_verification_s: float = 2.0
     physics_profile: str = "newton4"
     curriculum_stage: str = "walking_start"
     walking_start_keyframe: str = "stand"
@@ -289,6 +291,8 @@ def transition_physics_profile_3d(
 
 
 def validate_transition_config_3d(config: Transition3DConfig) -> None:
+    if not math.isfinite(config.stand_verification_s) or config.stand_verification_s < 0:
+        raise ValueError("stand verification duration must be finite and nonnegative")
     if config.geometry not in TRANSITION_GEOMETRY_NAMES_3D:
         raise ValueError(f"unknown transition geometry: {config.geometry}")
     if config.curriculum_stage not in TRANSITION_CURRICULUM_STAGE_NAMES_3D:

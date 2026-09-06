@@ -57,6 +57,30 @@ class Transition3DRewardConfig:
     termination: float = 20.0
 
 
+def reward_terms_roll_to_stand_3d(xp, config, inputs):
+    """Dynamic recovery; low speed is rewarded only with upright foot support.
+
+    Retain the metric ABI of the legacy task, without its brake-first rewards.
+    Normal shell contacts during recovery carry no constant collision penalty.
+    """
+    terms = reward_terms_transition_3d(xp, config, inputs)
+    pose = xp.exp(-xp.square(inputs["reference_pose_error_rms"] /
+                            config.deploy_pose_sigma_rad))
+    upright = xp.exp(-xp.square(inputs["upright_tilt"] / config.upright_sigma_rad))
+    height = xp.exp(-xp.square(inputs["root_height_error"] / config.height_sigma_m))
+    foot_support = inputs["support_fraction"] / (1.0 + inputs["nonfoot_contact_count"])
+    standing = pose * upright * height * foot_support
+    zero = xp.asarray(0.0)
+    terms.update(brake_speed=zero, brake_progress=zero, brake_capture=zero,
+                 stabilize_pose=zero, nonfoot_contact=zero,
+                 upright=config.upright * upright,
+                 height=config.height * upright * height,
+                 support=config.support * upright * height * foot_support,
+                 stabilize=config.stabilize * standing * xp.exp(-xp.square(
+                     inputs["combined_speed"] / config.stabilize_speed_sigma)))
+    return terms
+
+
 def reward_terms_transition_3d(
     xp,
     config: Transition3DRewardConfig,

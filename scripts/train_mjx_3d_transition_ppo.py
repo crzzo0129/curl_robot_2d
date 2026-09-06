@@ -41,6 +41,10 @@ from curl_robot_2d_mjx.transition_snapshot_cli_3d import (
 
 
 PRESETS_TRANSITION_3D = {
+    "cpu_smoke": {
+        "steps": 1536, "envs": 2, "eval_envs": 2, "num_evals": 2,
+        "batch_size": 8, "num_minibatches": 2,
+    },
     "smoke": {
         "steps": 131_072,
         "envs": 64,
@@ -77,7 +81,11 @@ def parse_args(argv=None):
     )
     parser.add_argument("--geometry", choices=TRANSITION_GEOMETRY_NAMES_3D,
                         default="rollingquad_2")
+    parser.add_argument("--dynamic-roll-to-stand", action="store_true",
+                        help="unrestricted recovery followed by continuous standing verification")
     parser.add_argument("--roll-snapshots", type=Path)
+    parser.add_argument("--eval-roll-snapshots", type=Path,
+                        help="held-out reference trajectories, required for dynamic snapshot training")
     parser.add_argument("--snapshot-tail-fraction", type=float, default=1.0)
     add_cycle_selection_arguments(parser)
     parser.add_argument("--preset", choices=tuple(PRESETS_TRANSITION_3D), default="smoke")
@@ -116,9 +124,15 @@ def parse_args(argv=None):
 
 
 def build_task(args) -> Transition3DConfig:
+    if args.dynamic_roll_to_stand and args.geometry != "rollingquad_2_primitive" and not args.eval_only:
+        raise ValueError("Roll to Stand training and training evaluation require primitive; mesh is eval-only")
     task = transition_curriculum_config_3d(
         args.stage, Transition3DConfig(
             geometry=args.geometry, curriculum_stage=args.stage,
+            dynamic_roll_to_stand=args.dynamic_roll_to_stand,
+            physics_timestep=0.001 if args.dynamic_roll_to_stand else Transition3DConfig().physics_timestep,
+            ready_hold_s=1.0 if args.dynamic_roll_to_stand else 0.40,
+            episode_length=500 if args.dynamic_roll_to_stand else 350,
             roll_snapshots_path=str(args.roll_snapshots.resolve())
             if args.roll_snapshots else None,
             snapshot_tail_fraction=args.snapshot_tail_fraction,
@@ -258,10 +272,21 @@ def main(argv=None) -> None:
         raise SystemExit("--eval-params is only valid with --eval-only")
 
     task = build_task(args)
+    if task.dynamic_roll_to_stand and args.stage.startswith("brake_") and not args.eval_only and not args.dry_run:
+        if args.eval_roll_snapshots is None:
+            raise SystemExit("dynamic training requires --eval-roll-snapshots collected with an independent seed")
+        if args.roll_snapshots and args.eval_roll_snapshots.resolve() == args.roll_snapshots.resolve():
+            raise SystemExit("training and evaluation snapshot banks must be distinct trajectories")
     if args.stage.startswith("brake_") and not args.roll_snapshots and not args.dry_run:
         raise SystemExit("BRAKE stages require --roll-snapshots; no synthetic "
                          "or artificially slowed fallback is used")
     reward = Transition3DRewardConfig()
+    if task.dynamic_roll_to_stand:
+        # Impact force is not measured by the legacy MJX implementation.
+        # Do not advertise an effective impact penalty until it is implemented.
+        reward = replace(reward, brake_speed=0.0, brake_progress=0.0,
+                         brake_capture=0.0, stabilize_pose=0.0,
+                         nonfoot_contact=0.0, impact=0.0)
     preset = PRESETS_TRANSITION_3D[args.preset]
     stage_out = args.out / args.stage
     payload = {
@@ -271,10 +296,12 @@ def main(argv=None) -> None:
         "critic_observation_size": TRANSITION_CRITIC_OBSERVATION_SIZE_3D,
         "actor_activation": "elu",
         "actor_distribution": "default_tanh_normal",
-        "control": "one policy; fixed Walking action center; no external brake",
+        "control": "dynamic roll-to-stand; no brake gate; 1s stand + 2s verification"
+                   if task.dynamic_roll_to_stand else "one policy; fixed Walking action center; no external brake",
         "reset_source": "roll_snapshots" if args.stage.startswith("brake_")
                         else "walking_start_neighborhood",
         "task": asdict(task),
+        "eval_roll_snapshots": str(args.eval_roll_snapshots.resolve()) if args.eval_roll_snapshots else None,
         "reward": asdict(reward),
         "training": {
             **preset,
@@ -333,7 +360,13 @@ def main(argv=None) -> None:
     # Validate cycle/phase coverage before importing JAX or creating outputs.
     if args.stage.startswith("brake_"):
         from scripts.inspect_transition_roll_snapshots import inspect_bank
+        if task.dynamic_roll_to_stand and not args.eval_only:
+            from curl_robot_2d_mjx.reference_bank_contract_3d import validate_reference_split
+            payload["reference_split"] = validate_reference_split(
+                args.roll_snapshots, args.eval_roll_snapshots, task)
         payload["snapshot_selection"] = inspect_bank(args.roll_snapshots, task)
+        if args.eval_roll_snapshots:
+            payload["eval_snapshot_selection"] = inspect_bank(args.eval_roll_snapshots, task)
         print("[ROLL snapshot selection] " + json.dumps(payload["snapshot_selection"],
                                                        sort_keys=True), flush=True)
 
@@ -362,7 +395,9 @@ def main(argv=None) -> None:
         (stage_out / "snapshot_selection.json").write_text(
             json.dumps(payload["snapshot_selection"], indent=2) + "\n", encoding="utf-8")
     eval_env = make_brax_transition_env_3d(
-        replace(task, observation_noise_enabled=False),
+        replace(task, observation_noise_enabled=False,
+                roll_snapshots_path=str(args.eval_roll_snapshots.resolve())
+                if args.eval_roll_snapshots else task.roll_snapshots_path),
         reward_config=reward, seed=args.seed + 10_000
     )
     train_env = None if args.eval_only else make_brax_transition_env_3d(

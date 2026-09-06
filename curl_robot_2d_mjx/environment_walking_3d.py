@@ -378,7 +378,7 @@ def validate_walking_morphology_3d(
 
     if tuple(WALKING_JOINT_NAMES_3D) != tuple(EXPECTED_WALKING_JOINT_AXES_3D):
         raise ValueError("unexpected 3-D walking joint order")
-    rollingquad_2 = geometry_name == "rollingquad_2"
+    rollingquad_2 = geometry_name in ("rollingquad_2", "rollingquad_2_primitive")
     data = mujoco.MjData(model) if rollingquad_2 else None
     if data is not None:
         mujoco.mj_forward(model, data)
