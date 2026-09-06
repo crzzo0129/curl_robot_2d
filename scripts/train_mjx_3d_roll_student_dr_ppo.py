@@ -18,7 +18,10 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
     controller_action_to_effective_action_3d,
 )
-from curl_robot_2d_mjx.environment_3d import cem_controller_path_3d
+from curl_robot_2d_mjx.environment_3d import (
+    ROLLINGQUAD_GEOMETRIES_3D,
+    cem_controller_path_3d,
+)
 from curl_robot_2d_mjx.randomization_3d import (
     RollingStudentDeployDomainRandomization,
 )
@@ -71,6 +74,12 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("student", type=Path, help="existing student_params")
     parser.add_argument(
+        "--geometry",
+        choices=ROLLINGQUAD_GEOMETRIES_3D,
+        default="rollingquad_2",
+        help="collision geometry used for Student DR rollouts",
+    )
+    parser.add_argument(
         "--restore-ppo",
         type=Path,
         help="previous DR PPO params_final; restores actor, critic and normalizer",
@@ -78,7 +87,15 @@ def parse_args(argv=None):
     parser.add_argument(
         "--controller",
         type=Path,
-        default=cem_controller_path_3d("rollingquad_2"),
+        help="CEM reference; defaults to the reference for --geometry",
+    )
+    parser.add_argument(
+        "--lateral-drift-diagnostic-only",
+        action="store_true",
+        help=(
+            "measure the 0.20 m lateral envelope without terminating or "
+            "counting it as a physical failure"
+        ),
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--allow-existing-output", action="store_true")
@@ -116,6 +133,8 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
+    if args.controller is None:
+        args.controller = cem_controller_path_3d(args.geometry)
     values = PRESETS[args.preset].copy()
     for name in values:
         override = getattr(args, name)
@@ -243,6 +262,10 @@ def main(argv=None):
         _task(
             episode_length=args.episode_length,
             direct_effective_action=True,
+            geometry=args.geometry,
+            lateral_drift_diagnostic_only=(
+                args.lateral_drift_diagnostic_only
+            ),
         ),
         args,
     )
@@ -351,13 +374,22 @@ def main(argv=None):
             2.0 * math.pi
         )
         failed = clean.get("eval/episode_failed", 0.0)
+        non_lateral_failed = clean.get(
+            "eval/episode_failed_non_lateral", 0.0
+        )
         success = clean.get("eval/episode_movement_success", 0.0)
+        non_lateral_success = clean.get(
+            "eval/episode_movement_success_non_lateral", 0.0
+        )
         lateral = clean.get("eval/episode_failure_lateral_drift", 0.0)
         anchor = clean.get("eval/episode_student_anchor_action_rmse", 0.0)
         length = max(clean.get("eval/avg_episode_length", 1.0), 1.0)
         print(
             f"[Student DR PPO eval] step={int(step):,} "
-            f"turns={turns:.3f} success={success:.1%} failed={failed:.1%} "
+            f"turns={turns:.3f} success={success:.1%} "
+            f"non_lateral_success={non_lateral_success:.1%} "
+            f"failed={failed:.1%} "
+            f"non_lateral_failed={non_lateral_failed:.1%} "
             f"lateral={lateral:.1%} anchor_rmse/step={anchor / length:.5f}",
             flush=True,
         )
@@ -413,6 +445,8 @@ def main(argv=None):
         f"  actor=720D-real -> 8D-effective critic=65D-privileged\n"
         f"  DR strength={args.dr_strength:g} anchor={args.student_anchor_weight:g} "
         f"noise={args.observation_noise_scale:g}\n"
+        f"  geometry={args.geometry} lateral_termination="
+        f"{task.lateral_drift_termination}\n"
         f"  steps={args.steps:,} envs={args.envs} eval_envs={args.eval_envs}",
         flush=True,
     )

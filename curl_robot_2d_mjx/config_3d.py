@@ -87,6 +87,11 @@ class Rolling3DConfig:
     terminate_root_z_low_duration_s: float = 0.20
     terminate_root_z_max: float = 0.80
     terminate_lateral_drift_m: float = 0.20
+    # Keep measuring the nominal lateral envelope even when it is not a
+    # terminal failure.  This is useful for rolling deployments where lateral
+    # motion is acceptable but falls, invalid contacts and numerical failures
+    # must still terminate immediately.
+    lateral_drift_termination: bool = True
     terminate_axis_tilt_rad: float = 0.50
     terminate_axis_tilt_duration_s: float = 0.10
     terminate_forbidden_depth_m: float = 0.004
@@ -224,6 +229,8 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("explicit_phase_observation must be boolean")
     if not isinstance(config.direct_effective_action, bool):
         raise ValueError("direct_effective_action must be boolean")
+    if not isinstance(config.lateral_drift_termination, bool):
+        raise ValueError("lateral_drift_termination must be boolean")
     if not isinstance(config.floor_contact_friction_override, bool):
         raise ValueError("floor_contact_friction_override must be boolean")
     if config.terminate_root_z_min is not None:

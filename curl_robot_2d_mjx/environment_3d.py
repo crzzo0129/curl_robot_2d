@@ -1161,6 +1161,7 @@ def make_brax_env_3d(
                 "phase_error_rad": zero,
                 "oscillator_rate_rad_s": zero,
                 "failed": zero,
+                "failed_non_lateral": zero,
                 "timeout": zero,
                 "failure_nonfinite": zero,
                 "failure_nonfinite_action": zero,
@@ -1778,21 +1779,23 @@ def make_brax_env_3d(
                 contacts["forbidden_depth"]
                 > task.terminate_forbidden_depth_m
             )
-            failed_bool = (
+            failed_non_lateral = (
                 failure_nonfinite
                 | failure_root_low
                 | failure_root_high
-                | failure_lateral_drift
                 | failure_axis_tilt
                 | failure_forbidden_depth
                 | failure_forbidden_contact
             )
+            failed_bool = failed_non_lateral | (
+                failure_lateral_drift & task.lateral_drift_termination
+            )
             failure_severe = (
                 failure_root_low
-                | failure_lateral_drift
                 | failure_axis_tilt
                 | failure_forbidden_depth
                 | failure_forbidden_contact
+                | (failure_lateral_drift & task.lateral_drift_termination)
             )
             step_count = state.info["step_count"] + 1
             timeout_bool = step_count >= task.episode_length
@@ -1981,6 +1984,7 @@ def make_brax_env_3d(
                 "phase_error_rad": phase_error,
                 "oscillator_rate_rad_s": oscillator_rate,
                 "failed": failed_bool.astype(jp.float32),
+                "failed_non_lateral": failed_non_lateral.astype(jp.float32),
                 "timeout": timeout_bool.astype(jp.float32),
                 "failure_nonfinite": failure_nonfinite.astype(jp.float32),
                 "failure_nonfinite_action": (

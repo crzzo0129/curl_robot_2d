@@ -199,6 +199,7 @@ def make_rolling_student_dr_env_3d(
                 "deadline_missed": jp.zeros((), dtype=jp.float32),
                 "latency_steps": info["deploy_latency_steps"].astype(jp.float32),
                 "movement_success": jp.zeros((), dtype=jp.float32),
+                "movement_success_non_lateral": jp.zeros((), dtype=jp.float32),
             }
             return base_state.replace(
                 obs={
@@ -264,6 +265,14 @@ def make_rolling_student_dr_env_3d(
                     >= minimum_success_turns * (2.0 * jp.pi)
                 )
             )
+            movement_success_non_lateral = (
+                (base_state.done > 0.0)
+                & (base_state.metrics["failed_non_lateral"] <= 0.0)
+                & (
+                    base_state.info["previous_roll_potential"]
+                    >= minimum_success_turns * (2.0 * jp.pi)
+                )
+            )
             metrics = {
                 **base_state.metrics,
                 "reward": reward,
@@ -275,6 +284,9 @@ def make_rolling_student_dr_env_3d(
                     jp.float32
                 ),
                 "movement_success": movement_success.astype(jp.float32),
+                "movement_success_non_lateral": (
+                    movement_success_non_lateral.astype(jp.float32)
+                ),
             }
             info = {
                 **base_state.info,

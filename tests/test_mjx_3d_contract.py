@@ -181,6 +181,7 @@ class MJX3DContractTest(unittest.TestCase):
             {"body_mass_left_scale": float("nan")},
             {"body_mass_right_scale": -1.0},
             {"actuator_gain_scale": 0.0},
+            {"lateral_drift_termination": 1},
             {"explicit_phase_observation": 1},
             {"direct_effective_action": 1},
             {"terminate_root_z_min": -0.01},

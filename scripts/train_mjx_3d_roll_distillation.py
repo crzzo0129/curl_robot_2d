@@ -34,7 +34,10 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     push_rolling_deploy_frame_3d,
     rolling_deploy_frame_3d,
 )
-from curl_robot_2d_mjx.environment_3d import cem_controller_path_3d
+from curl_robot_2d_mjx.environment_3d import (
+    ROLLINGQUAD_GEOMETRIES_3D,
+    cem_controller_path_3d,
+)
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
 from curl_robot_2d_mjx.startup_rolling_3d import add_stand_startup_arguments, with_stand_startup
 from curl_robot_2d_mjx.rolling_diagnostics_3d import (
@@ -97,6 +100,12 @@ def parse_args(argv=None):
     )
     parser.add_argument("teacher", type=Path, help="teacher params_best")
     parser.add_argument(
+        "--geometry",
+        choices=ROLLINGQUAD_GEOMETRIES_3D,
+        default="rollingquad_2",
+        help="collision geometry used by both the teacher and Student rollout",
+    )
+    parser.add_argument(
         "--eval-only", action="store_true",
         help="load --restore-student, skip all training, save lateral diagnostics only",
     )
@@ -124,7 +133,15 @@ def parse_args(argv=None):
     parser.add_argument(
         "--controller",
         type=Path,
-        default=cem_controller_path_3d("rollingquad_2"),
+        help="CEM reference; defaults to the reference for --geometry",
+    )
+    parser.add_argument(
+        "--lateral-drift-diagnostic-only",
+        action="store_true",
+        help=(
+            "measure the 0.20 m lateral envelope without terminating or "
+            "counting it as a physical failure"
+        ),
     )
     parser.add_argument("--envs", type=int)
     parser.add_argument("--stats-steps", type=int)
@@ -180,6 +197,8 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
+    if args.controller is None:
+        args.controller = cem_controller_path_3d(args.geometry)
     if args.eval_only:
         if args.restore_student is None:
             parser.error("--eval-only requires --restore-student")
@@ -289,11 +308,17 @@ def student_controller_config(model, *, action_scales=CONTROLLER_ACTION_SCALES):
     }
 
 
-def _task(*, episode_length, direct_effective_action=False):
+def _task(
+    *,
+    episode_length,
+    direct_effective_action=False,
+    geometry="rollingquad_2",
+    lateral_drift_diagnostic_only=False,
+):
     return physics_profile_3d(
         "cg20",
         Rolling3DConfig(
-            geometry="rollingquad_2",
+            geometry=geometry,
             episode_length=episode_length,
             reset_joint_noise_rad=0.005,
             reset_velocity_noise=0.005,
@@ -313,6 +338,9 @@ def _task(*, episode_length, direct_effective_action=False):
             # observation ABI so a direct state can be labelled by teacher_env.
             explicit_phase_observation=True,
             direct_effective_action=direct_effective_action,
+            lateral_drift_termination=(
+                not lateral_drift_diagnostic_only
+            ),
         ),
     )
 
@@ -351,7 +379,16 @@ def main(argv=None):
         reference_weight=1.0,
         minimum_residual_gain=0.15,
     )
-    teacher_task = with_stand_startup(_task(episode_length=args.episode_length), args)
+    teacher_task = with_stand_startup(
+        _task(
+            episode_length=args.episode_length,
+            geometry=args.geometry,
+            lateral_drift_diagnostic_only=(
+                args.lateral_drift_diagnostic_only
+            ),
+        ),
+        args,
+    )
     print(f"[startup] reset={teacher_task.reset_pose} "
           f"rolling_start={teacher_task.rolling_start_time_s:g}s; "
           "student must produce ALL startup actions (no reference assistance)", flush=True)
@@ -704,6 +741,10 @@ def main(argv=None):
     direct_task = _task(
         episode_length=args.episode_length,
         direct_effective_action=True,
+        geometry=args.geometry,
+        lateral_drift_diagnostic_only=(
+            args.lateral_drift_diagnostic_only
+        ),
     )
     direct_task = with_stand_startup(direct_task, args)
     direct_env = make_brax_env_3d(
@@ -1119,6 +1160,7 @@ def main(argv=None):
     )
     eval_active = jp.ones((args.eval_envs,), dtype=jp.bool_)
     eval_failed = jp.zeros_like(eval_active)
+    eval_non_lateral_failed = jp.zeros_like(eval_active)
     eval_steps = jp.zeros((args.eval_envs,), dtype=jp.int32)
     eval_roll_progress = jp.zeros((args.eval_envs,))
     eval_failure_flags = {
@@ -1236,7 +1278,13 @@ def main(argv=None):
         failed_now = (
             next_eval_state.metrics["failed"] > 0.5
         ) & was_active
+        non_lateral_failed_now = (
+            next_eval_state.metrics["failed_non_lateral"] > 0.5
+        ) & was_active
         eval_failed = eval_failed | failed_now
+        eval_non_lateral_failed = (
+            eval_non_lateral_failed | non_lateral_failed_now
+        )
         for name in EVALUATION_FAILURE_METRICS:
             eval_failure_flags[name] = eval_failure_flags[name] | (
                 (next_eval_state.metrics[name] > 0.5) & was_active
@@ -1262,6 +1310,15 @@ def main(argv=None):
         jax.device_get(eval_roll_progress / (2.0 * math.pi))
     )
     eval_failed_np = np.asarray(jax.device_get(eval_failed))
+    eval_non_lateral_failed_np = np.asarray(
+        jax.device_get(eval_non_lateral_failed)
+    )
+    eval_lateral_failed_np = np.asarray(
+        jax.device_get(eval_failure_flags["failure_lateral_drift"])
+    )
+    eval_strict_failed_np = (
+        eval_non_lateral_failed_np | eval_lateral_failed_np
+    )
     failure_rates = {
         name: float(
             np.mean(np.asarray(jax.device_get(flags), dtype=np.float64))
@@ -1270,6 +1327,14 @@ def main(argv=None):
     }
     movement_success = (
         (~eval_failed_np)
+        & (eval_turns >= args.minimum_closed_loop_turns)
+    )
+    non_lateral_movement_success = (
+        (~eval_non_lateral_failed_np)
+        & (eval_turns >= args.minimum_closed_loop_turns)
+    )
+    strict_movement_success = (
+        (~eval_strict_failed_np)
         & (eval_turns >= args.minimum_closed_loop_turns)
     )
     closed_loop_evaluation = {
@@ -1287,6 +1352,16 @@ def main(argv=None):
         "minimum_success_turns": args.minimum_closed_loop_turns,
         "failure_free_rate": float(1.0 - np.mean(eval_failed_np)),
         "success_rate": float(np.mean(movement_success)),
+        "strict_failure_free_rate": float(
+            1.0 - np.mean(eval_strict_failed_np)
+        ),
+        "strict_success_rate": float(np.mean(strict_movement_success)),
+        "non_lateral_failure_free_rate": float(
+            1.0 - np.mean(eval_non_lateral_failed_np)
+        ),
+        "non_lateral_success_rate": float(
+            np.mean(non_lateral_movement_success)
+        ),
         "mean_turns": float(np.mean(eval_turns)),
         "median_turns": float(np.median(eval_turns)),
         "minimum_turns": float(np.min(eval_turns)),
@@ -1306,6 +1381,10 @@ def main(argv=None):
     print(
         "[student closed loop]\n"
         f"  success={closed_loop_evaluation['success_rate']:.1%} "
+        "strict_success="
+        f"{closed_loop_evaluation['strict_success_rate']:.1%} "
+        "non_lateral_success="
+        f"{closed_loop_evaluation['non_lateral_success_rate']:.1%} "
         f"failure_free={closed_loop_evaluation['failure_free_rate']:.1%} "
         f"turns_mean={closed_loop_evaluation['mean_turns']:.3f} "
         f"turns_min={closed_loop_evaluation['minimum_turns']:.3f}\n"

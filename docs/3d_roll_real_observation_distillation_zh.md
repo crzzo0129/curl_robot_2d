@@ -4,6 +4,43 @@
 启用时先验证带启动段的教师，再把同样的 `--reset-pose stand` 等参数传给蒸馏；
 学生闭环没有隐藏的启动控制器。
 
+## Primitive mass-gain 教师与横漂诊断模式
+
+当教师由 `rollingquad_2_primitive` 的 `floor_mass_gain_v3` 训练得到时，蒸馏和
+后续 reward-driven Student DR 必须显式传入同一几何。入口会据此自动选择
+primitive CEM reference，避免把 primitive checkpoint 静默放进完整 mesh 环境：
+
+```bash
+python -m scripts.train_mjx_3d_roll_distillation \
+  results/rollingquad2_floor_mass_gain_v3_h200_seed0/params_best \
+  --geometry rollingquad_2_primitive \
+  --lateral-drift-diagnostic-only \
+  --preset h200 \
+  --out results/rollingquad2_primitive_roll_student_seed0 \
+  --mujoco-gl disable --memory-fraction 0.80
+```
+
+`--lateral-drift-diagnostic-only` 仍以 0.20 m 生成横漂越界统计，但不因该项终止
+episode。输出同时区分 `strict_success_rate` 与 `non_lateral_success_rate`；前者仍将
+横漂越界视为不通过，后者只统计数值、失高、轴倾斜和禁止接触等物理失败。
+
+第一级 deploy DR：
+
+```bash
+python -m scripts.train_mjx_3d_roll_student_dr_ppo \
+  results/rollingquad2_primitive_roll_student_seed0/student_params \
+  --geometry rollingquad_2_primitive \
+  --lateral-drift-diagnostic-only \
+  --dr-strength 0.25 --student-anchor-weight 0.02 \
+  --preset h200 --max-devices 4 \
+  --out results/rollingquad2_primitive_roll_student_dr025_seed0 \
+  --mujoco-gl disable --memory-fraction 0.80
+```
+
+后续使用上一阶段的 `params_final` 通过 `--restore-ppo` 依次继续到
+`--dr-strength 0.50` 和 `1.00`。横漂仍应报告 p50/p95/max，诊断模式只改变验收
+语义，不代表横漂已经消失或不受场地尺寸约束。
+
 ## 频率约定
 
 实机 `controller_manager` 运行在 520 Hz，`neural_controller.repeat_action=10`，

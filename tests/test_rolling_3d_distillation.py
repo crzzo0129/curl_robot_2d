@@ -221,6 +221,34 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
         self.assertTrue(direct_task.direct_effective_action)
         self.assertIsNone(direct_task.residual_pair_differential_scale)
 
+    def test_primitive_geometry_selects_matching_reference_and_lateral_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            teacher = root / "params_best"
+            teacher.write_bytes(b"placeholder")
+            args = train_mjx_3d_roll_distillation.parse_args(
+                [
+                    str(teacher),
+                    "--geometry",
+                    "rollingquad_2_primitive",
+                    "--lateral-drift-diagnostic-only",
+                    "--out",
+                    str(root / "output"),
+                ]
+            )
+            task = train_mjx_3d_roll_distillation._task(
+                episode_length=args.episode_length,
+                geometry=args.geometry,
+                lateral_drift_diagnostic_only=(
+                    args.lateral_drift_diagnostic_only
+                ),
+            )
+
+        self.assertEqual(args.geometry, "rollingquad_2_primitive")
+        self.assertIn("rollingquad_primitive_stiff_cem", str(args.controller))
+        self.assertEqual(task.geometry, "rollingquad_2_primitive")
+        self.assertFalse(task.lateral_drift_termination)
+
     def test_restore_student_must_exist(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

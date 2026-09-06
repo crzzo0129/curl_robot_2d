@@ -174,6 +174,26 @@ class RollingStudentDRPPOContractTest(unittest.TestCase):
         self.assertEqual(args.eval_envs, 8)
         self.assertEqual(args.max_devices, 4)
 
+    def test_primitive_geometry_selects_matching_reference_and_lateral_mode(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            student = root / "student_params"
+            student.write_bytes(b"placeholder")
+            args = train_mjx_3d_roll_student_dr_ppo.parse_args(
+                [
+                    str(student),
+                    "--geometry",
+                    "rollingquad_2_primitive",
+                    "--lateral-drift-diagnostic-only",
+                    "--out",
+                    str(root / "output"),
+                ]
+            )
+
+        self.assertEqual(args.geometry, "rollingquad_2_primitive")
+        self.assertIn("rollingquad_primitive_stiff_cem", str(args.controller))
+        self.assertTrue(args.lateral_drift_diagnostic_only)
+
     def test_cli_rejects_missing_restore_checkpoint(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
