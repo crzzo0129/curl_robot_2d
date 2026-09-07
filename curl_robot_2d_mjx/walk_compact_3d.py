@@ -174,16 +174,17 @@ class WalkCompactConfig:
     # Note: root height is deliberately NOT gated in stage one -- tucking the
     # legs drops the body (~0.14 m) rather than rising onto the shell
     # (0.166 m); the "roll onto shell" height belongs to the rolling stage.
-    joint_position_rad: float = 0.02
+    # joint_position_rad is a LOOSE stage-one tolerance (a dynamic tuck cannot
+    # hold 0.02 rad); tighten in a later stage.
+    joint_position_rad: float = 0.10
     axis_tilt_rad: float = 0.10      # rolling-axis tilt (sideways lean), rad
     lateral_m: float = 0.05
-    # Loose shaping-potential sigmas.  Kept far wider than the gate so the
-    # exp-potential keeps a usable gradient while the pose is still far away
-    # (the tight 0.02 rad gate makes the potential flat from a walking pose).
-    settling_pose_sigma_rad: float = 0.20
+    # Quadratic pose-cost sigma (wide, so the cost stays a usable magnitude
+    # from a walking pose) and the reward weight.
+    settling_pose_sigma_rad: float = 0.50
     potential_axis_tilt_sigma_rad: float = 0.20
     # Rewards.
-    pose_reward_weight: float = 0.10
+    pose_reward_weight: float = 1.0
     success_bonus: float = 20.0
     time_cost: float = 0.02
     action_change_cost: float = 0.02
@@ -250,18 +251,23 @@ def gate_errors(xp, joints, axis_tilt, lateral, target, cfg):
     return xp.stack((joint_error, tilt_error, lateral_error))
 
 
-def pose_potential(xp, joints, axis_tilt, target, cfg):
-    """0..1 smooth closeness using the LOOSE settling sigmas.
+def pose_cost(xp, joints, axis_tilt, target, cfg):
+    """Quadratic closeness cost with LINEAR gradient (not flat far away).
 
-    This is the dense shaping signal (not the terminal gate).  Wide sigmas
-    keep the exp-potential non-flat from a walking pose, so the pose reward
-    keeps gradient well before the tight gate can be met.  Root height is
-    excluded: tucking the legs lowers the body and must not fight the reward.
+    This is the reward-driving signal.  An exp-potential goes flat from a
+    walking pose (~0.23 quality), which starves the policy of a gradient and
+    leaves the legs un-tucked.  A quadratic cost keeps a nonzero push all the
+    way in.  Root height is excluded (tucking lowers the body).
     """
     joint_cost = xp.mean(xp.square(
         (joints - target["joints"]) / cfg.settling_pose_sigma_rad))
     tilt_cost = xp.square(axis_tilt / cfg.potential_axis_tilt_sigma_rad)
-    return xp.exp(-0.5 * (joint_cost + tilt_cost) / 2.0)
+    return joint_cost + tilt_cost
+
+
+def pose_potential(xp, joints, axis_tilt, target, cfg):
+    """0..1 reporting quality derived from pose_cost (NOT the reward signal)."""
+    return xp.exp(-0.5 * pose_cost(xp, joints, axis_tilt, target, cfg) / 2.0)
 
 
 def confirmation_update(xp, previous_id, previous_count, candidate_id, eligible):
@@ -270,13 +276,14 @@ def confirmation_update(xp, previous_id, previous_count, candidate_id, eligible)
     return count.astype(xp.int32)
 
 
-def dense_pose_reward(xp, quality, cfg):
-    """Nonpositive per-step pose reward, zero exactly at the target.
+def dense_pose_reward(xp, cost, cfg):
+    """Quadratic pose reward, zero exactly at the compact target.
 
-    Unlike a potential difference it does not telescope away, so approaching
-    the compact pose pays even when the episode eventually times out.
+    Unlike an exp-of-square potential, the cost (and therefore this reward)
+    grows quadratically with the error, so the gradient is linear and stays
+    meaningful even far from the target.
     """
-    return -cfg.pose_reward_weight * (1.0 - xp.clip(quality, 0.0, 1.0))
+    return -cfg.pose_reward_weight * cost
 
 
 def anti_ballistic_costs(xp, root_vz, root_z, root_angular, *,

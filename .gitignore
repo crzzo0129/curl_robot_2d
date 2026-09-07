@@ -44,6 +44,18 @@ results/**
 !results/rollingquad_primitive_stiff_cem/03_strict_10s/
 !results/rollingquad_primitive_stiff_cem/03_strict_10s/best_phase_controller.json
 
+# High-speed zero-contact reference chain for command-conditioned training
+# (train_mjx_3d_residual_ppo --recipe command_tracking_v1).
+!results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/
+!results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/
+!results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json
+!results/rollingquad_abd10_high_speed_cem_smoke/
+!results/rollingquad_abd10_high_speed_cem_smoke/03_speed_strict_10s/
+!results/rollingquad_abd10_high_speed_cem_smoke/03_speed_strict_10s/best_phase_controller.json
+!results/rollingquad_abd10_speed_discovery_zero_contact/
+!results/rollingquad_abd10_speed_discovery_zero_contact/01_speed_discovery_zero_contact/
+!results/rollingquad_abd10_speed_discovery_zero_contact/01_speed_discovery_zero_contact/best_phase_controller.json
+
 # Version the validated rolling-reset dataset required by stopping PPO.
 # Other rolling-stop searches, reports, and generated terminal states remain local.
 !results/rolling_stop/

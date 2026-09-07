@@ -37,6 +37,7 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     gate_errors,
     policy_actuator_names,
     policy_joint_names,
+    pose_cost,
     pose_potential,
     prepare_runtime_xml,
     validate_snapshot_bank,
@@ -97,7 +98,7 @@ class ConfigTest(unittest.TestCase):
 
     def test_pose_only_gate_ignores_velocity_fields(self):
         cfg = WalkCompactConfig()
-        self.assertEqual(cfg.joint_position_rad, 0.02)
+        self.assertEqual(cfg.joint_position_rad, 0.10)
         # no velocity tolerance fields exist in the config
         self.assertFalse(hasattr(cfg, "root_linear_velocity_m_s"))
 
@@ -193,7 +194,7 @@ class GateMathTest(unittest.TestCase):
 
     def test_joint_offset_scales_with_tolerance(self):
         joints = np.asarray(self.target["joints"], dtype=np.float32).copy()
-        joints[1] += 0.01  # hip
+        joints[1] += 0.05  # hip; tolerance 0.10 rad -> 0.5
         errors = gate_errors(np, joints, 0.0, 0.0, self.target, self.cfg)
         self.assertAlmostEqual(float(errors[0]), 0.5, places=5)
         self.assertAlmostEqual(float(errors[1]), 0.0, places=5)
@@ -236,12 +237,19 @@ class GateMathTest(unittest.TestCase):
         self.assertGreater(float(quality), 0.05)
         self.assertLess(float(quality), 0.95)
 
+    def test_pose_cost_is_quadratic_with_linear_gradient(self):
+        # Regression: the reward signal must grow quadratically (linear
+        # gradient) from a walking pose, not exp-flatten.
+        at_target = pose_cost(np, self.target["joints"], 0.0, self.target, self.cfg)
+        self.assertAlmostEqual(float(at_target), 0.0, places=6)
+        walking = pose_cost(np, self.walking, 0.0, self.target, self.cfg)
+        self.assertGreater(float(walking), 0.5)
+
     def test_dense_pose_reward_negative_and_zero_at_target(self):
-        quality = pose_potential(np, self.target["joints"], 0.0,
-                                 self.target, self.cfg)
-        self.assertAlmostEqual(float(dense_pose_reward(np, quality, self.cfg)), 0.0,
+        cost = pose_cost(np, self.target["joints"], 0.0, self.target, self.cfg)
+        self.assertAlmostEqual(float(dense_pose_reward(np, cost, self.cfg)), 0.0,
                                places=6)
-        far = pose_potential(np, self.walking, 0.5, self.target, self.cfg)
+        far = pose_cost(np, self.walking, 0.5, self.target, self.cfg)
         self.assertLess(float(dense_pose_reward(np, far, self.cfg)), 0.0)
 
     def test_confirmation_update_contiguity(self):

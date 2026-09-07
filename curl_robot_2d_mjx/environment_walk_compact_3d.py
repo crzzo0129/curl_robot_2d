@@ -31,6 +31,7 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     gate_errors,
     policy_actuator_names,
     policy_joint_names,
+    pose_cost,
     pose_potential,
     validate_snapshot_bank,
 )
@@ -188,6 +189,7 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             root_z = ps.q[2]
             lateral = ps.q[1] - old["initial_y"]
             errors = gate_errors(jp, joints, axis_tilt, lateral, target, cfg)
+            cost = pose_cost(jp, joints, axis_tilt, target, cfg)
             quality = pose_potential(jp, joints, axis_tilt, target, cfg)
             finite = jp.all(jp.isfinite(ps.q)) & jp.all(jp.isfinite(ps.qd))
             eligible = (jp.max(errors) <= 1.0) & finite
@@ -204,7 +206,7 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
                 stand_z=stand_z, compact_z=target["root_z"], cfg=cfg)
             change = jp.mean(jp.square(action_in - old["last_act"]))
             torque = jp.mean(jp.square(ps.qfrc_actuator[6:] / 3.0))
-            reward = (dense_pose_reward(jp, quality, cfg)
+            reward = (dense_pose_reward(jp, cost, cfg)
                       + cfg.success_bonus * success.astype(jp.float32)
                       - cfg.time_cost - cfg.action_change_cost * change
                       - cfg.torque_cost * torque - upward)
