@@ -335,7 +335,7 @@ def main(argv=None):
         num_minibatches=args.num_minibatches, num_updates_per_batch=args.updates_per_batch,
         normalize_observations=True, deterministic_eval=True, network_factory=factory,
         seed=args.seed, progress_fn=progress, policy_params_fn=params_callback,
-        wrap_env_fn=lambda e: wrap_walk_compact(e, env.episode_length),
+        wrap_env_fn=wrap_walk_compact,
         max_devices_per_host=devices, restore_params=restored)
     model_io.save_params(args.out / "params_final", params)
     if best["step"] is None:

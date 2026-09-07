@@ -213,7 +213,7 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
     return WalkCompactEnv()
 
 
-def wrap_walk_compact(env, episode_length, action_repeat=1):
+def wrap_walk_compact(env, episode_length, action_repeat=1, randomization_fn=None):
     """Full autoreset wrapper; brax defaults only reset on truncation."""
     import jax
     import jax.numpy as jp
@@ -222,6 +222,8 @@ def wrap_walk_compact(env, episode_length, action_repeat=1):
 
     if action_repeat != 1:
         raise ValueError("walk compact owns its control cadence; action_repeat must be 1")
+    if randomization_fn is not None:
+        raise ValueError("walk compact v1 does not implement domain randomization")
 
     class FullResetWrapper(Wrapper):
         def reset(self, rng):
