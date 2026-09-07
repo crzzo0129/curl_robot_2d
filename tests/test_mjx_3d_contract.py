@@ -44,6 +44,7 @@ from curl_robot_2d_mjx.environment_3d import (
     geometry_parameters_3d,
     cem_controller_path_3d,
     configure_pupper_shell_collisions_3d,
+    disable_rollingquad_self_collision_3d,
     model_path_3d,
     validate_rolling_morphology_3d,
     validate_rollingquad_self_collision_contract_3d,
@@ -407,6 +408,22 @@ class MJX3DContractTest(unittest.TestCase):
             PRIMITIVE_ROLLINGQUAD_GEOMETRIES_3D,
             ("rollingquad_2_primitive", "rollingquad_2_primitive_abd10"),
         )
+
+    def test_disable_self_collision_keeps_floor_only(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_ABD10_MODEL_PATH_3D))
+        validate_rollingquad_self_collision_contract_3d(model, "rollingquad_2_abd10")
+        disable_rollingquad_self_collision_3d(model)
+
+        floor_id = model.geom("floor").id
+        self.assertEqual(
+            (int(model.geom_contype[floor_id]), int(model.geom_conaffinity[floor_id])),
+            (1, 0),
+        )
+        for geom_id in range(model.ngeom):
+            if int(model.geom_bodyid[geom_id]) == 0:
+                continue
+            self.assertEqual(int(model.geom_contype[geom_id]), 0)
+            self.assertEqual(int(model.geom_conaffinity[geom_id]), 1)
 
     def test_rollingquad_keyframes_start_without_self_penetration(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))

@@ -327,6 +327,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
+        "--differential-residual",
+        type=float,
+        nargs=4,
+        metavar=("FRONT_HIP", "FRONT_KNEE", "REAR_HIP", "REAR_KNEE"),
+        default=(0.0, 0.0, 0.0, 0.0),
+        help=(
+            "Constant raw left/right differential residual in policy order. "
+            "Each value is clipped to [-1, 1]."
+        ),
+    )
+    parser.add_argument("--residual-gain", type=float, default=0.30)
+    parser.add_argument("--differential-scale", type=float, default=0.25)
+    parser.add_argument(
         "--diagnose-self-collision",
         action="store_true",
         help=(
@@ -372,6 +385,12 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         and math.isfinite(args.rear_abduction_deg)
     ):
         raise SystemExit("abduction targets must be finite")
+    if not np.isfinite(args.differential_residual).all():
+        raise SystemExit("differential residual values must be finite")
+    if not 0.0 <= args.residual_gain <= 1.0:
+        raise SystemExit("--residual-gain must be in [0, 1]")
+    if not 0.0 <= args.differential_scale <= 1.0:
+        raise SystemExit("--differential-scale must be in [0, 1]")
     if not math.isfinite(args.phase_rate_scale):
         raise SystemExit("--phase-rate-scale must be finite")
     if not math.isfinite(args.target_scale) or args.target_scale < 0.0:
@@ -476,6 +495,29 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     )
     ctrl_low = np.asarray(model.actuator_ctrlrange[actuator_ids, 0], dtype=np.float64)
     ctrl_high = np.asarray(model.actuator_ctrlrange[actuator_ids, 1], dtype=np.float64)
+    raw_differential = np.clip(
+        np.asarray(args.differential_residual, dtype=np.float64), -1.0, 1.0
+    )
+    differential = (
+        args.residual_gain * args.differential_scale * raw_differential
+    )
+    differential_action = np.asarray(
+        (
+            differential[0],
+            differential[1],
+            -differential[0],
+            -differential[1],
+            differential[2],
+            differential[3],
+            -differential[2],
+            -differential[3],
+        ),
+        dtype=np.float64,
+    )
+    differential_target_offset = differential_action * np.asarray(
+        (0.8, 1.2, 0.8, 1.2, 0.8, 1.2, 0.8, 1.2),
+        dtype=np.float64,
+    )
     torso_body_id = model.body("torso").id
     floor_geom_id = model.geom("floor").id
     foot_geom_ids = {model.geom(name).id for name in FOOT_GEOM_NAMES_3D}
@@ -525,7 +567,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         ),
     )
     initial_ctrl = np.clip(
-        map_planar_to_curl_3d_targets(initial_planar),
+        map_planar_to_curl_3d_targets(initial_planar)
+        + differential_target_offset,
         ctrl_low,
         ctrl_high,
     )
@@ -589,7 +632,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
                 ),
             )
             ctrl = np.clip(
-                map_planar_to_curl_3d_targets(planar),
+                map_planar_to_curl_3d_targets(planar)
+                + differential_target_offset,
                 ctrl_low,
                 ctrl_high,
             )
@@ -714,6 +758,13 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         rotation = data.xmat[torso_body_id].reshape(3, 3)
         roll, pitch, yaw = _rpy_from_rotation(rotation)
         rolling_axis_tilt = _rolling_axis_tilt(rotation)
+        body_y_axis = rotation[:, 1]
+        rolling_axis_heading = math.atan2(
+            -float(body_y_axis[0]), float(body_y_axis[1])
+        )
+        rolling_axis_elevation = math.asin(
+            float(np.clip(abs(body_y_axis[2]), 0.0, 1.0))
+        )
         tracking_rmse = float(np.sqrt(np.mean(np.square(ctrl - data.qpos[qpos_indices]))))
         records.append(
             (
@@ -733,6 +784,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
                 rolling_phase,
                 float(wrapped_phase_error(np, rolling_phase, phase)),
                 float(np.mean(phase_rates)) if phase_rates else 0.0,
+                rolling_axis_heading,
+                rolling_axis_elevation,
             )
         )
         joint_times.append(float(data.time))
@@ -793,6 +846,8 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         )
     distance_x = float(values[-1, 0] - start_x)
     distance_y = float(values[-1, 1] - start_y)
+    unwrapped_heading = np.unwrap(values[:, 16])
+    heading_change = float(unwrapped_heading[-1] - unwrapped_heading[0])
     status = "failed" if nonfinite else "ok"
     return {
         "status": status,
@@ -804,6 +859,10 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         "physics_profile": args.physics_profile,
         "front_abduction_deg": float(args.front_abduction_deg),
         "rear_abduction_deg": float(args.rear_abduction_deg),
+        "differential_residual": raw_differential.tolist(),
+        "residual_gain": float(args.residual_gain),
+        "differential_scale": float(args.differential_scale),
+        "differential_target_offset_rad": differential_target_offset.tolist(),
         "solver": task.solver_name,
         "phase_lock_enabled": not args.linear_phase,
         "reference_turns": float(
@@ -827,6 +886,12 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         "oscillator_rate_max_rad_s": float(np.max(values[:, 15])),
         "distance_x_m": distance_x,
         "distance_y_m": distance_y,
+        "rolling_axis_heading_change_rad": heading_change,
+        "rolling_axis_heading_rate_rad_s": heading_change / max(elapsed, 1.0e-9),
+        "rolling_axis_elevation_rms_rad": float(
+            np.sqrt(np.mean(np.square(values[:, 17])))
+        ),
+        "rolling_axis_elevation_max_rad": float(np.max(values[:, 17])),
         "distance_as_shell_turns": float(
             distance_x
             / max(

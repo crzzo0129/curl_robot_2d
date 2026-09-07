@@ -100,6 +100,16 @@ def parse_args(argv=None):
         help="Fixed rear-leg abduction angle (deg); positive is outward. "
         "Default: use the model's baked keyframe value.",
     )
+    parser.add_argument(
+        "--differential-residual",
+        type=float,
+        nargs=4,
+        metavar=("FRONT_HIP", "FRONT_KNEE", "REAR_HIP", "REAR_KNEE"),
+        default=(0.0, 0.0, 0.0, 0.0),
+        help="Constant raw left/right differential residual, clipped to [-1, 1].",
+    )
+    parser.add_argument("--residual-gain", type=float, default=0.30)
+    parser.add_argument("--differential-scale", type=float, default=0.25)
     parser.add_argument("--realtime", type=float, default=1.0)
     parser.add_argument("--camera-distance", type=float, default=0.9)
     parser.add_argument("--azimuth", type=float, default=135.0)
@@ -180,6 +190,12 @@ def run(argv=None):
         and math.isfinite(args.rear_abduction_deg)
     ):
         raise SystemExit("abduction targets must be finite")
+    if not np.isfinite(args.differential_residual).all():
+        raise SystemExit("differential residual values must be finite")
+    if not 0.0 <= args.residual_gain <= 1.0:
+        raise SystemExit("--residual-gain must be in [0, 1]")
+    if not 0.0 <= args.differential_scale <= 1.0:
+        raise SystemExit("--differential-scale must be in [0, 1]")
     if not math.isfinite(args.target_scale) or args.target_scale < 0.0:
         raise SystemExit("--target-scale must be nonnegative")
     if args.startup_target_scale is not None:
@@ -262,6 +278,25 @@ def run(argv=None):
         )
     ctrl_low = np.asarray(model.actuator_ctrlrange[actuator_ids, 0], dtype=np.float64)
     ctrl_high = np.asarray(model.actuator_ctrlrange[actuator_ids, 1], dtype=np.float64)
+    raw_differential = np.clip(
+        np.asarray(args.differential_residual, dtype=np.float64), -1.0, 1.0
+    )
+    differential = (
+        args.residual_gain * args.differential_scale * raw_differential
+    )
+    differential_action = np.asarray(
+        (
+            differential[0], differential[1],
+            -differential[0], -differential[1],
+            differential[2], differential[3],
+            -differential[2], -differential[3],
+        ),
+        dtype=np.float64,
+    )
+    differential_target_offset = differential_action * np.asarray(
+        (0.8, 1.2, 0.8, 1.2, 0.8, 1.2, 0.8, 1.2),
+        dtype=np.float64,
+    )
     model.actuator_gainprm[actuator_ids, 0] = args.kp
     model.actuator_biasprm[actuator_ids, 1] = -args.kp
     model.actuator_biasprm[actuator_ids, 2] = -args.kd
@@ -275,7 +310,7 @@ def run(argv=None):
 
     phase = float(args.initial_phase_rad)
     rolling_phase = 0.0
-    initial_ctrl = _target_for_phase(
+    initial_ctrl = np.clip(_target_for_phase(
         phase,
         config,
         args.target_scale,
@@ -286,7 +321,7 @@ def run(argv=None):
         0.0,
         ctrl_low,
         ctrl_high,
-    )
+    ) + differential_target_offset, ctrl_low, ctrl_high)
     _, stand_action = reset_pose_arrays_3d(model, task)
     if task.reset_pose == "stand":
         mujoco.mj_resetDataKeyframe(model, data, model.key("stand").id)
@@ -389,6 +424,9 @@ def run(argv=None):
                     ctrl = np.clip(ctrl + stand_startup_action_3d(
                         np, data.time, stand_action, task
                     ) * np.asarray(task.action_scales), ctrl_low, ctrl_high)
+                ctrl = np.clip(
+                    ctrl + differential_target_offset, ctrl_low, ctrl_high
+                )
                 data.ctrl[actuator_ids] = ctrl
                 if override_abduction:
                     data.ctrl[abduction_actuator_ids] = abduction_ctrl

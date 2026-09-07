@@ -45,6 +45,10 @@ class Rolling3DConfig:
     geom_friction_scale: float = 1.0
     floor_friction_scale: float = 1.0
     floor_contact_friction_override: bool = False
+    # When False, rollingquad robot geoms collide with the floor only (no
+    # self-collision).  Use the full CAD mesh without self-collision once the
+    # baked abduction offset has been shown to avoid self-contact.
+    self_collision_enabled: bool = True
     body_mass_scale: float = 1.0
     body_mass_left_scale: float = 1.0
     body_mass_right_scale: float = 1.0
@@ -251,6 +255,8 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("lateral_drift_termination must be boolean")
     if not isinstance(config.floor_contact_friction_override, bool):
         raise ValueError("floor_contact_friction_override must be boolean")
+    if not isinstance(config.self_collision_enabled, bool):
+        raise ValueError("self_collision_enabled must be boolean")
     if not isinstance(config.terrain_enabled, bool):
         raise ValueError("terrain_enabled must be boolean")
     if not math.isfinite(config.terrain_slope_angle_deg):

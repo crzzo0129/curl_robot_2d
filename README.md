@@ -153,6 +153,21 @@ python -m scripts.run_roll_to_walk
 
 设计和输出诊断见 [`docs/roll_to_walk_baseline_zh.md`](docs/roll_to_walk_baseline_zh.md)。
 
+## 行走转蜷缩第一阶段(0.4 m/s 行走 → compact)
+
+反方向 `walk → roll` 的起始段现为**从行走切换**:episode 从 deploy 行走策略
+0.4 m/s 稳态轨迹的真实快照 reset,12 自由度 actor 边走边收拢到 compact;
+终点只认 compact 姿态门(不看速度),暂不接 rolling policy。观测/动作与实机
+deploy 控制器同接口(36×20 历史、12 维绝对位置目标),模型为 mesh
+`rollingquad_abd10.xml`(compact 前腿 abd −10°/后腿 +10°)。入口:
+
+```powershell
+python -m scripts.collect_walking_start_snapshots --out results\walk_start_snapshots_0p4
+python -m scripts.train_walk_compact_ppo --snapshots results\walk_start_snapshots_0p4
+```
+
+设计与边界见 [`docs/walking_to_compact_stage1_zh.md`](docs/walking_to_compact_stage1_zh.md)。
+
 ## 3D Transition policy 第一版
 
 面向 `assets/rollingquad_description_2` 中的 12 自由度 `rollingquad_2`，

@@ -210,6 +210,14 @@ class SymmetricCEM3DBridgeTest(unittest.TestCase):
         self.assertEqual(viewer_args.front_abduction_deg, -5.0)
         self.assertEqual(viewer_args.rear_abduction_deg, 5.0)
 
+    def test_differential_residual_is_exposed_for_steering_probes(self) -> None:
+        values = ["0.25", "-0.5", "0.75", "-1.0"]
+        evaluator_args = bridge.parse_args(["--differential-residual", *values])
+        viewer_args = viewer.parse_args(["--differential-residual", *values])
+
+        self.assertEqual(evaluator_args.differential_residual, [0.25, -0.5, 0.75, -1.0])
+        self.assertEqual(viewer_args.differential_residual, [0.25, -0.5, 0.75, -1.0])
+
     def test_startup_reference_boost_is_exposed_for_transfer_smokes(self) -> None:
         args = bridge.parse_args(
             [

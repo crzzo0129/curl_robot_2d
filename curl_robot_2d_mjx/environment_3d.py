@@ -320,6 +320,21 @@ def configure_pupper_shell_collisions_3d(model, *, enabled: bool) -> None:
             model.geom_conaffinity[geom_id] = conaffinity
 
 
+def disable_rollingquad_self_collision_3d(model) -> None:
+    """Set every robot geom to collide with the floor only.
+
+    This drops the selective self-collision whitelist so the full CAD mesh can
+    be used without the expensive mesh-vs-mesh self-contact pairs.  It must be
+    called only after :func:`validate_rolling_morphology_3d` has confirmed the
+    original whitelist contract.
+    """
+
+    for geom_id in range(model.ngeom):
+        if int(model.geom_bodyid[geom_id]) != 0:
+            model.geom_contype[geom_id] = 0
+            model.geom_conaffinity[geom_id] = 1
+
+
 ROLLINGQUAD_SELF_COLLISION_MASKS_3D = {
     "torso_mesh": (16, 7),
     "front_left_hip_link_geom": (2, 29),
@@ -945,6 +960,13 @@ def make_brax_env_3d(
                 )
             validate_rolling_morphology_3d(self.mj_model, task.geometry)
             apply_physics_options_3d(self.mj_model, task)
+            if (
+                task.geometry in ROLLINGQUAD_GEOMETRIES_3D
+                and not task.self_collision_enabled
+            ):
+                # Validate the whitelist first, then drop mesh self-collision
+                # so the full CAD model runs without mesh-vs-mesh contact pairs.
+                disable_rollingquad_self_collision_3d(self.mj_model)
             self.terrain_surface_offset = (
                 terrain_surface_offset(self.terrain_config)
                 if self.terrain_config is not None

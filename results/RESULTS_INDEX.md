@@ -2,6 +2,9 @@
 
 ## 2026-09-07 指定 Pupper reference 与 mesh ABD 实验
 
+- `pupper_reference_primitive_abd10_20260907/`：指定 shell150/45 reference 在 primitive 模型、前 ABD −10°/后 +10°下的 10 s 回放。正式评估前进 4.661 m、滚动 5.194 圈，无自接触或力矩饱和；能耗评估器复核前进 4.727 m、滚动 5.278 圈。详见 [`primitive 回放报告`](../docs/pupper_reference_primitive_abd10_20260907_zh.md)。
+- `pupper_reference_mesh_frontm10_rearp10_phase_portrait_20260907/`：同一配置运行 10 s 的滚动相位—角速度与角速度—角加速度状态图，含 SVG/PDF/TIFF/PNG、源 CSV、图注和 QA 记录。
+- `pupper_reference_mesh_frontm10_rearp10_phase_portrait_20s_20260907/`：20 s 状态图及 0–20 s、0–10 s、10–20 s 三种时间窗导出。后十秒相位分箱角速度离散度降至 0.144 rad/s，显示轨迹接近稳定极限环。
 - `pupper_reference_mesh_frontm10_rearp10_energy_20260907_matched10s/`、`pupper_reference_mesh_frontm10_rearp10_energy_20260907_matched1ms/`、`pupper_reference_mesh_frontm10_rearp10_energy_20260907_matched20s/`：用户指定 reference，前 ABD −10°、后 +10°，完整 RollingQuad mesh 能耗测试。2–10 s 正功 3.326 J/m、绝对功 4.942 J/m，无检测到的自接触；长时仍加速，20 s 不作同速行走对照结论。
 - 角度更正前的 `pupper_reference_mesh_abd10_energy_20260907_*` 为四腿 +10° 诊断，不代表最终配置。
 - 方法、数字与行走外推边界见 [`实验报告`](../docs/pupper_reference_mesh_abduction_energy_20260907_zh.md)。

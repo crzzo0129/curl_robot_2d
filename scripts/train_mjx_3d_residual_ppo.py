@@ -1686,6 +1686,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="CEM reference; defaults to the controller matched to --geometry.",
     )
+    parser.add_argument(
+        "--no-self-collision",
+        action="store_true",
+        help=(
+            "drop the rollingquad selective self-collision whitelist so the "
+            "full CAD mesh runs without mesh-vs-mesh contact pairs"
+        ),
+    )
     parser.add_argument("--minimum-foot-gap-mm", type=float)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float)
     parser.add_argument("--reference-weight", type=float)
@@ -2096,6 +2104,7 @@ def main(argv=None) -> None:
         Rolling3DConfig(
             geometry=args.geometry,
             episode_length=args.episode_length,
+            self_collision_enabled=not args.no_self_collision,
             reset_joint_noise_rad=args.reset_joint_noise_rad,
             reset_velocity_noise=args.reset_velocity_noise,
             reset_root_velocity_noise=args.reset_root_velocity_noise,
