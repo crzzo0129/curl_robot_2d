@@ -10,6 +10,7 @@ import numpy as np
 from curl_robot_2d_mjx.environment_3d import (
     DEFAULT_3D_CEM_CONTROLLER,
     REAL_3D_CEM_CONTROLLER,
+    ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
     configure_floor_contact_friction_3d,
 )
 from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
@@ -118,12 +119,14 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertTrue(callable(train_mjx_3d_residual_ppo.main))
         self.assertEqual(args.preset, "smoke")
-        self.assertEqual(args.geometry, "rollingquad_2")
+        self.assertEqual(args.geometry, "rollingquad_2_primitive")
         self.assertEqual(args.recipe, "anchored_v1")
         self.assertEqual(args.physics_profile, "cg12")
         self.assertEqual(args.curriculum, "none")
         self.assertIsNone(args.curriculum_stage)
-        self.assertEqual(args.controller, DEFAULT_3D_CEM_CONTROLLER)
+        self.assertEqual(
+            args.controller, ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER
+        )
         self.assertEqual(args.reference_weight, 1.0)
         self.assertEqual(args.minimum_residual_gain, 0.05)
         self.assertEqual(args.reference_action_scale, 1.0)

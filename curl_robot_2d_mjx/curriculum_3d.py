@@ -23,6 +23,8 @@ CURRICULUM_NAMES_3D = (
     "friction_low_v1",
     "mass_v1",
     "robustness_v1",
+    "slope_v1",
+    "slope_v2",
 )
 
 
@@ -39,6 +41,9 @@ class Rolling3DCurriculumStage:
     domain_randomization: Rolling3DDomainRandomization = (
         Rolling3DDomainRandomization()
     )
+    terrain_enabled: bool = False
+    terrain_slope_probability: float = 0.0
+    terrain_max_angle_deg: float = 0.0
 
     def task_config(self, base: Rolling3DConfig) -> Rolling3DConfig:
         overrides = {
@@ -65,6 +70,9 @@ class Rolling3DCurriculumStage:
             overrides["reset_pair_differential_scale"] = None
         if self.domain_randomization.floor_friction_scale != (1.0, 1.0):
             overrides["floor_contact_friction_override"] = True
+        if self.terrain_enabled:
+            overrides["terrain_enabled"] = True
+            overrides["terrain_slope_angle_deg"] = 0.0
         return replace(base, **overrides)
 
 
@@ -400,6 +408,44 @@ FLOOR_MASS_GAIN_V3_STAGES_3D = (
     ),
 )
 
+# Terrain-adaptive stage 3: small slopes only.  Keep the same reset and DR
+# distribution as the flat floor_mass_gain_v3 teacher and add a 70% flat /
+# 30% slope (15% uphill + 15% downhill) heightfield mix.
+
+
+def _slope_stage(name, weight, max_angle_deg):
+    return Rolling3DCurriculumStage(
+        name=name,
+        weight=weight,
+        reset_joint_noise_rad=0.005,
+        reset_velocity_noise=0.005,
+        reset_root_velocity_noise=0.0,
+        reset_independent=True,
+        reset_axis_tilt_noise_rad=0.0,
+        domain_randomization=Rolling3DDomainRandomization(
+            floor_friction_scale=(0.90, 1.10),
+            body_mass_scale=(0.95, 1.05),
+            actuator_gain_scale=(0.95, 1.05),
+        ),
+        terrain_enabled=True,
+        terrain_slope_probability=0.30,
+        terrain_max_angle_deg=max_angle_deg,
+    )
+
+
+SLOPE_V1_STAGES_3D = (_slope_stage("slope_02", 1.0, 2.0),)
+
+# Terrain-adaptive stage 5: expand the slope magnitude once the previous stage
+# passes.  Run stage-by-stage (or use --curriculum-stage) and only advance after
+# verifying uphill/downhill/flat success rates; later stages carry more weight.
+SLOPE_V2_STAGES_3D = (
+    _slope_stage("slope_02", 0.15, 2.0),
+    _slope_stage("slope_04", 0.20, 4.0),
+    _slope_stage("slope_06", 0.20, 6.0),
+    _slope_stage("slope_08", 0.20, 8.0),
+    _slope_stage("slope_10", 0.25, 10.0),
+)
+
 FRICTION_LOW_V1_STAGES_3D = (
     Rolling3DCurriculumStage(
         name="friction_low_090",
@@ -506,6 +552,8 @@ CURRICULUM_STAGE_NAMES_3D = tuple(
         *FRICTION_LOW_V1_STAGES_3D,
         *MASS_V1_STAGES_3D,
         *PHYSICS_STAGES_3D,
+        *SLOPE_V1_STAGES_3D,
+        *SLOPE_V2_STAGES_3D,
     )
 )
 
@@ -547,6 +595,10 @@ def curriculum_stages_3d(
             replace(stage, weight=stage.weight * reset_weight_scale)
             for stage in RESET_STAGES_3D
         ) + PHYSICS_STAGES_3D
+    elif name == "slope_v1":
+        stages = SLOPE_V1_STAGES_3D
+    elif name == "slope_v2":
+        stages = SLOPE_V2_STAGES_3D
     else:
         raise ValueError(f"unknown 3-D curriculum: {name}")
     if only_stage is None:

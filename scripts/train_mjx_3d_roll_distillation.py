@@ -202,6 +202,26 @@ def parse_args(argv=None):
         ),
     )
     parser.add_argument(
+        "--terrain-enabled",
+        action="store_true",
+        help=(
+            "enable slope terrain (flat->slope->flat heightfield) in the "
+            "teacher BC and student DAgger rollouts"
+        ),
+    )
+    parser.add_argument(
+        "--terrain-slope-probability",
+        type=float,
+        default=0.30,
+        help="fraction of parallel envs receiving a slope; the rest stay flat",
+    )
+    parser.add_argument(
+        "--terrain-max-angle-deg",
+        type=float,
+        default=2.0,
+        help="slope angle magnitude for the up/down terrain mix",
+    )
+    parser.add_argument(
         "--deploy-dr",
         action="store_true",
         help=(
@@ -280,6 +300,16 @@ def parse_args(argv=None):
     ):
         parser.error("--velocity-loss-weight must be finite and nonnegative")
     if (
+        not math.isfinite(args.terrain_slope_probability)
+        or not 0.0 < args.terrain_slope_probability <= 1.0
+    ):
+        parser.error("--terrain-slope-probability must be in (0, 1]")
+    if (
+        not math.isfinite(args.terrain_max_angle_deg)
+        or args.terrain_max_angle_deg <= 0.0
+    ):
+        parser.error("--terrain-max-angle-deg must be finite and positive")
+    if (
         not math.isfinite(args.deploy_dr_strength)
         or not 0.0 <= args.deploy_dr_strength <= 1.0
     ):
@@ -354,6 +384,8 @@ def _task(
     direct_effective_action=False,
     geometry="rollingquad_2",
     lateral_drift_diagnostic_only=False,
+    terrain_enabled=False,
+    terrain_slope_angle_deg=0.0,
 ):
     return physics_profile_3d(
         "cg20",
@@ -372,6 +404,8 @@ def _task(
             residual_pair_differential_scale=(
                 None if direct_effective_action else 0.25
             ),
+            terrain_enabled=terrain_enabled,
+            terrain_slope_angle_deg=terrain_slope_angle_deg,
             # DAgger queries the privileged teacher on states visited by the
             # direct-action student.  The deployable student never reads
             # state.obs, but both environments must retain the teacher's 65-D
@@ -407,7 +441,9 @@ def main(argv=None):
     from curl_robot_2d_mjx.environment_3d import make_brax_env_3d
     from curl_robot_2d_mjx.randomization_3d import (
         make_student_deploy_domain_randomization_fn_3d,
+        make_terrain_randomization_fn_3d,
     )
+    from curl_robot_2d_mjx.terrain_3d import slope_terrain_config_from_task
     from scripts.export_rtneural import convert as convert_rtneural
     from scripts.train_mjx_3d_residual_ppo import (
         _zero_centered_residual_network_factory,
@@ -426,6 +462,8 @@ def main(argv=None):
             lateral_drift_diagnostic_only=(
                 args.lateral_drift_diagnostic_only
             ),
+            terrain_enabled=args.terrain_enabled,
+            terrain_slope_angle_deg=0.0,
         ),
         args,
     )
@@ -824,6 +862,8 @@ def main(argv=None):
         lateral_drift_diagnostic_only=(
             args.lateral_drift_diagnostic_only
         ),
+        terrain_enabled=args.terrain_enabled,
+        terrain_slope_angle_deg=0.0,
     )
     direct_task = with_stand_startup(direct_task, args)
     direct_env = make_brax_env_3d(
@@ -867,6 +907,20 @@ def main(argv=None):
     def batched_direct_environment(env, batch_size, model_seed):
         """Create nominal vmap or per-environment randomized MJX calls."""
 
+        if args.terrain_enabled:
+            randomization_fn = make_terrain_randomization_fn_3d(
+                slope_terrain_config_from_task(direct_task),
+                slope_probability=args.terrain_slope_probability,
+                max_angle_deg=args.terrain_max_angle_deg,
+            )
+            model_keys = jax.random.split(
+                jax.random.PRNGKey(model_seed), batch_size
+            )
+            wrapper = brax_training_wrappers.DomainRandomizationVmapWrapper(
+                env,
+                lambda model: randomization_fn(model, model_keys),
+            )
+            return wrapper, jax.jit(wrapper.reset), jax.jit(wrapper.step)
         if deploy_dr_settings is None:
             return (
                 None,

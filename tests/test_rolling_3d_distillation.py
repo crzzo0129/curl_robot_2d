@@ -409,6 +409,37 @@ class Rolling3DVelocityEstimationContractTest(unittest.TestCase):
                 base + ["--velocity-loss-weight", "-1.0"]
             )
 
+    def test_terrain_cli_and_task_config(self):
+        out = MODEL_PATH.parent / "unused_terrain_cli_output"
+        base = [
+            str(MODEL_PATH),
+            "--controller",
+            str(MODEL_PATH),
+            "--out",
+            str(out),
+        ]
+        args = train_mjx_3d_roll_distillation.parse_args(base)
+        self.assertFalse(args.terrain_enabled)
+        self.assertAlmostEqual(args.terrain_slope_probability, 0.30)
+        self.assertAlmostEqual(args.terrain_max_angle_deg, 2.0)
+
+        terrain_args = train_mjx_3d_roll_distillation.parse_args(
+            base + ["--terrain-enabled", "--terrain-max-angle-deg", "4.0"]
+        )
+        self.assertTrue(terrain_args.terrain_enabled)
+        self.assertAlmostEqual(terrain_args.terrain_max_angle_deg, 4.0)
+
+        task = train_mjx_3d_roll_distillation._task(
+            episode_length=500, terrain_enabled=True
+        )
+        self.assertTrue(task.terrain_enabled)
+        self.assertEqual(task.terrain_slope_angle_deg, 0.0)
+
+        with self.assertRaises(SystemExit):
+            train_mjx_3d_roll_distillation.parse_args(
+                base + ["--terrain-enabled", "--terrain-slope-probability", "0.0"]
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

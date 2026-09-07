@@ -13,7 +13,7 @@ MuJoCo hfield notes (verified empirically):
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from pathlib import Path
 import xml.etree.ElementTree as ET
@@ -143,6 +143,75 @@ def column_centers_x(config: SlopeTerrainConfig) -> np.ndarray:
     )
 
 
+def terrain_surface_offset(config: SlopeTerrainConfig) -> float:
+    """Vertical shift applied to the profile so hfield data stays nonnegative.
+
+    MuJoCo hfield data must be >= 0 (negative values drop collision), so the
+    profile is translated upward by ``-min(height)`` plus the mandatory positive
+    ``hfield_base_z``.  This is also the world-z of the surface at the robot's
+    start position (x=0, where the raw profile height is zero).
+    """
+
+    validate_slope_terrain_config(config)
+    return config.hfield_base_z + max(0.0, -config.total_rise)
+
+
+def terrain_surface_z_at(config: SlopeTerrainConfig, x) -> np.ndarray:
+    """Actual world-z of the terrain surface at world x."""
+
+    return terrain_height_array(np.asarray(x, dtype=np.float64), config) + (
+        terrain_surface_offset(config)
+    )
+
+
+def terrain_surface_z_xp(xp, x, config: SlopeTerrainConfig):
+    """Generic (numpy or jax.numpy) terrain surface height at world x.
+
+    Mirrors :func:`terrain_surface_z_at` but takes the array module as a
+    parameter so the MJX environment can evaluate it under ``jax.numpy``.
+    """
+
+    validate_slope_terrain_config(config)
+    x = xp.asarray(x)
+    offset = config.hfield_base_z + max(0.0, -config.total_rise)
+    if config.is_flat:
+        return xp.zeros_like(x) + offset
+
+    rise = config.rise_rate
+    length = config.transition_length_m
+    x0 = config.slope_start_distance_m
+    x1 = x0 + length
+    x2 = x1 + config.slope_length_m
+    x3 = x2 + length
+
+    def integral(u):
+        u = xp.clip(u, 0.0, 1.0)
+        return u**3 - 0.5 * u**4
+
+    height = xp.zeros_like(x)
+    height = xp.where(
+        (x > x0) & (x <= x1),
+        rise * length * integral((x - x0) / length),
+        height,
+    )
+    height = xp.where(
+        (x > x1) & (x <= x2),
+        rise * length * 0.5 + rise * (x - x1),
+        height,
+    )
+    height = xp.where(
+        (x > x2) & (x <= x3),
+        rise * length * 0.5
+        + rise * config.slope_length_m
+        + rise
+        * length
+        * (xp.clip((x - x2) / length, 0.0, 1.0) - integral((x - x2) / length)),
+        height,
+    )
+    height = xp.where(x > x3, config.total_rise, height)
+    return height + offset
+
+
 def hfield_data_3d(config: SlopeTerrainConfig) -> np.ndarray:
     """Return (nrow, ncol) hfield data for the terrain.
 
@@ -152,21 +221,17 @@ def hfield_data_3d(config: SlopeTerrainConfig) -> np.ndarray:
     """
 
     validate_slope_terrain_config(config)
-    heights = terrain_height_array(column_centers_x(config), config)
-    # MuJoCo surface = base + scale * data.  Solve for data so the surface
-    # equals ``heights`` while keeping data >= 0: shift the profile up by its
-    # minimum and absorb the base offset.
-    shifted = heights - float(np.min(heights))
-    data = (shifted - config.hfield_base_z) / config.hfield_scale_z
+    surface = terrain_surface_z_at(config, column_centers_x(config))
+    # MuJoCo surface = base + scale * data; solve for data with data >= 0.
+    data = (surface - config.hfield_base_z) / config.hfield_scale_z
     return np.tile(data[None, :], (config.nrow, 1))
 
 
 def flat_hfield_data_3d(config: SlopeTerrainConfig) -> np.ndarray:
-    """Return all-flat hfield data matching the same base/scale mapping."""
+    """Return all-flat hfield data (zero data, surface at ``hfield_base_z``)."""
 
     validate_slope_terrain_config(config)
-    data = (-config.hfield_base_z) / config.hfield_scale_z
-    return np.full((config.nrow, config.ncol), data)
+    return np.zeros((config.nrow, config.ncol))
 
 
 def hfield_data_flat_column_major(config: SlopeTerrainConfig, data_2d: np.ndarray) -> np.ndarray:
@@ -251,4 +316,32 @@ def slope_terrain_config_from_task(task) -> SlopeTerrainConfig:
         extent_x_m=task.terrain_extent_x_m,
         extent_y_m=task.terrain_extent_y_m,
     )
+
+
+def terrain_hfield_candidates_3d(
+    config: SlopeTerrainConfig,
+    max_angle_deg: float,
+) -> tuple[tuple[str, ...], np.ndarray]:
+    """Return flat/up/down hfield candidates for per-env terrain sampling.
+
+    Returns ``(labels, data)`` where ``data`` has shape
+    ``(3, nrow * ncol)`` in column-major order, with row order
+    ``flat, +max_angle (uphill), -max_angle (downhill)``.
+    """
+
+    validate_slope_terrain_config(config)
+    labels = ("flat", "uphill", "downhill")
+    variants = (
+        config,
+        replace(config, slope_angle_deg=max_angle_deg),
+        replace(config, slope_angle_deg=-max_angle_deg),
+    )
+    data = np.stack(
+        [
+            hfield_data_flat_column_major(variant, hfield_data_3d(variant))
+            for variant in variants
+        ]
+    )
+    return labels, data
+
 

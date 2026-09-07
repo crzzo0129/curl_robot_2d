@@ -39,6 +39,13 @@ from curl_robot_2d_mjx.startup_rolling_3d import (
     rolling_elapsed_3d,
     stand_startup_action_3d,
 )
+from curl_robot_2d_mjx.terrain_3d import (
+    hfield_data_3d,
+    hfield_data_flat_column_major,
+    slope_terrain_config_from_task,
+    terrain_surface_offset,
+    terrain_surface_z_xp,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -86,6 +93,20 @@ ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D = (
     / "mjcf"
     / "rollingquad_primitive_abd10.xml"
 )
+ROLLINGQUAD_2_ABD10_TERRAIN_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "rollingquad_description_2"
+    / "mjcf"
+    / "rollingquad_abd10_terrain.xml"
+)
+ROLLINGQUAD_2_PRIMITIVE_ABD10_TERRAIN_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "rollingquad_description_2"
+    / "mjcf"
+    / "rollingquad_primitive_abd10_terrain.xml"
+)
 # Geometries that share the corrected 12-joint RollingQuad CAD contract and
 # differ only in collision-surface representation (STL mesh, convex hull, or
 # analytic primitives) or in the baked front/rear abduction offset.
@@ -105,6 +126,13 @@ MODEL_PATHS_3D = {
     "rollingquad_2_primitive": ROLLINGQUAD_2_PRIMITIVE_MODEL_PATH_3D,
     "rollingquad_2_abd10": ROLLINGQUAD_2_ABD10_MODEL_PATH_3D,
     "rollingquad_2_primitive_abd10": ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D,
+}
+# hfield-floor variants used when the terrain curriculum is enabled.  The
+# heights are written at run time from the terrain profile; the baked file only
+# fixes the hfield grid so relative mesh references keep resolving.
+TERRAIN_MODEL_PATHS_3D = {
+    "rollingquad_2_abd10": ROLLINGQUAD_2_ABD10_TERRAIN_MODEL_PATH_3D,
+    "rollingquad_2_primitive_abd10": ROLLINGQUAD_2_PRIMITIVE_ABD10_TERRAIN_MODEL_PATH_3D,
 }
 BASELINE_3D_CEM_CONTROLLER = (
     PROJECT_ROOT
@@ -260,6 +288,18 @@ def cem_controller_path_3d(name: str) -> Path:
         return CEM_CONTROLLER_PATHS_3D[name]
     except KeyError as exc:
         raise ValueError(f"unknown 3-D geometry: {name!r}") from exc
+
+
+def terrain_model_path_3d(name: str) -> Path:
+    """Return the hfield-floor model for a terrain-enabled geometry."""
+
+    try:
+        return TERRAIN_MODEL_PATHS_3D[name]
+    except KeyError as exc:
+        raise ValueError(
+            f"geometry {name!r} has no baked terrain model; terrain is only "
+            "supported for the rollingquad_2_abd10 geometries"
+        ) from exc
 
 
 def configure_pupper_shell_collisions_3d(model, *, enabled: bool) -> None:
@@ -874,7 +914,16 @@ def make_brax_env_3d(
             self.cem_reference = reference_settings
             self.seed = seed
             self.geometry_parameters = geometry_parameters_3d(task.geometry)
-            self.model_path = model_path_3d(task.geometry)
+            self.terrain_config = (
+                slope_terrain_config_from_task(task)
+                if task.terrain_enabled
+                else None
+            )
+            self.model_path = (
+                terrain_model_path_3d(task.geometry)
+                if task.terrain_enabled
+                else model_path_3d(task.geometry)
+            )
             self.reference_geometry = CEMReferenceGeometry(
                 torso_length_m=self.geometry_parameters.torso_length,
                 link_length_m=self.geometry_parameters.edge_length,
@@ -889,6 +938,17 @@ def make_brax_env_3d(
                 )
             validate_rolling_morphology_3d(self.mj_model, task.geometry)
             apply_physics_options_3d(self.mj_model, task)
+            self.terrain_surface_offset = (
+                terrain_surface_offset(self.terrain_config)
+                if self.terrain_config is not None
+                else 0.0
+            )
+            if self.terrain_config is not None:
+                # Write the terrain heightfield before converting to MJX.
+                terrain_data_2d = hfield_data_3d(self.terrain_config)
+                self.mj_model.hfield_data[:] = hfield_data_flat_column_major(
+                    self.terrain_config, terrain_data_2d
+                )
             self.cpu_data = mujoco.MjData(self.mj_model)
             self.mjx_model = mjx.put_model(self.mj_model)
             self.base_data = mjx.put_data(self.mj_model, self.cpu_data)
@@ -1353,6 +1413,9 @@ def make_brax_env_3d(
             )
             qpos = qpos.at[0].set(0.0)
             qpos = qpos.at[1].set(0.0)
+            qpos = qpos.at[2].set(
+                self.reset_qpos[2] + self.terrain_surface_offset
+            )
             qpos = qpos.at[3:7].set(
                 axis_tilted_quaternion_3d(
                     jp,
@@ -1677,6 +1740,8 @@ def make_brax_env_3d(
             root_x = data.qpos[0]
             root_y = data.qpos[1]
             root_z = data.qpos[2]
+            terrain_z = self._terrain_surface_z(root_x)
+            root_z_relative = root_z - terrain_z
             translation_progress = (
                 root_x - state.info["previous_root_x"]
             ) / self.rolling_radius
@@ -1763,7 +1828,7 @@ def make_brax_env_3d(
                 root_low_step_count = jp.asarray(0, dtype=jp.int32)
                 failure_root_low = jp.asarray(False)
             else:
-                root_low_active = root_z < task.terminate_root_z_min
+                root_low_active = root_z_relative < task.terminate_root_z_min
                 root_low_step_count = jp.where(
                     root_low_active,
                     state.info["root_low_step_count"] + 1,
@@ -1790,7 +1855,7 @@ def make_brax_env_3d(
                 forbidden_contact_step_count
                 >= self.forbidden_contact_termination_steps
             )
-            failure_root_high = root_z > task.terminate_root_z_max
+            failure_root_high = root_z_relative > task.terminate_root_z_max
             lateral_velocity_error = jp.abs(
                 lateral_velocity - state.info["lateral_velocity_command"]
             )
@@ -2217,6 +2282,11 @@ def make_brax_env_3d(
             rotation = jp.reshape(data.xmat[self.torso_body_id], (3, 3))
             return rotation[:, 1], rotation[:, 2]
 
+        def _terrain_surface_z(self, root_x):
+            if self.terrain_config is None:
+                return jp.zeros_like(root_x)
+            return terrain_surface_z_xp(jp, root_x, self.terrain_config)
+
         def _rolling_axis_tilt(self, data):
             body_y_axis, _ = self._body_axes(data)
             alignment = jp.clip(jp.abs(body_y_axis[1]), 0.0, 1.0)
@@ -2239,7 +2309,11 @@ def make_brax_env_3d(
             body_y_axis, body_z_axis = self._body_axes(data)
             yaw = rolling_axis_heading_3d(jp, body_y_axis)
             root_position_features = jp.asarray(
-                [data.qpos[2], lateral_drift, yaw]
+                [
+                    data.qpos[2] - self._terrain_surface_z(data.qpos[0]),
+                    lateral_drift,
+                    yaw,
+                ]
             )
             root_linear_velocity = data.qvel[:3]
             root_angular_velocity = data.qvel[3:6]

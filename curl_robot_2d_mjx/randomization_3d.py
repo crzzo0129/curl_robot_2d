@@ -150,6 +150,190 @@ def make_domain_randomization_fn_3d(
     return domain_randomize
 
 
+def make_terrain_randomization_fn_3d(
+    terrain_config,
+    *,
+    slope_probability: float,
+    max_angle_deg: float,
+):
+    """Return a Brax DR callback that samples per-env flat/uphill/downhill.
+
+    ``slope_probability`` is the fraction of parallel environments that receive
+    a slope; the remaining envs stay flat.  Sloped envs split evenly between
+    ``+max_angle_deg`` (uphill) and ``-max_angle_deg`` (downhill).
+    """
+
+    if not math.isfinite(slope_probability) or not 0.0 < slope_probability <= 1.0:
+        raise ValueError("slope_probability must be in (0, 1]")
+    if not math.isfinite(max_angle_deg) or max_angle_deg <= 0.0:
+        raise ValueError("max_angle_deg must be finite and positive")
+
+    import jax
+    import jax.numpy as jp
+
+    from curl_robot_2d_mjx.terrain_3d import (
+        terrain_hfield_candidates_3d,
+    )
+
+    _, candidates = terrain_hfield_candidates_3d(terrain_config, max_angle_deg)
+    candidates = jp.asarray(candidates, dtype=jp.float32)
+    probabilities = jp.asarray(
+        (
+            1.0 - slope_probability,
+            0.5 * slope_probability,
+            0.5 * slope_probability,
+        )
+    )
+
+    def domain_randomize(model, rng):
+        @jax.vmap
+        def randomize_one(key):
+            choice = jax.random.choice(key, 3, p=probabilities)
+            return jp.take(candidates, choice, axis=0)
+
+        hfield_data = randomize_one(rng)
+        in_axes = jax.tree_util.tree_map(lambda _: None, model)
+        in_axes = in_axes.tree_replace({"hfield_data": 0})
+        randomized_model = model.tree_replace({"hfield_data": hfield_data})
+        return randomized_model, in_axes
+
+    return domain_randomize
+
+
+def make_domain_randomization_with_terrain_fn_3d(
+    settings: Rolling3DDomainRandomization,
+    terrain_config,
+    *,
+    slope_probability: float,
+    max_angle_deg: float,
+    floor_geom_id: int | None = None,
+):
+    """Physics DR (friction/mass/gain) plus per-env terrain in one callback.
+
+    Brax applies a single randomization function, so the terrain heightfield and
+    the physics ranges are sampled together in one vmap.  This keeps the
+    terrain-adaptive curriculum compatible with the existing floor_mass_gain_v3
+    physics distribution.
+    """
+
+    validate_domain_randomization_3d(settings)
+    if not settings.enabled:
+        raise ValueError("physics domain randomization must be enabled")
+    if not math.isfinite(slope_probability) or not 0.0 < slope_probability <= 1.0:
+        raise ValueError("slope_probability must be in (0, 1]")
+    if not math.isfinite(max_angle_deg) or max_angle_deg <= 0.0:
+        raise ValueError("max_angle_deg must be finite and positive")
+    floor_randomization_enabled = settings.floor_friction_scale != (1.0, 1.0)
+    if floor_randomization_enabled and floor_geom_id is None:
+        raise ValueError(
+            "floor_geom_id is required when floor friction randomization is enabled"
+        )
+
+    import jax
+    import jax.numpy as jp
+
+    from curl_robot_2d_mjx.terrain_3d import (
+        terrain_hfield_candidates_3d,
+    )
+
+    _, candidates = terrain_hfield_candidates_3d(terrain_config, max_angle_deg)
+    candidates = jp.asarray(candidates, dtype=jp.float32)
+    probabilities = jp.asarray(
+        (
+            1.0 - slope_probability,
+            0.5 * slope_probability,
+            0.5 * slope_probability,
+        )
+    )
+
+    def domain_randomize(model, rng):
+        @jax.vmap
+        def randomize_one(key):
+            friction_key, mass_key, gain_key, terrain_key = jax.random.split(
+                key, 4
+            )
+            friction_scale = jax.random.uniform(
+                friction_key,
+                shape=(),
+                minval=settings.geom_friction_scale[0],
+                maxval=settings.geom_friction_scale[1],
+            )
+            geom_friction = model.geom_friction * friction_scale
+            if floor_randomization_enabled:
+                floor_scale = jax.random.uniform(
+                    jax.random.fold_in(key, 0xF100),
+                    shape=(),
+                    minval=settings.floor_friction_scale[0],
+                    maxval=settings.floor_friction_scale[1],
+                )
+                geom_friction = geom_friction.at[floor_geom_id].multiply(
+                    floor_scale
+                )
+
+            mass_scale = jax.random.uniform(
+                mass_key,
+                shape=(model.nbody,),
+                minval=settings.body_mass_scale[0],
+                maxval=settings.body_mass_scale[1],
+            )
+            body_mass = model.body_mass * mass_scale
+            body_inertia = model.body_inertia * mass_scale[:, None]
+
+            gain_scale = jax.random.uniform(
+                gain_key,
+                shape=(model.nu,),
+                minval=settings.actuator_gain_scale[0],
+                maxval=settings.actuator_gain_scale[1],
+            )
+            kp = model.actuator_gainprm[:, 0] * gain_scale
+            actuator_gainprm = model.actuator_gainprm.at[:, 0].set(kp)
+            actuator_biasprm = model.actuator_biasprm.at[:, 1].set(-kp)
+
+            choice = jax.random.choice(terrain_key, 3, p=probabilities)
+            hfield_data = jp.take(candidates, choice, axis=0)
+            return (
+                geom_friction,
+                body_mass,
+                body_inertia,
+                actuator_gainprm,
+                actuator_biasprm,
+                hfield_data,
+            )
+
+        (
+            geom_friction,
+            body_mass,
+            body_inertia,
+            actuator_gainprm,
+            actuator_biasprm,
+            hfield_data,
+        ) = randomize_one(rng)
+        in_axes = jax.tree_util.tree_map(lambda _: None, model)
+        in_axes = in_axes.tree_replace(
+            {
+                "geom_friction": 0,
+                "body_mass": 0,
+                "body_inertia": 0,
+                "actuator_gainprm": 0,
+                "actuator_biasprm": 0,
+                "hfield_data": 0,
+            }
+        )
+        randomized_model = model.tree_replace(
+            {
+                "geom_friction": geom_friction,
+                "body_mass": body_mass,
+                "body_inertia": body_inertia,
+                "actuator_gainprm": actuator_gainprm,
+                "actuator_biasprm": actuator_biasprm,
+                "hfield_data": hfield_data,
+            }
+        )
+        return randomized_model, in_axes
+
+    return domain_randomize
+
+
 @dataclass(frozen=True)
 class RollingStudentDeployDomainRandomization:
     """Real-robot uncertainty used while continuing the rolling Student.

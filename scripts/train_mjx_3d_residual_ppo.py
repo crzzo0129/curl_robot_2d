@@ -34,11 +34,13 @@ from curl_robot_2d_mjx.environment_3d import (
 )
 from curl_robot_2d_mjx.randomization_3d import (
     make_domain_randomization_fn_3d,
+    make_domain_randomization_with_terrain_fn_3d,
 )
 from curl_robot_2d_mjx.reward_3d import (
     REWARD_3D_TERM_NAMES,
     Rolling3DRewardConfig,
 )
+from curl_robot_2d_mjx.terrain_3d import slope_terrain_config_from_task
 from curl_robot_2d_mjx.runtime import (
     configure_cloud_runtime,
     describe_runtime,
@@ -2459,10 +2461,19 @@ def main(argv=None) -> None:
             cem_reference=reference,
             seed=args.seed + 10_000 + 100 * stage_index,
         )
-        randomization_fn = make_domain_randomization_fn_3d(
-            stage.domain_randomization,
-            floor_geom_id=train_env.floor_geom_id,
-        )
+        if stage.terrain_enabled:
+            randomization_fn = make_domain_randomization_with_terrain_fn_3d(
+                stage.domain_randomization,
+                slope_terrain_config_from_task(stage_task),
+                slope_probability=stage.terrain_slope_probability,
+                max_angle_deg=stage.terrain_max_angle_deg,
+                floor_geom_id=train_env.floor_geom_id,
+            )
+        else:
+            randomization_fn = make_domain_randomization_fn_3d(
+                stage.domain_randomization,
+                floor_geom_id=train_env.floor_geom_id,
+            )
         best = {
             "score": float("-inf"),
             "reward": float("-inf"),

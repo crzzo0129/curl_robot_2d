@@ -17,6 +17,9 @@ from curl_robot_2d_mjx.terrain_3d import (
     slope_terrain_config_from_task,
     terrain_height,
     terrain_height_array,
+    terrain_hfield_candidates_3d,
+    terrain_surface_offset,
+    terrain_surface_z_at,
     validate_slope_terrain_config,
 )
 from curl_robot_2d_mjx.config_3d import Rolling3DConfig, validate_3d_config
@@ -107,9 +110,37 @@ class SlopeTerrainHfieldTest(unittest.TestCase):
         data = hfield_data_3d(self.config)
         centers = column_centers_x(self.config)
         surface = self.config.hfield_base_z + self.config.hfield_scale_z * data[0]
-        expected = terrain_height_array(centers, self.config)
-        shifted = expected - float(np.min(expected))
-        np.testing.assert_allclose(surface, shifted, atol=1e-9)
+        expected = terrain_surface_z_at(self.config, centers)
+        np.testing.assert_allclose(surface, expected, atol=1e-9)
+        # Data must stay nonnegative for the hfield to keep colliding.
+        self.assertTrue(np.all(data >= -1e-9))
+
+    def test_surface_offset_keeps_start_at_ground_for_uphill(self):
+        uphill = SlopeTerrainConfig(slope_angle_deg=4.0)
+        self.assertAlmostEqual(
+            terrain_surface_offset(uphill), uphill.hfield_base_z, places=9
+        )
+        self.assertAlmostEqual(
+            terrain_surface_z_at(uphill, 0.0), uphill.hfield_base_z, places=9
+        )
+
+    def test_surface_offset_lifts_downhill_start(self):
+        downhill = SlopeTerrainConfig(
+            slope_angle_deg=-4.0,
+            transition_length_m=0.5,
+            slope_length_m=2.0,
+        )
+        self.assertAlmostEqual(
+            terrain_surface_offset(downhill),
+            downhill.hfield_base_z - downhill.total_rise,
+            places=9,
+        )
+        # Start is on the flat high plateau.
+        self.assertAlmostEqual(
+            terrain_surface_z_at(downhill, 0.0),
+            terrain_surface_offset(downhill),
+            places=9,
+        )
 
     def test_flat_hfield_data_is_constant(self):
         data = flat_hfield_data_3d(self.config)
@@ -173,6 +204,78 @@ class SlopeTerrainMjcfBakeTest(unittest.TestCase):
         finally:
             if output.exists():
                 output.unlink()
+
+
+class SlopeTerrainCommittedModelTest(unittest.TestCase):
+    def test_primitive_abd10_terrain_model_validates_and_writes_hfield(self):
+        from curl_robot_2d_mjx.environment_3d import (
+            terrain_model_path_3d,
+            validate_rollingquad_self_collision_contract_3d,
+        )
+
+        path = terrain_model_path_3d("rollingquad_2_primitive_abd10")
+        model = mujoco.MjModel.from_xml_path(str(path))
+        self.assertEqual(model.nhfield, 1)
+        self.assertEqual(model.geom_type[model.geom("floor").id], mujoco.mjtGeom.mjGEOM_HFIELD)
+        validate_rollingquad_self_collision_contract_3d(
+            model, "rollingquad_2_primitive_abd10"
+        )
+
+        config = SlopeTerrainConfig(slope_angle_deg=2.0, ncol=model.hfield_ncol[0], nrow=model.hfield_nrow[0])
+        data_2d = hfield_data_3d(config)
+        data_flat = hfield_data_flat_column_major(config, data_2d)
+        model.hfield_data[:] = data_flat
+        # Round-trip through the model preserves the column-major flat array
+        # (the model stores hfield data as float32).
+        np.testing.assert_allclose(model.hfield_data, data_flat, rtol=1e-5, atol=1e-6)
+        # The logical row 0 (all x columns) matches the intended surface.
+        surface = config.hfield_base_z + config.hfield_scale_z * data_2d[0]
+        np.testing.assert_allclose(
+            surface,
+            terrain_surface_z_at(config, column_centers_x(config)),
+            atol=1e-9,
+        )
+
+
+class SlopeCurriculumTest(unittest.TestCase):
+    def test_slope_v1_stage_enables_terrain_and_keeps_flat_base(self):
+        from curl_robot_2d_mjx.curriculum_3d import curriculum_stages_3d
+
+        stages = curriculum_stages_3d("slope_v1")
+        self.assertEqual(len(stages), 1)
+        stage = stages[0]
+        self.assertEqual(stage.name, "slope_02")
+        self.assertTrue(stage.terrain_enabled)
+        self.assertAlmostEqual(stage.terrain_slope_probability, 0.30)
+        self.assertAlmostEqual(stage.terrain_max_angle_deg, 2.0)
+
+        task = stage.task_config(Rolling3DConfig())
+        self.assertTrue(task.terrain_enabled)
+        self.assertEqual(task.terrain_slope_angle_deg, 0.0)
+        validate_slope_terrain_config(slope_terrain_config_from_task(task))
+
+    def test_slope_v2_expands_slope_magnitude(self):
+        from curl_robot_2d_mjx.curriculum_3d import curriculum_stages_3d
+
+        stages = curriculum_stages_3d("slope_v2")
+        self.assertEqual([s.name for s in stages], [
+            "slope_02", "slope_04", "slope_06", "slope_08", "slope_10",
+        ])
+        self.assertEqual(
+            [s.terrain_max_angle_deg for s in stages], [2.0, 4.0, 6.0, 8.0, 10.0]
+        )
+        self.assertTrue(all(s.terrain_enabled for s in stages))
+        self.assertTrue(all(s.terrain_slope_probability == 0.30 for s in stages))
+
+    def test_terrain_candidates_flat_uphill_downhill(self):
+        config = SlopeTerrainConfig(ncol=16, nrow=2)
+        labels, data = terrain_hfield_candidates_3d(config, 2.0)
+
+        self.assertEqual(labels, ("flat", "uphill", "downhill"))
+        self.assertEqual(data.shape, (3, 2 * 16))
+        self.assertTrue(np.all(data[0] >= -1e-9))
+        # Uphill and downhill surface profiles are not identical.
+        self.assertFalse(np.allclose(data[1], data[2]))
 
 
 if __name__ == "__main__":
