@@ -50,12 +50,22 @@ python -m scripts.collect_walking_start_snapshots ^
 ```
 
 默认:1.5 s 热身、随后 5 s 内每控制步采样、要求 |vx−0.4|≤0.08 m/s、
-|vy|≤0.12、倾角 ≤20°、无非足地面接触/自穿透;默认单 episode
-(确定性回放即可覆盖全部步态相位),也可 `--episodes N --reset-noise 0.005`
-做多扰动采集。产出 `walk_start_snapshots.npz`(qpos/qvel/ctrl/hist/
-last_action/time)与 `walk_start_snapshots_meta.json`(模型/策略指纹、动作
-元数据、观测统计)。meta 的 `action.default/scale/lower/upper` 是训练 env
-的 ctrl 语义来源,与策略 JSON 一致。
+|vy|≤0.12、倾角 ≤20°、无非足地面接触/自穿透;默认单 episode(确定性回放
+已覆盖全部步态相位,约 250 帧,可用作 smoke)。实测 0.4 m/s 指令下稳态
+实际 vx 在 0.34–0.44 m/s 振荡、均值 ≈0.39 m/s。生成规模更大的正式
+bank(多扰动、覆盖相位更密)用:
+
+```powershell
+python -m scripts.collect_walking_start_snapshots ^
+  --policy ..\rollingquad_2_deploy_robust_dr_policy_stable.json ^
+  --episodes 70 --reset-noise 0.005 --max-snapshots 16384 ^
+  --out results\walk_start_snapshots_0p4
+```
+
+产出 `walk_start_snapshots.npz`(qpos/qvel/ctrl/hist/last_action/time)与
+`walk_start_snapshots_meta.json`(模型/策略指纹、动作元数据、观测统计)。
+meta 的 `action.default/scale/lower/upper` 是训练 env 的 ctrl 语义来源,
+与策略 JSON 一致。
 
 ### 3.2 训练(云端 MJX/JAX)
 
