@@ -1,4 +1,4 @@
-﻿"""Train the walking-start -> compact transition actor (stage one, no rolling).
+"""Train the walking-start -> compact transition actor (stage one, no rolling).
 
 Episode = real 0.4 m/s walking snapshot (deploy-interface walking policy) and
 the 12-DoF actor must curl into the compact pose while decelerating.  Pose-only
@@ -47,8 +47,9 @@ PRESETS = {
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--snapshots", type=Path, required=True,
-                   help="directory written by scripts.collect_walking_start_snapshots")
+    p.add_argument("--snapshots", type=Path, default=None,
+                   help="directory written by scripts.collect_walking_start_snapshots "
+                        "(default: PROJECT_ROOT/results/walk_start_snapshots_0p4)")
     p.add_argument("--xml", type=Path,
                    default=PROJECT_ROOT / MESH_XML_REL,
                    help="source mesh XML (compact keyframe must be the target)")
@@ -84,8 +85,21 @@ def parse_args(argv=None):
     p.add_argument("--memory-fraction", type=float, default=0.80)
     p.add_argument("--mujoco-gl", default="disable")
     args = p.parse_args(argv)
+
+    def _resolve(path):
+        path = Path(path)
+        return path if path.is_absolute() else (PROJECT_ROOT / path)
+
+    if args.snapshots is None:
+        args.snapshots = PROJECT_ROOT / "results" / "walk_start_snapshots_0p4"
+    args.snapshots = _resolve(args.snapshots)
+    args.xml = _resolve(args.xml)
+    args.out = _resolve(args.out)
+    if args.restore is not None:
+        args.restore = _resolve(args.restore)
     if not args.snapshots.is_dir():
-        p.error(f"missing snapshot directory: {args.snapshots}")
+        p.error(f"missing snapshot directory: {args.snapshots} "
+                f"(relative paths resolve against {PROJECT_ROOT})")
     if args.confirmation_steps is None:
         args.confirmation_steps = compact_defaults.confirmation_steps
     for key, default in PRESETS[args.preset].items():

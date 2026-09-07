@@ -263,7 +263,21 @@ class ArgParseTest(unittest.TestCase):
 
     def test_train_requires_snapshot_directory(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-            train_parse(["--out", "x"])
+            train_parse(["--out", "x", "--snapshots", "does_not_exist_xyz"])
+
+    def test_train_snapshots_defaults_to_project_root(self):
+        args = train_parse(["--out", "x"])
+        self.assertEqual(args.snapshots,
+                         PROJECT_ROOT / "results" / "walk_start_snapshots_0p4")
+
+    def test_train_relative_paths_resolve_against_project_root(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_bank(Path(tmp))
+            args = train_parse(["--snapshots", "results/walk_start_snapshots_0p4",
+                                "--out", "results/some_out", "--dry-run"])
+            self.assertEqual(args.snapshots,
+                             PROJECT_ROOT / "results" / "walk_start_snapshots_0p4")
+            self.assertEqual(args.out, PROJECT_ROOT / "results" / "some_out")
 
     def test_train_dry_run_end_to_end_without_mujoco(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -162,7 +162,16 @@ def parse_args(argv=None):
     p.add_argument("--max-snapshots", type=int, default=16384)
     p.add_argument("--seed", type=int, default=0)
     p.add_argument("--out", type=Path, required=True)
-    return p.parse_args(argv)
+    args = p.parse_args(argv)
+
+    def _resolve(path):
+        path = Path(path)
+        return path if path.is_absolute() else (PROJECT_ROOT / path)
+
+    args.policy = _resolve(args.policy)
+    args.xml = _resolve(args.xml)
+    args.out = _resolve(args.out)
+    return args
 
 
 def main(argv=None):
