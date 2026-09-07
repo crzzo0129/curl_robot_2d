@@ -33,6 +33,18 @@ class Staged3DReferenceCEMTest(unittest.TestCase):
         )
         self.assertEqual(cem3d.FULL_STAGES[-1].duration_s, 10.0)
 
+    def test_high_speed_objective_is_uncapped_and_rewards_tail_speed(self) -> None:
+        args = cem3d.parse_args(["--objective", "high_speed"])
+        self.assertEqual(args.objective, "high_speed")
+        self.assertEqual(len(cem3d.HIGH_SPEED_STAGES), 3)
+        self.assertTrue(all(stage.uncapped_progress for stage in cem3d.HIGH_SPEED_STAGES))
+        self.assertTrue(
+            all(stage.forward_speed_weight > 0.0 for stage in cem3d.HIGH_SPEED_STAGES)
+        )
+        self.assertTrue(
+            all(stage.tail_speed_weight > 0.0 for stage in cem3d.HIGH_SPEED_STAGES)
+        )
+
     def test_export_is_compatible_with_shared_reference_loader(self) -> None:
         source = cem3d.PUPPER_OPEN60_CEM_CONTROLLER
         parameters = cem3d.controller_parameters(source, initial_gap_m=0.002)

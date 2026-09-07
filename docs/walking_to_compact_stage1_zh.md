@@ -12,7 +12,7 @@
 | 行走来源 | 上级目录 `rollingquad_2_deploy_robust_dr_policy_stable.json`(36 维×20 帧观测、12 维动作的 deploy 行走策略) |
 | 模型/几何 | mesh `rollingquad_abd10.xml`(geometry 名 `rollingquad_2_abd10`);**compact keyframe = 前腿 abd −10°/后腿 +10°**,root z 0.1663 m |
 | 接触口径 | 保持 XML 默认:外壳/Torso 等与地面接触开,**自碰撞不开**(default geom contype=0 conaffinity=1,无 pair/exclude) |
-| 物理 | 运行 XML 只替换 `<option>`:0.002 s implicitfast、pyramidal、Newton 20/10、impratio 10、关 eulerdamp —— 与 CPU 快照回放完全一致 |
+| 物理 | 运行 XML 替换 `<option>`:0.002 s implicitfast、pyramidal、Newton 20/10、impratio 10、关 eulerdamp;并给 `<compiler>` 注入 `meshdir` 指向源 mjcf 目录(源 XML 的 mesh 是 `../meshes/*.stl` 相对路径)—— 与 CPU 快照回放完全一致 |
 | actor 观测/动作 | 与 deploy 控制器同接口:36×20=720 维历史观测,12 维绝对位置目标 `pose + scale × action`;obs 指令字段全程固定 [0.4, 0, 0] |
 | 终点门 | **纯姿态门**:12 关节 ≤0.02 rad、root z 误差 ≤0.01 m、姿态四元数距离 ≤0.05 rad、横向偏移 ≤0.05 m;连续 5 帧(0.10 s)达标即成功;速度/余速不参与判定 |
 | episode 预算 | 5 s(250 × 20 ms);成功/超时/非有限数终止;超时无额外惩罚(dense pose 奖励已覆盖进度) |

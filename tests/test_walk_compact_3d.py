@@ -121,7 +121,7 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(actuators[0], "front_left_hip_abduction_servo")
         self.assertEqual(len(actuators), 12)
 
-    def test_runtime_xml_only_touches_option(self):
+    def test_runtime_xml_only_touches_option_and_pins_meshdir(self):
         source = PROJECT_ROOT / MESH_XML_REL
         self.assertTrue(source.is_file())
         with tempfile.TemporaryDirectory() as tmp:
@@ -133,6 +133,10 @@ class ContractTest(unittest.TestCase):
             # contacts untouched: ground-contact default is kept
             self.assertIn('<geom contype="0" conaffinity="1"', text)
             self.assertNotIn("contype=\"0\" conaffinity=\"0\"", text)
+            # mesh resolution pinned to the source MJCF directory
+            mesh_dir = source.resolve().parent.as_posix()
+            self.assertIn(f'meshdir="{mesh_dir}"', text)
+            self.assertIn("../meshes/Upperleg_with_motor_1.stl", text)
 
     def test_xml_fingerprint_normalizes_crlf(self):
         with tempfile.TemporaryDirectory() as tmp:

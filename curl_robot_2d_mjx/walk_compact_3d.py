@@ -82,16 +82,34 @@ def xml_fingerprint(path: Path):
 
 
 def prepare_runtime_xml(source_xml: Path, dst_xml: Path) -> Path:
-    """Copy the mesh XML, replacing only <option> with the training profile.
+    """Copy the mesh XML, replacing <option> and pinning mesh resolution.
 
     Contacts stay exactly as authored in the source (ground contact on,
-    self-collision off).  Returns the runtime path.
+    self-collision off).  The source MJCF references meshes with relative
+    paths (``../meshes/*.stl``), so a ``meshdir`` pointing back at the source
+    MJCF directory is injected into <compiler> -- otherwise the copied XML
+    under the output directory cannot find the CAD meshes.  Returns the
+    runtime path.
     """
     xml = Path(source_xml).read_text(encoding="utf-8")
     xml, count = re.subn(r"<option\b.*?/>", RUNTIME_OPTION, xml, count=1,
                          flags=re.S)
     if count != 1:
         raise ValueError(f"could not replace <option> in {source_xml}")
+
+    mesh_dir = Path(source_xml).resolve().parent.as_posix()
+
+    def preserve_mesh_dir(match):
+        tag = match.group(0)
+        if "meshdir=" in tag:
+            return tag
+        return tag[:-2] + f' meshdir="{mesh_dir}"/>'
+
+    xml, ncompiler = re.subn(r"<compiler\b[^>]*/>", preserve_mesh_dir,
+                             xml, count=1)
+    if ncompiler != 1:
+        raise ValueError(f"could not patch <compiler> meshdir in {source_xml}")
+
     dst = Path(dst_xml)
     dst.parent.mkdir(parents=True, exist_ok=True)
     dst.write_text(xml, encoding="utf-8")

@@ -81,6 +81,9 @@ class StageConfig:
     minimum_turns: float
     progress_reward_margin_turns: float
     progress_weight: float
+    uncapped_progress: bool
+    forward_speed_weight: float
+    tail_speed_weight: float
     contact_time_weight: float
     penetration_integral_weight: float
     maximum_penetration_weight: float
@@ -103,6 +106,9 @@ FULL_STAGES = (
         minimum_turns=1.2,
         progress_reward_margin_turns=0.8,
         progress_weight=24.0,
+        uncapped_progress=False,
+        forward_speed_weight=0.0,
+        tail_speed_weight=0.0,
         contact_time_weight=0.5,
         penetration_integral_weight=250.0,
         maximum_penetration_weight=30.0,
@@ -123,6 +129,9 @@ FULL_STAGES = (
         minimum_turns=2.8,
         progress_reward_margin_turns=0.4,
         progress_weight=18.0,
+        uncapped_progress=False,
+        forward_speed_weight=0.0,
+        tail_speed_weight=0.0,
         contact_time_weight=2.5,
         penetration_integral_weight=1400.0,
         maximum_penetration_weight=180.0,
@@ -143,6 +152,9 @@ FULL_STAGES = (
         minimum_turns=5.0,
         progress_reward_margin_turns=0.5,
         progress_weight=14.0,
+        uncapped_progress=False,
+        forward_speed_weight=0.0,
+        tail_speed_weight=0.0,
         contact_time_weight=4.0,
         penetration_integral_weight=2400.0,
         maximum_penetration_weight=300.0,
@@ -180,6 +192,9 @@ DISCOVERY_STAGE = StageConfig(
     minimum_turns=0.0,
     progress_reward_margin_turns=1.0,
     progress_weight=40.0,
+    uncapped_progress=False,
+    forward_speed_weight=0.0,
+    tail_speed_weight=0.0,
     contact_time_weight=0.2,
     penetration_integral_weight=100.0,
     maximum_penetration_weight=20.0,
@@ -200,6 +215,61 @@ FROM_SCRATCH_SMOKE_STAGES = (
         duration_s=1.5,
     ),
 ) + SMOKE_STAGES
+
+# Warm-started search whose selection pressure continues increasing after the
+# existing safe-roll gate.  Mean and tail speed are both rewarded so a brief
+# startup surge cannot masquerade as a genuinely faster reference.
+HIGH_SPEED_STAGES = (
+    replace(
+        FULL_STAGES[0],
+        name="01_speed_discovery",
+        description="Increase sustained forward speed from the safe CEM warm start",
+        duration_s=4.0,
+        minimum_turns=2.4,
+        progress_reward_margin_turns=8.0,
+        progress_weight=28.0,
+        uncapped_progress=True,
+        forward_speed_weight=80.0,
+        tail_speed_weight=100.0,
+    ),
+    replace(
+        FULL_STAGES[1],
+        name="02_speed_contact",
+        description="Retain high speed while restoring strict contact margins",
+        minimum_turns=4.5,
+        progress_reward_margin_turns=10.0,
+        progress_weight=24.0,
+        uncapped_progress=True,
+        forward_speed_weight=100.0,
+        tail_speed_weight=140.0,
+    ),
+    replace(
+        FULL_STAGES[2],
+        name="03_speed_strict_10s",
+        description="Select sustained 10 s speed under the strict safety objective",
+        minimum_turns=7.5,
+        progress_reward_margin_turns=12.0,
+        progress_weight=20.0,
+        uncapped_progress=True,
+        forward_speed_weight=120.0,
+        tail_speed_weight=180.0,
+        generations=14,
+        population=64,
+        elite_count=10,
+    ),
+)
+
+HIGH_SPEED_SMOKE_STAGES = tuple(
+    replace(
+        stage,
+        generations=2,
+        population=8,
+        elite_count=2,
+        duration_s=(2.0, 3.5, 5.0)[index],
+        minimum_turns=(1.0, 2.0, 3.2)[index],
+    )
+    for index, stage in enumerate(HIGH_SPEED_STAGES)
+)
 
 
 def from_scratch_parameters() -> np.ndarray:
@@ -333,8 +403,16 @@ class ReferenceRollout3D:
         nonfinite = False
         physics_steps = 0
         control_steps = max(1, round(stage.duration_s / self.control_dt))
+        tail_start_step = max(0, int(0.75 * control_steps))
+        tail_start_x = start_x
+        tail_start_rolling_phase = rolling_phase
+        tail_start_time = 0.0
 
-        for _ in range(control_steps):
+        for control_step in range(control_steps):
+            if control_step == tail_start_step:
+                tail_start_x = float(self.data.qpos[0])
+                tail_start_rolling_phase = rolling_phase
+                tail_start_time = float(self.data.time)
             for _ in range(self.control_repeat):
                 phase = float(
                     advance_oscillator(
@@ -434,6 +512,25 @@ class ReferenceRollout3D:
             * PUPPER_ORIGINAL_SHELL_60_PARAMETERS.shell_contact_radius
         )
         conservative_turns = max(min(rolling_turns, distance_turns), 0.0)
+        rolling_speed_m_s = rolling_phase * (
+            PUPPER_ORIGINAL_SHELL_60_PARAMETERS.shell_contact_radius / elapsed
+        )
+        translation_speed_m_s = distance_x / elapsed
+        conservative_forward_speed_m_s = max(
+            min(rolling_speed_m_s, translation_speed_m_s), 0.0
+        )
+        tail_elapsed = max(float(self.data.time) - tail_start_time, 1.0e-9)
+        tail_rolling_speed_m_s = (
+            (rolling_phase - tail_start_rolling_phase)
+            * PUPPER_ORIGINAL_SHELL_60_PARAMETERS.shell_contact_radius
+            / tail_elapsed
+        )
+        tail_translation_speed_m_s = (
+            float(self.data.qpos[0]) - tail_start_x
+        ) / tail_elapsed
+        conservative_tail_speed_m_s = max(
+            min(tail_rolling_speed_m_s, tail_translation_speed_m_s), 0.0
+        )
         contact_time = self_contact_steps * float(self.model.opt.timestep)
         divisor = max(physics_steps, 1)
         tilt_rms = math.sqrt(tilt_squared_sum / divisor)
@@ -441,14 +538,20 @@ class ReferenceRollout3D:
         saturation_fraction = saturation_sum / divisor
         progress_deficit = max(stage.minimum_turns - conservative_turns, 0.0)
         failure_penalty = 120.0 * progress_deficit * progress_deficit
-        rewarded_turns = min(
-            conservative_turns,
-            stage.minimum_turns + stage.progress_reward_margin_turns,
+        rewarded_turns = (
+            conservative_turns
+            if stage.uncapped_progress
+            else min(
+                conservative_turns,
+                stage.minimum_turns + stage.progress_reward_margin_turns,
+            )
         )
         if nonfinite:
             failure_penalty += 10000.0
         score = (
             stage.progress_weight * rewarded_turns
+            + stage.forward_speed_weight * conservative_forward_speed_m_s
+            + stage.tail_speed_weight * conservative_tail_speed_m_s
             - failure_penalty
             - stage.contact_time_weight * contact_time
             - stage.penetration_integral_weight * penetration_integral
@@ -469,6 +572,14 @@ class ReferenceRollout3D:
             "reference_turns": float(phase / (2.0 * math.pi)),
             "distance_x_m": float(distance_x),
             "distance_y_m": float(distance_y),
+            "rolling_speed_m_s": float(rolling_speed_m_s),
+            "translation_speed_m_s": float(translation_speed_m_s),
+            "conservative_forward_speed_m_s": float(
+                conservative_forward_speed_m_s
+            ),
+            "tail_rolling_speed_m_s": float(tail_rolling_speed_m_s),
+            "tail_translation_speed_m_s": float(tail_translation_speed_m_s),
+            "conservative_tail_speed_m_s": float(conservative_tail_speed_m_s),
             "minimum_required_turns": float(stage.minimum_turns),
             "progress_reward_cap_turns": float(
                 stage.minimum_turns + stage.progress_reward_margin_turns
@@ -636,6 +747,12 @@ def optimize_stage(
             "population_mean_score": float(np.mean(scores)),
             "population_std_score": float(np.std(scores)),
             "global_best_turns": best.summary["conservative_rolling_turns"],
+            "global_best_speed_m_s": best.summary[
+                "conservative_forward_speed_m_s"
+            ],
+            "global_best_tail_speed_m_s": best.summary[
+                "conservative_tail_speed_m_s"
+            ],
             "global_best_contact_s": best.summary["self_contact_total_s"],
             "global_best_maximum_penetration_mm": 1000.0
             * float(best.summary["maximum_self_penetration_m"]),
@@ -647,6 +764,8 @@ def optimize_stage(
             f"stage={stage.name} generation={generation + 1:02d}/{stage.generations} "
             f"score={best.score:+.3f} "
             f"turns={float(best.summary['conservative_rolling_turns']):.3f} "
+            f"speed={float(best.summary['conservative_forward_speed_m_s']):.3f}m/s "
+            f"tail={float(best.summary['conservative_tail_speed_m_s']):.3f}m/s "
             f"contact={float(best.summary['self_contact_total_s']):.3f}s "
             f"penetration={1000.0*float(best.summary['maximum_self_penetration_m']):.3f}mm "
             f"lateral={float(best.summary['distance_y_m']):+.3f}m "
@@ -741,6 +860,15 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--torque-limit", type=float, default=3.0)
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--preset", choices=("full", "smoke"), default="full")
+    parser.add_argument(
+        "--objective",
+        choices=("standard", "high_speed"),
+        default="standard",
+        help=(
+            "Use high_speed to remove the progress reward cap and reward both "
+            "mean and final-quarter conservative forward speed."
+        ),
+    )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--restart", action="store_true")
     return parser.parse_args(argv)
@@ -763,6 +891,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise SystemExit(f"3-D XML not found: {args.xml}")
     if not args.from_scratch and not args.initial_controller.exists():
         raise SystemExit(f"initial controller not found: {args.initial_controller}")
+    if args.from_scratch and args.objective == "high_speed":
+        raise SystemExit("--objective high_speed requires a warm-start controller")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -776,7 +906,14 @@ def main(argv: list[str] | None = None) -> None:
         )
         parameters = from_scratch_parameters()
     else:
-        stages = SMOKE_STAGES if args.preset == "smoke" else FULL_STAGES
+        if args.objective == "high_speed":
+            stages = (
+                HIGH_SPEED_SMOKE_STAGES
+                if args.preset == "smoke"
+                else HIGH_SPEED_STAGES
+            )
+        else:
+            stages = SMOKE_STAGES if args.preset == "smoke" else FULL_STAGES
         parameters = controller_parameters(
             args.initial_controller.expanduser().resolve(),
             initial_gap_m=args.initial_gap_mm / 1000.0,
