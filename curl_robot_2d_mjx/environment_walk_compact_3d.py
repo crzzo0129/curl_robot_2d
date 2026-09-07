@@ -136,7 +136,9 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
 
         def _zero_metrics(self):
             names = ("reward", "success", "failed", "timeout", "gate_eligible",
-                     "terminal_gate_error", "terminal_pose_quality", "pose_quality")
+                     "terminal_gate_error", "terminal_gate_joint",
+                     "terminal_gate_axis_tilt", "terminal_gate_lateral",
+                     "terminal_pose_quality", "pose_quality")
             return {name: jp.zeros((), dtype=jp.float32) for name in names}
 
         def reset(self, rng):
