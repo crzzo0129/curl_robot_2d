@@ -89,14 +89,16 @@ def parse_args(argv=None):
     parser.add_argument(
         "--front-abduction-deg",
         type=float,
-        default=0.0,
-        help="Fixed front-leg abduction angle; positive is outward.",
+        default=None,
+        help="Fixed front-leg abduction angle (deg); positive is outward. "
+        "Default: use the model's baked keyframe value.",
     )
     parser.add_argument(
         "--rear-abduction-deg",
         type=float,
-        default=0.0,
-        help="Fixed rear-leg abduction angle; positive is outward.",
+        default=None,
+        help="Fixed rear-leg abduction angle (deg); positive is outward. "
+        "Default: use the model's baked keyframe value.",
     )
     parser.add_argument("--realtime", type=float, default=1.0)
     parser.add_argument("--camera-distance", type=float, default=0.9)
@@ -169,7 +171,11 @@ def run(argv=None):
         raise SystemExit("--duration, --control-dt and --realtime must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
         raise SystemExit("--kp/--kd must be nonnegative and --torque-limit positive")
-    if not (
+    if (args.front_abduction_deg is None) != (args.rear_abduction_deg is None):
+        raise SystemExit(
+            "provide both --front-abduction-deg and --rear-abduction-deg, or neither"
+        )
+    if args.front_abduction_deg is not None and not (
         math.isfinite(args.front_abduction_deg)
         and math.isfinite(args.rear_abduction_deg)
     ):
@@ -235,22 +241,25 @@ def run(argv=None):
         [model.actuator(f"{name}_servo").id for name in abduction_joint_names],
         dtype=np.int32,
     )
-    abduction_ctrl = np.deg2rad(
-        np.asarray(
-            [
-                args.front_abduction_deg,
-                args.front_abduction_deg,
-                args.rear_abduction_deg,
-                args.rear_abduction_deg,
-            ],
-            dtype=np.float64,
+    override_abduction = args.front_abduction_deg is not None
+    abduction_ctrl = None
+    if override_abduction:
+        abduction_ctrl = np.deg2rad(
+            np.asarray(
+                [
+                    args.front_abduction_deg,
+                    args.front_abduction_deg,
+                    args.rear_abduction_deg,
+                    args.rear_abduction_deg,
+                ],
+                dtype=np.float64,
+            )
         )
-    )
-    abduction_ctrl = np.clip(
-        abduction_ctrl,
-        model.actuator_ctrlrange[abduction_actuator_ids, 0],
-        model.actuator_ctrlrange[abduction_actuator_ids, 1],
-    )
+        abduction_ctrl = np.clip(
+            abduction_ctrl,
+            model.actuator_ctrlrange[abduction_actuator_ids, 0],
+            model.actuator_ctrlrange[abduction_actuator_ids, 1],
+        )
     ctrl_low = np.asarray(model.actuator_ctrlrange[actuator_ids, 0], dtype=np.float64)
     ctrl_high = np.asarray(model.actuator_ctrlrange[actuator_ids, 1], dtype=np.float64)
     model.actuator_gainprm[actuator_ids, 0] = args.kp
@@ -284,8 +293,9 @@ def run(argv=None):
         mujoco.mj_forward(model, data)
     else:
         _reset(model, data, qpos_indices, actuator_ids, initial_ctrl)
-    data.qpos[abduction_qpos_indices] = abduction_ctrl
-    data.ctrl[abduction_actuator_ids] = abduction_ctrl
+    if override_abduction:
+        data.qpos[abduction_qpos_indices] = abduction_ctrl
+        data.ctrl[abduction_actuator_ids] = abduction_ctrl
     mujoco.mj_forward(model, data)
     start_x = float(data.qpos[0])
     start_y = float(data.qpos[1])
@@ -380,7 +390,8 @@ def run(argv=None):
                         np, data.time, stand_action, task
                     ) * np.asarray(task.action_scales), ctrl_low, ctrl_high)
                 data.ctrl[actuator_ids] = ctrl
-                data.ctrl[abduction_actuator_ids] = abduction_ctrl
+                if override_abduction:
+                    data.ctrl[abduction_actuator_ids] = abduction_ctrl
                 mujoco.mj_step(model, data)
                 if not (np.isfinite(data.qpos).all() and np.isfinite(data.qvel).all()):
                     raise RuntimeError(f"nonfinite physics at {data.time}s")

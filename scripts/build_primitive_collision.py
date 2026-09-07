@@ -309,19 +309,22 @@ def _shell_capsules(model, data, leg_center_z: dict[str, float] | None = None) -
                 })
         else:
             for body_name in leg_map[region]:
-                pos, _ = poses[body_name]
-                world_y = float(pos[1])
-                a_local = to_local(body_name, world_point(xa, za, world_y))
-                b_local = to_local(body_name, world_point(xb, zb, world_y))
-                # Align the shell segment with the leg's centreline: the FK
-                # transform lands on the body-origin plane, but the shank link
-                # (and foot) live at the mesh centroid's local z.  Shift the
-                # shell into that same lateral plane so it stays coplanar with
-                # the shank capsule and foot sphere.
+                pos, mat = poses[body_name]
+                # Align the shell with the leg's centreline in WORLD lateral
+                # (torso-y) space, not by overriding the leg-local z.  The local
+                # z only maps to torso-y when the leg sits in the sagittal plane;
+                # once the leg abducts, overriding local z tilts the shell and
+                # dents the rolling circle.  Projecting the centreline through
+                # the leg's forward transform keeps the shell on the circle at
+                # any abduction angle.
                 if leg_center_z and body_name in leg_center_z:
                     dz = leg_center_z[body_name]
-                    a_local[2] = dz
-                    b_local[2] = dz
+                    centreline = pos + mat @ np.asarray([0.0, 0.0, dz])
+                    world_y = float(centreline[1])
+                else:
+                    world_y = float(pos[1])
+                a_local = to_local(body_name, world_point(xa, za, world_y))
+                b_local = to_local(body_name, world_point(xb, zb, world_y))
                 capsules.append({
                     "body": body_name,
                     "fromto": np.array([*a_local, *b_local]),
@@ -330,6 +333,36 @@ def _shell_capsules(model, data, leg_center_z: dict[str, float] | None = None) -
     for capsule in capsules:
         capsule["size"] = f"{capsule_radius:.8g}"
     return capsules
+
+
+def _override_keyframe_abduction(
+    tree: ET.ElementTree, front_rad: float, rear_rad: float
+) -> None:
+    """Set every keyframe's abduction angle to the requested front/rear values.
+
+    qpos joint triplets are ordered FR, RL, FL, RR as (hip, abduction, knee);
+    ctrl triplets are ordered FL, FR, RL, RR as (abduction, hip, knee).
+    """
+
+    for key in tree.getroot().iter("key"):
+        qpos_text = key.get("qpos")
+        ctrl_text = key.get("ctrl")
+        if not qpos_text or not ctrl_text:
+            continue
+        qpos = [float(x) for x in qpos_text.split()]
+        ctrl = [float(x) for x in ctrl_text.split()]
+        if len(qpos) != 19 or len(ctrl) != 12:
+            continue
+        qpos[8] = front_rad    # front_right abduction
+        qpos[11] = rear_rad    # rear_left  abduction
+        qpos[14] = front_rad   # front_left abduction
+        qpos[17] = rear_rad    # rear_right abduction
+        ctrl[0] = front_rad    # front_left  abduction
+        ctrl[3] = front_rad    # front_right abduction
+        ctrl[6] = rear_rad     # rear_left   abduction
+        ctrl[9] = rear_rad     # rear_right  abduction
+        key.set("qpos", " ".join(f"{x:.10g}" for x in qpos))
+        key.set("ctrl", " ".join(f"{x:.10g}" for x in ctrl))
 
 
 def build(args: argparse.Namespace) -> dict[str, object]:
@@ -342,8 +375,20 @@ def build(args: argparse.Namespace) -> dict[str, object]:
     if output_xml.exists() and not args.force:
         raise FileExistsError(f"{output_xml} already exists; pass --force to replace")
 
+    override_abduction = (
+        args.front_abduction_deg is not None or args.rear_abduction_deg is not None
+    )
+    front_rad = math.radians(
+        0.0 if args.front_abduction_deg is None else args.front_abduction_deg
+    )
+    rear_rad = math.radians(
+        0.0 if args.rear_abduction_deg is None else args.rear_abduction_deg
+    )
+
     tree = _parse_xml(input_xml)
     root = tree.getroot()
+    if override_abduction:
+        _override_keyframe_abduction(tree, front_rad, rear_rad)
     mesh_files = _mesh_asset_files(tree, input_xml)
     foot_sites = _foot_site_pos(tree)
     body_pos = {
@@ -384,6 +429,11 @@ def build(args: argparse.Namespace) -> dict[str, object]:
     shell_model = mujoco.MjModel.from_xml_path(str(input_xml))
     shell_data = mujoco.MjData(shell_model)
     mujoco.mj_resetDataKeyframe(shell_model, shell_data, shell_model.key("compact").id)
+    if override_abduction:
+        for leg in ("front_left", "front_right", "rear_left", "rear_right"):
+            jid = shell_model.joint(f"{leg}_hip_abduction").id
+            adr = shell_model.jnt_qposadr[jid]
+            shell_data.qpos[adr] = front_rad if leg.startswith("front") else rear_rad
     mujoco.mj_forward(shell_model, shell_data)
     shell_capsules = _shell_capsules(shell_model, shell_data, leg_center_z)
 
@@ -569,6 +619,18 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", type=Path, default=DEFAULT_XML, help="Source MJCF")
     parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_XML, help="Generated MJCF")
+    parser.add_argument(
+        "--front-abduction-deg",
+        type=float,
+        default=None,
+        help="Override every keyframe's front-leg abduction angle (degrees).",
+    )
+    parser.add_argument(
+        "--rear-abduction-deg",
+        type=float,
+        default=None,
+        help="Override every keyframe's rear-leg abduction angle (degrees).",
+    )
     parser.add_argument(
         "--report",
         type=Path,

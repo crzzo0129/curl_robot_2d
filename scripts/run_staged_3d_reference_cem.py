@@ -168,6 +168,53 @@ SMOKE_STAGES = tuple(
     for index, stage in enumerate(FULL_STAGES)
 )
 
+# From-scratch discovery: a zero-turn-gate first stage that rewards ANY forward
+# progress so the CEM has a signal to climb out of a zero-coefficient start.
+DISCOVERY_STAGE = StageConfig(
+    name="00_discover_motion",
+    description="Discover forward rolling from zero coefficients (no turn gate)",
+    generations=16,
+    population=64,
+    elite_count=10,
+    duration_s=3.0,
+    minimum_turns=0.0,
+    progress_reward_margin_turns=1.0,
+    progress_weight=40.0,
+    contact_time_weight=0.2,
+    penetration_integral_weight=100.0,
+    maximum_penetration_weight=20.0,
+    lateral_weight=1.0,
+    tilt_rms_weight=1.0,
+    tilt_max_weight=0.5,
+    phase_error_weight=0.5,
+    saturation_weight=2.0,
+    seed=7,
+)
+FROM_SCRATCH_STAGES = (DISCOVERY_STAGE,) + FULL_STAGES
+FROM_SCRATCH_SMOKE_STAGES = (
+    replace(
+        DISCOVERY_STAGE,
+        generations=2,
+        population=12,
+        elite_count=3,
+        duration_s=1.5,
+    ),
+) + SMOKE_STAGES
+
+
+def from_scratch_parameters() -> np.ndarray:
+    """Zero-coefficient start: a static folded pose plus a nominal oscillator.
+
+    The 8 Fourier coefficients start at zero (no periodic motion), the
+    oscillator rate starts at a mid-range 3.0 rad/s, and the foot-gap
+    projection is disabled.  CEM exploration discovers the gait from here.
+    """
+
+    return np.asarray(
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 3.0, 0.0, 0.0),
+        dtype=np.float64,
+    )
+
 
 @dataclass(frozen=True)
 class RolloutResult:
@@ -186,6 +233,7 @@ class ReferenceRollout3D:
         kd: float,
         torque_limit: float,
         tracking_margin_m: float,
+        ramp_duration_s: float = 0.25,
     ) -> None:
         activate_planar_geometry(PUPPER_ORIGINAL_SHELL_60_PARAMETERS)
         self.model = mujoco.MjModel.from_xml_path(str(Path(xml_path).resolve()))
@@ -196,6 +244,7 @@ class ReferenceRollout3D:
         self.control_repeat = max(1, round(control_dt / self.model.opt.timestep))
         self.control_dt = self.control_repeat * float(self.model.opt.timestep)
         self.tracking_margin_m = float(tracking_margin_m)
+        self.ramp_duration_s = float(ramp_duration_s)
         self.torque_limit = float(torque_limit)
 
         joint_ids = np.asarray(
@@ -251,7 +300,7 @@ class ReferenceRollout3D:
                 0.0,
                 target_scale=1.0,
                 startup_scale=0.0,
-                ramp_duration_s=0.25,
+                ramp_duration_s=self.ramp_duration_s,
                 startup_boost=0.0,
                 startup_boost_duration_s=0.25,
             ),
@@ -303,7 +352,7 @@ class ReferenceRollout3D:
                         float(self.data.time),
                         target_scale=1.0,
                         startup_scale=0.0,
-                        ramp_duration_s=0.25,
+                        ramp_duration_s=self.ramp_duration_s,
                         startup_boost=0.0,
                         startup_boost_duration_s=0.25,
                     ),
@@ -457,6 +506,7 @@ def _initialize_worker(
     kd: float,
     torque_limit: float,
     tracking_margin_m: float,
+    ramp_duration_s: float,
 ) -> None:
     global _WORKER
     _WORKER = ReferenceRollout3D(
@@ -467,6 +517,7 @@ def _initialize_worker(
         kd=kd,
         torque_limit=torque_limit,
         tracking_margin_m=tracking_margin_m,
+        ramp_duration_s=ramp_duration_s,
     )
 
 
@@ -610,7 +661,7 @@ def controller_payload(
     rollout: RolloutResult,
     *,
     stage: StageConfig,
-    source_controller: Path,
+    source_controller: Path | None,
     tracking_margin_m: float,
 ) -> dict[str, object]:
     raw = {
@@ -644,7 +695,11 @@ def controller_payload(
         "optimization": {
             "method": "three_stage_3d_cem",
             "stage": stage.name,
-            "source_controller": str(source_controller.resolve()),
+            "source_controller": (
+                str(source_controller.resolve())
+                if source_controller is not None
+                else "from_scratch_zero_init"
+            ),
             "parameters": list(PARAMETER_NAMES),
             "stage_config": asdict(stage),
         },
@@ -665,8 +720,20 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--initial-controller", type=Path, default=PUPPER_OPEN60_CEM_CONTROLLER
     )
+    parser.add_argument(
+        "--from-scratch",
+        action="store_true",
+        help="Ignore --initial-controller and start CEM from zero coefficients "
+        "with a zero-turn-gate discovery stage.",
+    )
     parser.add_argument("--initial-gap-mm", type=float, default=2.0)
     parser.add_argument("--tracking-margin-mm", type=float, default=4.0)
+    parser.add_argument(
+        "--target-ramp-duration-s",
+        type=float,
+        default=0.25,
+        help="Startup target ramp duration in seconds (default 0.25).",
+    )
     parser.add_argument("--physics-profile", default="cg20")
     parser.add_argument("--control-dt", type=float, default=0.02)
     parser.add_argument("--kp", type=float, default=5.0)
@@ -688,24 +755,34 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise SystemExit("--tracking-margin-mm must be nonnegative")
     if args.control_dt <= 0.0:
         raise SystemExit("--control-dt must be positive")
+    if args.target_ramp_duration_s <= 0.0:
+        raise SystemExit("--target-ramp-duration-s must be positive")
     if args.kp < 0.0 or args.kd < 0.0 or args.torque_limit <= 0.0:
         raise SystemExit("invalid actuator parameters")
     if not args.xml.exists():
         raise SystemExit(f"3-D XML not found: {args.xml}")
-    if not args.initial_controller.exists():
+    if not args.from_scratch and not args.initial_controller.exists():
         raise SystemExit(f"initial controller not found: {args.initial_controller}")
 
 
 def main(argv: list[str] | None = None) -> None:
     args = parse_args(argv)
     _validate_args(args)
-    stages = SMOKE_STAGES if args.preset == "smoke" else FULL_STAGES
+    if args.from_scratch:
+        stages = (
+            FROM_SCRATCH_SMOKE_STAGES
+            if args.preset == "smoke"
+            else FROM_SCRATCH_STAGES
+        )
+        parameters = from_scratch_parameters()
+    else:
+        stages = SMOKE_STAGES if args.preset == "smoke" else FULL_STAGES
+        parameters = controller_parameters(
+            args.initial_controller.expanduser().resolve(),
+            initial_gap_m=args.initial_gap_mm / 1000.0,
+        )
     output_dir = args.output_dir.expanduser().resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
-    parameters = controller_parameters(
-        args.initial_controller.expanduser().resolve(),
-        initial_gap_m=args.initial_gap_mm / 1000.0,
-    )
     runner = None
     executor = None
     worker_args = (
@@ -716,6 +793,7 @@ def main(argv: list[str] | None = None) -> None:
         args.kd,
         args.torque_limit,
         args.tracking_margin_mm / 1000.0,
+        args.target_ramp_duration_s,
     )
     if args.workers == 1:
         runner = ReferenceRollout3D(
@@ -726,6 +804,7 @@ def main(argv: list[str] | None = None) -> None:
             kd=args.kd,
             torque_limit=args.torque_limit,
             tracking_margin_m=args.tracking_margin_mm / 1000.0,
+            ramp_duration_s=args.target_ramp_duration_s,
         )
     else:
         executor = ProcessPoolExecutor(
@@ -765,7 +844,9 @@ def main(argv: list[str] | None = None) -> None:
                 parameters,
                 rollout,
                 stage=stage,
-                source_controller=args.initial_controller,
+                source_controller=(
+                    None if args.from_scratch else args.initial_controller
+                ),
                 tracking_margin_m=args.tracking_margin_mm / 1000.0,
             )
             controller_path.write_text(

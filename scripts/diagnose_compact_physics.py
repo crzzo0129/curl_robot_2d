@@ -239,6 +239,8 @@ def run(mode, args):
             if single_foot and controller is not None:
                 support = [i for i in range(4) if i != controller.active_leg]
                 flags['support_slip'] = float(np.max(slip[support])) > args.max_support_slip
+                flags['support_contact_lost'] = (controller.phase in ('lift','move','lower','touchdown')
+                                                and np.any(foot_f[support] < 1.))
             stop_reasons = sustained_triggers(flags, timers, dt if index else 0., args.trigger_seconds)
             if not finite:
                 stop_reasons.append('nonfinite')
@@ -308,7 +310,10 @@ def run(mode, args):
                       planned_steps=4*args.foot_rounds,
                       progress_meaning='confirmed single-foot steps / planned steps, NOT compact attainment',
                       final_controller_phase=controller.phase if controller else 'not_started',
-                      controller_config=asdict(controller.config) if controller else None)
+                      controller_config=asdict(controller.config) if controller else None,
+                      initial_root_height_m=float(controller.nominal_root[2]) if controller else None,
+                      compact_root_height_target_m=float(controller.ik.final_root[2]) if controller else None,
+                      final_root_height_target_m=float(controller.root_goal[2]) if controller else None)
     report.update(peak_abs_yaw_rad=float(np.max(np.abs(rows[:, headers.index('yaw_rad')]))),
                   peak_abs_yaw_rate_rad_s=float(np.max(np.abs(rows[:, headers.index('yaw_rate_rad_s')]))))
     json_write(folder / 'summary.json', report)

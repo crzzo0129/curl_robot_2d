@@ -83,6 +83,29 @@ observation 的教师重新标注。行为策略中的教师干预概率默认�
 action scale 设为 0 还不够，因为 C++ 会把原始网络输出写回下一帧的 last-action
 观测，非零的无效输出仍会造成历史分布漂移。
 
+## 特权速度重建辅助损失
+
+学生编码器除了输出 12 维动作外，还增加一个 3 维特权状态估计头
+`velocity_estimator`，从共享的 720 维历史编码重建世界系 base linear velocity。
+监督目标是教师 65 维观测的第 9、10、11 通道（`root linear velocity`，与
+`environment_3d.py` 的 mirror contract 一致）。训练损失为：
+
+```text
+L_total = L_action + velocity_loss_weight * L_velocity
+L_velocity = mean(||v_hat - v_gt||^2)
+```
+
+`--velocity-loss-weight`（默认 0.2，`0` 关闭辅助监督）控制该项权重，BC 与 DAgger
+都使用同一组合损失。BC/DAgger 日志和最终闭环评估都会额外报告 `velocity_rmse`
+（单位 m/s）；闭环评估的 `velocity_estimation_rmse` 记录在 `distillation.json` 的
+`closed_loop_evaluation` 中。
+
+部署契约不受影响：`velocity_estimator` 头只在蒸馏训练时参与，导出 RTNeural 前会
+从参数中剥离，因此 `student_rtneural.json` 仍是单一的 `720 -> ... -> 12` 动作链。
+`student_params` checkpoint 保留该头，便于 `--restore-student` 继续蒸馏；旧版
+checkpoint（无 `velocity_estimator`）在加载时会自动补一个随机初始化的头，不影响
+已有动作参数。
+
 ## 先跑 smoke
 
 ```bash

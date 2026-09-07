@@ -23,6 +23,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     ROLLING_CONTROLLER_ACTION_MASK_3D,
 )
 from scripts import train_mjx_3d_roll_distillation
+from scripts.export_rtneural import convert as convert_rtneural
 from curl_robot_2d_mjx.randomization_3d import (
     RollingStudentDeployDomainRandomization,
     validate_student_deploy_domain_randomization_3d,
@@ -168,8 +169,12 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
             np.asarray(config["action_scale"])[[0, 3, 6, 9]], 0.0
         )
         self.assertEqual(len(config["default_joint_pos"]), 12)
+        # rollingquad.xml bakes front -15 deg / rear +15 deg abduction into the
+        # compact keyframe; the four abduction action scales remain locked at
+        # zero so the deployable student holds this offset without commanding it.
         np.testing.assert_allclose(
-            np.asarray(config["default_joint_pos"])[[0, 3, 6, 9]], 0.0
+            np.asarray(config["default_joint_pos"])[[0, 3, 6, 9]],
+            np.asarray((-0.2617993878, -0.2617993878, 0.2617993878, 0.2617993878)),
         )
         np.testing.assert_allclose(
             np.asarray(config["default_joint_pos"])[[1, 4, 7, 10]],
@@ -302,6 +307,107 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
 
         self.assertTrue(args.deploy_dr)
         self.assertEqual(args.deploy_dr_strength, 0.25)
+
+
+def _dense(rng, inputs, outputs):
+    return {
+        "kernel": rng.normal(size=(inputs, outputs)).astype(np.float32),
+        "bias": rng.normal(size=(outputs,)).astype(np.float32),
+    }
+
+
+class Rolling3DVelocityEstimationContractTest(unittest.TestCase):
+    def test_privileged_velocity_slice_matches_mirror_contract(self):
+        self.assertEqual(
+            train_mjx_3d_roll_distillation.PRIVILEGED_BASE_VELOCITY_INDICES_3D,
+            (9, 10, 11),
+        )
+        observation = np.arange(65, dtype=np.float32)
+        velocity = train_mjx_3d_roll_distillation.privileged_base_velocity_3d(
+            observation
+        )
+
+        self.assertEqual(velocity.shape, (3,))
+        np.testing.assert_array_equal(velocity, observation[9:12])
+        batched = train_mjx_3d_roll_distillation.privileged_base_velocity_3d(
+            observation[np.newaxis, :]
+        )
+        np.testing.assert_array_equal(batched, observation[np.newaxis, 9:12])
+
+    def test_action_only_params_strips_velocity_head(self):
+        rng = np.random.default_rng(11)
+        params = {
+            "params": {
+                "hidden_0": _dense(rng, 5, 4),
+                "location": _dense(rng, 4, 12),
+                "velocity_estimator": _dense(rng, 4, 3),
+            }
+        }
+
+        stripped = train_mjx_3d_roll_distillation.action_only_student_params(
+            params
+        )
+
+        self.assertNotIn("velocity_estimator", stripped["params"])
+        self.assertIn("location", stripped["params"])
+        self.assertIn("hidden_0", stripped["params"])
+        # The original dict is left untouched.
+        self.assertIn("velocity_estimator", params["params"])
+
+    def test_velocity_head_would_break_export_chain_unless_stripped(self):
+        rng = np.random.default_rng(13)
+        action_scale = [1.0] * 12
+        mean = np.zeros(5, dtype=np.float32)
+        std = np.ones(5, dtype=np.float32)
+
+        with_head = {
+            "params": {
+                "hidden_0": _dense(rng, 5, 4),
+                "location": _dense(rng, 4, 12),
+                "velocity_estimator": _dense(rng, 4, 3),
+            }
+        }
+        with self.assertRaises(ValueError):
+            convert_rtneural(
+                ({"mean": mean, "std": std}, with_head, {}),
+                {"action_scale": action_scale},
+                activation="elu",
+            )
+
+        stripped = train_mjx_3d_roll_distillation.action_only_student_params(
+            with_head
+        )
+        document = convert_rtneural(
+            ({"mean": mean, "std": std}, stripped, {}),
+            {"action_scale": action_scale},
+            activation="elu",
+        )
+        self.assertEqual(document["in_shape"], [1, 5])
+        self.assertEqual(document["out_shape"], [1, 12])
+
+    def test_velocity_loss_weight_cli_defaults_and_overrides(self):
+        # parse_args only checks that the teacher/controller paths exist; the
+        # real XML model stands in for both so the test needs no temp directory.
+        out = MODEL_PATH.parent / "unused_velocity_cli_output"
+        base = [
+            str(MODEL_PATH),
+            "--controller",
+            str(MODEL_PATH),
+            "--out",
+            str(out),
+        ]
+        default_args = train_mjx_3d_roll_distillation.parse_args(base)
+        self.assertAlmostEqual(default_args.velocity_loss_weight, 0.2)
+
+        weighted = train_mjx_3d_roll_distillation.parse_args(
+            base + ["--velocity-loss-weight", "0.0"]
+        )
+        self.assertEqual(weighted.velocity_loss_weight, 0.0)
+
+        with self.assertRaises(SystemExit):
+            train_mjx_3d_roll_distillation.parse_args(
+                base + ["--velocity-loss-weight", "-1.0"]
+            )
 
 
 if __name__ == "__main__":

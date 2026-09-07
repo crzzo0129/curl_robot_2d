@@ -86,6 +86,32 @@ EVALUATION_FAILURE_METRICS = (
     "failure_forbidden_contact",
 )
 
+# The privileged 65-value teacher observation places the world-frame base
+# linear velocity at channels 9, 10, 11 (the mirror contract in
+# environment_3d.py labels those channels "root linear velocity").  This is
+# the privileged state the student's auxiliary estimator reconstructs from the
+# 36 x 20 real-controller observation history.
+PRIVILEGED_BASE_VELOCITY_INDICES_3D = (9, 10, 11)
+
+
+def privileged_base_velocity_3d(observation):
+    """Extract privileged world-frame base linear velocity from a 65-D obs."""
+
+    return observation[..., PRIVILEGED_BASE_VELOCITY_INDICES_3D]
+
+
+def action_only_student_params(params):
+    """Return policy params without the auxiliary velocity estimator head.
+
+    The deployable RTNeural actor must remain a single 720 -> ... -> 12 dense
+    chain; the velocity head only participates in distillation training.  This
+    helper works on both plain mappings and Flax FrozenDict values.
+    """
+
+    inner = dict(params["params"])
+    inner.pop("velocity_estimator", None)
+    return {**params, "params": inner}
+
 
 def dagger_teacher_probability(step, total_steps, start, end):
     """Linear expert-intervention schedule, including both endpoints."""
@@ -167,6 +193,15 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--observation-noise-scale", type=float, default=1.0)
     parser.add_argument(
+        "--velocity-loss-weight",
+        type=float,
+        default=0.2,
+        help=(
+            "weight of the privileged base-linear-velocity reconstruction "
+            "auxiliary loss; zero disables the estimator supervision"
+        ),
+    )
+    parser.add_argument(
         "--deploy-dr",
         action="store_true",
         help=(
@@ -239,6 +274,11 @@ def parse_args(argv=None):
         or args.observation_noise_scale < 0.0
     ):
         parser.error("--observation-noise-scale must be finite and nonnegative")
+    if (
+        not math.isfinite(args.velocity_loss_weight)
+        or args.velocity_loss_weight < 0.0
+    ):
+        parser.error("--velocity-loss-weight must be finite and nonnegative")
     if (
         not math.isfinite(args.deploy_dr_strength)
         or not 0.0 <= args.deploy_dr_strength <= 1.0
@@ -504,13 +544,18 @@ def main(argv=None):
             for index, width in enumerate(self.hidden_layers):
                 value = linen.Dense(width, name=f"hidden_{index}")(value)
                 value = linen.elu(value)
-            value = linen.Dense(
+            latent = value
+            action = linen.Dense(
                 ROLLING_CONTROLLER_ACTION_SIZE_3D,
                 name="location",
-            )(value)
-            return jp.tanh(value) * jp.asarray(
+            )(latent)
+            action = jp.tanh(action) * jp.asarray(
                 ROLLING_CONTROLLER_ACTION_MASK_3D
             )
+            # Auxiliary privileged-state estimator head: reconstructs the
+            # world-frame base linear velocity from the shared history encoder.
+            velocity = linen.Dense(3, name="velocity_estimator")(latent)
+            return action, velocity
 
     student = StudentPolicy(tuple(args.hidden_layers))
     rng = jax.random.PRNGKey(args.seed)
@@ -642,23 +687,53 @@ def main(argv=None):
         if params_were_frozen
         else mutable_student_params
     )
+    if "velocity_estimator" not in student_params["params"]:
+        # Backward compatibility: student checkpoints saved before the
+        # auxiliary velocity head was introduced have no "velocity_estimator"
+        # layer.  Merge in a freshly initialized head so the shared-encoder
+        # module can still be applied; its supervision is gated by
+        # --velocity-loss-weight and the head is stripped again before export.
+        fresh_head = student.init(
+            jax.random.PRNGKey(args.seed + 999_983),
+            jp.zeros((1, ROLLING_DEPLOY_OBSERVATION_SIZE_3D)),
+        )["params"]["velocity_estimator"]
+        mutable_student_params = unfreeze(student_params)
+        mutable_student_params["params"]["velocity_estimator"] = fresh_head
+        student_params = (
+            freeze(mutable_student_params)
+            if isinstance(student_params, FrozenDict)
+            else mutable_student_params
+        )
+        print(
+            "[restore student] checkpoint predates the velocity estimator; "
+            "initialized a fresh auxiliary head",
+            flush=True,
+        )
+    velocity_loss_weight = float(args.velocity_loss_weight)
+
     def make_train_step(current_optimizer):
         @jax.jit
-        def train_step(params, opt_state, observation, target):
+        def train_step(params, opt_state, observation, target, velocity_target):
             normalized = (observation - observation_mean) / observation_std
 
             def loss_fn(current_params):
-                prediction = student.apply(current_params, normalized)
+                prediction, velocity_estimate = student.apply(
+                    current_params, normalized
+                )
                 # The four abduction outputs are structurally locked at zero.
                 # Report and optimize only the eight controlled hip/knee
                 # channels so the BC/DAgger diagnostics are not diluted.
                 error = controller_action_to_effective_action_3d(
                     jp, prediction - target
                 )
-                mse = jp.mean(jp.square(error))
-                return mse, (
-                    jp.sqrt(mse),
+                action_mse = jp.mean(jp.square(error))
+                velocity_error = velocity_estimate - velocity_target
+                velocity_mse = jp.mean(jp.square(velocity_error))
+                loss = action_mse + velocity_loss_weight * velocity_mse
+                return loss, (
+                    jp.sqrt(action_mse),
                     jp.max(jp.abs(error)),
+                    jp.sqrt(velocity_mse),
                 )
 
             (loss, diagnostics), gradients = jax.value_and_grad(
@@ -700,6 +775,7 @@ def main(argv=None):
         target = effective_action_to_controller_action_3d(
             jp, next_state.info["last_action"]
         )
+        velocity_target = privileged_base_velocity_3d(state.obs)
         (
             student_params,
             optimizer_state,
@@ -710,6 +786,7 @@ def main(argv=None):
             optimizer_state,
             history,
             target,
+            velocity_target,
         )
         state = next_state
         previous_controller_action = target
@@ -725,13 +802,15 @@ def main(argv=None):
                 "loss": float(loss),
                 "action_rmse": float(diagnostics[0]),
                 "action_max_abs": float(diagnostics[1]),
+                "velocity_rmse": float(diagnostics[2]),
             }
             loss_history.append(record)
             print(
                 f"[student {step + 1:>6}/{args.train_steps}] "
                 f"loss={record['loss']:.6g} "
                 f"rmse={record['action_rmse']:.5f} "
-                f"max={record['action_max_abs']:.5f}",
+                f"max={record['action_max_abs']:.5f} "
+                f"vel_rmse={record['velocity_rmse']:.4f}",
                 flush=True,
             )
 
@@ -831,12 +910,18 @@ def main(argv=None):
 
         return step_if_active
 
-    student_policy_batch = jax.jit(
+    student_apply_batch = jax.jit(
         lambda params, observation: student.apply(
             params,
             (observation - observation_mean) / observation_std,
         )
     )
+
+    def student_policy_batch(params, observation):
+        return student_apply_batch(params, observation)[0]
+
+    def student_velocity_batch(params, observation):
+        return student_apply_batch(params, observation)[1]
 
     def make_episode_randomization(batch_size):
         if deploy_dr_settings is None:
@@ -1039,6 +1124,7 @@ def main(argv=None):
                 jp, teacher_label_state.info["last_action"]
             )
         )
+        velocity_target = privileged_base_velocity_3d(dagger_state.obs)
         (
             student_params,
             dagger_optimizer_state,
@@ -1049,6 +1135,7 @@ def main(argv=None):
             dagger_optimizer_state,
             dagger_history,
             teacher_controller_action,
+            velocity_target,
         )
 
         teacher_probability = dagger_teacher_probability(
@@ -1105,6 +1192,7 @@ def main(argv=None):
                 "loss": float(loss),
                 "action_rmse": float(diagnostics[0]),
                 "action_max_abs": float(diagnostics[1]),
+                "velocity_rmse": float(diagnostics[2]),
                 "teacher_probability": float(teacher_probability),
                 "teacher_fraction": float(jp.mean(use_teacher)),
                 "deadline_miss_rate": float(deadline_miss_rate),
@@ -1117,6 +1205,7 @@ def main(argv=None):
                 f"loss={record['loss']:.6g} "
                 f"rmse={record['action_rmse']:.5f} "
                 f"max={record['action_max_abs']:.5f} "
+                f"vel_rmse={record['velocity_rmse']:.4f} "
                 f"expert={record['teacher_fraction']:.1%} "
                 f"miss={record['deadline_miss_rate']:.1%} "
                 f"reset={record['reset_rate']:.1%}",
@@ -1172,6 +1261,8 @@ def main(argv=None):
     abduction_max_abs = jp.asarray(0.0)
     abduction_indices = jp.asarray((0, 3, 6, 9))
     eval_deadline_miss_sum = jp.asarray(0.0)
+    velocity_error_square_sum = jp.asarray(0.0)
+    velocity_error_sample_count = jp.asarray(0, dtype=jp.int32)
     diagnostic_frames = []
     diagnostic_rng = jax.random.PRNGKey(args.seed + 200_000)
 
@@ -1224,6 +1315,18 @@ def main(argv=None):
         )
         controller_action = student_policy_batch(
             student_params, eval_history
+        )
+        velocity_estimate = student_velocity_batch(
+            student_params, eval_history
+        )
+        velocity_error = jp.where(
+            eval_active[:, None],
+            velocity_estimate - privileged_base_velocity_3d(eval_state.obs),
+            0.0,
+        )
+        velocity_error_square_sum += jp.sum(jp.square(velocity_error))
+        velocity_error_sample_count += 3 * jp.sum(
+            eval_active.astype(jp.int32)
         )
         abduction_action = jp.take(
             controller_action, abduction_indices, axis=-1
@@ -1376,6 +1479,12 @@ def main(argv=None):
             )
         ),
         "abduction_output_max_abs": float(abduction_max_abs),
+        "velocity_estimation_rmse": float(
+            jp.sqrt(
+                velocity_error_square_sum
+                / jp.maximum(velocity_error_sample_count, 1)
+            )
+        ),
         "failure_rates": failure_rates,
     }
     print(
@@ -1387,7 +1496,9 @@ def main(argv=None):
         f"{closed_loop_evaluation['non_lateral_success_rate']:.1%} "
         f"failure_free={closed_loop_evaluation['failure_free_rate']:.1%} "
         f"turns_mean={closed_loop_evaluation['mean_turns']:.3f} "
-        f"turns_min={closed_loop_evaluation['minimum_turns']:.3f}\n"
+        f"turns_min={closed_loop_evaluation['minimum_turns']:.3f} "
+        f"velocity_rmse="
+        f"{closed_loop_evaluation['velocity_estimation_rmse']:.4f} m/s\n"
         f"  abduction_rms="
         f"{closed_loop_evaluation['abduction_output_rms']:.6f} "
         f"abduction_max="
@@ -1442,9 +1553,18 @@ def main(argv=None):
         "mean": np.asarray(observation_mean),
         "std": np.asarray(observation_std),
     }
+    # The resumed-from checkpoint keeps the auxiliary velocity estimator so
+    # --restore-student can continue the reconstruction loss.  The deployable
+    # RTNeural actor is stripped back to the single action-output chain.
+    deploy_params = action_only_student_params(student_params)
     checkpoint = (
         normalizer,
         jax.tree_util.tree_map(np.asarray, student_params),
+        {},
+    )
+    deploy_checkpoint = (
+        normalizer,
+        jax.tree_util.tree_map(np.asarray, deploy_params),
         {},
     )
     checkpoint_path = args.out / "student_params"
@@ -1455,7 +1575,7 @@ def main(argv=None):
         json.dump(config, config_file, indent=2)
         config_file.write("\n")
     rtneural = convert_rtneural(
-        checkpoint,
+        deploy_checkpoint,
         config,
         activation="elu",
         observation_history=ROLLING_DEPLOY_OBSERVATION_HISTORY_3D,
@@ -1479,6 +1599,10 @@ def main(argv=None):
         ),
         "student_observation_size": ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
         "student_action_size": ROLLING_CONTROLLER_ACTION_SIZE_3D,
+        "velocity_loss_weight": args.velocity_loss_weight,
+        "privileged_velocity_indices": list(
+            PRIVILEGED_BASE_VELOCITY_INDICES_3D
+        ),
         "hardware_policy_frequency_hz": HARDWARE_POLICY_FREQUENCY_HZ_3D,
         "hardware_imu_publish_frequency_hz": (
             HARDWARE_IMU_PUBLISH_FREQUENCY_HZ_3D

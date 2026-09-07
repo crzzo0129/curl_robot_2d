@@ -72,13 +72,29 @@ ROLLINGQUAD_2_PRIMITIVE_MODEL_PATH_3D = (
     / "mjcf"
     / "rollingquad_primitive.xml"
 )
+ROLLINGQUAD_2_ABD10_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "rollingquad_description_2"
+    / "mjcf"
+    / "rollingquad_abd10.xml"
+)
+ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D = (
+    PROJECT_ROOT
+    / "assets"
+    / "rollingquad_description_2"
+    / "mjcf"
+    / "rollingquad_primitive_abd10.xml"
+)
 # Geometries that share the corrected 12-joint RollingQuad CAD contract and
 # differ only in collision-surface representation (STL mesh, convex hull, or
-# analytic primitives).
+# analytic primitives) or in the baked front/rear abduction offset.
 ROLLINGQUAD_GEOMETRIES_3D = (
     "rollingquad_2",
     "rollingquad_2_simple_convex",
     "rollingquad_2_primitive",
+    "rollingquad_2_abd10",
+    "rollingquad_2_primitive_abd10",
 )
 MODEL_PATHS_3D = {
     "baseline": MODEL_PATH_3D,
@@ -87,6 +103,8 @@ MODEL_PATHS_3D = {
     "rollingquad_2": ROLLINGQUAD_2_MODEL_PATH_3D,
     "rollingquad_2_simple_convex": ROLLINGQUAD_2_SIMPLE_CONVEX_MODEL_PATH_3D,
     "rollingquad_2_primitive": ROLLINGQUAD_2_PRIMITIVE_MODEL_PATH_3D,
+    "rollingquad_2_abd10": ROLLINGQUAD_2_ABD10_MODEL_PATH_3D,
+    "rollingquad_2_primitive_abd10": ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D,
 }
 BASELINE_3D_CEM_CONTROLLER = (
     PROJECT_ROOT
@@ -132,6 +150,10 @@ CEM_CONTROLLER_PATHS_3D = {
     "rollingquad_2": ROLLINGQUAD_2_CEM_CONTROLLER,
     "rollingquad_2_simple_convex": ROLLINGQUAD_2_SIMPLE_CONVEX_CEM_CONTROLLER,
     "rollingquad_2_primitive": ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
+    # Same hip/knee oscillator as rollingquad_2: the CEM reference does not
+    # command abduction, which comes entirely from the model's compact keyframe.
+    "rollingquad_2_abd10": ROLLINGQUAD_2_CEM_CONTROLLER,
+    "rollingquad_2_primitive_abd10": ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
 }
 DEFAULT_3D_CEM_CONTROLLER = ROLLINGQUAD_2_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
@@ -298,6 +320,8 @@ SELF_COLLISION_MASKS_BY_GEOMETRY_3D = {
     "rollingquad_2": ROLLINGQUAD_SELF_COLLISION_MASKS_3D,
     "rollingquad_2_simple_convex": ROLLINGQUAD_SELF_COLLISION_MASKS_3D,
     "rollingquad_2_primitive": ROLLINGQUAD_PRIMITIVE_LEG_MASKS_3D,
+    "rollingquad_2_abd10": ROLLINGQUAD_SELF_COLLISION_MASKS_3D,
+    "rollingquad_2_primitive_abd10": ROLLINGQUAD_PRIMITIVE_LEG_MASKS_3D,
 }
 ROLLINGQUAD_FRONT_LEG_GEOM_NAMES_3D = (
     "front_left_hip_link_geom",

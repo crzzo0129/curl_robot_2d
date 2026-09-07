@@ -81,6 +81,13 @@ def summarize(rows, start, dt, mass, gravity):
         positive_j_per_m=positive / distance if distance > .01 else None,
         cot_positive=positive / (mass * gravity * distance) if distance > .01 else None,
         cot_absolute=(positive + negative) / (mass * gravity * distance) if distance > .01 else None,
+        abduction_positive_work_j=sum(r['abd_positive_power_w'] for r in selected)*dt,
+        abduction_absolute_work_j=sum(r['abd_absolute_power_w'] for r in selected)*dt,
+        abduction_mean_deg=float(np.mean([r['abd_mean_deg'] for r in selected])),
+        front_abduction_mean_deg=float(np.mean([r['front_abd_mean_deg'] for r in selected])),
+        rear_abduction_mean_deg=float(np.mean([r['rear_abd_mean_deg'] for r in selected])),
+        abduction_min_deg=min(r['abd_min_deg'] for r in selected),
+        abduction_max_deg=max(r['abd_max_deg'] for r in selected),
         min_height_m=min(r['height_m'] for r in selected),
         max_tilt_deg=max(r['tilt_deg'] for r in selected),
         max_axis_tilt_deg=max(r['axis_tilt_deg'] for r in selected),
@@ -101,6 +108,20 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
     model.opt.disableflags |= mj.mjtDisableBit.mjDSBL_EULERDAMP
     data = mj.MjData(model)
     mj.mj_resetDataKeyframe(model, data, model.key('stand' if mode == 'walk' else 'compact').id)
+    abd_names = [f'{leg}_hip_abduction' for leg in LEGS]
+    abd_qids = [model.joint(n).qposadr[0] for n in abd_names]
+    abd_aids = [model.actuator(n+'_servo').id for n in abd_names]
+    uniform_abd = getattr(args, 'roll_abduction_deg', 0.)
+    front_abd = getattr(args, 'front_abduction_deg', None)
+    rear_abd = getattr(args, 'rear_abduction_deg', None)
+    front_abd = uniform_abd if front_abd is None else front_abd
+    rear_abd = uniform_abd if rear_abd is None else rear_abd
+    abd_target = np.deg2rad([front_abd, front_abd, rear_abd, rear_abd])
+    if mode == 'roll':
+        if np.any(abd_target < model.actuator_ctrlrange[abd_aids,0]) or np.any(abd_target > model.actuator_ctrlrange[abd_aids,1]):
+            raise ValueError('Abduction target outside actuator limits')
+        data.qpos[abd_qids] = abd_target
+        data.ctrl[abd_aids] = abd_target
     policy = WalkingPolicy(args.policy, model) if mode == 'walk' else None
     if policy:
         data.qpos[policy.qids] = policy.pose
@@ -158,6 +179,13 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
             dy_m=float(data.qpos[1]-xy[1]), x_m=float(data.qpos[0]),
             y_m=float(data.qpos[1]), height_m=float(data.qpos[2]), tilt_deg=tilt,
             positive_power_w=positive, negative_power_w=negative,
+            abd_positive_power_w=float(np.maximum(power[abd_aids],0).sum()),
+            abd_absolute_power_w=float(np.abs(power[abd_aids]).sum()),
+            abd_mean_deg=float(np.degrees(data.qpos[abd_qids]).mean()),
+            front_abd_mean_deg=float(np.degrees(data.qpos[abd_qids[:2]]).mean()),
+            rear_abd_mean_deg=float(np.degrees(data.qpos[abd_qids[2:]]).mean()),
+            abd_min_deg=float(np.degrees(data.qpos[abd_qids]).min()),
+            abd_max_deg=float(np.degrees(data.qpos[abd_qids]).max()),
             axis_tilt_deg=float(np.degrees(np.arcsin(np.clip(abs(rotation[7]), 0, 1)))),
             self_contact=int(self_contact), self_penetration_m=self_penetration,
             nonfoot_ground=int(nonfoot), saturation_fraction=saturation))
@@ -173,6 +201,7 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
     safe = (windows['post_startup']['min_height_m'] > .079 and
             windows['post_startup']['max_tilt_deg'] < 45) if policy else None
     result = dict(label=label, mode=mode, command_m_s=speed, mass_kg=mass,
+        roll_abduction_target_deg=np.degrees(abd_target).tolist() if mode == 'roll' else None,
         windows=windows, walking_post_startup_posture_ok=safe,
         power_identity_max_error_w=power_error, rolling_turns=body_phase/(2*np.pi) if not policy else None)
     if not quiet:
@@ -189,10 +218,18 @@ def main():
     p.add_argument('--warmup', type=float, default=2)
     p.add_argument('--dt', type=float, default=.002)
     p.add_argument('--walk-speeds', type=float, nargs='+', default=[.3, .5, .7])
+    p.add_argument('--roll-abduction-deg', type=float, default=0., help='All four rolling abduction servo targets; positive is outward. Not a rigid lock.')
+    p.add_argument('--roll-only', action='store_true')
+    p.add_argument('--front-abduction-deg', type=float, default=None, help='Override front rolling ABD target')
+    p.add_argument('--rear-abduction-deg', type=float, default=None, help='Override rear rolling ABD target')
     p.add_argument('--out', type=Path, required=True)
     args = p.parse_args()
     if args.dt <= 0 or not np.isfinite(args.dt):
         p.error('dt must be positive and finite')
+    if not np.isfinite(args.roll_abduction_deg):
+        p.error('Abduction must be finite')
+    if any(v is not None and not np.isfinite(v) for v in (args.front_abduction_deg, args.rear_abduction_deg)):
+        p.error('Front/rear abduction must be finite')
     if not 0 <= args.warmup < args.duration:
         p.error('Require 0 <= warmup < duration')
     if args.out.exists() and any(args.out.iterdir()):
@@ -204,9 +241,12 @@ def main():
         settings={k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         sha256={name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in
                 [('model', args.xml), ('policy', args.policy), ('controller', args.controller), ('script', Path(__file__))]})
+    if args.roll_only:
+        metadata['hypothesis'] = 'Measure mechanical work and sustained rolling with the specified reference and abduction targets.'
+        metadata['pass_gate'] = 'Report finite state, signed progress, rolling turns and energy; do not interpret low power from failed locomotion as efficiency.'
     (args.out/'manifest.json').write_text(json.dumps(metadata, indent=2))
     results = [run_case(args, 'roll', None, 'roll')]
-    for i, speed in enumerate(args.walk_speeds):
+    for i, speed in enumerate([] if args.roll_only else args.walk_speeds):
         results.append(run_case(args, 'walk', speed, f'walk_{i}_{speed:.3f}'))
     metadata['status'] = 'COMPLETED'
     (args.out/'manifest.json').write_text(json.dumps(metadata, indent=2))

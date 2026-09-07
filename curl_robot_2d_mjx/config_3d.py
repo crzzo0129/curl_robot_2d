@@ -21,6 +21,13 @@ GEOMETRY_NAMES_3D = (
     "rollingquad_2",
     "rollingquad_2_simple_convex",
     "rollingquad_2_primitive",
+    # Full CAD mesh with front/rear abduction baked to -10 deg / +10 deg so the
+    # folded shanks clear each other under the selective self-collision ABI.
+    "rollingquad_2_abd10",
+    # Analytic-primitive collision with the same -10/+10 deg abduction offset.
+    # This is the training geometry; the full CAD mesh is used only for
+    # verification because mesh-vs-mesh contact is too expensive for MJX.
+    "rollingquad_2_primitive_abd10",
 )
 
 
@@ -96,6 +103,17 @@ class Rolling3DConfig:
     terminate_axis_tilt_duration_s: float = 0.10
     terminate_forbidden_depth_m: float = 0.004
     terminate_forbidden_contact_duration_s: float = 0.20
+
+    # Slope terrain (flat -> slope -> flat).  Disabled by default so the
+    # existing flat-rolling pipeline is unchanged; terrain_3d.py builds the
+    # MuJoCo heightfield from these values.
+    terrain_enabled: bool = False
+    terrain_slope_angle_deg: float = 0.0
+    terrain_slope_start_distance_m: float = 3.0
+    terrain_transition_length_m: float = 0.5
+    terrain_slope_length_m: float = 2.0
+    terrain_extent_x_m: float = 16.0
+    terrain_extent_y_m: float = 3.0
 
     solver_iterations: int = 20
     solver_ls_iterations: int = 10
@@ -233,6 +251,19 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         raise ValueError("lateral_drift_termination must be boolean")
     if not isinstance(config.floor_contact_friction_override, bool):
         raise ValueError("floor_contact_friction_override must be boolean")
+    if not isinstance(config.terrain_enabled, bool):
+        raise ValueError("terrain_enabled must be boolean")
+    if not math.isfinite(config.terrain_slope_angle_deg):
+        raise ValueError("terrain_slope_angle_deg must be finite")
+    for value, name in (
+        (config.terrain_slope_start_distance_m, "terrain_slope_start_distance_m"),
+        (config.terrain_transition_length_m, "terrain_transition_length_m"),
+        (config.terrain_slope_length_m, "terrain_slope_length_m"),
+        (config.terrain_extent_x_m, "terrain_extent_x_m"),
+        (config.terrain_extent_y_m, "terrain_extent_y_m"),
+    ):
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive")
     if config.terminate_root_z_min is not None:
         if (
             not math.isfinite(config.terminate_root_z_min)

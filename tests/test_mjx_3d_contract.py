@@ -20,7 +20,10 @@ from curl_robot_2d_mjx.environment_3d import (
     PUPPER_OPEN60_MODEL_PATH_3D,
     PUPPER_OPEN60_CEM_CONTROLLER,
     ROLLINGQUAD_2_CEM_CONTROLLER,
+    ROLLINGQUAD_2_ABD10_MODEL_PATH_3D,
     ROLLINGQUAD_2_MODEL_PATH_3D,
+    ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D,
+    ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
     ROLLINGQUAD_SELF_COLLISION_MASKS_3D,
     REAL_3D_CEM_CONTROLLER,
     REAL_MODEL_PATH_3D,
@@ -72,6 +75,8 @@ class MJX3DContractTest(unittest.TestCase):
                 "rollingquad_2",
                 "rollingquad_2_simple_convex",
                 "rollingquad_2_primitive",
+                "rollingquad_2_abd10",
+                "rollingquad_2_primitive_abd10",
             ),
         )
         self.assertEqual(model_path_3d("real"), REAL_MODEL_PATH_3D)
@@ -327,6 +332,58 @@ class MJX3DContractTest(unittest.TestCase):
             compatible("rear_left_thigh_geom", "rear_right_thigh_geom")
         )
         self.assertFalse(compatible("front_left_foot_proxy", "torso_mesh"))
+
+    def test_rollingquad_abd10_uses_same_self_collision_and_baked_abduction(self) -> None:
+        model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_ABD10_MODEL_PATH_3D))
+        validate_rollingquad_self_collision_contract_3d(model, "rollingquad_2_abd10")
+        self.assertEqual(
+            cem_controller_path_3d("rollingquad_2_abd10"),
+            ROLLINGQUAD_2_CEM_CONTROLLER,
+        )
+
+        compact_id = model.key("compact").id
+        for leg, expected_deg in (
+            ("front_left", -10.0),
+            ("front_right", -10.0),
+            ("rear_left", 10.0),
+            ("rear_right", 10.0),
+        ):
+            actuator_id = model.actuator(
+                f"{leg}_hip_abduction_servo"
+            ).id
+            self.assertAlmostEqual(
+                np.degrees(model.key_ctrl[compact_id, actuator_id]),
+                expected_deg,
+                places=4,
+            )
+
+    def test_primitive_abd10_is_training_geometry_with_baked_abduction(self) -> None:
+        model = mujoco.MjModel.from_xml_path(
+            str(ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D)
+        )
+        validate_rollingquad_self_collision_contract_3d(
+            model, "rollingquad_2_primitive_abd10"
+        )
+        self.assertEqual(
+            cem_controller_path_3d("rollingquad_2_primitive_abd10"),
+            ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
+        )
+
+        compact_id = model.key("compact").id
+        for leg, expected_deg in (
+            ("front_left", -10.0),
+            ("front_right", -10.0),
+            ("rear_left", 10.0),
+            ("rear_right", 10.0),
+        ):
+            actuator_id = model.actuator(
+                f"{leg}_hip_abduction_servo"
+            ).id
+            self.assertAlmostEqual(
+                np.degrees(model.key_ctrl[compact_id, actuator_id]),
+                expected_deg,
+                places=4,
+            )
 
     def test_rollingquad_keyframes_start_without_self_penetration(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))

@@ -35,6 +35,8 @@ def main(argv=None):
     if args.gif and args.gif.exists():
         p.error('GIF already exists; choose a new output path')
     summary = json.loads((args.run / 'summary.json').read_text(encoding='utf-8'))
+    event_path = args.run / 'single_foot_events.json'
+    foot_events = json.loads(event_path.read_text(encoding='utf-8')) if event_path.exists() else []
     with np.load(args.run / 'trajectory.npz', allow_pickle=False) as archive:
         arrays = {k: archive[k] for k in ('time', 'qpos', 'qvel', 'ctrl', 'metrics', 'metric_names')}
     indices = frame_indices(arrays['time'], args.fps, args.speed)
@@ -83,10 +85,18 @@ def main(argv=None):
                 renderer.update_scene(data, camera=camera)
                 frame = Image.fromarray(renderer.render())
                 draw = ImageDraw.Draw(frame)
-                draw.rectangle((0, 0, 640, 48), fill=(15, 20, 28))
+                draw.rectangle((0, 0, 640, 64), fill=(15, 20, 28))
                 row = dict(zip(arrays['metric_names'], arrays['metrics'][i]))
                 draw.text((10, 6), f'SAVED PHYSICS REPLAY | {summary["mode"]} | t={data.time:.2f}s | {args.speed:g}x', fill='white')
-                draw.text((10, 24), f'fold={row["progress"]:.0%}  tilt={row["tilt_rad"]:.3f}rad  vz={row["root_vz_m_s"]:.3f}m/s  stop={stop}', fill='white')
+                if foot_events:
+                    event = next((e for e in reversed(foot_events) if e['time_s'] <= data.time + 1e-9), {})
+                    label = f'steps={int(row["completed_steps"])}/{summary["planned_steps"]} {event.get("leg") or ""} {event.get("phase", "settle")}'
+                    if 'target_root_z_m' in event:
+                        label += f'  z={row["root_z_m"]:.3f}->{event["target_root_z_m"]:.3f}m'
+                else:
+                    label = f'fold={row["progress"]:.0%}'
+                draw.text((10, 24), f'{label}  tilt={row["tilt_rad"]:.3f}  vz={row["root_vz_m_s"]:.3f}', fill='white')
+                draw.text((10, 42), f'Recorded end: {stop}', fill='white')
                 images.append(frame.convert('P', palette=Image.Palette.ADAPTIVE, colors=192))
         args.gif.parent.mkdir(parents=True, exist_ok=True)
         durations = [round(1000 / args.fps)] * len(images)

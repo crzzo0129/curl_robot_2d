@@ -1,5 +1,11 @@
 # 结果目录索引
 
+## 2026-09-07 指定 Pupper reference 与 mesh ABD 实验
+
+- `pupper_reference_mesh_frontm10_rearp10_energy_20260907_matched10s/`、`pupper_reference_mesh_frontm10_rearp10_energy_20260907_matched1ms/`、`pupper_reference_mesh_frontm10_rearp10_energy_20260907_matched20s/`：用户指定 reference，前 ABD −10°、后 +10°，完整 RollingQuad mesh 能耗测试。2–10 s 正功 3.326 J/m、绝对功 4.942 J/m，无检测到的自接触；长时仍加速，20 s 不作同速行走对照结论。
+- 角度更正前的 `pupper_reference_mesh_abd10_energy_20260907_*` 为四腿 +10° 诊断，不代表最终配置。
+- 方法、数字与行走外推边界见 [`实验报告`](../docs/pupper_reference_mesh_abduction_energy_20260907_zh.md)。
+
 ## 2026-09-05 三维能耗对比
 
 - `energy_cem_3d_20260905/`：能耗目标 CEM，两个种子各 6 代、24 候选；最优控制器及全部候选记录。相对原滚动绝对功 J/m 降低约 6.6%–8.4%，未达到预设 10% 目标。详见 [`能耗 CEM 实验报告`](../docs/energy_cem_3d_20260905_zh.md)。
