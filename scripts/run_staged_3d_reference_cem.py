@@ -93,6 +93,9 @@ class StageConfig:
     phase_error_weight: float
     saturation_weight: float
     seed: int
+    require_zero_contact: bool = False
+    search_std_scale: float = 1.0
+    export_best_zero_contact: bool = False
 
 
 FULL_STAGES = (
@@ -269,6 +272,42 @@ HIGH_SPEED_SMOKE_STAGES = tuple(
         minimum_turns=(1.0, 2.0, 3.2)[index],
     )
     for index, stage in enumerate(HIGH_SPEED_STAGES)
+)
+
+SPEED_DISCOVERY_ZERO_CONTACT_STAGE = replace(
+    HIGH_SPEED_STAGES[0],
+    name="01_speed_discovery_zero_contact",
+    description="Search only for faster rolling among zero-contact candidates",
+    require_zero_contact=False,
+    export_best_zero_contact=True,
+)
+SPEED_DISCOVERY_ZERO_CONTACT_SMOKE_STAGE = replace(
+    HIGH_SPEED_SMOKE_STAGES[0],
+    name="01_speed_discovery_zero_contact",
+    description="Smoke search only for faster rolling among zero-contact candidates",
+    require_zero_contact=False,
+    export_best_zero_contact=True,
+)
+
+# Conservative local refinement around an already collision-free high-speed
+# controller.  Any enabled robot-robot contact is infeasible, so speed can
+# only improve inside the zero-contact region.
+ZERO_CONTACT_REFINE_STAGE = replace(
+    HIGH_SPEED_STAGES[-1],
+    name="01_zero_contact_speed_refine",
+    description="Locally improve 10 s speed with zero self-contact required",
+    generations=6,
+    population=24,
+    elite_count=6,
+    require_zero_contact=True,
+    search_std_scale=0.25,
+    seed=59,
+)
+ZERO_CONTACT_REFINE_SMOKE_STAGE = replace(
+    ZERO_CONTACT_REFINE_STAGE,
+    generations=3,
+    population=12,
+    elite_count=3,
 )
 
 
@@ -548,6 +587,9 @@ class ReferenceRollout3D:
         )
         if nonfinite:
             failure_penalty += 10000.0
+        hard_contact_penalty = (
+            1.0e6 if stage.require_zero_contact and self_contact_steps > 0 else 0.0
+        )
         score = (
             stage.progress_weight * rewarded_turns
             + stage.forward_speed_weight * conservative_forward_speed_m_s
@@ -561,6 +603,7 @@ class ReferenceRollout3D:
             - stage.tilt_max_weight * maximum_tilt
             - stage.phase_error_weight * phase_error_rms
             - stage.saturation_weight * saturation_fraction
+            - hard_contact_penalty
         )
         summary: dict[str, object] = {
             "score": float(score),
@@ -588,6 +631,8 @@ class ReferenceRollout3D:
             "progress_deficit_turns": float(progress_deficit),
             "self_contact_fraction": float(self_contact_steps / divisor),
             "self_contact_total_s": float(contact_time),
+            "zero_contact_feasible": bool(self_contact_steps == 0),
+            "hard_contact_penalty": float(hard_contact_penalty),
             "self_penetration_integral_m_s": float(penetration_integral),
             "maximum_self_penetration_m": float(maximum_penetration),
             "rolling_axis_tilt_rms_rad": float(tilt_rms),
@@ -668,12 +713,14 @@ def controller_parameters(path: Path, *, initial_gap_m: float) -> np.ndarray:
     )
 
 
-def _initial_std(lower: np.ndarray, upper: np.ndarray) -> np.ndarray:
+def _initial_std(
+    lower: np.ndarray, upper: np.ndarray, *, scale: float = 1.0
+) -> np.ndarray:
     std = (upper - lower) / 12.0
     std[8] = 0.30
     std[9] = 0.45
     std[10] = 0.0012
-    return std
+    return scale * std
 
 
 def _update_distribution(
@@ -683,11 +730,14 @@ def _update_distribution(
     elite_count: int,
     mean: np.ndarray,
     std: np.ndarray,
+    minimum_std_scale: float = 1.0,
 ) -> tuple[np.ndarray, np.ndarray]:
     elites = samples[np.argsort(scores)[-elite_count:]]
     next_mean = 0.7 * elites.mean(axis=0) + 0.3 * mean
     next_std = 0.7 * elites.std(axis=0) + 0.3 * std
-    minimum_std = np.asarray((0.01,) * 8 + (0.03, 0.05, 0.00015))
+    minimum_std = minimum_std_scale * np.asarray(
+        (0.01,) * 8 + (0.03, 0.05, 0.00015)
+    )
     return next_mean, np.maximum(next_std, minimum_std)
 
 
@@ -701,13 +751,21 @@ def optimize_stage(
     lower, upper = parameter_bounds()
     rng = np.random.default_rng(stage.seed)
     mean = np.clip(initial_parameters, lower, upper)
-    std = _initial_std(lower, upper)
+    std = _initial_std(lower, upper, scale=stage.search_std_scale)
     best_parameters = mean.copy()
     if runner is not None:
         best = runner.run(best_parameters, stage)
     else:
         assert executor is not None
         best = next(iter(executor.map(_run_worker, [(best_parameters, stage)])))
+    zero_contact_best_parameters = (
+        best_parameters.copy()
+        if bool(best.summary["zero_contact_feasible"])
+        else None
+    )
+    zero_contact_best = (
+        best if bool(best.summary["zero_contact_feasible"]) else None
+    )
     history: list[dict[str, object]] = []
 
     for generation in range(stage.generations):
@@ -727,6 +785,23 @@ def optimize_stage(
                 )
             )
         scores = np.asarray([rollout.score for rollout in rollouts])
+        zero_contact_speeds = [
+            float(rollout.summary["conservative_forward_speed_m_s"])
+            for rollout in rollouts
+            if bool(rollout.summary["zero_contact_feasible"])
+        ]
+        for sample, rollout in zip(samples, rollouts, strict=True):
+            if not bool(rollout.summary["zero_contact_feasible"]):
+                continue
+            if (
+                zero_contact_best is None
+                or float(rollout.summary["conservative_forward_speed_m_s"])
+                > float(
+                    zero_contact_best.summary["conservative_forward_speed_m_s"]
+                )
+            ):
+                zero_contact_best = rollout
+                zero_contact_best_parameters = sample.copy()
         generation_best_index = int(np.argmax(scores))
         generation_best = rollouts[generation_best_index]
         if generation_best.score > best.score:
@@ -738,6 +813,7 @@ def optimize_stage(
             elite_count=stage.elite_count,
             mean=mean,
             std=std,
+            minimum_std_scale=stage.search_std_scale,
         )
         mean = np.clip(mean, lower, upper)
         record = {
@@ -746,6 +822,15 @@ def optimize_stage(
             "global_best_score": best.score,
             "population_mean_score": float(np.mean(scores)),
             "population_std_score": float(np.std(scores)),
+            "zero_contact_candidate_count": len(zero_contact_speeds),
+            "zero_contact_best_speed_m_s": (
+                max(zero_contact_speeds) if zero_contact_speeds else None
+            ),
+            "global_zero_contact_best_speed_m_s": (
+                None
+                if zero_contact_best is None
+                else zero_contact_best.summary["conservative_forward_speed_m_s"]
+            ),
             "global_best_turns": best.summary["conservative_rolling_turns"],
             "global_best_speed_m_s": best.summary[
                 "conservative_forward_speed_m_s"
@@ -766,12 +851,19 @@ def optimize_stage(
             f"turns={float(best.summary['conservative_rolling_turns']):.3f} "
             f"speed={float(best.summary['conservative_forward_speed_m_s']):.3f}m/s "
             f"tail={float(best.summary['conservative_tail_speed_m_s']):.3f}m/s "
+            f"zero_contact={len(zero_contact_speeds)}/{stage.population} "
             f"contact={float(best.summary['self_contact_total_s']):.3f}s "
             f"penetration={1000.0*float(best.summary['maximum_self_penetration_m']):.3f}mm "
             f"lateral={float(best.summary['distance_y_m']):+.3f}m "
             f"gap={1000.0*float(best_parameters[10]):.2f}mm",
             flush=True,
         )
+    if stage.export_best_zero_contact:
+        if zero_contact_best is None or zero_contact_best_parameters is None:
+            raise RuntimeError(
+                f"stage {stage.name} completed without a zero-contact candidate"
+            )
+        return zero_contact_best_parameters, zero_contact_best, history
     return best_parameters, best, history
 
 
@@ -828,6 +920,7 @@ def controller_payload(
             "contact_time_weight": stage.contact_time_weight,
             "penetration_integral_weight": stage.penetration_integral_weight,
             "maximum_penetration_weight": stage.maximum_penetration_weight,
+            "require_zero_contact": stage.require_zero_contact,
         },
         "rollout_summary": rollout.summary,
     }
@@ -862,11 +955,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--preset", choices=("full", "smoke"), default="full")
     parser.add_argument(
         "--objective",
-        choices=("standard", "high_speed"),
+        choices=(
+            "standard",
+            "high_speed",
+            "speed_discovery_zero_contact",
+            "zero_contact_refine",
+        ),
         default="standard",
         help=(
             "Use high_speed to remove the progress reward cap and reward both "
-            "mean and final-quarter conservative forward speed."
+            "mean and final-quarter conservative forward speed. Use "
+            "speed_discovery_zero_contact to run only the first speed stage, "
+            "finish every rollout, and export the fastest observed zero-contact "
+            "candidate. Use "
+            "zero_contact_refine for a small local search where any self-contact "
+            "is infeasible."
         ),
     )
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
@@ -891,8 +994,8 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise SystemExit(f"3-D XML not found: {args.xml}")
     if not args.from_scratch and not args.initial_controller.exists():
         raise SystemExit(f"initial controller not found: {args.initial_controller}")
-    if args.from_scratch and args.objective == "high_speed":
-        raise SystemExit("--objective high_speed requires a warm-start controller")
+    if args.from_scratch and args.objective != "standard":
+        raise SystemExit(f"--objective {args.objective} requires a warm-start controller")
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -911,6 +1014,18 @@ def main(argv: list[str] | None = None) -> None:
                 HIGH_SPEED_SMOKE_STAGES
                 if args.preset == "smoke"
                 else HIGH_SPEED_STAGES
+            )
+        elif args.objective == "zero_contact_refine":
+            stages = (
+                (ZERO_CONTACT_REFINE_SMOKE_STAGE,)
+                if args.preset == "smoke"
+                else (ZERO_CONTACT_REFINE_STAGE,)
+            )
+        elif args.objective == "speed_discovery_zero_contact":
+            stages = (
+                (SPEED_DISCOVERY_ZERO_CONTACT_SMOKE_STAGE,)
+                if args.preset == "smoke"
+                else (SPEED_DISCOVERY_ZERO_CONTACT_STAGE,)
             )
         else:
             stages = SMOKE_STAGES if args.preset == "smoke" else FULL_STAGES

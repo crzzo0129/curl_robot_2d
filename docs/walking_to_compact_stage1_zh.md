@@ -10,8 +10,8 @@
 | --- | --- |
 | episode 起点 | 行走策略(实机 deploy 接口)0.4 m/s 稳态轨迹的**真实状态快照**(CPU 采集),reset 到快照,保留速度/步态相位 |
 | 行走来源 | 上级目录 `rollingquad_2_deploy_robust_dr_policy_stable.json`(36 维×20 帧观测、12 维动作的 deploy 行走策略) |
-| 模型/几何 | mesh `rollingquad_abd10.xml`(geometry 名 `rollingquad_2_abd10`);**compact keyframe = 前腿 abd −10°/后腿 +10°**,root z 0.1663 m |
-| 接触口径 | 保持 XML 默认:外壳/Torso 等与地面接触开,**自碰撞不开**(default geom contype=0 conaffinity=1,无 pair/exclude) |
+| 模型/几何 | mesh `rollingquad_abd10_no_self_collision.xml`(由 `rollingquad_abd10.xml` 生成的专用版本,geometry 名 `rollingquad_2_abd10`);**compact keyframe = 前腿 abd −10°/后腿 +10°**,root z 0.1663 m |
+| 接触口径 | **自碰撞关闭**:所有机器人 geom 改为 `contype=0 conaffinity=1`(只对地面接触),`floor` 保持 `contype=1 conaffinity=0`;源模型里滚动自碰撞白名单的位掩码(torso 16/7、前腿 2/29、后腿 4/27、足端 8/15)全部去除 |
 | 物理 | 运行 XML 替换 `<option>`:0.002 s implicitfast、pyramidal、Newton 20/10、impratio 10、关 eulerdamp;并给 `<compiler>` 注入 `meshdir` 指向源 mjcf 目录(源 XML 的 mesh 是 `../meshes/*.stl` 相对路径)—— 与 CPU 快照回放完全一致 |
 | actor 观测/动作 | 与 deploy 控制器同接口:36×20=720 维历史观测,12 维绝对位置目标 `pose + scale × action`;obs 指令字段全程固定 [0.4, 0, 0] |
 | 终点门 | **纯姿态门**:12 关节 ≤0.02 rad、root z 误差 ≤0.01 m、姿态四元数距离 ≤0.05 rad、横向偏移 ≤0.05 m;连续 5 帧(0.10 s)达标即成功;速度/余速不参与判定 |
@@ -28,13 +28,15 @@
 - obs 用 deploy 接口是刻意的:与行走策略同一观测合同,后续可训练可导出的
   实机 actor,历史帧让策略自己推断速度与时机(实机没有状态估计器)。
 - compact 目标的 −10°/+10° 以 `rollingquad_abd10.xml` 的 keyframe 为准;
-  基础 `rollingquad.xml` 的 compact 是 ±15°,不要混用。
+  基础 `rollingquad.xml` 的 compact 是 ±15°,不要混用。自碰撞专用版由
+  `curl_robot_2d_mjx/walk_compact_3d.py` 的 `write_no_self_collision_variant()`
+  从 `rollingquad_abd10.xml` 生成,改动只有碰撞掩码,mesh/keyframe/actuator 不变。
 
 ## 2. 代码结构
 
 | 文件 | 内容 |
 | --- | --- |
-| `curl_robot_2d_mjx/walk_compact_3d.py` | contract(`walking_0p4_to_compact_v1_pose_gate_mesh_abd10`)、`WalkCompactConfig`、纯姿态门/势函数/防跳项(xp=numpy|jax.numpy 双端)、快照 bank 校验、运行 XML 生成、fingerprint |
+| `curl_robot_2d_mjx/walk_compact_3d.py` | contract(`walking_0p4_to_compact_v1_pose_gate_mesh_abd10`)、`WalkCompactConfig`、纯姿态门/势函数/防跳项(xp=numpy|jax.numpy 双端)、快照 bank 校验、运行 XML 生成、`disable_self_collision_xml`/`write_no_self_collision_variant`、fingerprint |
 | `curl_robot_2d_mjx/environment_walk_compact_3d.py` | MJX `WalkCompactEnv`(快照 reset、36×20 历史帧 obs、12 维绝对位置目标、姿态门终止、dense pose+防跳奖励)与自动 reset 包装器 |
 | `scripts/collect_walking_start_snapshots.py` | CPU(mujoco)采集脚本:deploy 行走策略固定 0.4 m/s 回放,热身后采样并过滤,输出 npz+meta |
 | `scripts/train_walk_compact_ppo.py` | PPO 训练入口(仿 `train_mjx_3d_startup_ppo`:smoke/dry-run/eval-only/best 选取/报告) |

@@ -45,6 +45,20 @@ class Staged3DReferenceCEMTest(unittest.TestCase):
             all(stage.tail_speed_weight > 0.0 for stage in cem3d.HIGH_SPEED_STAGES)
         )
 
+    def test_zero_contact_refine_is_local_and_contact_is_infeasible(self) -> None:
+        args = cem3d.parse_args(["--objective", "zero_contact_refine"])
+        self.assertEqual(args.objective, "zero_contact_refine")
+        stage = cem3d.ZERO_CONTACT_REFINE_SMOKE_STAGE
+        self.assertTrue(stage.require_zero_contact)
+        self.assertLess(stage.search_std_scale, 1.0)
+        self.assertEqual(stage.duration_s, 10.0)
+
+    def test_speed_discovery_records_zero_contact_without_hard_rejection(self) -> None:
+        stage = cem3d.SPEED_DISCOVERY_ZERO_CONTACT_STAGE
+        self.assertFalse(stage.require_zero_contact)
+        self.assertTrue(stage.export_best_zero_contact)
+        self.assertEqual(stage.name, "01_speed_discovery_zero_contact")
+
     def test_export_is_compatible_with_shared_reference_loader(self) -> None:
         source = cem3d.PUPPER_OPEN60_CEM_CONTROLLER
         parameters = cem3d.controller_parameters(source, initial_gap_m=0.002)

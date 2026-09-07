@@ -159,7 +159,8 @@ python -m scripts.run_roll_to_walk
 0.4 m/s 稳态轨迹的真实快照 reset,12 自由度 actor 边走边收拢到 compact;
 终点只认 compact 姿态门(不看速度),暂不接 rolling policy。观测/动作与实机
 deploy 控制器同接口(36×20 历史、12 维绝对位置目标),模型为 mesh
-`rollingquad_abd10.xml`(compact 前腿 abd −10°/后腿 +10°)。入口:
+`rollingquad_abd10_no_self_collision.xml`(compact 前腿 abd −10°/后腿 +10°,
+**自碰撞关闭、只保留地面接触**,由 `rollingquad_abd10.xml` 生成)。入口:
 
 ```powershell
 python -m scripts.collect_walking_start_snapshots --out results\walk_start_snapshots_0p4

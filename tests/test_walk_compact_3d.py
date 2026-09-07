@@ -17,6 +17,7 @@ import numpy as np
 
 from curl_robot_2d_mjx.walk_compact_3d import (
     ACTION_SIZE,
+    ABD10_SOURCE_XML_REL,
     COMMAND_M_S,
     CONTROL_TIMESTEP_S,
     GEOMETRY,
@@ -32,12 +33,14 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     compact_target_from_keyframe,
     confirmation_update,
     dense_pose_reward,
+    disable_self_collision_xml,
     gate_errors,
     policy_actuator_names,
     policy_joint_names,
     pose_quality,
     prepare_runtime_xml,
     validate_snapshot_bank,
+    write_no_self_collision_variant,
     xml_fingerprint,
 )
 from scripts.collect_walking_start_snapshots import parse_args as collect_parse
@@ -137,6 +140,24 @@ class ContractTest(unittest.TestCase):
             mesh_dir = source.resolve().parent.as_posix()
             self.assertIn(f'meshdir="{mesh_dir}"', text)
             self.assertIn("../meshes/Upperleg_with_motor_1.stl", text)
+            # no rolling self-collision bitmasks may survive in the variant
+            for mask in ('contype="16"', 'contype="2"', 'contype="4"',
+                         'contype="8"', 'conaffinity="7"', 'conaffinity="29"',
+                         'conaffinity="27"', 'conaffinity="15"'):
+                self.assertNotIn(mask, text)
+
+    def test_no_self_collision_variant_is_exact_transform_of_source(self):
+        source = PROJECT_ROOT / ABD10_SOURCE_XML_REL
+        variant = PROJECT_ROOT / MESH_XML_REL
+        self.assertTrue(source.is_file())
+        self.assertTrue(variant.is_file())
+        source_text = source.read_text(encoding="utf-8")
+        self.assertIn('contype="16" conaffinity="7"', source_text)  # rolling whitelist present
+        self.assertEqual(disable_self_collision_xml(source_text),
+                         variant.read_text(encoding="utf-8"))
+        # idempotent
+        variant_text = variant.read_text(encoding="utf-8")
+        self.assertEqual(disable_self_collision_xml(variant_text), variant_text)
 
     def test_xml_fingerprint_normalizes_crlf(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -342,6 +363,19 @@ class MujocoContractTest(unittest.TestCase):
         deg = np.degrees(target["joints"]).reshape(4, 3)
         self.assertAlmostEqual(deg[0, 0], -10.0, places=3)
         self.assertAlmostEqual(target["root_z"], 0.1663, places=3)
+
+    def test_variant_has_ground_only_geoms_no_self_collision(self):
+        import mujoco
+        model = mujoco.MjModel.from_xml_path(str(PROJECT_ROOT / MESH_XML_REL))
+        for i in range(model.ngeom):
+            name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, i) or "(anon)"
+            contype = int(model.geom_contype[i])
+            conaffinity = int(model.geom_conaffinity[i])
+            if name == "floor":
+                self.assertEqual((contype, conaffinity), (1, 0))
+            else:
+                # every robot geom: ground-only, no robot-robot collision
+                self.assertEqual((contype, conaffinity), (0, 1), msg=name)
 
 
 if __name__ == "__main__":

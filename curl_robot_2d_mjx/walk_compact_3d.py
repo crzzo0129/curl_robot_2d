@@ -37,7 +37,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 WALK_COMPACT_CONTRACT = "walking_0p4_to_compact_v1_pose_gate_mesh_abd10"
 GEOMETRY = "rollingquad_2_abd10"
-MESH_XML_REL = Path("assets") / "rollingquad_description_2" / "mjcf" / "rollingquad_abd10.xml"
+# Source mesh model with the rolling self-collision whitelist baked in.
+ABD10_SOURCE_XML_REL = Path("assets") / "rollingquad_description_2" / "mjcf" / "rollingquad_abd10.xml"
+# Dedicated variant for the walk->compact stage: self-collision DISABLED,
+# ground contact kept (all robot geoms become contype=0 conaffinity=1).
+MESH_XML_REL = Path("assets") / "rollingquad_description_2" / "mjcf" / "rollingquad_abd10_no_self_collision.xml"
 COMMAND_M_S = 0.4
 
 # Canonical policy order (== actuator order in the XML, per its own comment):
@@ -79,6 +83,39 @@ def xml_fingerprint(path: Path):
     raw = Path(path).read_bytes()
     return {"xml_sha256": sha256_bytes(raw),
             "xml_lf_sha256": sha256_bytes(raw.replace(b"\r\n", b"\n"))}
+
+
+_SELF_COLLISION_GEOM_RE = re.compile(r"<geom\b[^>]*>")
+
+
+def disable_self_collision_xml(xml_text: str) -> str:
+    """Rewrite every named geom except the floor to ground-only contact.
+
+    The rolling mesh model encodes a selective self-collision whitelist with
+    contype/conaffinity bitmasks (torso 16/7, front leg 2/29, rear leg 4/27,
+    foot 8/15).  Setting each named robot geom to contype=0 conaffinity=1 keeps
+    ground contact (the floor is contype=1 conaffinity=0) while disabling all
+    robot-robot collisions, which is what the walk->compact stage wants.
+    """
+    def rewrite(match):
+        tag = match.group(0)
+        name = re.search(r'name="([^"]*)"', tag)
+        if not name or name.group(1) == "floor":
+            return tag  # leave the anonymous default geom and the floor
+        tag = re.sub(r'contype="[^"]*"', 'contype="0"', tag)
+        tag = re.sub(r'conaffinity="[^"]*"', 'conaffinity="1"', tag)
+        return tag
+
+    return _SELF_COLLISION_GEOM_RE.sub(rewrite, xml_text)
+
+
+def write_no_self_collision_variant(source_xml: Path, dst_xml: Path) -> Path:
+    """Write the no-self-collision variant of a rolling mesh MJCF."""
+    xml = Path(source_xml).read_text(encoding="utf-8")
+    dst = Path(dst_xml)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    dst.write_text(disable_self_collision_xml(xml), encoding="utf-8")
+    return dst
 
 
 def prepare_runtime_xml(source_xml: Path, dst_xml: Path) -> Path:
