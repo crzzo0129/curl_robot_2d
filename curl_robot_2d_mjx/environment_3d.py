@@ -117,6 +117,13 @@ ROLLINGQUAD_GEOMETRIES_3D = (
     "rollingquad_2_abd10",
     "rollingquad_2_primitive_abd10",
 )
+# Analytic-primitive collision variants (with or without the baked abduction
+# offset).  These use capsule/cylinder/sphere geoms and a capsule-arc shell, so
+# they need the primitive-specific torso/foot-shell geom classification below.
+PRIMITIVE_ROLLINGQUAD_GEOMETRIES_3D = (
+    "rollingquad_2_primitive",
+    "rollingquad_2_primitive_abd10",
+)
 MODEL_PATHS_3D = {
     "baseline": MODEL_PATH_3D,
     "real": REAL_MODEL_PATH_3D,
@@ -1048,7 +1055,7 @@ def make_brax_env_3d(
             )
             front_leg_names = list(ROLLINGQUAD_FRONT_LEG_GEOM_NAMES_3D)
             rear_leg_names = list(ROLLINGQUAD_REAR_LEG_GEOM_NAMES_3D)
-            if task.geometry == "rollingquad_2_primitive":
+            if task.geometry in PRIMITIVE_ROLLINGQUAD_GEOMETRIES_3D:
                 front_leg_names += [
                     "front_left_thigh_motor",
                     "front_right_thigh_motor",
@@ -1075,7 +1082,7 @@ def make_brax_env_3d(
                 else [],
                 dtype=jp.int32,
             )
-            if task.geometry == "rollingquad_2_primitive":
+            if task.geometry in PRIMITIVE_ROLLINGQUAD_GEOMETRIES_3D:
                 self.torso_shell_geom_ids = jp.asarray(
                     [
                         int(geom_id)

@@ -24,6 +24,7 @@ from curl_robot_2d_mjx.environment_3d import (
     ROLLINGQUAD_2_MODEL_PATH_3D,
     ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D,
     ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
+    PRIMITIVE_ROLLINGQUAD_GEOMETRIES_3D,
     ROLLINGQUAD_SELF_COLLISION_MASKS_3D,
     REAL_3D_CEM_CONTROLLER,
     REAL_MODEL_PATH_3D,
@@ -384,6 +385,28 @@ class MJX3DContractTest(unittest.TestCase):
                 expected_deg,
                 places=4,
             )
+
+    def test_primitive_abd10_uses_primitive_shell_classification(self) -> None:
+        # Regression: make_brax_env_3d must classify the abd10 primitive model
+        # through the primitive path (capsule-arc shell + thigh motors), never
+        # through the mesh path that requires a "torso_mesh" geom.
+        model = mujoco.MjModel.from_xml_path(
+            str(ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D)
+        )
+        names = {
+            mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_GEOM, geom_id)
+            for geom_id in range(model.ngeom)
+        }
+        self.assertNotIn("torso_mesh", names)
+        self.assertIn("torso_box_proxy", names)
+        self.assertTrue(any(n and "torso_shell_" in n for n in names))
+        for leg in ("front_left", "front_right", "rear_left", "rear_right"):
+            self.assertIn(f"{leg}_thigh_motor", names)
+
+        self.assertEqual(
+            PRIMITIVE_ROLLINGQUAD_GEOMETRIES_3D,
+            ("rollingquad_2_primitive", "rollingquad_2_primitive_abd10"),
+        )
 
     def test_rollingquad_keyframes_start_without_self_penetration(self) -> None:
         model = mujoco.MjModel.from_xml_path(str(ROLLINGQUAD_2_MODEL_PATH_3D))
