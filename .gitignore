@@ -50,6 +50,12 @@ results/**
 !results/rolling_stop/low_speed_snapshots_0p40hz.npz
 !results/rolling_stop/low_speed_snapshots_0p40hz.json
 
+# Version the walking-start snapshot bank required by the walk->compact
+# stage-one training (scripts.collect_walking_start_snapshots).
+!results/walk_start_snapshots_0p4/
+!results/walk_start_snapshots_0p4/walk_start_snapshots.npz
+!results/walk_start_snapshots_0p4/walk_start_snapshots_meta.json
+
 # Local training services and logs.
 wandb/
 ppo_logs/
