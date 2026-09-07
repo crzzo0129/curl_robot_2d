@@ -321,7 +321,7 @@ def main(argv=None):
         try_save(int(step))
         print(f"[walk-compact PPO] step={step} success={success:.1%} "
               f"failed={failed:.1%} timeout={timeout:.1%} "
-              f"pose={clean.get('eval/episode_pose_quality', 0.):.3f} "
+              f"reward={clean.get('eval/episode_reward', 0.):.2f} "
               f"gate={clean.get('eval/episode_gate_eligible', 0.):.3f} "
               f"term=[joint={clean.get('eval/episode_terminal_gate_joint', 0.):.2f} "
               f"tilt={clean.get('eval/episode_terminal_gate_axis_tilt', 0.):.2f} "

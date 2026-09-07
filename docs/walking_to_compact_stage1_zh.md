@@ -14,9 +14,9 @@
 | 接触口径 | **自碰撞关闭**:所有机器人 geom 改为 `contype=0 conaffinity=1`(只对地面接触),`floor` 保持 `contype=1 conaffinity=0`;源模型里滚动自碰撞白名单的位掩码(torso 16/7、前腿 2/29、后腿 4/27、足端 8/15)全部去除 |
 | 物理 | 运行 XML 替换 `<option>`:0.002 s implicitfast、pyramidal、Newton 20/10、impratio 10、关 eulerdamp;并给 `<compiler>` 注入 `meshdir` 指向源 mjcf 目录(源 XML 的 mesh 是 `../meshes/*.stl` 相对路径)—— 与 CPU 快照回放完全一致 |
 | actor 观测/动作 | 与 deploy 控制器同接口:36×20=720 维历史观测,12 维绝对位置目标;**nominal=行走默认姿态,scale=逐关节非对称全范围 `max(high−nominal, nominal−low)`**(与 roll→walk transition policy 同一约定),保证 compact 的 hip/knee 目标落在动作 `[-1,1]` 内;obs 指令字段全程固定 [0.4, 0, 0] |
-| 终点门 | **纯姿态门**:12 关节 ≤0.02 rad、**滚动轴侧倾(axis tilt,绕 body-X 侧翻)≤0.10 rad**、横向偏移 ≤0.05 m;连续 5 帧(0.10 s)达标即成功;速度/余速不参与判定;**不锁身体四元数**(收拢会绕横轴翻转,任何前向滚动相位都合法);**不门控 root 高度**——实测收腿会把机身下压到 ~0.14 m,而不是升到 keyframe 的 0.166 m,高度目标属于滚动阶段 |
+| 终点门 | **纯姿态门**:12 关节 ≤0.10 rad(阶段一宽松"大致收拢"口径)、**滚动轴侧倾(axis tilt,绕 body-X 侧翻)≤0.10 rad**、横向偏移 ≤0.05 m;连续 5 帧(0.10 s)达标即成功;速度/余速不参与判定;**不锁身体四元数**(收拢会绕横轴翻转,任何前向滚动相位都合法);**不门控 root 高度**——实测收腿会把机身下压到 ~0.14 m,而不是升到 keyframe 的 0.166 m,高度目标属于滚动阶段 |
 | episode 预算 | 5 s(250 × 20 ms);成功/超时/非有限数终止;超时无额外惩罚(dense pose 奖励已覆盖进度) |
-| 奖励(v1) | 每步 dense pose `−0.10×(1−quality)` + 成功 +20;`quality` 用**宽松 settling sigma**(关节 0.20 rad、axis tilt 0.20 rad)计算,只含关节收拢与侧倾两项(不含 root 高度,避免与收腿下压冲突),保证从行走姿态起仍有梯度;时间/动作变化/力矩代价;轻量防跳项(向上 vz、超出 stand/compact 高度包络、三轴角速度) |
+| 奖励(v1) | 每步 **二次代价** `reward = −1.0 × (mean((关节误差/0.50)²) + (axis_tilt/0.20)²)` + 成功 +20;二次代价在远处是**线性梯度**(不像 exp 势函数会变平),保证策略从行走姿态起就收到"收腿"的明确推力;时间/动作变化/力矩代价;轻量防跳项(向上 vz、超出 stand/compact 高度包络、三轴角速度) |
 | 不做的事 | 无足端拖滑罚、无固定收腿轨迹、无 trajectory 插值、无 episode 内碰撞几何切换、无 rolling teacher |
 
 为什么这样搭:
