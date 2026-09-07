@@ -1377,9 +1377,21 @@ def make_brax_env_3d(
                 )
             else:
                 forward_velocity_command = jp.zeros((), dtype=jp.float32)
-            forward_command_scale = forward_command_to_target_scale_3d(
-                jp, forward_velocity_command
-            )
+            if (
+                task.forward_command_enabled
+                or task.forward_command_fixed_m_s is not None
+            ):
+                forward_command_scale = forward_command_to_target_scale_3d(
+                    jp, forward_velocity_command
+                )
+            else:
+                # Command conditioning disabled: keep the reference at its
+                # static action scale (default 1.0) instead of scaling it by
+                # lookup(0.0)=0.36, which would silently slow every legacy
+                # recipe down to ~0.41 m/s.
+                forward_command_scale = jp.asarray(
+                    task.reference_action_scale, dtype=jp.float32
+                )
             if task.reset_pair_differential_scale is None:
                 joint_key, velocity_key, root_velocity_key = jax.random.split(
                     rng, 3
