@@ -636,6 +636,22 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.lateral_command_fixed, 0.10)
         self.assertFalse(args.lateral_command_enabled)
 
+    def test_evaluator_exposes_forward_command(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "params_best",
+                "--out",
+                "eval_vcmd",
+                "--forward-command-fixed-m-s",
+                "0.60",
+            ]
+        )
+
+        self.assertEqual(args.forward_command_fixed_m_s, 0.60)
+        self.assertFalse(args.forward_command_enabled)
+        self.assertEqual(args.forward_command_min_m_s, 0.47)
+        self.assertEqual(args.forward_command_max_m_s, 0.80)
+
     def test_phase_locked_meanzero_v10_uses_mean_zero_regularizer(
         self,
     ) -> None:
@@ -728,6 +744,24 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.recovery, 4.0)
         self.assertEqual(reward.recovery_clip, 0.25)
         self.assertEqual(reward.residual_action, 0.05)
+
+    def test_command_tracking_v1_uses_forward_command_and_gaussian(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "command_tracking_v1"]
+        )
+
+        self.assertTrue(args.forward_command_enabled)
+        self.assertEqual(args.forward_command_min_m_s, 0.47)
+        self.assertEqual(args.forward_command_max_m_s, 0.80)
+        self.assertIsNone(args.forward_command_fixed_m_s)
+        self.assertEqual(args.minimum_residual_gain, 0.15)
+        self.assertTrue(args.explicit_phase_observation)
+
+        reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
+        self.assertEqual(reward.forward_velocity, 8.0)
+        self.assertEqual(reward.forward_velocity_sigma_m_s, 0.10)
+        # The primary speed reward is the command Gaussian, not raw progress.
+        self.assertLess(reward.roll_progress, reward.forward_velocity)
 
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(

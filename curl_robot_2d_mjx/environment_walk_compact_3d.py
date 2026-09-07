@@ -185,8 +185,8 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             joints = ps.q[self.joint_qpos_idx]
             root_z = ps.q[2]
             lateral = ps.q[1] - old["initial_y"]
-            errors = gate_errors(jp, joints, root_z, axis_tilt, lateral, target, cfg)
-            quality = pose_potential(jp, joints, root_z, axis_tilt, target, cfg)
+            errors = gate_errors(jp, joints, axis_tilt, lateral, target, cfg)
+            quality = pose_potential(jp, joints, axis_tilt, target, cfg)
             finite = jp.all(jp.isfinite(ps.q)) & jp.all(jp.isfinite(ps.qd))
             eligible = (jp.max(errors) <= 1.0) & finite
             confirm = jp.where(eligible, old["confirm"] + 1, 0)
@@ -218,6 +218,9 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
                 "timeout": timeout.astype(jp.float32),
                 "gate_eligible": eligible.astype(jp.float32),
                 "terminal_gate_error": jp.where(terminal, jp.max(errors), 0.0),
+                "terminal_gate_joint": jp.where(terminal, errors[0], 0.0),
+                "terminal_gate_axis_tilt": jp.where(terminal, errors[1], 0.0),
+                "terminal_gate_lateral": jp.where(terminal, errors[2], 0.0),
                 "terminal_pose_quality": jp.where(terminal, quality, 0.0),
                 "pose_quality": quality,
             }

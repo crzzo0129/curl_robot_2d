@@ -751,6 +751,47 @@ RECIPES_3D = {
             "severe_extra_termination": 50.0,
         },
     },
+    "command_tracking_v1": {
+        "description": (
+            "Straight-line forward-velocity command tracking around the "
+            "phase-locked high-speed reference. The reference amplitude is "
+            "scaled by a target-scale lookup on v_cmd, and the primary speed "
+            "reward is a Gaussian on (v_x - v_cmd), so the policy must match "
+            "the commanded speed instead of always rolling flat out."
+        ),
+        "args": {
+            "reference_weight": 1.0,
+            "minimum_residual_gain": 0.15,
+            "phase_rate_scale": 1.0,
+            "residual_pair_differential_scale": 0.25,
+            "explicit_phase_observation": True,
+            "forward_command_enabled": True,
+            "forward_command_min_m_s": 0.47,
+            "forward_command_max_m_s": 0.80,
+            "learning_rate": 1e-5,
+            "entropy_cost": 2.5e-4,
+            "selection_target_turns": 8.0,
+            "zero_residual_policy_init": True,
+            "initial_policy_std": 0.10,
+        },
+        "reward": {
+            "roll_progress": 1.0,
+            "forward_velocity": 8.0,
+            "forward_velocity_sigma_m_s": 0.10,
+            "roll_mismatch": 0.8,
+            "backward": 1.0,
+            "lateral_velocity": 2.0,
+            "lateral_drift": 3.0,
+            "yaw_rate": 2.0,
+            "yaw": 3.0,
+            "axis_tilt": 10.0,
+            "action_rate": 0.02,
+            "residual_action": 0.01,
+            "failure_progress_clawback": 4.0,
+            "termination": 40.0,
+            "severe_extra_termination": 40.0,
+        },
+    },
 }
 
 
@@ -999,6 +1040,10 @@ PER_STEP_EVAL_METRICS_3D = (
     "lateral_drift_m",
     "lateral_drift_abs_m",
     "lateral_velocity_m_s",
+    "forward_velocity_command",
+    "forward_velocity_m_s",
+    "forward_velocity_error_m_s",
+    "forward_velocity_error_abs_m_s",
     "stability_error_cost",
     "axis_tilt_rad",
     "axis_tilt_step_count",
@@ -1122,12 +1167,16 @@ def _checkpoint_selection_3d(
         "eval/avg_first_turn_forbidden_contact_count",
         forbidden_contact,
     )
+    velocity_error_abs = metrics.get(
+        "eval/avg_forward_velocity_error_abs_m_s", 0.0
+    )
     survival = min(max(average_length / episode_length, 0.0), 1.0)
     turns = roll_total / (2.0 * math.pi)
     progress_quality = min(max(turns / target_turns, -1.0), 1.0)
     nonfailure_quality = 1.0 - min(max(failed_rate, 0.0), 1.0)
     lateral_quality = 1.0 - min(max(lateral_drift / 0.05, 0.0), 1.0)
     tilt_quality = 1.0 - min(max(axis_tilt / 0.25, 0.0), 1.0)
+    command_quality = 1.0 - min(max(velocity_error_abs / 0.10, 0.0), 1.0)
     contact_quality = 1.0 - min(
         max(forbidden_depth / 0.001, 0.0)
         + max(forbidden_contact / 0.05, 0.0),
@@ -1151,7 +1200,8 @@ def _checkpoint_selection_3d(
     elif objective == "balanced":
         score = (
             0.20 * survival
-            + 0.25 * progress_quality
+            + 0.15 * progress_quality
+            + 0.10 * command_quality
             + 0.30 * nonfailure_quality
             + 0.15 * lateral_quality
             + 0.05 * tilt_quality
@@ -1168,6 +1218,7 @@ def _checkpoint_selection_3d(
         or not math.isfinite(forbidden_depth)
         or not math.isfinite(forbidden_contact)
         or not math.isfinite(first_turn_forbidden_contact)
+        or not math.isfinite(velocity_error_abs)
         or not math.isfinite(score)
         or (objective == "contact" and turns < target_turns)
     )
@@ -1182,6 +1233,8 @@ def _checkpoint_selection_3d(
         "turns": turns,
         "lateral_drift_m": lateral_drift,
         "axis_tilt_rad": axis_tilt,
+        "command_quality": command_quality,
+        "forward_velocity_error_abs_m_s": velocity_error_abs,
         "contact_quality": contact_quality,
         "forbidden_contact_count": forbidden_contact,
         "first_turn_forbidden_contact_count": first_turn_forbidden_contact,
@@ -1279,6 +1332,13 @@ def _format_eval_report_3d(
             f"mismatch="
             f"{_metric(metrics, 'eval/avg_mismatch_progress_rad'):+.5f} "
             f"turns/episode={selection['turns']:+.3f}"
+        ),
+        (
+            "  command "
+            f"v_cmd={_metric(metrics, 'eval/avg_forward_velocity_command'):.3f} "
+            f"v_act={_metric(metrics, 'eval/avg_forward_velocity_m_s'):.3f} "
+            f"v_err="
+            f"{_metric(metrics, 'eval/avg_forward_velocity_error_m_s'):+.3f} m/s"
         ),
         (
             "  mean pose "
@@ -1753,6 +1813,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Turning termination threshold on |vy - vy_cmd| (m/s).",
     )
     parser.add_argument(
+        "--forward-command-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Sample a straight-line forward velocity command (v_cmd) at "
+            "reset and scale the reference amplitude by a target-scale "
+            "lookup on v_cmd. Defaults from the selected recipe."
+        ),
+    )
+    parser.add_argument(
+        "--forward-command-min-m-s",
+        type=float,
+        help="Minimum forward velocity command magnitude (m/s).",
+    )
+    parser.add_argument(
+        "--forward-command-max-m-s",
+        type=float,
+        help="Maximum forward velocity command magnitude (m/s).",
+    )
+    parser.add_argument(
+        "--forward-command-fixed-m-s",
+        type=float,
+        help="Fixed forward velocity command (m/s); overrides sampling.",
+    )
+    parser.add_argument(
         "--explicit-phase-observation",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -1916,6 +2001,30 @@ def parse_args(argv=None):
         args.lateral_command_probability = 0.20
     if args.lateral_command_error_limit is None:
         args.lateral_command_error_limit = 0.20
+    if args.forward_command_enabled is None:
+        args.forward_command_enabled = False
+    if args.forward_command_min_m_s is None:
+        args.forward_command_min_m_s = 0.47
+    if args.forward_command_max_m_s is None:
+        args.forward_command_max_m_s = 0.80
+    if args.forward_command_fixed_m_s is None:
+        args.forward_command_fixed_m_s = None
+    for value, name in (
+        (args.forward_command_min_m_s, "--forward-command-min-m-s"),
+        (args.forward_command_max_m_s, "--forward-command-max-m-s"),
+    ):
+        if not math.isfinite(value) or value <= 0.0:
+            parser.error(f"{name} must be finite and positive")
+    if args.forward_command_min_m_s > args.forward_command_max_m_s:
+        parser.error(
+            "--forward-command-min-m-s must not exceed "
+            "--forward-command-max-m-s"
+        )
+    if (
+        args.forward_command_fixed_m_s is not None
+        and not math.isfinite(args.forward_command_fixed_m_s)
+    ):
+        parser.error("--forward-command-fixed-m-s must be finite")
     if args.differential_mean_zero_weight < 0.0:
         parser.error("--differential-mean-zero-weight must be nonnegative")
     if (
@@ -2130,6 +2239,10 @@ def main(argv=None) -> None:
             lateral_command_max=args.lateral_command_max,
             lateral_command_probability=args.lateral_command_probability,
             lateral_command_error_limit=args.lateral_command_error_limit,
+            forward_command_enabled=args.forward_command_enabled,
+            forward_command_min_m_s=args.forward_command_min_m_s,
+            forward_command_max_m_s=args.forward_command_max_m_s,
+            forward_command_fixed_m_s=args.forward_command_fixed_m_s,
             explicit_phase_observation=bool(
                 args.explicit_phase_observation
             ),

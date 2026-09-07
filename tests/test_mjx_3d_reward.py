@@ -18,6 +18,8 @@ def zero_inputs():
         "conservative_progress": zero,
         "mismatch_progress": zero,
         "backward_progress": zero,
+        "forward_velocity": zero,
+        "forward_velocity_command": zero,
         "lateral_velocity": zero,
         "lateral_drift": zero,
         "yaw_rate": zero,
@@ -36,6 +38,7 @@ def zero_inputs():
         "same_side_foot_contact_active": zero,
         "same_side_foot_excess": zero,
         "same_side_foot_max_increment": zero,
+        "same_side_foot_gap": zero,
         "cross_side_foot_contact": zero,
         "roll_potential_positive": zero,
         "failed": zero,
@@ -72,6 +75,30 @@ class MJX3DRewardTest(unittest.TestCase):
         self.assertAlmostEqual(float(terms["roll_progress"]), 0.6)
         self.assertAlmostEqual(float(terms["axis_tilt"]), -0.08)
         self.assertAlmostEqual(float(terms["collision"]), 0.0)
+
+    def test_forward_velocity_reward_tracks_command_gaussian(self) -> None:
+        config = Rolling3DRewardConfig(
+            forward_velocity=8.0,
+            forward_velocity_sigma_m_s=0.10,
+        )
+
+        def term(velocity, command):
+            inputs = zero_inputs()
+            inputs["forward_velocity"] = np.asarray(
+                velocity, dtype=np.float32
+            )
+            inputs["forward_velocity_command"] = np.asarray(
+                command, dtype=np.float32
+            )
+            return float(
+                reward_terms_3d(np, config, inputs)["forward_velocity"]
+            )
+
+        self.assertAlmostEqual(term(0.60, 0.60), 8.0)
+        self.assertAlmostEqual(term(0.70, 0.60), 8.0 * np.exp(-1.0), delta=1e-4)
+        self.assertAlmostEqual(
+            term(0.80, 0.60), 8.0 * np.exp(-4.0), delta=1e-4
+        )
 
     def test_lateral_and_yaw_rewards_use_four_independent_signals(self) -> None:
         config = Rolling3DRewardConfig(

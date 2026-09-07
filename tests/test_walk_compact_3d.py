@@ -184,34 +184,32 @@ class GateMathTest(unittest.TestCase):
         self.walking = np.asarray([0.0, 0.9, 1.15] * 4, dtype=np.float32)
 
     def test_exact_target_has_zero_errors_and_unit_quality(self):
-        errors = gate_errors(np, self.target["joints"], self.target["root_z"],
-                             0.0, 0.0, self.target, self.cfg)
+        errors = gate_errors(np, self.target["joints"], 0.0, 0.0,
+                             self.target, self.cfg)
         self.assertLess(errors.max(), 1e-5)
-        quality = pose_potential(np, self.target["joints"], self.target["root_z"],
-                                 0.0, self.target, self.cfg)
+        quality = pose_potential(np, self.target["joints"], 0.0,
+                                 self.target, self.cfg)
         self.assertAlmostEqual(float(quality), 1.0, places=5)
 
     def test_joint_offset_scales_with_tolerance(self):
         joints = np.asarray(self.target["joints"], dtype=np.float32).copy()
         joints[1] += 0.01  # hip
-        errors = gate_errors(np, joints, self.target["root_z"],
-                             0.0, 0.0, self.target, self.cfg)
+        errors = gate_errors(np, joints, 0.0, 0.0, self.target, self.cfg)
         self.assertAlmostEqual(float(errors[0]), 0.5, places=5)
         self.assertAlmostEqual(float(errors[1]), 0.0, places=5)
 
-    def test_root_height_and_lateral(self):
-        errors = gate_errors(np, self.target["joints"], self.target["root_z"] + 0.02,
-                             0.0, 0.05, self.target, self.cfg)
-        self.assertAlmostEqual(float(errors[1]), 2.0, places=5)
-        self.assertAlmostEqual(float(errors[3]), 1.0, places=5)
+    def test_lateral_scales_with_tolerance(self):
+        errors = gate_errors(np, self.target["joints"], 0.0, 0.05,
+                             self.target, self.cfg)
+        self.assertAlmostEqual(float(errors[2]), 1.0, places=5)
 
     def test_axis_tilt_scales_with_tolerance(self):
-        errors = gate_errors(np, self.target["joints"], self.target["root_z"],
-                             0.0, 0.0, self.target, self.cfg)
-        self.assertAlmostEqual(float(errors[2]), 0.0, places=5)
-        errors = gate_errors(np, self.target["joints"], self.target["root_z"],
-                             0.10, 0.0, self.target, self.cfg)
-        self.assertAlmostEqual(float(errors[2]), 1.0, places=5)
+        errors = gate_errors(np, self.target["joints"], 0.0, 0.0,
+                             self.target, self.cfg)
+        self.assertAlmostEqual(float(errors[1]), 0.0, places=5)
+        errors = gate_errors(np, self.target["joints"], 0.10, 0.0,
+                             self.target, self.cfg)
+        self.assertAlmostEqual(float(errors[1]), 1.0, places=5)
 
     @staticmethod
     def _axis_tilt_np(q):
@@ -234,17 +232,16 @@ class GateMathTest(unittest.TestCase):
     def test_pose_potential_is_not_flat_from_walking(self):
         # Regression: the potential must keep gradient from a walking pose,
         # not collapse to ~0 (which starves the dense pose reward).
-        quality = pose_potential(np, self.walking, 0.158, 0.0,
-                                 self.target, self.cfg)
+        quality = pose_potential(np, self.walking, 0.0, self.target, self.cfg)
         self.assertGreater(float(quality), 0.05)
         self.assertLess(float(quality), 0.95)
 
     def test_dense_pose_reward_negative_and_zero_at_target(self):
-        quality = pose_potential(np, self.target["joints"], self.target["root_z"],
-                                 0.0, self.target, self.cfg)
+        quality = pose_potential(np, self.target["joints"], 0.0,
+                                 self.target, self.cfg)
         self.assertAlmostEqual(float(dense_pose_reward(np, quality, self.cfg)), 0.0,
                                places=6)
-        far = pose_potential(np, self.walking, 0.10, 0.5, self.target, self.cfg)
+        far = pose_potential(np, self.walking, 0.5, self.target, self.cfg)
         self.assertLess(float(dense_pose_reward(np, far, self.cfg)), 0.0)
 
     def test_confirmation_update_contiguity(self):

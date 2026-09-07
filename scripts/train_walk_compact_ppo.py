@@ -60,9 +60,8 @@ def parse_args(argv=None):
     p.add_argument("--budget-s", type=float, default=WalkCompactConfig.budget_s)
     p.add_argument("--confirmation-steps", type=int)
     compact_defaults = WalkCompactConfig()
-    for field in ("joint_position_rad", "root_z_m", "axis_tilt_rad", "lateral_m",
-                  "settling_pose_sigma_rad", "potential_root_height_sigma_m",
-                  "potential_axis_tilt_sigma_rad",
+    for field in ("joint_position_rad", "axis_tilt_rad", "lateral_m",
+                  "settling_pose_sigma_rad", "potential_axis_tilt_sigma_rad",
                   "pose_reward_weight", "success_bonus", "time_cost",
                   "action_change_cost", "torque_cost",
                   "upward_velocity_weight", "upward_velocity_sigma_m_s",
@@ -130,11 +129,9 @@ def build_config(args):
         budget_s=args.budget_s,
         confirmation_steps=args.confirmation_steps,
         joint_position_rad=args.joint_position_rad,
-        root_z_m=args.root_z_m,
         axis_tilt_rad=args.axis_tilt_rad,
         lateral_m=args.lateral_m,
         settling_pose_sigma_rad=args.settling_pose_sigma_rad,
-        potential_root_height_sigma_m=args.potential_root_height_sigma_m,
         potential_axis_tilt_sigma_rad=args.potential_axis_tilt_sigma_rad,
         pose_reward_weight=args.pose_reward_weight,
         success_bonus=args.success_bonus,
@@ -325,7 +322,10 @@ def main(argv=None):
         print(f"[walk-compact PPO] step={step} success={success:.1%} "
               f"failed={failed:.1%} timeout={timeout:.1%} "
               f"pose={clean.get('eval/episode_pose_quality', 0.):.3f} "
-              f"gate={clean.get('eval/episode_gate_eligible', 0.):.3f}", flush=True)
+              f"gate={clean.get('eval/episode_gate_eligible', 0.):.3f} "
+              f"term=[joint={clean.get('eval/episode_terminal_gate_joint', 0.):.2f} "
+              f"tilt={clean.get('eval/episode_terminal_gate_axis_tilt', 0.):.2f} "
+              f"lat={clean.get('eval/episode_terminal_gate_lateral', 0.):.2f}]", flush=True)
 
     print(f"[walk-compact PPO] {args.envs} envs, budget={cfg.budget_s}s "
           f"confirm={cfg.confirmation_steps} steps, snapshots={meta['count']}",

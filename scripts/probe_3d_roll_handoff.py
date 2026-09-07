@@ -387,7 +387,8 @@ class MJXRunner:
                 oscillator_phase=info["oscillator_phase"], rolling_phase=info["rolling_phase"],
                 action_ramp=smoothstep_ramp(jp, ref_time, task.startup_action_ramp_s),
                 lateral_drift=d.qpos[1] - info["initial_root_y"],
-                lateral_velocity_command=info["lateral_velocity_command"])
+                lateral_velocity_command=info["lateral_velocity_command"],
+                forward_velocity_command=info["forward_velocity_command"])
             # Preserve global coordinates, time, counters, warm start, and ALL
             # unchanged teacher history; never reset at a proposed handoff.
             return s.replace(pipeline_state=d, info=info, obs=obs)

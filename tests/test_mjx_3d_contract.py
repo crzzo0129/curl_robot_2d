@@ -36,6 +36,7 @@ from curl_robot_2d_mjx.environment_3d import (
     duplicate_planar_action_3d,
     pair_coupled_residual_action_3d,
     pair_coupled_reset_noise_3d,
+    forward_command_to_target_scale_3d,
     mirror_rolling_observation_3d,
     phase_feedback_observation_3d,
     reference_startup_scale_3d,
@@ -114,7 +115,7 @@ class MJX3DContractTest(unittest.TestCase):
         ):
             self.assertTrue(controller.exists())
         self.assertEqual(len(JOINT_NAMES_3D), ACTION_SIZE_3D)
-        self.assertEqual(OBSERVATION_SIZE_3D, 61)
+        self.assertEqual(OBSERVATION_SIZE_3D, 62)
 
     def test_3d_config_defaults_are_training_smoke_safe(self) -> None:
         config = Rolling3DConfig()
@@ -504,7 +505,8 @@ class MJX3DContractTest(unittest.TestCase):
             [17, 18, 15, 16, 21, 22, 19, 20]
         ])
         self.assertEqual(mirrored[60], -observation[60])
-        np.testing.assert_allclose(mirrored[61:65], observation[61:65])
+        self.assertEqual(mirrored[61], observation[61])
+        np.testing.assert_allclose(mirrored[62:66], observation[62:66])
 
     def test_rolling_observation_mirror_supports_base_observation(self) -> None:
         observation = np.arange(OBSERVATION_SIZE_3D, dtype=np.float32)
@@ -1062,6 +1064,64 @@ class MJX3DContractTest(unittest.TestCase):
             "task.reset_root_velocity_noise",
         ):
             self.assertIn(token, source)
+
+    def test_forward_command_defaults_are_disabled(self) -> None:
+        config = Rolling3DConfig()
+
+        self.assertFalse(config.forward_command_enabled)
+        self.assertEqual(config.forward_command_min_m_s, 0.47)
+        self.assertEqual(config.forward_command_max_m_s, 0.80)
+        self.assertIsNone(config.forward_command_fixed_m_s)
+
+    def test_forward_command_validation(self) -> None:
+        for values in (
+            {"forward_command_enabled": 1},
+            {"forward_command_min_m_s": 0.0},
+            {"forward_command_max_m_s": float("nan")},
+            {"forward_command_min_m_s": 0.9, "forward_command_max_m_s": 0.5},
+            {"forward_command_fixed_m_s": float("inf")},
+        ):
+            with self.subTest(values=values), self.assertRaises(ValueError):
+                validate_3d_config(Rolling3DConfig(**values))
+
+    def test_forward_command_lookup_is_monotonic_and_clamped(self) -> None:
+        scale_low = float(
+            forward_command_to_target_scale_3d(np, np.float32(0.41))
+        )
+        scale_mid = float(
+            forward_command_to_target_scale_3d(np, np.float32(0.60))
+        )
+        scale_high = float(
+            forward_command_to_target_scale_3d(np, np.float32(0.811))
+        )
+        scale_above = float(
+            forward_command_to_target_scale_3d(np, np.float32(1.50))
+        )
+        scale_below = float(
+            forward_command_to_target_scale_3d(np, np.float32(0.0))
+        )
+
+        self.assertLess(scale_low, scale_mid)
+        self.assertLess(scale_mid, scale_high)
+        self.assertAlmostEqual(scale_high, 1.0, places=3)
+        self.assertAlmostEqual(scale_above, 1.0, places=6)
+        self.assertAlmostEqual(scale_below, 0.36, places=6)
+
+    def test_forward_command_lookup_round_trips_scan_points(self) -> None:
+        from curl_robot_2d_mjx.environment_3d import (
+            FORWARD_COMMAND_LOOKUP_SCALES,
+            FORWARD_COMMAND_LOOKUP_SPEEDS_M_S,
+        )
+
+        for scale, speed in zip(
+            FORWARD_COMMAND_LOOKUP_SCALES,
+            FORWARD_COMMAND_LOOKUP_SPEEDS_M_S,
+            strict=True,
+        ):
+            recovered = float(
+                forward_command_to_target_scale_3d(np, np.float32(speed))
+            )
+            self.assertAlmostEqual(recovered, scale, places=3)
 
 
 if __name__ == "__main__":

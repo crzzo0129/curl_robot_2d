@@ -86,6 +86,15 @@ def _summarize_arrays(arrays: dict[str, np.ndarray]) -> dict[str, object]:
         "conservative_turns": _distribution(arrays["conservative_turns"]),
         "rotation_turns": _distribution(arrays["rotation_turns"]),
         "translation_turns": _distribution(arrays["translation_turns"]),
+        "forward_velocity_command_m_s": _distribution(
+            arrays["forward_velocity_command_m_s"]
+        ),
+        "average_forward_velocity_m_s": _distribution(
+            arrays["average_forward_velocity_m_s"]
+        ),
+        "average_forward_velocity_error_abs_m_s": _distribution(
+            arrays["average_forward_velocity_error_abs_m_s"]
+        ),
         "average_lateral_drift_m": _distribution(
             arrays["average_lateral_drift_m"]
         ),
@@ -385,6 +394,14 @@ def parse_args(argv=None):
     parser.add_argument("--lateral-command-error-limit", type=float, default=0.20)
     parser.add_argument("--lateral-command-fixed", type=float)
     parser.add_argument(
+        "--forward-command-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--forward-command-min-m-s", type=float, default=0.47)
+    parser.add_argument("--forward-command-max-m-s", type=float, default=0.80)
+    parser.add_argument("--forward-command-fixed-m-s", type=float)
+    parser.add_argument(
         "--explicit-phase-observation",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -584,6 +601,10 @@ def main(argv=None) -> None:
             lateral_command_probability=args.lateral_command_probability,
             lateral_command_error_limit=args.lateral_command_error_limit,
             lateral_command_fixed=args.lateral_command_fixed,
+            forward_command_enabled=args.forward_command_enabled,
+            forward_command_min_m_s=args.forward_command_min_m_s,
+            forward_command_max_m_s=args.forward_command_max_m_s,
+            forward_command_fixed_m_s=args.forward_command_fixed_m_s,
             explicit_phase_observation=args.explicit_phase_observation,
         ),
     )
@@ -671,6 +692,11 @@ def main(argv=None) -> None:
         conservative = jp.zeros((batch,), dtype=jp.float32)
         rotation = jp.zeros((batch,), dtype=jp.float32)
         translation = jp.zeros((batch,), dtype=jp.float32)
+        forward_velocity_command = jp.zeros((batch,), dtype=jp.float32)
+        forward_velocity_sum = jp.zeros((batch,), dtype=jp.float32)
+        forward_velocity_error_abs_sum = jp.zeros(
+            (batch,), dtype=jp.float32
+        )
         lateral_sum = jp.zeros((batch,), dtype=jp.float32)
         lateral_path = jp.zeros((batch,), dtype=jp.float32)
         previous_lateral = jp.zeros((batch,), dtype=jp.float32)
@@ -728,6 +754,17 @@ def main(argv=None) -> None:
             conservative += weight * state.metrics["roll_progress_rad"]
             rotation += weight * state.metrics["rotation_progress_rad"]
             translation += weight * state.metrics["translation_progress_rad"]
+            forward_velocity_command = jp.where(
+                was_active,
+                state.metrics["forward_velocity_command"],
+                forward_velocity_command,
+            )
+            forward_velocity_sum += (
+                weight * state.metrics["forward_velocity_m_s"]
+            )
+            forward_velocity_error_abs_sum += (
+                weight * state.metrics["forward_velocity_error_abs_m_s"]
+            )
             lateral = state.metrics["lateral_drift_m"]
             lateral_sum += weight * lateral
             lateral_path += weight * jp.abs(lateral - previous_lateral)
@@ -834,6 +871,15 @@ def main(argv=None) -> None:
             "rotation_turns": np.asarray(jax.device_get(rotation * scale)),
             "translation_turns": np.asarray(
                 jax.device_get(translation * scale)
+            ),
+            "forward_velocity_command_m_s": np.asarray(
+                jax.device_get(forward_velocity_command)
+            ),
+            "average_forward_velocity_m_s": np.asarray(
+                jax.device_get(forward_velocity_sum / denominator)
+            ),
+            "average_forward_velocity_error_abs_m_s": np.asarray(
+                jax.device_get(forward_velocity_error_abs_sum / denominator)
             ),
             "average_lateral_drift_m": np.asarray(
                 jax.device_get(lateral_sum / denominator)
@@ -1218,6 +1264,12 @@ def main(argv=None) -> None:
         f"{summary['conservative_turns']['max']:.3f}] "
         f"failed={summary['failure_rate']:.2%} "
         f"timeout={summary['timeout_rate']:.2%}\n"
+        f"  v_cmd median="
+        f"{summary['forward_velocity_command_m_s']['median']:.3f} m/s "
+        f"v_act median="
+        f"{summary['average_forward_velocity_m_s']['median']:.3f} m/s "
+        f"|err| median="
+        f"{summary['average_forward_velocity_error_abs_m_s']['median']:.3f} m/s\n"
         f"  per_rollout={args.out.resolve() / 'eval_arrays.npz'}\n"
         f"  output={args.out.resolve()}",
         flush=True,

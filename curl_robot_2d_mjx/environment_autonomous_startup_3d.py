@@ -165,7 +165,8 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                 action_ramp=smoothstep_ramp(jp, jp.maximum(age - task.physics_timestep, 0),
                                            task.startup_action_ramp_s),
                 lateral_drift=d.qpos[1] - info["initial_root_y"],
-                lateral_velocity_command=info["lateral_velocity_command"])
+                lateral_velocity_command=info["lateral_velocity_command"],
+                forward_velocity_command=info["forward_velocity_command"])
             return b.replace(info=info, obs=obs)
 
         def first_teacher_command(self, prepared):
