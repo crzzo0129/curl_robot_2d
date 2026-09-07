@@ -64,7 +64,7 @@ RUNTIME_OPTION = (
     '<flag eulerdamp="disable"/></option>'
 )
 
-COMPACT_GATE_NAMES = ("joint_position", "root_height", "orientation", "lateral")
+COMPACT_GATE_NAMES = ("joint_position", "root_height", "axis_tilt", "lateral")
 
 # Deploy frame layout, indices 0-based.
 FRAME_GYRO = slice(0, 3)            # base angular velocity, body frame
@@ -170,11 +170,17 @@ class WalkCompactConfig:
     # Time budget from the walking snapshot to a confirmed compact window.
     budget_s: float = 5.0
     confirmation_steps: int = 5
-    # Pose-only terminal gate (velocities are intentionally not gated).
+    # Tight terminal gate (pose-only; velocities are intentionally not gated).
     joint_position_rad: float = 0.02
     root_z_m: float = 0.01
-    orientation_rad: float = 0.05
+    axis_tilt_rad: float = 0.10      # rolling-axis tilt (sideways lean), rad
     lateral_m: float = 0.05
+    # Loose shaping-potential sigmas.  Kept far wider than the gate so the
+    # exp-potential keeps a usable gradient while the pose is still far away
+    # (the tight 0.02 rad gate makes the potential flat from a walking pose).
+    settling_pose_sigma_rad: float = 0.20
+    potential_root_height_sigma_m: float = 0.03
+    potential_axis_tilt_sigma_rad: float = 0.20
     # Rewards.
     pose_reward_weight: float = 0.10
     success_bonus: float = 20.0
@@ -214,39 +220,48 @@ class WalkCompactConfig:
 def compact_target_from_keyframe(key_qpos: np.ndarray,
                                  joint_qpos_indices: np.ndarray,
                                  *,
-                                 root_z: float | None = None,
-                                 quat: np.ndarray | None = None):
+                                 root_z: float | None = None):
     """Policy-order compact target from an MjModel compact keyframe qpos.
 
     key_qpos uses the MuJoCo body-tree qpos order; joint_qpos_indices selects
-    the 12 joint entries in policy order (see policy_joint_names).
+    the 12 joint entries in policy order (see policy_joint_names).  The target
+    carries joints + root height only; body orientation is NOT part of the
+    compact definition (a curled ball is valid at any forward-roll phase), so
+    sideways lean is gated separately via rolling-axis tilt.
     """
     key_qpos = np.asarray(key_qpos, dtype=np.float32)
     joints = np.asarray(key_qpos[joint_qpos_indices], dtype=np.float32).copy()
     return {"joints": joints,
-            "root_z": float(root_z) if root_z is not None else float(key_qpos[2]),
-            "quat": (np.asarray(quat, dtype=np.float32).copy()
-                     if quat is not None else np.asarray(key_qpos[3:7], dtype=np.float32).copy())}
+            "root_z": float(root_z) if root_z is not None else float(key_qpos[2])}
 
 
-def gate_errors(xp, joints, root_z, quat, lateral, target, cfg):
-    """Normalized pose-gate errors: 1.0 == tolerance bound on one component.
+def gate_errors(xp, joints, root_z, axis_tilt, lateral, target, cfg):
+    """Normalized terminal-gate errors: 1.0 == tolerance bound per component.
 
-    joints/root_z/quat/lateral are the CURRENT state expressed in policy order
-    (joints 12-vector) plus root height, root quaternion and lateral offset
-    relative to the episode start.
+    joints is the 12-vector in policy order; axis_tilt is the rolling-axis
+    tilt (arcsin(|world_z . body_y|), i.e. sideways lean) rather than the full
+    body quaternion, so a forward-rolled compact ball is not rejected.
     """
     joint_error = xp.max(xp.abs(joints - target["joints"])) / cfg.joint_position_rad
     height_error = xp.abs(root_z - target["root_z"]) / cfg.root_z_m
-    dot = xp.clip(xp.abs(xp.sum(quat * target["quat"])), 0.0, 1.0)
-    orientation_error = 2.0 * xp.arccos(dot) / cfg.orientation_rad
+    tilt_error = xp.abs(axis_tilt) / cfg.axis_tilt_rad
     lateral_error = xp.abs(lateral) / cfg.lateral_m
-    return xp.stack((joint_error, height_error, orientation_error, lateral_error))
+    return xp.stack((joint_error, height_error, tilt_error, lateral_error))
 
 
-def pose_quality(xp, errors):
-    """0..1 smooth closeness to the compact pose from normalized gate errors."""
-    return xp.exp(-0.5 * xp.mean(xp.square(errors), axis=-1))
+def pose_potential(xp, joints, root_z, axis_tilt, target, cfg):
+    """0..1 smooth closeness using the LOOSE settling sigmas.
+
+    This is the dense shaping signal (not the terminal gate).  Wide sigmas
+    keep the exp-potential non-flat from a walking pose, so the pose reward
+    keeps gradient well before the tight gate can be met.
+    """
+    joint_cost = xp.mean(xp.square(
+        (joints - target["joints"]) / cfg.settling_pose_sigma_rad))
+    height_cost = xp.square((root_z - target["root_z"])
+                            / cfg.potential_root_height_sigma_m)
+    tilt_cost = xp.square(axis_tilt / cfg.potential_axis_tilt_sigma_rad)
+    return xp.exp(-0.5 * (joint_cost + height_cost + tilt_cost) / 3.0)
 
 
 def confirmation_update(xp, previous_id, previous_count, candidate_id, eligible):

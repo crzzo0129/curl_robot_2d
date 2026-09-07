@@ -20,8 +20,10 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     ACTION_SIZE,
     COMMAND_M_S,
     CONTROL_TIMESTEP_S,
+    HISTORY_SIZE,
     OBSERVATION_SIZE,
     PHYSICS_TIMESTEP_S,
+    SINGLE_OBS_SIZE,
     WalkCompactConfig,
     anti_ballistic_costs,
     compact_target_from_keyframe,
@@ -29,7 +31,7 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     gate_errors,
     policy_actuator_names,
     policy_joint_names,
-    pose_quality,
+    pose_potential,
     validate_snapshot_bank,
 )
 
@@ -79,6 +81,13 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
         np.asarray(mj.key_qpos[key_id]), np.asarray(joint_qpos_idx))
     target = {key: jp.asarray(value) for key, value in target.items()}
     stand_z = float(np.asarray(mj.key_qpos[stand_id])[2])
+    # Action -> ctrl follows the repo transition convention: nominal = walking
+    # default pose, asymmetric per-joint scale that reaches the full joint
+    # range (so the compact hip/knee targets are inside [-1, 1] action space).
+    nominal = action["default"]
+    ctrl_low = jp.asarray(np.asarray(mj.actuator_ctrlrange[:, 0], dtype=np.float32))
+    ctrl_high = jp.asarray(np.asarray(mj.actuator_ctrlrange[:, 1], dtype=np.float32))
+    scale = jp.maximum(ctrl_high - nominal, nominal - ctrl_low)
     n_snapshots = int(bank["qpos"].shape[0])
     budget_steps = cfg.episode_steps(CONTROL_TIMESTEP_S)
     command = jp.asarray((COMMAND_M_S, 0.0, 0.0))
@@ -118,7 +127,7 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
                 brax_math.rotate(jp.array((0.0, 0.0, -1.0)), inv_rot),  # proj gravity
                 info["command"],                                        # unscaled cmd
                 desired_z,
-                ps.q[self.joint_qpos_idx] - action["default"],          # joint err
+                ps.q[self.joint_qpos_idx] - nominal,                    # joint err
                 info["last_act"]))
 
         def _push(self, hist, frame):
@@ -136,10 +145,14 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             qpos = bank["qpos"][index]
             qvel = bank["qvel"][index]
             ps = self.pipeline_init(qpos, qvel)
-            hist = bank["hist"][index]
+            # Reuse the recorded walking history but clear the previous-action
+            # term: the transition actor starts with its own empty action
+            # history (same as a controller hot-switch to a fresh policy).
+            hist = bank["hist"][index].reshape((HISTORY_SIZE, SINGLE_OBS_SIZE))
+            hist = hist.at[:, 24:36].set(0.0).reshape(-1)
             info = {
                 "command": command,
-                "last_act": bank["last_action"][index],
+                "last_act": jp.zeros(ACTION_SIZE),
                 "hist": hist,
                 "step": jp.asarray(0, dtype=jp.int32),
                 "confirm": jp.asarray(0, dtype=jp.int32),
@@ -158,19 +171,22 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
         def _step_live(self, state, action_in):
             old = state.info
             action_in = jp.clip(action_in, -1.0, 1.0)
-            ctrl = jp.clip(action["default"] + action_in * action["scale"],
-                           action["lower"], action["upper"])
+            ctrl = jp.clip(nominal + action_in * scale, ctrl_low, ctrl_high)
             ps = self.pipeline_step(state.pipeline_state, ctrl)
             frame = self._frame(ps, old)
             hist = self._push(old["hist"], frame)
 
             # ---------------- pose gate (pose-only, velocities ignored)
             quat = ps.x.rot[0]
-            quat = quat / jp.sqrt(jp.maximum(jp.sum(quat * quat), 1e-12))
+            # Rolling-axis tilt: sideways lean of body-Y out of the horizontal,
+            # invariant to the forward roll that curling onto the shell implies.
+            body_y_world = brax_math.rotate(jp.array((0.0, 1.0, 0.0)), quat)
+            axis_tilt = jp.arcsin(jp.clip(jp.abs(body_y_world[2]), 0.0, 1.0))
+            joints = ps.q[self.joint_qpos_idx]
+            root_z = ps.q[2]
             lateral = ps.q[1] - old["initial_y"]
-            errors = gate_errors(jp,
-                ps.q[self.joint_qpos_idx], ps.q[2], quat, lateral, target, cfg)
-            quality = pose_quality(jp, errors)
+            errors = gate_errors(jp, joints, root_z, axis_tilt, lateral, target, cfg)
+            quality = pose_potential(jp, joints, root_z, axis_tilt, target, cfg)
             finite = jp.all(jp.isfinite(ps.q)) & jp.all(jp.isfinite(ps.qd))
             eligible = (jp.max(errors) <= 1.0) & finite
             confirm = jp.where(eligible, old["confirm"] + 1, 0)
@@ -181,7 +197,6 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             terminal = failed | timeout | success
 
             # ---------------- rewards
-            root_z = ps.q[2]
             upward_parts, upward = anti_ballistic_costs(jp,
                 ps.xd.vel[0, 2], root_z, ps.xd.ang[0],
                 stand_z=stand_z, compact_z=target["root_z"], cfg=cfg)

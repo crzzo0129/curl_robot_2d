@@ -846,6 +846,23 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         )
     distance_x = float(values[-1, 0] - start_x)
     distance_y = float(values[-1, 1] - start_y)
+    translation_speed_m_s = distance_x / max(elapsed, 1.0e-9)
+    rolling_speed_m_s = (
+        rolling_phase
+        * FIXED_PARAMETERS.shell_contact_radius
+        / max(elapsed, 1.0e-9)
+    )
+    rolling_translation_slip_m_s = rolling_speed_m_s - translation_speed_m_s
+    tail_start_step = max(0, int(0.75 * len(values)))
+    final_quarter_elapsed = max(elapsed - tail_start_step * control_dt, 1.0e-9)
+    final_quarter_x_speed_m_s = (
+        values[-1, 0] - values[tail_start_step, 0]
+    ) / final_quarter_elapsed
+    maximum_self_penetration_m = (
+        max(self_contact_pair_max_penetration.values())
+        if self_contact_pair_max_penetration
+        else 0.0
+    )
     unwrapped_heading = np.unwrap(values[:, 16])
     heading_change = float(unwrapped_heading[-1] - unwrapped_heading[0])
     status = "failed" if nonfinite else "ok"
@@ -886,6 +903,12 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         "oscillator_rate_max_rad_s": float(np.max(values[:, 15])),
         "distance_x_m": distance_x,
         "distance_y_m": distance_y,
+        "mean_x_speed_m_s": translation_speed_m_s,
+        "final_quarter_x_speed_m_s": final_quarter_x_speed_m_s,
+        "rolling_speed_m_s": rolling_speed_m_s,
+        "translation_speed_m_s": translation_speed_m_s,
+        "rolling_translation_slip_m_s": rolling_translation_slip_m_s,
+        "maximum_self_penetration_m": maximum_self_penetration_m,
         "rolling_axis_heading_change_rad": heading_change,
         "rolling_axis_heading_rate_rad_s": heading_change / max(elapsed, 1.0e-9),
         "rolling_axis_elevation_rms_rad": float(

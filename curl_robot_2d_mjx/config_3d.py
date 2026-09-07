@@ -90,6 +90,13 @@ class Rolling3DConfig:
     lateral_command_probability: float = 0.20
     lateral_command_error_limit: float = 0.20
     lateral_command_fixed: float | None = None
+    # Straight-line forward-velocity command (v_cmd). When enabled the CEM
+    # reference amplitude is scaled by a target-scale lookup on v_cmd, so the
+    # reference shape stays the same while the commanded rolling speed changes.
+    forward_command_enabled: bool = False
+    forward_command_min_m_s: float = 0.47
+    forward_command_max_m_s: float = 0.80
+    forward_command_fixed_m_s: float | None = None
     explicit_phase_observation: bool = False
     direct_effective_action: bool = False
     disable_root_damping: bool = True
@@ -247,6 +254,22 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         config.lateral_command_fixed
     ):
         raise ValueError("lateral_command_fixed must be finite")
+    if not isinstance(config.forward_command_enabled, bool):
+        raise ValueError("forward_command_enabled must be boolean")
+    for value, name in (
+        (config.forward_command_min_m_s, "forward_command_min_m_s"),
+        (config.forward_command_max_m_s, "forward_command_max_m_s"),
+    ):
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive")
+    if config.forward_command_min_m_s > config.forward_command_max_m_s:
+        raise ValueError(
+            "forward_command_min_m_s must not exceed forward_command_max_m_s"
+        )
+    if config.forward_command_fixed_m_s is not None and not math.isfinite(
+        config.forward_command_fixed_m_s
+    ):
+        raise ValueError("forward_command_fixed_m_s must be finite")
     if not isinstance(config.explicit_phase_observation, bool):
         raise ValueError("explicit_phase_observation must be boolean")
     if not isinstance(config.direct_effective_action, bool):

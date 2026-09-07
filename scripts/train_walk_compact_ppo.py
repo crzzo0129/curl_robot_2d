@@ -60,7 +60,9 @@ def parse_args(argv=None):
     p.add_argument("--budget-s", type=float, default=WalkCompactConfig.budget_s)
     p.add_argument("--confirmation-steps", type=int)
     compact_defaults = WalkCompactConfig()
-    for field in ("joint_position_rad", "root_z_m", "orientation_rad", "lateral_m",
+    for field in ("joint_position_rad", "root_z_m", "axis_tilt_rad", "lateral_m",
+                  "settling_pose_sigma_rad", "potential_root_height_sigma_m",
+                  "potential_axis_tilt_sigma_rad",
                   "pose_reward_weight", "success_bonus", "time_cost",
                   "action_change_cost", "torque_cost",
                   "upward_velocity_weight", "upward_velocity_sigma_m_s",
@@ -129,8 +131,11 @@ def build_config(args):
         confirmation_steps=args.confirmation_steps,
         joint_position_rad=args.joint_position_rad,
         root_z_m=args.root_z_m,
-        orientation_rad=args.orientation_rad,
+        axis_tilt_rad=args.axis_tilt_rad,
         lateral_m=args.lateral_m,
+        settling_pose_sigma_rad=args.settling_pose_sigma_rad,
+        potential_root_height_sigma_m=args.potential_root_height_sigma_m,
+        potential_axis_tilt_sigma_rad=args.potential_axis_tilt_sigma_rad,
         pose_reward_weight=args.pose_reward_weight,
         success_bonus=args.success_bonus,
         time_cost=args.time_cost,

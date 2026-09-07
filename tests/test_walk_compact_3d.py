@@ -37,7 +37,7 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     gate_errors,
     policy_actuator_names,
     policy_joint_names,
-    pose_quality,
+    pose_potential,
     prepare_runtime_xml,
     validate_snapshot_bank,
     write_no_self_collision_variant,
@@ -173,47 +173,79 @@ class ContractTest(unittest.TestCase):
 class GateMathTest(unittest.TestCase):
     def setUp(self):
         self.cfg = WalkCompactConfig()
-        self.target = {"joints": np.asarray([0.0, 0.9, 1.15] * 4, dtype=np.float32),
-                       "root_z": 0.1663, "quat": np.asarray([1.0, 0.0, 0.0, 0.0])}
+        # compact target in policy order FL,FR,RL,RR x abd,hip,knee:
+        self.target = {"joints": np.asarray(
+            [-0.1745, 0.1108, 0.9093,
+             -0.1745, 0.1108, 0.9093,
+             0.1745, 0.1108, 0.9093,
+             0.1745, 0.1108, 0.9093], dtype=np.float32),
+            "root_z": 0.1663}
+        # walking default pose (also the transition action nominal)
+        self.walking = np.asarray([0.0, 0.9, 1.15] * 4, dtype=np.float32)
 
     def test_exact_target_has_zero_errors_and_unit_quality(self):
         errors = gate_errors(np, self.target["joints"], self.target["root_z"],
-                             self.target["quat"], 0.0, self.target, self.cfg)
+                             0.0, 0.0, self.target, self.cfg)
         self.assertLess(errors.max(), 1e-5)
-        self.assertAlmostEqual(float(pose_quality(np, errors)), 1.0, places=5)
+        quality = pose_potential(np, self.target["joints"], self.target["root_z"],
+                                 0.0, self.target, self.cfg)
+        self.assertAlmostEqual(float(quality), 1.0, places=5)
 
     def test_joint_offset_scales_with_tolerance(self):
         joints = np.asarray(self.target["joints"], dtype=np.float32).copy()
-        joints[1] += 0.01
+        joints[1] += 0.01  # hip
         errors = gate_errors(np, joints, self.target["root_z"],
-                             self.target["quat"], 0.0, self.target, self.cfg)
+                             0.0, 0.0, self.target, self.cfg)
         self.assertAlmostEqual(float(errors[0]), 0.5, places=5)
         self.assertAlmostEqual(float(errors[1]), 0.0, places=5)
 
     def test_root_height_and_lateral(self):
         errors = gate_errors(np, self.target["joints"], self.target["root_z"] + 0.02,
-                             self.target["quat"], 0.05, self.target, self.cfg)
+                             0.0, 0.05, self.target, self.cfg)
         self.assertAlmostEqual(float(errors[1]), 2.0, places=5)
         self.assertAlmostEqual(float(errors[3]), 1.0, places=5)
 
-    def test_orientation_signedness_invariant(self):
-        flipped = np.asarray([-1.0, 0.0, 0.0, 0.0])
+    def test_axis_tilt_scales_with_tolerance(self):
         errors = gate_errors(np, self.target["joints"], self.target["root_z"],
-                             flipped, 0.0, self.target, self.cfg)
+                             0.0, 0.0, self.target, self.cfg)
         self.assertAlmostEqual(float(errors[2]), 0.0, places=5)
-        tilted = np.asarray([np.cos(0.05), np.sin(0.05), 0.0, 0.0])
         errors = gate_errors(np, self.target["joints"], self.target["root_z"],
-                             tilted, 0.0, self.target, self.cfg)
-        self.assertAlmostEqual(float(errors[2]), 2.0, places=4)
+                             0.10, 0.0, self.target, self.cfg)
+        self.assertAlmostEqual(float(errors[2]), 1.0, places=5)
+
+    @staticmethod
+    def _axis_tilt_np(q):
+        w, x, y, z = q
+        # world_z component of body-Y = R[2][1] = 2(yz + wx) for wxyz quaternion
+        body_y_z = 2.0 * (y * z + w * x)
+        return np.arcsin(np.clip(np.abs(body_y_z), 0.0, 1.0))
+
+    def test_axis_tilt_invariant_to_forward_roll(self):
+        import math
+        self.assertAlmostEqual(self._axis_tilt_np([1.0, 0.0, 0.0, 0.0]), 0.0,
+                               places=6)
+        # 90 deg forward roll about body Y: sideways lean stays zero
+        q = [math.cos(math.pi / 4), 0.0, math.sin(math.pi / 4), 0.0]
+        self.assertAlmostEqual(self._axis_tilt_np(q), 0.0, places=6)
+        # 30 deg sideways lean about body X: tilt == 30 deg
+        q = [math.cos(math.pi / 12), math.sin(math.pi / 12), 0.0, 0.0]
+        self.assertAlmostEqual(self._axis_tilt_np(q), math.pi / 6, places=6)
+
+    def test_pose_potential_is_not_flat_from_walking(self):
+        # Regression: the potential must keep gradient from a walking pose,
+        # not collapse to ~0 (which starves the dense pose reward).
+        quality = pose_potential(np, self.walking, 0.158, 0.0,
+                                 self.target, self.cfg)
+        self.assertGreater(float(quality), 0.05)
+        self.assertLess(float(quality), 0.95)
 
     def test_dense_pose_reward_negative_and_zero_at_target(self):
-        errors = gate_errors(np, self.target["joints"], self.target["root_z"],
-                             self.target["quat"], 0.0, self.target, self.cfg)
-        quality = pose_quality(np, errors)
+        quality = pose_potential(np, self.target["joints"], self.target["root_z"],
+                                 0.0, self.target, self.cfg)
         self.assertAlmostEqual(float(dense_pose_reward(np, quality, self.cfg)), 0.0,
                                places=6)
-        far = np.zeros_like(errors) + 5.0
-        self.assertLess(float(dense_pose_reward(np, pose_quality(np, far), self.cfg)), 0.0)
+        far = pose_potential(np, self.walking, 0.10, 0.5, self.target, self.cfg)
+        self.assertLess(float(dense_pose_reward(np, far, self.cfg)), 0.0)
 
     def test_confirmation_update_contiguity(self):
         count = 0
@@ -363,6 +395,24 @@ class MujocoContractTest(unittest.TestCase):
         deg = np.degrees(target["joints"]).reshape(4, 3)
         self.assertAlmostEqual(deg[0, 0], -10.0, places=3)
         self.assertAlmostEqual(target["root_z"], 0.1663, places=3)
+
+    def test_compact_ctrl_is_reachable_in_transition_action_space(self):
+        # Regression: the walking action scales (0.17/0.5/0.5) could not reach
+        # the compact hip target; the transition asymmetric scale must.
+        import mujoco
+        model = mujoco.MjModel.from_xml_path(str(PROJECT_ROOT / MESH_XML_REL))
+        nominal = np.asarray([0.0, 0.9, 1.15] * 4)  # walking default, policy order
+        low = np.asarray(model.actuator_ctrlrange[:, 0])
+        high = np.asarray(model.actuator_ctrlrange[:, 1])
+        scale = np.maximum(high - nominal, nominal - low)
+        compact = np.asarray(model.key_ctrl[mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_KEY, "compact")])
+        action = (compact - nominal) / scale
+        self.assertTrue((np.abs(action) <= 1.0 + 1e-4).all(),
+                        msg=f"unreachable action {action}")
+        # old walking fixed scale is provably insufficient (documents the bug)
+        old_scale = np.asarray([0.17, 0.5, 0.5] * 4)
+        self.assertTrue((np.abs((compact - nominal) / old_scale) > 1.0).any())
 
     def test_variant_has_ground_only_geoms_no_self_collision(self):
         import mujoco

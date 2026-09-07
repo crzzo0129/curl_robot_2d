@@ -9,6 +9,7 @@ REWARD_3D_TERM_NAMES = (
     "roll_progress",
     "roll_mismatch",
     "backward",
+    "forward_velocity",
     "lateral_velocity",
     "lateral_drift",
     "yaw_rate",
@@ -36,6 +37,8 @@ class Rolling3DRewardConfig:
     roll_progress: float = 6.0
     roll_mismatch: float = 0.8
     backward: float = 1.5
+    forward_velocity: float = 0.0
+    forward_velocity_sigma_m_s: float = 0.10
     lateral_velocity: float = 1.0
     lateral_velocity_sigma_m_s: float = 0.20
     lateral_drift: float = 0.5
@@ -176,6 +179,13 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         "roll_progress": config.roll_progress * clipped_progress,
         "roll_mismatch": -config.roll_mismatch * inputs["mismatch_progress"],
         "backward": -config.backward * inputs["backward_progress"],
+        "forward_velocity": config.forward_velocity * xp.exp(
+            -xp.square(
+                inputs["forward_velocity"]
+                - inputs["forward_velocity_command"]
+            )
+            / config.forward_velocity_sigma_m_s**2
+        ),
         "lateral_velocity": config.lateral_velocity * xp.exp(
             -xp.square(inputs["lateral_velocity"])
             / config.lateral_velocity_sigma_m_s**2
