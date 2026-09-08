@@ -1,0 +1,35 @@
+{
+  "xml": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\assets\\rollingquad_description_2\\mjcf\\rollingquad_abd10.xml",
+  "controller": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\results\\rollingquad_abd10_high_speed_zero_contact_refine_smoke\\01_zero_contact_speed_refine\\best_phase_controller.json",
+  "physics_profile": "cg20",
+  "kp": 5.0,
+  "kd": 0.1,
+  "torque_limit": 3.0,
+  "front_abduction_deg": -10.0,
+  "rear_abduction_deg": 10.0,
+  "oscillator_rate_rad_s": 3.8745926492619844,
+  "oscillator_period_s": 1.6216376470895282,
+  "oscillator_coupling_per_s": 8.0,
+  "cycles": 20,
+  "warmup_s": 2.0,
+  "control_dt": 0.02,
+  "recorded_steps": 1622,
+  "record_duration_s": 32.43275294179056,
+  "total_rolling_turns": 42.5976964239616,
+  "joint_names": [
+    "front_left_hip",
+    "front_left_knee",
+    "front_right_hip",
+    "front_right_knee",
+    "rear_left_hip",
+    "rear_left_knee",
+    "rear_right_hip",
+    "rear_right_knee"
+  ],
+  "abduction_joint_names": [
+    "front_left_hip_abduction",
+    "front_right_hip_abduction",
+    "rear_left_hip_abduction",
+    "rear_right_hip_abduction"
+  ]
+}

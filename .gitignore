@@ -56,6 +56,11 @@ results/**
 !results/rollingquad_abd10_speed_discovery_zero_contact/01_speed_discovery_zero_contact/
 !results/rollingquad_abd10_speed_discovery_zero_contact/01_speed_discovery_zero_contact/best_phase_controller.json
 
+# Version the CEM cycle dataset required by stand-to-roll BC and PPO training.
+!results/cem_cycle_data/
+!results/cem_cycle_data/cem_cycles.npz
+!results/cem_cycle_data/cem_cycles.json
+
 # Version the validated rolling-reset dataset required by stopping PPO.
 # Other rolling-stop searches, reports, and generated terminal states remain local.
 !results/rolling_stop/
