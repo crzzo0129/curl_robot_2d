@@ -1,5 +1,38 @@
 # Stand-to-roll v2 cloud validation
 
+## Optional minimal DAgger before PPO
+
+```bash
+python -m scripts.train_stand_to_roll_dagger \
+  --bc-params results/stand_to_roll_v2/bc/bc_params \
+  --out results/stand_to_roll_dagger
+```
+
+This is a separate, untested-locally experiment. It keeps the v2 normalization
+and actor layout. Its teacher uses nearest-phase recorded NEXT CEM actions;
+it is an approximation, not the original oscillator or a learned recovery
+controller. Both nominal and small-perturbation teacher rollouts must achieve
+80% sustained success with <=20% failures before training starts. If status is
+teacher_gate_failed, the reference cannot supervise recovery reliably under
+this setup; no training or replacement checkpoint is produced.
+
+Three rounds collect at teacher intervention probabilities 0.5, 0.25 and 0.
+Labels farther than matcher distance 3 are excluded. Each update mixes 50%
+original BC data and 50% aggregated student-visited data. These are discrete
+teacher interventions during sampling, not action blending or deployment
+control switching. Pure-student evaluations select updates; independent final
+seeds compare baseline/candidate with identical small-perturbation resets.
+
+Only status=passed exports bc_params, requiring >=80% sustained success,
+<=20% failures and improvement over baseline on the final seed batch. This is
+finite-sample cloud evidence, not a guarantee of deployment performance.
+For student_gate_failed, the original BC is left untouched.
+
+Use the resulting results/stand_to_roll_dagger/bc_params for a NEW rolling_orbit
+PPO run and consistently for every later stage. Do not restore checkpoints
+trained with the old BC file. See dagger_summary.json for both teacher gates,
+baseline, round decisions and final independent evaluations.
+
 Run from `curl_robot_2d` in the Linux MJX environment. These changes have NOT
 been tested locally. Keep the old runs for comparison. Do not reuse v1 BC or
 PPO checkpoints: v2 changes label alignment and observation preprocessing.
