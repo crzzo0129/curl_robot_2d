@@ -68,6 +68,12 @@ results/**
 !results/walk_start_snapshots_0p4/walk_start_snapshots.npz
 !results/walk_start_snapshots_0p4/walk_start_snapshots_meta.json
 
+# Version the +90° Roll-to-Stand handoff banks required by residual/absolute
+# dynamic roll-to-stand training (scripts.collect_reference_roll_to_stand).
+!results/roll_to_stand_reference_residual/
+!results/roll_to_stand_reference_residual/handoffs_*.npz
+!results/roll_to_stand_reference_residual/handoffs_*.summary.json
+
 # Local training services and logs.
 wandb/
 ppo_logs/

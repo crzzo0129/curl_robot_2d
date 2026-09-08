@@ -1,0 +1,141 @@
+{
+  "source_kind": "handcrafted_roll_to_stand_90_reference",
+  "status": "ok",
+  "reference_path": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\results\\rollingquad_abd10_high_speed_zero_contact_refine_smoke\\01_zero_contact_speed_refine\\best_phase_controller.json",
+  "reference_sha256": "3cafc56df34dffddc7cb3ec00be0626de99605fd7f0f6a07d6b71d25c1cf2c60",
+  "model": "C:\\Users\\12481\\Desktop\\OH-WorkSpace\\robot_description\\curl_robot_2d\\assets\\rollingquad_description_2\\mjcf\\rollingquad_abd10_no_self_collision.xml",
+  "mesh_used": true,
+  "trigger_pitch_deg": 90.0,
+  "deploy_duration_s": 0.15,
+  "stand_abduction_deg": [
+    0.0,
+    0.0,
+    0.0,
+    0.0
+  ],
+  "seed": 0,
+  "first_turn": 1,
+  "samples": 8,
+  "task": {
+    "geometry": "rollingquad_2_abd10_no_self_collision",
+    "dynamic_roll_to_stand": true,
+    "handcrafted_reference_residual": true,
+    "stand_abduction_zero": true,
+    "reference_deploy_duration_s": 0.15,
+    "reference_residual_scale": 0.35,
+    "stand_verification_s": 2.0,
+    "physics_profile": "accurate",
+    "curriculum_stage": "brake_full",
+    "walking_start_keyframe": "stand",
+    "walking_start_height_offset_m": 0.0005,
+    "physics_timestep": 0.001,
+    "action_repeat": 20,
+    "episode_length": 500,
+    "solver_name": "newton",
+    "integrator_name": "implicitfast",
+    "cone_name": "elliptic",
+    "jacobian_name": "dense",
+    "solver_iterations": 20,
+    "solver_ls_iterations": 10,
+    "geom_friction_scale": 1.0,
+    "floor_friction_scale": 1.0,
+    "floor_contact_friction_override": false,
+    "body_mass_scale": 1.0,
+    "body_mass_left_scale": 1.0,
+    "body_mass_right_scale": 1.0,
+    "actuator_gain_scale": 1.0,
+    "disable_root_damping": true,
+    "action_range_fraction": 1.0,
+    "brake_timeout_s": 2.5,
+    "deploy_timeout_s": 3.0,
+    "deploy_gate_linear_speed_m_s": 0.35,
+    "deploy_gate_angular_speed_rad_s": 2.5,
+    "deploy_gate_tilt_rad": 1.2,
+    "deploy_gate_hold_s": 0.08,
+    "stabilize_min_s": 0.25,
+    "ready_hold_s": 1.0,
+    "ready_linear_speed_m_s": 0.12,
+    "ready_angular_speed_rad_s": 0.45,
+    "ready_upright_tilt_rad": 0.22,
+    "ready_joint_error_rad": 0.2,
+    "ready_root_height_min_m": 0.1280029248,
+    "ready_root_height_max_m": 0.1930029248,
+    "ready_min_foot_contacts": 3,
+    "failure_root_height_min_m": 0.09,
+    "failure_root_height_max_m": 0.55,
+    "stabilize_failure_grace_s": 0.3,
+    "stabilize_bad_support_hold_s": 0.25,
+    "stabilize_failure_root_height_min_m": 0.12,
+    "stabilize_failure_joint_error_rad": 0.65,
+    "stabilize_failure_tilt_rad": 0.65,
+    "stabilize_failure_min_foot_contacts": 2,
+    "reset_start_mode": 0,
+    "reset_compact_fraction_range": [
+      0.0,
+      0.0
+    ],
+    "reset_joint_noise_rad": 0.0,
+    "reset_joint_velocity_rad_s": 0.0,
+    "reset_linear_speed_m_s": 0.0,
+    "reset_angular_speed_rad_s": 0.0,
+    "reset_tilt_rad": 0.0,
+    "reset_roll_phase_range_rad": [
+      0.0,
+      0.0
+    ],
+    "roll_snapshots_path": null,
+    "snapshot_tail_fraction": 1.0,
+    "snapshot_min_turns": 1.0,
+    "snapshot_max_turns": null,
+    "snapshot_roll_direction": 1,
+    "snapshot_phase_bins": 8,
+    "observation_noise_enabled": true,
+    "observation_noise_level": 1.0,
+    "observation_noise_velocity": 0.2,
+    "observation_noise_gravity": 0.05,
+    "observation_noise_joint_position": 0.01,
+    "observation_limit": 100.0
+  },
+  "handoffs": [
+    {
+      "time_s": 2.5939999999998253,
+      "pitch_deg": 89.89983859092851,
+      "turns": 1.751463636974784
+    },
+    {
+      "time_s": 3.3929999999997373,
+      "pitch_deg": 89.97030075574331,
+      "turns": 2.751329953557253
+    },
+    {
+      "time_s": 4.17699999999973,
+      "pitch_deg": 89.78006598473624,
+      "turns": 3.7518568200207616
+    },
+    {
+      "time_s": 4.960999999999991,
+      "pitch_deg": 89.76094151683579,
+      "turns": 4.751906826058112
+    },
+    {
+      "time_s": 5.746000000000254,
+      "pitch_deg": 89.67729832298767,
+      "turns": 5.7521346417375545
+    },
+    {
+      "time_s": 6.531000000000516,
+      "pitch_deg": 89.59342094521496,
+      "turns": 6.7523708519435095
+    },
+    {
+      "time_s": 7.3150000000007775,
+      "pitch_deg": 89.5597839293263,
+      "turns": 7.752461591950841
+    },
+    {
+      "time_s": 8.098000000000951,
+      "pitch_deg": 89.92205094919693,
+      "turns": 8.751451975686106
+    }
+  ]
+}
