@@ -42,8 +42,8 @@ def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--xml", type=Path, default=MODEL)
     p.add_argument("--reference", type=Path, default=REFERENCE)
-    p.add_argument("--trigger-pitch-deg", type=float, default=90.0,
-                   help="long axis vertical=90; Stand torso orientation=0")
+    p.add_argument("--trigger-pitch-deg", type=float, default=0.0,
+                   help="nose-up positive; Stand torso orientation=0")
     p.add_argument("--lead-deg", type=float, default=15.0)
     p.add_argument("--deploy-duration", type=float, default=0.15)
     p.add_argument("--min-roll-duration", type=float, default=2.0)
@@ -85,6 +85,7 @@ def run(args):
             ("front_left", "front_right", "rear_left", "rear_right")}
     mujoco.mj_forward(model, data)
     phase = rolled = 0.0
+    previous_in_window = False
     trigger = None
     start_ctrl = None
     dt = float(model.opt.timestep)
@@ -116,17 +117,22 @@ def run(args):
             while True:
                 tick = time.perf_counter()
                 rotation = data.xmat[torso].reshape(3, 3)
-                pitch = math.atan2(-rotation[2, 0], rotation[2, 2])
+                # Nose-up positive: +body-y angular velocity lowers the nose.
+                pitch = math.atan2(rotation[2, 0], rotation[2, 2])
                 if trigger is None:
                     if data.time >= args.max_roll_duration:
                         break
+                    in_window = near_target(pitch, -float(data.qvel[4]), math.radians(args.trigger_pitch_deg), math.radians(args.lead_deg))
+                    # Trigger on entering the early window, never midway
+                    # through it merely because the warmup just expired.
                     if (data.time >= args.min_roll_duration and abs(rolled) >= args.min_roll_turns * 2 * math.pi
-                            and near_target(pitch, float(data.qvel[4]), math.radians(args.trigger_pitch_deg), math.radians(args.lead_deg))):
+                            and in_window and not previous_in_window):
                         trigger = dict(time_s=float(data.time), pitch_deg=math.degrees(pitch),
-                                       angular_speed_rad_s=float(data.qvel[4]), turns=rolled / (2 * math.pi),
+                                       angular_speed_rad_s=float(data.qvel[4]), pitch_rate_rad_s=-float(data.qvel[4]), turns=rolled / (2 * math.pi),
                                        qpos=data.qpos.tolist(), qvel=data.qvel.tolist(), ctrl=data.ctrl.tolist())
                         start_ctrl = data.ctrl.copy()
                         print("[trigger] " + json.dumps(trigger), flush=True)
+                    previous_in_window = in_window
                 if trigger is None:
                     phase = float(advance_oscillator(np, rolled, phase, dt, reference))
                     data.ctrl[aids] = _target_for_phase(phase, reference, 1., 0., .25, 0., .25, data.time, low, high)
@@ -183,7 +189,7 @@ def run(args):
         if renderer is not None:
             renderer.close()
     summary = dict(model=str(args.xml.resolve()), reference=str(args.reference.resolve()),
-                   trigger=trigger, trigger_target_deg=args.trigger_pitch_deg, lead_deg=args.lead_deg,
+                   trigger=trigger, pitch_convention="nose_up_positive", trigger_target_deg=args.trigger_pitch_deg, lead_deg=args.lead_deg,
                    deploy_duration_s=args.deploy_duration, stand_keyframe=args.stand_keyframe,
                    longest_stable_stand_s=longest_stand, stable_stand_success=longest_stand >= 1.,
                    final_height_m=float(data.qpos[2]), final_tilt_deg=math.degrees(tilt),
