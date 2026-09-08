@@ -13,6 +13,7 @@ a clear message when JAX/MJX is unavailable.
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 import json
 import math
 from pathlib import Path
@@ -142,17 +143,15 @@ def run_mjx(task: Transition3DConfig, handoffs: dict, seed: int):
     from curl_robot_2d_mjx.environment_transition_3d import make_brax_transition_env_3d
 
     env = make_brax_transition_env_3d(task, seed=seed)
-    reset = jax.jit(env.reset)
     takeover = jax.jit(env.reset_from_roll_state)
     step = jax.jit(env.step)
 
     num_policy_steps = max(1, int(math.ceil(task.reference_deploy_duration_s / task.control_timestep)))
-    template = reset(jax.random.PRNGKey(seed))
     zero_action = jp.zeros((env.action_size,), dtype=jp.float32)
 
     rows = []
     for index in range(len(handoffs["qpos"])):
-        data = template.pipeline_state.replace(
+        data = env.base_data.replace(
             qpos=jp.asarray(handoffs["qpos"][index]),
             qvel=jp.asarray(handoffs["qvel"][index]),
             ctrl=jp.asarray(handoffs["ctrl"][index]),
@@ -255,8 +254,11 @@ def main(argv=None):
     }
 
     if not args.cpu_only:
-        for label, bank in handoffs.items():
-            mjx_result = run_mjx(task, bank, args.seed)
+        for label, path in (("train", args.train), ("eval", args.eval)):
+            # The transition env requires roll_snapshots_path on any
+            # dynamic/handcrafted task; point it at the bank being evaluated.
+            bank_task = replace(task, roll_snapshots_path=str(path.resolve()))
+            mjx_result = run_mjx(bank_task, handoffs[label], args.seed)
             report.setdefault("runtime", mjx_result["runtime"])
             comparison = compare(cpu_rows[label], mjx_result["rows"])
             report[f"comparison_{label}"] = comparison
