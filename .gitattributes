@@ -1,0 +1,4 @@
+# Keep the abd10 no-self-collision model byte-identical across platforms so
+# ROLL-snapshot bank model_xml_sha256 checks agree on Windows (CRLF) and Linux
+# (LF) checkouts. Other model XMLs are intentionally left as-is for now.
+assets/rollingquad_description_2/mjcf/rollingquad_abd10_no_self_collision.xml text eol=lf
