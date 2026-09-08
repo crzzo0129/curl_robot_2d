@@ -101,9 +101,9 @@ class ConfigTest(unittest.TestCase):
     def test_success_is_state_space_target(self):
         cfg = WalkCompactConfig()
         self.assertEqual(cfg.joint_position_rad, 0.10)
-        # success also gates orientation, base velocity, base angular velocity,
-        # and root height -- not just joint pose
-        self.assertEqual(cfg.orientation_rad, 0.30)
+        # success gates sideways lean (roll), base velocity, base angular
+        # velocity, and root height -- forward pitch is intentionally free
+        self.assertEqual(cfg.roll_rad, 0.30)
         self.assertEqual(cfg.base_linear_velocity_m_s, 0.30)
         self.assertEqual(cfg.base_angular_velocity_rad_s, 1.00)
         self.assertEqual(cfg.root_z_min_m, 0.10)
@@ -207,9 +207,9 @@ class GateMathTest(unittest.TestCase):
         # walking default pose (also the transition action nominal)
         self.walking = np.asarray([0.0, 0.9, 1.15] * 4, dtype=np.float32)
 
-    def _gate(self, joints=None, roll=0.0, pitch=0.0, vel=0.0, ang=0.0, root_z=0.14):
+    def _gate(self, joints=None, roll=0.0, vel=0.0, ang=0.0, root_z=0.14):
         joints = self.target["joints"] if joints is None else joints
-        return gate_errors(np, joints, roll, pitch, vel, ang, root_z,
+        return gate_errors(np, joints, roll, vel, ang, root_z,
                            self.target, stand_z=0.158, cfg=self.cfg)
 
     def test_joint_cost_zero_at_target_and_pose_reward_bounded(self):
@@ -254,13 +254,11 @@ class GateMathTest(unittest.TestCase):
         self.assertAlmostEqual(float(pitch), 0.0, places=6)
 
     def test_stability_cost_zero_at_rest(self):
-        self.assertAlmostEqual(float(stability_cost(np, 0.0, 0.0,
-                                                    np.zeros(2), self.cfg)), 0.0,
-                               places=6)
-        self.assertGreater(float(stability_cost(np, 0.3, 0.0,
-                                                np.zeros(2), self.cfg)), 0.0)
-        self.assertGreater(float(stability_cost(np, 0.0, 0.0,
-                                                np.ones(2) * 2.0, self.cfg)), 0.0)
+        self.assertAlmostEqual(float(stability_cost(np, 0.0, np.zeros(2), self.cfg)),
+                               0.0, places=6)
+        self.assertGreater(float(stability_cost(np, 0.3, np.zeros(2), self.cfg)), 0.0)
+        self.assertGreater(float(stability_cost(np, 0.0, np.ones(2) * 2.0, self.cfg)),
+                           0.0)
 
     def test_height_penalty_envelope(self):
         # inside the wide envelope -> zero
@@ -279,8 +277,8 @@ class GateMathTest(unittest.TestCase):
         joints = self.target["joints"].copy()
         joints[1] += 0.05
         self.assertAlmostEqual(float(self._gate(joints=joints)[0]), 0.5, places=5)
-        # base velocity 0.3 m/s -> 1.0 of the 0.30 bound
-        self.assertAlmostEqual(float(self._gate(vel=0.3)[3]), 1.0, places=5)
+        # base velocity 0.3 m/s -> 1.0 of the 0.30 bound (index 2 now)
+        self.assertAlmostEqual(float(self._gate(vel=0.3)[2]), 1.0, places=5)
         # roll 0.3 rad -> 1.0 of the 0.30 bound
         self.assertAlmostEqual(float(self._gate(roll=0.3)[1]), 1.0, places=5)
 

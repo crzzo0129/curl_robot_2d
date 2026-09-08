@@ -277,6 +277,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--duration", type=float, default=2.0)
     parser.add_argument("--control-dt", type=float, default=0.02)
+    parser.add_argument(
+        "--initial-keyframe",
+        choices=("compact", "stand"),
+        default="compact",
+        help="Physical reset pose before the rolling reference is applied.",
+    )
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
     parser.add_argument("--target-scale", type=float, default=1.0)
@@ -572,7 +578,15 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         ctrl_low,
         ctrl_high,
     )
-    _reset_data(model, data, mujoco, qpos_indices, actuator_ids, initial_ctrl)
+    _reset_data(
+        model,
+        data,
+        mujoco,
+        qpos_indices,
+        actuator_ids,
+        initial_ctrl,
+        keyframe=args.initial_keyframe,
+    )
     data.qpos[abduction_qpos_indices] = abduction_ctrl
     data.ctrl[abduction_actuator_ids] = abduction_ctrl
     mujoco.mj_forward(model, data)
@@ -874,6 +888,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
         "elapsed_s": float(elapsed),
         "control_dt_s": float(control_dt),
         "physics_profile": args.physics_profile,
+        "initial_keyframe": args.initial_keyframe,
         "front_abduction_deg": float(args.front_abduction_deg),
         "rear_abduction_deg": float(args.rear_abduction_deg),
         "differential_residual": raw_differential.tolist(),
@@ -1128,9 +1143,19 @@ def _plot_joint_angles(
     image.save(path)
 
 
-def _reset_data(model, data, mujoco, qpos_indices, actuator_ids, ctrl) -> None:
-    mujoco.mj_resetDataKeyframe(model, data, model.key("compact").id)
-    data.qpos[qpos_indices] = ctrl
+def _reset_data(
+    model,
+    data,
+    mujoco,
+    qpos_indices,
+    actuator_ids,
+    ctrl,
+    *,
+    keyframe="compact",
+) -> None:
+    mujoco.mj_resetDataKeyframe(model, data, model.key(keyframe).id)
+    if keyframe == "compact":
+        data.qpos[qpos_indices] = ctrl
     data.qvel[:] = 0.0
     data.ctrl[actuator_ids] = ctrl
     mujoco.mj_forward(model, data)

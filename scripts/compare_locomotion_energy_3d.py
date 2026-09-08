@@ -78,6 +78,13 @@ def summarize(rows, start, dt, mass, gravity):
         absolute_work_j=positive + negative,
         positive_power_w=positive / duration,
         absolute_power_w=(positive + negative) / duration,
+        peak_positive_power_w=max(r['positive_power_w'] for r in selected),
+        peak_absolute_power_w=max(
+            r['positive_power_w'] + r['negative_power_w'] for r in selected),
+        peak_abs_roll_acceleration_rad_s2=max(
+            abs(r['roll_acceleration_rad_s2']) for r in selected),
+        peak_contact_normal_force_n=max(r['contact_normal_force_n'] for r in selected),
+        peak_joint_tracking_error_deg=max(r['joint_tracking_error_deg'] for r in selected),
         positive_j_per_m=positive / distance if distance > .01 else None,
         cot_positive=positive / (mass * gravity * distance) if distance > .01 else None,
         cot_absolute=(positive + negative) / (mass * gravity * distance) if distance > .01 else None,
@@ -107,7 +114,9 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
     model.opt.cone = mj.mjtCone.mjCONE_PYRAMIDAL
     model.opt.disableflags |= mj.mjtDisableBit.mjDSBL_EULERDAMP
     data = mj.MjData(model)
-    mj.mj_resetDataKeyframe(model, data, model.key('stand' if mode == 'walk' else 'compact').id)
+    roll_reset_keyframe = getattr(args, 'roll_reset_keyframe', 'compact')
+    reset_keyframe = 'stand' if mode == 'walk' else roll_reset_keyframe
+    mj.mj_resetDataKeyframe(model, data, model.key(reset_keyframe).id)
     abd_names = [f'{leg}_hip_abduction' for leg in LEGS]
     abd_qids = [model.joint(n).qposadr[0] for n in abd_names]
     abd_aids = [model.actuator(n+'_servo').id for n in abd_names]
@@ -144,7 +153,10 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
         else:
             phase = float(ref.advance_oscillator(np, body_phase, phase, dt, config))
             u = min(k * dt / .25, 1.)
-            target = ref.scaled_planar_target(ref.planar_cem_target(phase, config), u*u*(3-2*u))
+            ramp = u*u*(3-2*u)
+            start_scale = getattr(args, 'roll_startup_target_scale', 0.)
+            scale = start_scale + (1. - start_scale) * ramp
+            target = ref.scaled_planar_target(ref.planar_cem_target(phase, config), scale)
             data.ctrl[aids] = np.clip(ref.map_planar_to_curl_3d_targets(target),
                 model.actuator_ctrlrange[aids, 0], model.actuator_ctrlrange[aids, 1])
         xy = data.qpos[:2].copy()
@@ -158,7 +170,8 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
         nonfoot = False
         self_contact = False
         self_penetration = 0.
-        for contact in data.contact:
+        contact_normal_force = 0.
+        for contact_id, contact in enumerate(data.contact):
             names = [model.geom(int(i)).name or '' for i in (contact.geom1, contact.geom2)]
             bodies = model.geom_bodyid[[contact.geom1, contact.geom2]]
             if 0 in bodies:
@@ -168,6 +181,12 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
             elif contact.dist < 0:
                 self_contact = True
                 self_penetration = max(self_penetration, -float(contact.dist))
+            contact_force = np.zeros(6)
+            mj.mj_contactForce(model, data, contact_id, contact_force)
+            contact_normal_force = max(contact_normal_force, abs(float(contact_force[0])))
+        tracking_error = float(np.degrees(np.max(np.abs(
+            data.ctrl[aids] - data.qpos[[model.joint(n).qposadr[0] for n in ref.JOINT_NAMES_3D]]
+        )))) if not policy else 0.
         mj.mj_step(model, data)
         body_phase += float(data.qvel[4]) * dt
         if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
@@ -182,6 +201,8 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
             roll_phase_wrapped_rad=float(np.arctan2(np.sin(body_phase), np.cos(body_phase))),
             roll_rate_rad_s=float(data.qvel[4]),
             roll_acceleration_rad_s2=float(data.qacc[4]),
+            contact_normal_force_n=contact_normal_force,
+            joint_tracking_error_deg=tracking_error,
             positive_power_w=positive, negative_power_w=negative,
             abd_positive_power_w=float(np.maximum(power[abd_aids],0).sum()),
             abd_absolute_power_w=float(np.abs(power[abd_aids]).sum()),
@@ -205,6 +226,9 @@ def run_case(args, mode, speed, label, *, config_override=None, save=True, quiet
     safe = (windows['post_startup']['min_height_m'] > .079 and
             windows['post_startup']['max_tilt_deg'] < 45) if policy else None
     result = dict(label=label, mode=mode, command_m_s=speed, mass_kg=mass,
+        reset_keyframe=reset_keyframe,
+        roll_startup_target_scale=(
+            getattr(args, 'roll_startup_target_scale', 0.) if mode == 'roll' else None),
         roll_abduction_target_deg=np.degrees(abd_target).tolist() if mode == 'roll' else None,
         windows=windows, walking_post_startup_posture_ok=safe,
         power_identity_max_error_w=power_error, rolling_turns=body_phase/(2*np.pi) if not policy else None)
@@ -224,6 +248,10 @@ def main():
     p.add_argument('--walk-speeds', type=float, nargs='+', default=[.3, .5, .7])
     p.add_argument('--roll-abduction-deg', type=float, default=0., help='All four rolling abduction servo targets; positive is outward. Not a rigid lock.')
     p.add_argument('--roll-only', action='store_true')
+    p.add_argument('--roll-reset-keyframe', choices=('compact', 'stand'), default='compact',
+                   help='Initial keyframe for rolling evaluation.')
+    p.add_argument('--roll-startup-target-scale', type=float, default=0.,
+                   help='Periodic reference scale at t=0; ramps to 1 over 0.25 s.')
     p.add_argument('--front-abduction-deg', type=float, default=None, help='Override front rolling ABD target')
     p.add_argument('--rear-abduction-deg', type=float, default=None, help='Override rear rolling ABD target')
     p.add_argument('--out', type=Path, required=True)
@@ -232,6 +260,8 @@ def main():
         p.error('dt must be positive and finite')
     if not np.isfinite(args.roll_abduction_deg):
         p.error('Abduction must be finite')
+    if not np.isfinite(args.roll_startup_target_scale) or args.roll_startup_target_scale < 0:
+        p.error('Roll startup target scale must be finite and nonnegative')
     if any(v is not None and not np.isfinite(v) for v in (args.front_abduction_deg, args.rear_abduction_deg)):
         p.error('Front/rear abduction must be finite')
     if not 0 <= args.warmup < args.duration:

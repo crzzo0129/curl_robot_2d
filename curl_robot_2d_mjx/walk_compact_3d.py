@@ -64,7 +64,7 @@ RUNTIME_OPTION = (
     '<flag eulerdamp="disable"/></option>'
 )
 
-COMPACT_GATE_NAMES = ("joint_position", "roll", "pitch",
+COMPACT_GATE_NAMES = ("joint_position", "roll",
                        "base_velocity", "base_angular_velocity", "root_height")
 
 # Deploy frame layout, indices 0-based.
@@ -178,17 +178,17 @@ class WalkCompactConfig:
     joint_cost_sigma_rad: float = 0.50
     # Terminal (success) gate -- a STATE-space target, not just joint-space.
     joint_position_rad: float = 0.10    # max |q - q_compact|
-    orientation_rad: float = 0.30       # |roll| and |pitch|
+    roll_rad: float = 0.30              # |sideways lean| only (NOT forward pitch)
     base_linear_velocity_m_s: float = 0.30   # |v_xy|
     base_angular_velocity_rad_s: float = 1.00  # |omega|
     root_z_min_m: float = 0.10          # lower height envelope (block collapse)
     root_z_max_margin_m: float = 0.02   # upper envelope = max(stand,compact)+margin
     # Reward weights (transition-skill recipe).
     progress_reward_weight: float = 2.0
-    progress_scale: float = 0.02        # clip divisor on (D_prev - D_t)
+    progress_scale: float = 0.02        # divisor on (D_prev - D_t)
     pose_reward_weight: float = 0.5     # exp(-D_t)
-    orientation_stability_weight: float = 0.10   # roll/pitch
-    orientation_stability_sigma_rad: float = 0.30
+    roll_stability_weight: float = 0.10   # sideways lean (roll) only
+    roll_stability_sigma_rad: float = 0.30
     angular_velocity_stability_weight: float = 0.03   # base omega_xy
     angular_velocity_stability_sigma_rad_s: float = 2.0
     height_penalty_weight: float = 0.05
@@ -285,17 +285,17 @@ def roll_pitch_from_quat(xp, quat):
     return roll, pitch
 
 
-def stability_cost(xp, roll, pitch, angular_xy, cfg):
-    """Positive penalty: body roll/pitch tilt + base angular velocity in xy.
+def stability_cost(xp, roll, angular_xy, cfg):
+    """Positive penalty: sideways lean (roll) + base angular velocity in xy.
 
-    Mild weights: a transition may legitimately have some body disturbance, so
-    this only nudges the robot to stay roughly upright, not rigidly level.
+    Forward pitch is deliberately NOT penalised: tucking onto the shell folds
+    the body forward, and a curled ball is valid at any forward-roll phase.
+    Mild weight: a transition may legitimately have some body disturbance.
     """
-    tilt = (xp.square(roll / cfg.orientation_stability_sigma_rad)
-            + xp.square(pitch / cfg.orientation_stability_sigma_rad))
+    tilt = xp.square(roll / cfg.roll_stability_sigma_rad)
     ang = xp.mean(xp.square(
         angular_xy / cfg.angular_velocity_stability_sigma_rad_s))
-    return (cfg.orientation_stability_weight * tilt
+    return (cfg.roll_stability_weight * tilt
             + cfg.angular_velocity_stability_weight * ang)
 
 
@@ -311,22 +311,22 @@ def height_penalty(xp, root_z, stand_z, compact_z, cfg):
     return cfg.height_penalty_weight * (upper + lower)
 
 
-def gate_errors(xp, joints, roll, pitch, velocity_norm, angular_norm, root_z,
+def gate_errors(xp, joints, roll, velocity_norm, angular_norm, root_z,
                 target, stand_z, cfg):
     """Normalized success-gate errors (1.0 == bound).  A STATE-space target:
-    joint pose AND near-upright orientation AND low base velocity/angular
+    joint pose AND small sideways lean (roll) AND low base velocity/angular
     velocity AND root height inside the envelope, held for confirmation_steps.
+    Forward pitch is NOT gated: the compact transition folds the body forward.
     """
     joint_error = xp.max(xp.abs(joints - target["joints"])) / cfg.joint_position_rad
-    roll_error = xp.abs(roll) / cfg.orientation_rad
-    pitch_error = xp.abs(pitch) / cfg.orientation_rad
+    roll_error = xp.abs(roll) / cfg.roll_rad
     velocity_error = velocity_norm / cfg.base_linear_velocity_m_s
     angular_error = angular_norm / cfg.base_angular_velocity_rad_s
     z_max = xp.maximum(stand_z, target["root_z"]) + cfg.root_z_max_margin_m
     upper = xp.maximum(root_z - z_max, 0.0) / cfg.height_sigma_m
     lower = xp.maximum(cfg.root_z_min_m - root_z, 0.0) / cfg.height_sigma_m
     height_error = xp.maximum(upper, lower)
-    return xp.stack((joint_error, roll_error, pitch_error, velocity_error,
+    return xp.stack((joint_error, roll_error, velocity_error,
                      angular_error, height_error))
 
 

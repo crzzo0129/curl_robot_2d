@@ -14,9 +14,9 @@
 | 接触口径 | **自碰撞关闭**:所有机器人 geom 改为 `contype=0 conaffinity=1`(只对地面接触),`floor` 保持 `contype=1 conaffinity=0`;源模型里滚动自碰撞白名单的位掩码(torso 16/7、前腿 2/29、后腿 4/27、足端 8/15)全部去除 |
 | 物理 | 运行 XML 替换 `<option>`:0.002 s implicitfast、pyramidal、Newton 20/10、impratio 10、关 eulerdamp;并给 `<compiler>` 注入 `meshdir` 指向源 mjcf 目录(源 XML 的 mesh 是 `../meshes/*.stl` 相对路径)—— 与 CPU 快照回放完全一致 |
 | actor 观测/动作 | 与 deploy 控制器同接口:36×20=720 维历史观测,12 维绝对位置目标;**nominal=行走默认姿态,scale=逐关节非对称全范围 `max(high−nominal, nominal−low)`**(与 roll→walk transition policy 同一约定),保证 compact 的 hip/knee 目标落在动作 `[-1,1]` 内;obs 指令字段全程固定 [0.4, 0, 0] |
-| 终点门 | **state-space 目标,不是只认关节姿态**:12 关节 ≤0.10 rad 且 |roll|,|pitch| ≤0.30 rad 且 |v_xy| ≤0.30 m/s 且 |ω| ≤1.0 rad/s 且 root z ∈ [0.10, 0.1863],连续 10 帧(0.20 s)才成功。即"收拢、大致直立、已经停稳、没塌到地上" |
+| 终点门 | **state-space 目标,不是只认关节姿态**:12 关节 ≤0.10 rad 且 |roll|(侧向倾倒)≤0.30 rad 且 |v_xy| ≤0.30 m/s 且 |ω| ≤1.0 rad/s 且 root z ∈ [0.10, 0.1863],连续 10 帧(0.20 s)才成功。即"收拢、没侧翻、已经停稳、没塌到地上";**不门控前向 pitch**——收腿会向前折,蜷缩球在任何前向滚动相位都合法 |
 | episode 预算 | 5 s(250 × 20 ms);成功/超时/非有限数终止;时间代价极小(−0.003/步),不逼着提前结束 |
-| 奖励 | `D_t=mean((q−q_compact)/0.50)²`;`progress=2.0·(D_{t−1}−D_t)/0.02`(主信号,势能差分,**无 clip**——一集望远镜为 `100·(D_0−D_T)`,只奖励净收拢,不会被"收完又弹回"薅分)+ `0.5·exp(−D_t)`(高斯姿态) + 稳定性(−0.10·(roll/0.3)²−0.10·(pitch/0.3)²−0.03·(ω_xy/2)²)+ 高度包络(−0.05·上越界²−0.05·下越界²)+ 平滑(−0.05·(Δa)²)+ 力矩(−0.01·(τ/3)²)− 0.003 + 成功 +8 |
+| 奖励 | `D_t=mean((q−q_compact)/0.50)²`;`progress=2.0·(D_{t−1}−D_t)/0.02`(主信号,势能差分,**无 clip**——一集望远镜为 `100·(D_0−D_T)`,只奖励净收拢,不会被"收完又弹回"薅分)+ `0.5·exp(−D_t)`(高斯姿态) + 稳定性(−0.10·(roll/0.3)²−0.03·(ω_xy/2)²,不含 pitch)+ 高度包络(−0.05·上越界²−0.05·下越界²)+ 平滑(−0.05·(Δa)²)+ 力矩(−0.01·(τ/3)²)− 0.003 + 成功 +8 |
 | 不做的事 | 无足端拖滑罚、无固定收腿轨迹、无 trajectory 插值、无 episode 内碰撞几何切换、无 rolling teacher |
 
 为什么这样搭:
@@ -141,16 +141,17 @@ python -m unittest tests.test_walk_compact_3d -v
 ```
 
 覆盖:观测/动作合同尺寸、策略关节顺序、运行 XML 只改 option、state-space
-成功门(关节/roll/pitch/速度/角速度/高度)、progress/pose/stability/height 各
+成功门(关节/roll/速度/角速度/高度)、progress/pose/stability/height 各
 奖励项、roll/pitch 四元数解算、预算随机化校验、快照 bank 校验、compact 目标
 在 transition 动作空间内可达、采集/训练入口参数、`--dry-run` 端到端;有 mujoco
 时附加验证 abd10 compact keyframe 确为 ±10°、执行器顺序与无自碰撞变体。
 
 ## 4. 已知边界与后续
 
-- 成功是 state-space 目标(关节 + roll/pitch + 基座线/角速度 + 高度包络,
+- 成功是 state-space 目标(关节 + 侧向 roll + 基座线/角速度 + 高度包络,
   连续 10 帧),速度只进终点门、不进 dense 奖励(起始 0.4 m/s,直接罚 vx
-  会让机器人一出生就被罚、逼它暴力刹车)。
+  会让机器人一出生就被罚、逼它暴力刹车)。**前向 pitch 不门控、也不进奖励**:
+  收腿会向前折,蜷缩球在任何前向滚动相位都合法。
 - 动作映射已从行走策略的固定 scale 换成 transition 的非对称全范围 scale,
   否则 compact hip(0.11 rad)在行走 scale(0.5、默认 0.9)下根本够不到,
   会导致 success 恒为 0。

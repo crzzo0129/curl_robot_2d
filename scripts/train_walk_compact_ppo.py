@@ -62,11 +62,11 @@ def parse_args(argv=None):
                    help="if > budget-s, sample a per-episode random budget in [budget-s, budget-s-max]")
     p.add_argument("--confirmation-steps", type=int)
     compact_defaults = WalkCompactConfig()
-    for field in ("joint_cost_sigma_rad", "joint_position_rad", "orientation_rad",
+    for field in ("joint_cost_sigma_rad", "joint_position_rad", "roll_rad",
                   "base_linear_velocity_m_s", "base_angular_velocity_rad_s",
                   "root_z_min_m", "root_z_max_margin_m",
                   "progress_reward_weight", "progress_scale", "pose_reward_weight",
-                  "orientation_stability_weight", "orientation_stability_sigma_rad",
+                  "roll_stability_weight", "roll_stability_sigma_rad",
                   "angular_velocity_stability_weight",
                   "angular_velocity_stability_sigma_rad_s",
                   "height_penalty_weight", "height_sigma_m",
@@ -134,7 +134,7 @@ def build_config(args):
         confirmation_steps=args.confirmation_steps,
         joint_cost_sigma_rad=args.joint_cost_sigma_rad,
         joint_position_rad=args.joint_position_rad,
-        orientation_rad=args.orientation_rad,
+        roll_rad=args.roll_rad,
         base_linear_velocity_m_s=args.base_linear_velocity_m_s,
         base_angular_velocity_rad_s=args.base_angular_velocity_rad_s,
         root_z_min_m=args.root_z_min_m,
@@ -142,8 +142,8 @@ def build_config(args):
         progress_reward_weight=args.progress_reward_weight,
         progress_scale=args.progress_scale,
         pose_reward_weight=args.pose_reward_weight,
-        orientation_stability_weight=args.orientation_stability_weight,
-        orientation_stability_sigma_rad=args.orientation_stability_sigma_rad,
+        roll_stability_weight=args.roll_stability_weight,
+        roll_stability_sigma_rad=args.roll_stability_sigma_rad,
         angular_velocity_stability_weight=args.angular_velocity_stability_weight,
         angular_velocity_stability_sigma_rad_s=args.angular_velocity_stability_sigma_rad_s,
         height_penalty_weight=args.height_penalty_weight,
@@ -332,7 +332,6 @@ def main(argv=None):
               f"gate={clean.get('eval/episode_gate_eligible', 0.):.3f} "
               f"term=[joint={clean.get('eval/episode_terminal_gate_joint', 0.):.2f} "
               f"roll={clean.get('eval/episode_terminal_gate_roll', 0.):.2f} "
-              f"pitch={clean.get('eval/episode_terminal_gate_pitch', 0.):.2f} "
               f"vel={clean.get('eval/episode_terminal_gate_velocity', 0.):.2f} "
               f"ang={clean.get('eval/episode_terminal_gate_angular', 0.):.2f} "
               f"z={clean.get('eval/episode_terminal_gate_height', 0.):.2f}]", flush=True)

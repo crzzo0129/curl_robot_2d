@@ -146,10 +146,9 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
         def _zero_metrics(self):
             names = ("reward", "success", "failed", "timeout", "gate_eligible",
                      "terminal_gate_error", "terminal_gate_joint",
-                     "terminal_gate_roll", "terminal_gate_pitch",
-                     "terminal_gate_velocity", "terminal_gate_angular",
-                     "terminal_gate_height", "terminal_pose_quality",
-                     "pose_quality")
+                     "terminal_gate_roll", "terminal_gate_velocity",
+                     "terminal_gate_angular", "terminal_gate_height",
+                     "terminal_pose_quality", "pose_quality")
             return {name: jp.zeros((), dtype=jp.float32) for name in names}
 
         def reset(self, rng):
@@ -196,14 +195,14 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             frame = self._frame(ps, old)
             hist = self._push(old["hist"], frame)
 
-            # ---------------- state-space gate (joint + orientation + settle)
+            # ---------------- state-space gate (joint + settle; forward pitch free)
             quat = ps.x.rot[0]
-            roll, pitch = roll_pitch_from_quat(jp, quat)
+            roll, _ = roll_pitch_from_quat(jp, quat)
             joints = ps.q[self.joint_qpos_idx]
             root_z = ps.q[2]
             v_xy_norm = jp.sqrt(jp.sum(jp.square(ps.xd.vel[0, :2])))
             ang_norm = jp.sqrt(jp.sum(jp.square(ps.xd.ang[0])))
-            errors = gate_errors(jp, joints, roll, pitch, v_xy_norm, ang_norm,
+            errors = gate_errors(jp, joints, roll, v_xy_norm, ang_norm,
                                  root_z, target, stand_z, cfg)
             D = joint_cost(jp, joints, target, cfg)
             quality = jp.exp(-D)
@@ -221,7 +220,7 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             pose_r = pose_reward(jp, D, cfg)
             inv_rot = brax_math.quat_inv(quat)
             ang_body = brax_math.rotate(ps.xd.ang[0], inv_rot)
-            stability = stability_cost(jp, roll, pitch, ang_body[:2], cfg)
+            stability = stability_cost(jp, roll, ang_body[:2], cfg)
             hpen = height_penalty(jp, root_z, stand_z, target["root_z"], cfg)
             smooth = cfg.smooth_weight * jp.mean(jp.square(action_in - old["last_act"]))
             torque = cfg.torque_cost * jp.mean(jp.square(ps.qfrc_actuator[6:] / 3.0))
@@ -242,10 +241,9 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
                 "terminal_gate_error": jp.where(terminal, jp.max(errors), 0.0),
                 "terminal_gate_joint": jp.where(terminal, errors[0], 0.0),
                 "terminal_gate_roll": jp.where(terminal, errors[1], 0.0),
-                "terminal_gate_pitch": jp.where(terminal, errors[2], 0.0),
-                "terminal_gate_velocity": jp.where(terminal, errors[3], 0.0),
-                "terminal_gate_angular": jp.where(terminal, errors[4], 0.0),
-                "terminal_gate_height": jp.where(terminal, errors[5], 0.0),
+                "terminal_gate_velocity": jp.where(terminal, errors[2], 0.0),
+                "terminal_gate_angular": jp.where(terminal, errors[3], 0.0),
+                "terminal_gate_height": jp.where(terminal, errors[4], 0.0),
                 "terminal_pose_quality": jp.where(terminal, quality, 0.0),
                 "pose_quality": quality,
             }
