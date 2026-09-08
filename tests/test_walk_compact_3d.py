@@ -28,12 +28,12 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     SINGLE_OBS_SIZE,
     WALK_COMPACT_CONTRACT,
     WalkCompactConfig,
-    anti_ballistic_costs,
     bank_action_arrays,
     compact_target_from_keyframe,
     confirmation_update,
     dense_pose_reward,
     disable_self_collision_xml,
+    excess_height_cost,
     gate_errors,
     policy_actuator_names,
     policy_joint_names,
@@ -188,8 +188,7 @@ class GateMathTest(unittest.TestCase):
         errors = gate_errors(np, self.target["joints"], 0.0, 0.0,
                              self.target, self.cfg)
         self.assertLess(errors.max(), 1e-5)
-        quality = pose_potential(np, self.target["joints"], 0.0,
-                                 self.target, self.cfg)
+        quality = pose_potential(np, self.target["joints"], self.target, self.cfg)
         self.assertAlmostEqual(float(quality), 1.0, places=5)
 
     def test_joint_offset_scales_with_tolerance(self):
@@ -233,23 +232,23 @@ class GateMathTest(unittest.TestCase):
     def test_pose_potential_is_not_flat_from_walking(self):
         # Regression: the potential must keep gradient from a walking pose,
         # not collapse to ~0 (which starves the dense pose reward).
-        quality = pose_potential(np, self.walking, 0.0, self.target, self.cfg)
+        quality = pose_potential(np, self.walking, self.target, self.cfg)
         self.assertGreater(float(quality), 0.05)
         self.assertLess(float(quality), 0.95)
 
     def test_pose_cost_is_quadratic_with_linear_gradient(self):
         # Regression: the reward signal must grow quadratically (linear
         # gradient) from a walking pose, not exp-flatten.
-        at_target = pose_cost(np, self.target["joints"], 0.0, self.target, self.cfg)
+        at_target = pose_cost(np, self.target["joints"], self.target, self.cfg)
         self.assertAlmostEqual(float(at_target), 0.0, places=6)
-        walking = pose_cost(np, self.walking, 0.0, self.target, self.cfg)
+        walking = pose_cost(np, self.walking, self.target, self.cfg)
         self.assertGreater(float(walking), 0.5)
 
     def test_dense_pose_reward_negative_and_zero_at_target(self):
-        cost = pose_cost(np, self.target["joints"], 0.0, self.target, self.cfg)
+        cost = pose_cost(np, self.target["joints"], self.target, self.cfg)
         self.assertAlmostEqual(float(dense_pose_reward(np, cost, self.cfg)), 0.0,
                                places=6)
-        far = pose_cost(np, self.walking, 0.5, self.target, self.cfg)
+        far = pose_cost(np, self.walking, self.target, self.cfg)
         self.assertLess(float(dense_pose_reward(np, far, self.cfg)), 0.0)
 
     def test_confirmation_update_contiguity(self):
@@ -258,16 +257,12 @@ class GateMathTest(unittest.TestCase):
             count = confirmation_update(np, 0, count, 0, eligible)
         self.assertEqual(count, 5)
 
-    def test_anti_ballistic_costs_shape_and_zero_at_rest(self):
-        parts, total = anti_ballistic_costs(
-            np, 0.0, 0.158, np.zeros(3),
-            stand_z=0.158, compact_z=0.1663, cfg=self.cfg)
-        self.assertEqual(len(parts), 3)
-        self.assertAlmostEqual(float(total), 0.0, places=6)
-        parts, total = anti_ballistic_costs(
-            np, 0.5, 0.25, np.ones(3) * 1.0,
-            stand_z=0.158, compact_z=0.1663, cfg=self.cfg)
-        self.assertGreater(float(total), 0.0)
+    def test_excess_height_cost_zero_below_envelope(self):
+        self.assertAlmostEqual(float(excess_height_cost(
+            np, 0.158, stand_z=0.158, compact_z=0.1663, cfg=self.cfg)), 0.0,
+            places=6)
+        self.assertGreater(float(excess_height_cost(
+            np, 0.25, stand_z=0.158, compact_z=0.1663, cfg=self.cfg)), 0.0)
 
 
 class SnapshotIOTest(unittest.TestCase):

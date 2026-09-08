@@ -61,13 +61,11 @@ def parse_args(argv=None):
     p.add_argument("--confirmation-steps", type=int)
     compact_defaults = WalkCompactConfig()
     for field in ("joint_position_rad", "axis_tilt_rad", "lateral_m",
-                  "settling_pose_sigma_rad", "potential_axis_tilt_sigma_rad",
+                  "settling_pose_sigma_rad",
                   "pose_reward_weight", "success_bonus", "time_cost",
                   "action_change_cost", "torque_cost",
-                  "upward_velocity_weight", "upward_velocity_sigma_m_s",
                   "excess_height_weight", "excess_height_margin_m",
-                  "excess_height_sigma_m", "angular_velocity_weight",
-                  "angular_velocity_sigma_rad_s"):
+                  "excess_height_sigma_m"):
         p.add_argument("--" + field.replace("_", "-"), type=float,
                        default=getattr(compact_defaults, field))
     p.add_argument("--learning-rate", type=float, default=2e-4)
@@ -132,19 +130,14 @@ def build_config(args):
         axis_tilt_rad=args.axis_tilt_rad,
         lateral_m=args.lateral_m,
         settling_pose_sigma_rad=args.settling_pose_sigma_rad,
-        potential_axis_tilt_sigma_rad=args.potential_axis_tilt_sigma_rad,
         pose_reward_weight=args.pose_reward_weight,
         success_bonus=args.success_bonus,
         time_cost=args.time_cost,
         action_change_cost=args.action_change_cost,
         torque_cost=args.torque_cost,
-        upward_velocity_weight=args.upward_velocity_weight,
-        upward_velocity_sigma_m_s=args.upward_velocity_sigma_m_s,
         excess_height_weight=args.excess_height_weight,
         excess_height_margin_m=args.excess_height_margin_m,
-        excess_height_sigma_m=args.excess_height_sigma_m,
-        angular_velocity_weight=args.angular_velocity_weight,
-        angular_velocity_sigma_rad_s=args.angular_velocity_sigma_rad_s)
+        excess_height_sigma_m=args.excess_height_sigma_m)
 
 
 def snapshot_paths(args):

@@ -182,22 +182,20 @@ class WalkCompactConfig:
     # Quadratic pose-cost sigma (wide, so the cost stays a usable magnitude
     # from a walking pose) and the reward weight.
     settling_pose_sigma_rad: float = 0.50
-    potential_axis_tilt_sigma_rad: float = 0.20
     # Rewards.
     pose_reward_weight: float = 1.0
     success_bonus: float = 20.0
     time_cost: float = 0.02
     action_change_cost: float = 0.02
     torque_cost: float = 0.005
-    # Light anti-ballistic costs (kept from the compact startup so the actor
-    # cannot "jump into the ball"); no foot-slip cost in v1.
-    upward_velocity_weight: float = 0.05
-    upward_velocity_sigma_m_s: float = 0.15
+    # Anti-jump only: penalise the body rising above the pose envelope.  The
+    # natural tumble after tucking (sideways lean / angular velocity) is NOT
+    # penalised in the dense reward -- those live in the terminal gate --
+    # otherwise the fall penalty makes tucking net-negative and the legs never
+    # fold.  No foot-slip cost in v1.
     excess_height_weight: float = 0.05
     excess_height_margin_m: float = 0.02
     excess_height_sigma_m: float = 0.02
-    angular_velocity_weight: float = 0.02
-    angular_velocity_sigma_rad_s: float = 0.50
     discounting: float = 0.999
 
     def validate(self, dt: float) -> None:
@@ -251,23 +249,22 @@ def gate_errors(xp, joints, axis_tilt, lateral, target, cfg):
     return xp.stack((joint_error, tilt_error, lateral_error))
 
 
-def pose_cost(xp, joints, axis_tilt, target, cfg):
-    """Quadratic closeness cost with LINEAR gradient (not flat far away).
+def pose_cost(xp, joints, target, cfg):
+    """Quadratic JOINT-tuck cost with LINEAR gradient (not flat far away).
 
     This is the reward-driving signal.  An exp-potential goes flat from a
-    walking pose (~0.23 quality), which starves the policy of a gradient and
-    leaves the legs un-tucked.  A quadratic cost keeps a nonzero push all the
-    way in.  Root height is excluded (tucking lowers the body).
+    walking pose, which starves the policy of a gradient and leaves the legs
+    un-tucked.  A quadratic cost keeps a nonzero push all the way in.  Root
+    height and sideways lean are deliberately EXCLUDED: tucking lowers the body
+    and may tip it, and penalising that here makes tucking net-negative.
     """
-    joint_cost = xp.mean(xp.square(
+    return xp.mean(xp.square(
         (joints - target["joints"]) / cfg.settling_pose_sigma_rad))
-    tilt_cost = xp.square(axis_tilt / cfg.potential_axis_tilt_sigma_rad)
-    return joint_cost + tilt_cost
 
 
-def pose_potential(xp, joints, axis_tilt, target, cfg):
+def pose_potential(xp, joints, target, cfg):
     """0..1 reporting quality derived from pose_cost (NOT the reward signal)."""
-    return xp.exp(-0.5 * pose_cost(xp, joints, axis_tilt, target, cfg) / 2.0)
+    return xp.exp(-0.5 * pose_cost(xp, joints, target, cfg))
 
 
 def confirmation_update(xp, previous_id, previous_count, candidate_id, eligible):
@@ -286,21 +283,16 @@ def dense_pose_reward(xp, cost, cfg):
     return -cfg.pose_reward_weight * cost
 
 
-def anti_ballistic_costs(xp, root_vz, root_z, root_angular, *,
-                         stand_z, compact_z, cfg):
-    """Dense penalties against jumping into the compact pose.
+def excess_height_cost(xp, root_z, *, stand_z, compact_z, cfg):
+    """Anti-jump penalty: only the body rising above the pose envelope.
 
-    Returns (parts, total): upward root vz, height above the pose envelope,
-    and 3-axis root angular velocity.
+    The natural tumble after tucking (sideways lean / angular velocity) is NOT
+    penalised here -- those belong to the terminal gate -- otherwise the fall
+    penalty makes tucking net-negative and the legs never fold.
     """
-    upward = xp.square(xp.maximum(root_vz, 0.0) / cfg.upward_velocity_sigma_m_s)
     envelope = xp.maximum(stand_z, compact_z) + cfg.excess_height_margin_m
     excess = xp.square(xp.maximum(root_z - envelope, 0.0) / cfg.excess_height_sigma_m)
-    angular = xp.mean(xp.square(root_angular / cfg.angular_velocity_sigma_rad_s))
-    parts = (cfg.upward_velocity_weight * upward,
-             cfg.excess_height_weight * excess,
-             cfg.angular_velocity_weight * angular)
-    return parts, sum(parts)
+    return cfg.excess_height_weight * excess
 
 
 # ------------------------------------------------------------ snapshot format
