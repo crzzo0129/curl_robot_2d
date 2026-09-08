@@ -404,16 +404,26 @@ def parse_args(argv=None):
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    parser.add_argument("--forward-command-min-m-s", type=float, default=0.40)
-    parser.add_argument("--forward-command-max-m-s", type=float, default=0.90)
+    parser.add_argument("--forward-command-min-m-s", type=float, default=0.55)
+    parser.add_argument("--forward-command-max-m-s", type=float, default=0.65)
     parser.add_argument("--forward-command-fixed-m-s", type=float)
     parser.add_argument(
         "--turn-command-enabled",
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    parser.add_argument("--turn-command-max-rad-s", type=float, default=0.10)
-    parser.add_argument("--turn-command-probability", type=float, default=0.30)
+    parser.add_argument("--turn-command-max-rad-s", type=float, default=0.08)
+    parser.add_argument(
+        "--turn-command-straight-fraction", type=float, default=0.40
+    )
+    parser.add_argument(
+        "--turn-command-left-fraction", type=float, default=0.30
+    )
+    parser.add_argument(
+        "--turn-command-right-fraction", type=float, default=0.30
+    )
+    parser.add_argument("--turn-command-interval-s", type=float, default=1.5)
+    parser.add_argument("--turn-command-k-turn", type=float, default=5.0)
     parser.add_argument("--turn-command-fixed-rad-s", type=float)
     parser.add_argument(
         "--explicit-phase-observation",
@@ -621,7 +631,11 @@ def main(argv=None) -> None:
             forward_command_fixed_m_s=args.forward_command_fixed_m_s,
             turn_command_enabled=args.turn_command_enabled,
             turn_command_max_rad_s=args.turn_command_max_rad_s,
-            turn_command_probability=args.turn_command_probability,
+            turn_command_straight_fraction=args.turn_command_straight_fraction,
+            turn_command_left_fraction=args.turn_command_left_fraction,
+            turn_command_right_fraction=args.turn_command_right_fraction,
+            turn_command_interval_s=args.turn_command_interval_s,
+            turn_command_k_turn=args.turn_command_k_turn,
             turn_command_fixed_rad_s=args.turn_command_fixed_rad_s,
             explicit_phase_observation=args.explicit_phase_observation,
         ),

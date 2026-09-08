@@ -766,11 +766,15 @@ RECIPES_3D = {
             "residual_pair_differential_scale": 0.25,
             "explicit_phase_observation": True,
             "forward_command_enabled": True,
-            "forward_command_min_m_s": 0.40,
-            "forward_command_max_m_s": 0.90,
+            "forward_command_min_m_s": 0.55,
+            "forward_command_max_m_s": 0.65,
             "turn_command_enabled": True,
-            "turn_command_max_rad_s": 0.10,
-            "turn_command_probability": 0.30,
+            "turn_command_max_rad_s": 0.08,
+            "turn_command_straight_fraction": 0.40,
+            "turn_command_left_fraction": 0.30,
+            "turn_command_right_fraction": 0.30,
+            "turn_command_interval_s": 1.5,
+            "turn_command_k_turn": 5.0,
             "learning_rate": 1e-5,
             "entropy_cost": 2.5e-4,
             "selection_target_turns": 8.0,
@@ -778,21 +782,22 @@ RECIPES_3D = {
             "initial_policy_std": 0.10,
         },
         "reward": {
-            "roll_progress": 1.0,
-            "forward_velocity": 8.0,
+            "roll_progress": 0.5,
+            "forward_velocity": 1.0,
             "forward_velocity_sigma_m_s": 0.10,
-            "yaw_rate": 2.0,
+            "yaw_rate": 0.0,
             "yaw_rate_sigma_rad_s": 0.30,
-            "yaw_rate_command": 8.0,
+            "yaw_rate_command": 1.5,
             "yaw_rate_command_sigma_rad_s": 0.05,
-            "roll_mismatch": 0.8,
+            "roll_mismatch": 0.5,
             "backward": 1.0,
             "lateral_velocity": 2.0,
-            "lateral_drift": 3.0,
-            "yaw": 3.0,
-            "axis_tilt": 10.0,
+            "lateral_drift": 0.0,
+            "yaw": 0.0,
+            "axis_tilt": 0.3,
             "action_rate": 0.02,
             "residual_action": 0.01,
+            "torque": 0.01,
             "failure_progress_clawback": 4.0,
             "termination": 40.0,
             "severe_extra_termination": 40.0,
@@ -1877,9 +1882,29 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Maximum turning (yaw-rate) command magnitude (rad/s).",
     )
     parser.add_argument(
-        "--turn-command-probability",
+        "--turn-command-straight-fraction",
         type=float,
-        help="Probability a reset samples a non-zero turning command.",
+        help="Fraction of command segments sampled as straight (yaw=0).",
+    )
+    parser.add_argument(
+        "--turn-command-left-fraction",
+        type=float,
+        help="Fraction of command segments sampled as left turns.",
+    )
+    parser.add_argument(
+        "--turn-command-right-fraction",
+        type=float,
+        help="Fraction of command segments sampled as right turns.",
+    )
+    parser.add_argument(
+        "--turn-command-interval-s",
+        type=float,
+        help="Interval (seconds) between command re-samples within an episode.",
+    )
+    parser.add_argument(
+        "--turn-command-k-turn",
+        type=float,
+        help="Steering-prior gain a = k_turn * yaw_rate_cmd (clipped).",
     )
     parser.add_argument(
         "--turn-command-fixed-rad-s",
@@ -2061,9 +2086,17 @@ def parse_args(argv=None):
     if args.turn_command_enabled is None:
         args.turn_command_enabled = False
     if args.turn_command_max_rad_s is None:
-        args.turn_command_max_rad_s = 0.10
-    if args.turn_command_probability is None:
-        args.turn_command_probability = 0.30
+        args.turn_command_max_rad_s = 0.08
+    if args.turn_command_straight_fraction is None:
+        args.turn_command_straight_fraction = 0.40
+    if args.turn_command_left_fraction is None:
+        args.turn_command_left_fraction = 0.30
+    if args.turn_command_right_fraction is None:
+        args.turn_command_right_fraction = 0.30
+    if args.turn_command_interval_s is None:
+        args.turn_command_interval_s = 1.5
+    if args.turn_command_k_turn is None:
+        args.turn_command_k_turn = 5.0
     if args.turn_command_fixed_rad_s is None:
         args.turn_command_fixed_rad_s = None
     for value, name in (
@@ -2084,12 +2117,18 @@ def parse_args(argv=None):
         parser.error("--forward-command-fixed-m-s must be finite")
     for value, name in (
         (args.turn_command_max_rad_s, "--turn-command-max-rad-s"),
-        (args.turn_command_probability, "--turn-command-probability"),
+        (args.turn_command_interval_s, "--turn-command-interval-s"),
+        (args.turn_command_k_turn, "--turn-command-k-turn"),
     ):
         if not math.isfinite(value) or value <= 0.0:
             parser.error(f"{name} must be finite and positive")
-    if not 0.0 <= args.turn_command_probability <= 1.0:
-        parser.error("--turn-command-probability must be in [0, 1]")
+    for value, name in (
+        (args.turn_command_straight_fraction, "--turn-command-straight-fraction"),
+        (args.turn_command_left_fraction, "--turn-command-left-fraction"),
+        (args.turn_command_right_fraction, "--turn-command-right-fraction"),
+    ):
+        if not 0.0 <= value <= 1.0:
+            parser.error(f"{name} must be in [0, 1]")
     if (
         args.turn_command_fixed_rad_s is not None
         and not math.isfinite(args.turn_command_fixed_rad_s)
@@ -2315,7 +2354,11 @@ def main(argv=None) -> None:
             forward_command_fixed_m_s=args.forward_command_fixed_m_s,
             turn_command_enabled=args.turn_command_enabled,
             turn_command_max_rad_s=args.turn_command_max_rad_s,
-            turn_command_probability=args.turn_command_probability,
+            turn_command_straight_fraction=args.turn_command_straight_fraction,
+            turn_command_left_fraction=args.turn_command_left_fraction,
+            turn_command_right_fraction=args.turn_command_right_fraction,
+            turn_command_interval_s=args.turn_command_interval_s,
+            turn_command_k_turn=args.turn_command_k_turn,
             turn_command_fixed_rad_s=args.turn_command_fixed_rad_s,
             explicit_phase_observation=bool(
                 args.explicit_phase_observation

@@ -168,7 +168,8 @@ python -m scripts.evaluate_mjx_3d_policy \
 
 ## 注意事项
 
-- 转向由策略学 8 维 differential residual 完成（§14 `[a,a,a,-a]` 模式），无固定 reflex。
+- 转向用 §14 实验得出的**恒定差分** `[a,a,a,-a]`（前髋/前膝/后髋同向 +a，后膝反向 −a），
+  该模式能产生近似恒定的转向率；幅度 a 由 yaw_rate_cmd 决定，不是让策略自由学差分。
 - v_cmd 采样范围已放宽到 0.40–0.90；但 reference 零接触上限 ~0.81 m/s，**0.82–0.90 会
   饱和到 scale=1.0（实际 ~0.81），始终差 ~0.09 m/s**；有效可追范围仍是 ~0.41–0.81。
 - 低速（< 0.41 m/s）与停止不靠 reference 幅值缩放，属于独立 curriculum（§18）。

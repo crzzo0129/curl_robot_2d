@@ -58,14 +58,19 @@ def parse_args(argv=None):
     for key in PRESETS["smoke"]:
         p.add_argument("--" + key.replace("_", "-"), type=int)
     p.add_argument("--budget-s", type=float, default=WalkCompactConfig.budget_s)
+    p.add_argument("--budget-s-max", type=float, default=None,
+                   help="if > budget-s, sample a per-episode random budget in [budget-s, budget-s-max]")
     p.add_argument("--confirmation-steps", type=int)
     compact_defaults = WalkCompactConfig()
-    for field in ("joint_position_rad", "axis_tilt_rad", "lateral_m",
-                  "settling_pose_sigma_rad",
-                  "pose_reward_weight", "success_bonus", "time_cost",
-                  "action_change_cost", "torque_cost",
-                  "excess_height_weight", "excess_height_margin_m",
-                  "excess_height_sigma_m"):
+    for field in ("joint_cost_sigma_rad", "joint_position_rad", "orientation_rad",
+                  "base_linear_velocity_m_s", "base_angular_velocity_rad_s",
+                  "root_z_min_m", "root_z_max_margin_m",
+                  "progress_reward_weight", "progress_scale", "pose_reward_weight",
+                  "orientation_stability_weight", "orientation_stability_sigma_rad",
+                  "angular_velocity_stability_weight",
+                  "angular_velocity_stability_sigma_rad_s",
+                  "height_penalty_weight", "height_sigma_m",
+                  "smooth_weight", "torque_cost", "time_cost", "success_bonus"):
         p.add_argument("--" + field.replace("_", "-"), type=float,
                        default=getattr(compact_defaults, field))
     p.add_argument("--learning-rate", type=float, default=2e-4)
@@ -125,19 +130,28 @@ def write_json(path, payload):
 def build_config(args):
     return WalkCompactConfig(
         budget_s=args.budget_s,
+        budget_s_max=args.budget_s_max,
         confirmation_steps=args.confirmation_steps,
+        joint_cost_sigma_rad=args.joint_cost_sigma_rad,
         joint_position_rad=args.joint_position_rad,
-        axis_tilt_rad=args.axis_tilt_rad,
-        lateral_m=args.lateral_m,
-        settling_pose_sigma_rad=args.settling_pose_sigma_rad,
+        orientation_rad=args.orientation_rad,
+        base_linear_velocity_m_s=args.base_linear_velocity_m_s,
+        base_angular_velocity_rad_s=args.base_angular_velocity_rad_s,
+        root_z_min_m=args.root_z_min_m,
+        root_z_max_margin_m=args.root_z_max_margin_m,
+        progress_reward_weight=args.progress_reward_weight,
+        progress_scale=args.progress_scale,
         pose_reward_weight=args.pose_reward_weight,
-        success_bonus=args.success_bonus,
-        time_cost=args.time_cost,
-        action_change_cost=args.action_change_cost,
+        orientation_stability_weight=args.orientation_stability_weight,
+        orientation_stability_sigma_rad=args.orientation_stability_sigma_rad,
+        angular_velocity_stability_weight=args.angular_velocity_stability_weight,
+        angular_velocity_stability_sigma_rad_s=args.angular_velocity_stability_sigma_rad_s,
+        height_penalty_weight=args.height_penalty_weight,
+        height_sigma_m=args.height_sigma_m,
+        smooth_weight=args.smooth_weight,
         torque_cost=args.torque_cost,
-        excess_height_weight=args.excess_height_weight,
-        excess_height_margin_m=args.excess_height_margin_m,
-        excess_height_sigma_m=args.excess_height_sigma_m)
+        time_cost=args.time_cost,
+        success_bonus=args.success_bonus)
 
 
 def snapshot_paths(args):
@@ -317,10 +331,16 @@ def main(argv=None):
               f"reward={clean.get('eval/episode_reward', 0.):.2f} "
               f"gate={clean.get('eval/episode_gate_eligible', 0.):.3f} "
               f"term=[joint={clean.get('eval/episode_terminal_gate_joint', 0.):.2f} "
-              f"tilt={clean.get('eval/episode_terminal_gate_axis_tilt', 0.):.2f} "
-              f"lat={clean.get('eval/episode_terminal_gate_lateral', 0.):.2f}]", flush=True)
+              f"roll={clean.get('eval/episode_terminal_gate_roll', 0.):.2f} "
+              f"pitch={clean.get('eval/episode_terminal_gate_pitch', 0.):.2f} "
+              f"vel={clean.get('eval/episode_terminal_gate_velocity', 0.):.2f} "
+              f"ang={clean.get('eval/episode_terminal_gate_angular', 0.):.2f} "
+              f"z={clean.get('eval/episode_terminal_gate_height', 0.):.2f}]", flush=True)
 
-    print(f"[walk-compact PPO] {args.envs} envs, budget={cfg.budget_s}s "
+    budget_desc = (f"{cfg.budget_s}s"
+                   if cfg.budget_s_max is None
+                   else f"[{cfg.budget_s},{cfg.budget_s_max}]s random")
+    print(f"[walk-compact PPO] {args.envs} envs, budget={budget_desc} "
           f"confirm={cfg.confirmation_steps} steps, snapshots={meta['count']}",
           flush=True)
     started = time.perf_counter()

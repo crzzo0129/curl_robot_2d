@@ -649,8 +649,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertEqual(args.forward_command_fixed_m_s, 0.60)
         self.assertFalse(args.forward_command_enabled)
-        self.assertEqual(args.forward_command_min_m_s, 0.40)
-        self.assertEqual(args.forward_command_max_m_s, 0.90)
+        self.assertEqual(args.forward_command_min_m_s, 0.55)
+        self.assertEqual(args.forward_command_max_m_s, 0.65)
 
     def test_evaluator_exposes_turn_command(self) -> None:
         args = evaluate_mjx_3d_policy.parse_args(
@@ -665,7 +665,9 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertEqual(args.turn_command_fixed_rad_s, 0.08)
         self.assertFalse(args.turn_command_enabled)
-        self.assertEqual(args.turn_command_max_rad_s, 0.10)
+        self.assertEqual(args.turn_command_max_rad_s, 0.08)
+        self.assertEqual(args.turn_command_interval_s, 1.5)
+        self.assertEqual(args.turn_command_k_turn, 5.0)
 
     def test_phase_locked_meanzero_v10_uses_mean_zero_regularizer(
         self,
@@ -766,20 +768,26 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
 
         self.assertTrue(args.forward_command_enabled)
-        self.assertEqual(args.forward_command_min_m_s, 0.40)
-        self.assertEqual(args.forward_command_max_m_s, 0.90)
+        self.assertEqual(args.forward_command_min_m_s, 0.55)
+        self.assertEqual(args.forward_command_max_m_s, 0.65)
         self.assertIsNone(args.forward_command_fixed_m_s)
         self.assertTrue(args.turn_command_enabled)
-        self.assertEqual(args.turn_command_max_rad_s, 0.10)
-        self.assertEqual(args.turn_command_probability, 0.30)
+        self.assertEqual(args.turn_command_max_rad_s, 0.08)
+        self.assertEqual(args.turn_command_straight_fraction, 0.40)
+        self.assertEqual(args.turn_command_left_fraction, 0.30)
+        self.assertEqual(args.turn_command_right_fraction, 0.30)
+        self.assertEqual(args.turn_command_interval_s, 1.5)
+        self.assertEqual(args.turn_command_k_turn, 5.0)
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertTrue(args.explicit_phase_observation)
 
         reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
-        self.assertEqual(reward.forward_velocity, 8.0)
+        self.assertEqual(reward.forward_velocity, 1.0)
         self.assertEqual(reward.forward_velocity_sigma_m_s, 0.10)
-        self.assertEqual(reward.yaw_rate_command, 8.0)
+        self.assertEqual(reward.yaw_rate_command, 1.5)
         self.assertEqual(reward.yaw_rate_command_sigma_rad_s, 0.05)
+        self.assertEqual(reward.roll_mismatch, 0.5)
+        self.assertEqual(reward.axis_tilt, 0.3)
         # The primary speed reward is the command Gaussian, not raw progress.
         self.assertLess(reward.roll_progress, reward.forward_velocity)
 

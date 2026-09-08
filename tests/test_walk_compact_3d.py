@@ -31,15 +31,17 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     bank_action_arrays,
     compact_target_from_keyframe,
     confirmation_update,
-    dense_pose_reward,
     disable_self_collision_xml,
-    excess_height_cost,
     gate_errors,
+    height_penalty,
+    joint_cost,
     policy_actuator_names,
     policy_joint_names,
-    pose_cost,
-    pose_potential,
+    pose_reward,
     prepare_runtime_xml,
+    progress_reward,
+    roll_pitch_from_quat,
+    stability_cost,
     validate_snapshot_bank,
     write_no_self_collision_variant,
     xml_fingerprint,
@@ -83,7 +85,7 @@ class ConfigTest(unittest.TestCase):
         cfg.validate(CONTROL_TIMESTEP_S)
         self.assertEqual(cfg.episode_steps(CONTROL_TIMESTEP_S), 250)
         self.assertEqual(cfg.budget_s / CONTROL_TIMESTEP_S, 250)
-        self.assertEqual(cfg.confirmation_steps * CONTROL_TIMESTEP_S, 0.10)
+        self.assertEqual(cfg.confirmation_steps * CONTROL_TIMESTEP_S, 0.20)
 
     def test_validation_rejects_bad_timing_and_confirmation(self):
         bad = WalkCompactConfig(budget_s=5.01)
@@ -96,11 +98,32 @@ class ConfigTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             bad.validate(CONTROL_TIMESTEP_S)
 
-    def test_pose_only_gate_ignores_velocity_fields(self):
+    def test_success_is_state_space_target(self):
         cfg = WalkCompactConfig()
         self.assertEqual(cfg.joint_position_rad, 0.10)
-        # no velocity tolerance fields exist in the config
-        self.assertFalse(hasattr(cfg, "root_linear_velocity_m_s"))
+        # success also gates orientation, base velocity, base angular velocity,
+        # and root height -- not just joint pose
+        self.assertEqual(cfg.orientation_rad, 0.30)
+        self.assertEqual(cfg.base_linear_velocity_m_s, 0.30)
+        self.assertEqual(cfg.base_angular_velocity_rad_s, 1.00)
+        self.assertEqual(cfg.root_z_min_m, 0.10)
+
+    def test_reward_weights_match_transition_recipe(self):
+        cfg = WalkCompactConfig()
+        self.assertEqual(cfg.progress_reward_weight, 2.0)
+        self.assertEqual(cfg.pose_reward_weight, 0.5)
+        self.assertEqual(cfg.success_bonus, 8.0)
+        self.assertEqual(cfg.time_cost, 0.003)
+
+    def test_budget_randomization_validation(self):
+        cfg = WalkCompactConfig(budget_s=1.5, budget_s_max=3.0)
+        cfg.validate(CONTROL_TIMESTEP_S)
+        self.assertEqual(cfg.episode_steps(CONTROL_TIMESTEP_S), 75)
+        self.assertEqual(cfg.max_episode_steps(CONTROL_TIMESTEP_S), 150)
+        with self.assertRaises(ValueError):
+            WalkCompactConfig(budget_s=3.0, budget_s_max=2.0).validate(CONTROL_TIMESTEP_S)
+        with self.assertRaises(ValueError):
+            WalkCompactConfig(budget_s=3.0, budget_s_max=3.01).validate(CONTROL_TIMESTEP_S)
 
 
 class ContractTest(unittest.TestCase):
@@ -184,85 +207,83 @@ class GateMathTest(unittest.TestCase):
         # walking default pose (also the transition action nominal)
         self.walking = np.asarray([0.0, 0.9, 1.15] * 4, dtype=np.float32)
 
-    def test_exact_target_has_zero_errors_and_unit_quality(self):
-        errors = gate_errors(np, self.target["joints"], 0.0, 0.0,
-                             self.target, self.cfg)
-        self.assertLess(errors.max(), 1e-5)
-        quality = pose_potential(np, self.target["joints"], self.target, self.cfg)
-        self.assertAlmostEqual(float(quality), 1.0, places=5)
+    def _gate(self, joints=None, roll=0.0, pitch=0.0, vel=0.0, ang=0.0, root_z=0.14):
+        joints = self.target["joints"] if joints is None else joints
+        return gate_errors(np, joints, roll, pitch, vel, ang, root_z,
+                           self.target, stand_z=0.158, cfg=self.cfg)
 
-    def test_joint_offset_scales_with_tolerance(self):
-        joints = np.asarray(self.target["joints"], dtype=np.float32).copy()
-        joints[1] += 0.05  # hip; tolerance 0.10 rad -> 0.5
-        errors = gate_errors(np, joints, 0.0, 0.0, self.target, self.cfg)
-        self.assertAlmostEqual(float(errors[0]), 0.5, places=5)
-        self.assertAlmostEqual(float(errors[1]), 0.0, places=5)
+    def test_joint_cost_zero_at_target_and_pose_reward_bounded(self):
+        self.assertAlmostEqual(float(joint_cost(np, self.target["joints"],
+                                                self.target, self.cfg)), 0.0, places=6)
+        self.assertAlmostEqual(float(pose_reward(np, 0.0, self.cfg)), 0.5, places=6)
+        walking_cost = joint_cost(np, self.walking, self.target, self.cfg)
+        self.assertGreater(float(walking_cost), 0.5)
+        self.assertLess(float(pose_reward(np, walking_cost, self.cfg)), 0.5)
 
-    def test_lateral_scales_with_tolerance(self):
-        errors = gate_errors(np, self.target["joints"], 0.0, 0.05,
-                             self.target, self.cfg)
-        self.assertAlmostEqual(float(errors[2]), 1.0, places=5)
+    def test_progress_reward_rewards_approach(self):
+        # closer (D down) -> positive; farther -> negative; unchanged -> zero
+        self.assertAlmostEqual(float(progress_reward(np, 1.0, 0.5, self.cfg)), 2.0,
+                               places=6)
+        self.assertAlmostEqual(float(progress_reward(np, 0.5, 1.0, self.cfg)), -2.0,
+                               places=6)
+        self.assertAlmostEqual(float(progress_reward(np, 0.5, 0.5, self.cfg)), 0.0,
+                               places=6)
+        # small progress stays linear (not clipped)
+        self.assertAlmostEqual(float(progress_reward(np, 0.02, 0.0, self.cfg)), 2.0,
+                               places=6)
 
-    def test_axis_tilt_scales_with_tolerance(self):
-        errors = gate_errors(np, self.target["joints"], 0.0, 0.0,
-                             self.target, self.cfg)
-        self.assertAlmostEqual(float(errors[1]), 0.0, places=5)
-        errors = gate_errors(np, self.target["joints"], 0.10, 0.0,
-                             self.target, self.cfg)
-        self.assertAlmostEqual(float(errors[1]), 1.0, places=5)
-
-    @staticmethod
-    def _axis_tilt_np(q):
-        w, x, y, z = q
-        # world_z component of body-Y = R[2][1] = 2(yz + wx) for wxyz quaternion
-        body_y_z = 2.0 * (y * z + w * x)
-        return np.arcsin(np.clip(np.abs(body_y_z), 0.0, 1.0))
-
-    def test_axis_tilt_invariant_to_forward_roll(self):
+    def test_roll_pitch_from_quat(self):
         import math
-        self.assertAlmostEqual(self._axis_tilt_np([1.0, 0.0, 0.0, 0.0]), 0.0,
+        roll, pitch = roll_pitch_from_quat(np, np.asarray([1.0, 0.0, 0.0, 0.0]))
+        self.assertAlmostEqual(float(roll), 0.0, places=6)
+        self.assertAlmostEqual(float(pitch), 0.0, places=6)
+        # pitch forward about body Y
+        q = np.asarray([math.cos(math.pi / 8), 0.0, math.sin(math.pi / 8), 0.0])
+        roll, pitch = roll_pitch_from_quat(np, q)
+        self.assertAlmostEqual(float(roll), 0.0, places=6)
+        self.assertAlmostEqual(float(pitch), math.pi / 4, places=6)
+        # roll sideways about body X
+        q = np.asarray([math.cos(math.pi / 12), math.sin(math.pi / 12), 0.0, 0.0])
+        roll, pitch = roll_pitch_from_quat(np, q)
+        self.assertAlmostEqual(float(roll), math.pi / 6, places=6)
+        self.assertAlmostEqual(float(pitch), 0.0, places=6)
+
+    def test_stability_cost_zero_at_rest(self):
+        self.assertAlmostEqual(float(stability_cost(np, 0.0, 0.0,
+                                                    np.zeros(2), self.cfg)), 0.0,
                                places=6)
-        # 90 deg forward roll about body Y: sideways lean stays zero
-        q = [math.cos(math.pi / 4), 0.0, math.sin(math.pi / 4), 0.0]
-        self.assertAlmostEqual(self._axis_tilt_np(q), 0.0, places=6)
-        # 30 deg sideways lean about body X: tilt == 30 deg
-        q = [math.cos(math.pi / 12), math.sin(math.pi / 12), 0.0, 0.0]
-        self.assertAlmostEqual(self._axis_tilt_np(q), math.pi / 6, places=6)
+        self.assertGreater(float(stability_cost(np, 0.3, 0.0,
+                                                np.zeros(2), self.cfg)), 0.0)
+        self.assertGreater(float(stability_cost(np, 0.0, 0.0,
+                                                np.ones(2) * 2.0, self.cfg)), 0.0)
 
-    def test_pose_potential_is_not_flat_from_walking(self):
-        # Regression: the potential must keep gradient from a walking pose,
-        # not collapse to ~0 (which starves the dense pose reward).
-        quality = pose_potential(np, self.walking, self.target, self.cfg)
-        self.assertGreater(float(quality), 0.05)
-        self.assertLess(float(quality), 0.95)
+    def test_height_penalty_envelope(self):
+        # inside the wide envelope -> zero
+        self.assertAlmostEqual(float(height_penalty(
+            np, 0.14, stand_z=0.158, compact_z=0.1663, cfg=self.cfg)), 0.0, places=6)
+        # collapse below z_min and jump above z_max -> penalised
+        self.assertGreater(float(height_penalty(
+            np, 0.08, stand_z=0.158, compact_z=0.1663, cfg=self.cfg)), 0.0)
+        self.assertGreater(float(height_penalty(
+            np, 0.25, stand_z=0.158, compact_z=0.1663, cfg=self.cfg)), 0.0)
 
-    def test_pose_cost_is_quadratic_with_linear_gradient(self):
-        # Regression: the reward signal must grow quadratically (linear
-        # gradient) from a walking pose, not exp-flatten.
-        at_target = pose_cost(np, self.target["joints"], self.target, self.cfg)
-        self.assertAlmostEqual(float(at_target), 0.0, places=6)
-        walking = pose_cost(np, self.walking, self.target, self.cfg)
-        self.assertGreater(float(walking), 0.5)
-
-    def test_dense_pose_reward_negative_and_zero_at_target(self):
-        cost = pose_cost(np, self.target["joints"], self.target, self.cfg)
-        self.assertAlmostEqual(float(dense_pose_reward(np, cost, self.cfg)), 0.0,
-                               places=6)
-        far = pose_cost(np, self.walking, self.target, self.cfg)
-        self.assertLess(float(dense_pose_reward(np, far, self.cfg)), 0.0)
+    def test_gate_errors_state_space(self):
+        errors = self._gate()
+        self.assertLess(float(errors.max()), 1e-5)
+        # joint offset 0.05 rad -> 0.5 of the 0.10 rad bound
+        joints = self.target["joints"].copy()
+        joints[1] += 0.05
+        self.assertAlmostEqual(float(self._gate(joints=joints)[0]), 0.5, places=5)
+        # base velocity 0.3 m/s -> 1.0 of the 0.30 bound
+        self.assertAlmostEqual(float(self._gate(vel=0.3)[3]), 1.0, places=5)
+        # roll 0.3 rad -> 1.0 of the 0.30 bound
+        self.assertAlmostEqual(float(self._gate(roll=0.3)[1]), 1.0, places=5)
 
     def test_confirmation_update_contiguity(self):
         count = 0
         for eligible in (True, True, True, False, True, True, True, True, True):
             count = confirmation_update(np, 0, count, 0, eligible)
         self.assertEqual(count, 5)
-
-    def test_excess_height_cost_zero_below_envelope(self):
-        self.assertAlmostEqual(float(excess_height_cost(
-            np, 0.158, stand_z=0.158, compact_z=0.1663, cfg=self.cfg)), 0.0,
-            places=6)
-        self.assertGreater(float(excess_height_cost(
-            np, 0.25, stand_z=0.158, compact_z=0.1663, cfg=self.cfg)), 0.0)
 
 
 class SnapshotIOTest(unittest.TestCase):

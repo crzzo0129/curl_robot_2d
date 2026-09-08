@@ -14,9 +14,9 @@
 | 接触口径 | **自碰撞关闭**:所有机器人 geom 改为 `contype=0 conaffinity=1`(只对地面接触),`floor` 保持 `contype=1 conaffinity=0`;源模型里滚动自碰撞白名单的位掩码(torso 16/7、前腿 2/29、后腿 4/27、足端 8/15)全部去除 |
 | 物理 | 运行 XML 替换 `<option>`:0.002 s implicitfast、pyramidal、Newton 20/10、impratio 10、关 eulerdamp;并给 `<compiler>` 注入 `meshdir` 指向源 mjcf 目录(源 XML 的 mesh 是 `../meshes/*.stl` 相对路径)—— 与 CPU 快照回放完全一致 |
 | actor 观测/动作 | 与 deploy 控制器同接口:36×20=720 维历史观测,12 维绝对位置目标;**nominal=行走默认姿态,scale=逐关节非对称全范围 `max(high−nominal, nominal−low)`**(与 roll→walk transition policy 同一约定),保证 compact 的 hip/knee 目标落在动作 `[-1,1]` 内;obs 指令字段全程固定 [0.4, 0, 0] |
-| 终点门 | **纯姿态门**:12 关节 ≤0.10 rad(阶段一宽松"大致收拢"口径)、**滚动轴侧倾(axis tilt,绕 body-X 侧翻)≤0.10 rad**、横向偏移 ≤0.05 m;连续 5 帧(0.10 s)达标即成功;速度/余速不参与判定;**不锁身体四元数**(收拢会绕横轴翻转,任何前向滚动相位都合法);**不门控 root 高度**——实测收腿会把机身下压到 ~0.14 m,而不是升到 keyframe 的 0.166 m,高度目标属于滚动阶段 |
-| episode 预算 | 5 s(250 × 20 ms);成功/超时/非有限数终止;超时无额外惩罚(dense pose 奖励已覆盖进度) |
-| 奖励(v1) | 每步 **二次代价(只含关节)** `reward = −1.0 × mean((关节误差/0.50)²)` + 成功 +20;二次代价在远处是**线性梯度**(不像 exp 势函数会变平),保证策略从行走姿态起就收到"收腿"的明确推力;时间/动作变化/力矩代价;防跳项(仅"超出 stand/compact 高度包络")。**侧倾/角速度不进奖励**——收腿天然会下压/前倾,惩罚它们会让"收腿→倒→罚"变成净负、导致腿一直不收;它们只留在终点门里 |
+| 终点门 | **state-space 目标,不是只认关节姿态**:12 关节 ≤0.10 rad 且 |roll|,|pitch| ≤0.30 rad 且 |v_xy| ≤0.30 m/s 且 |ω| ≤1.0 rad/s 且 root z ∈ [0.10, 0.1863],连续 10 帧(0.20 s)才成功。即"收拢、大致直立、已经停稳、没塌到地上" |
+| episode 预算 | 5 s(250 × 20 ms);成功/超时/非有限数终止;时间代价极小(−0.003/步),不逼着提前结束 |
+| 奖励 | `D_t=mean((q−q_compact)/0.50)²`;`progress=2.0·clip((D_{t−1}−D_t)/0.02, −1, 1)`(主信号,奖励每帧进步)+ `0.5·exp(−D_t)`(高斯姿态) + 稳定性(−0.10·(roll/0.3)²−0.10·(pitch/0.3)²−0.03·(ω_xy/2)²)+ 高度包络(−0.05·上越界²−0.05·下越界²)+ 平滑(−0.05·(Δa)²)+ 力矩(−0.01·(τ/3)²)− 0.003 + 成功 +8 |
 | 不做的事 | 无足端拖滑罚、无固定收腿轨迹、无 trajectory 插值、无 episode 内碰撞几何切换、无 rolling teacher |
 
 为什么这样搭:
@@ -102,31 +102,71 @@ python -m scripts.train_walk_compact_ppo --snapshots results/walk_start_snapshot
 `rolling_continuation_evaluated=false`、`deployable_actor=false`
 (特权观测定义已按 deploy 合同,但本轮 actor 仍是仿真网络,未导出)。
 
+### 3.4 Curriculum:预算递减 + 随机预算
+
+默认 5 s 预算偏松(PPO 会发现"前 4 s 乱动、最后 1 s 进 compact"也算成功)。
+建议分四段,每段用上一段的 `params_best` 热启动(`--restore` 恢复 actor 权重
+与观测 normalizer):
+
+```bash
+# Stage 1: 从各种快照都能 compact
+python -m scripts.train_walk_compact_ppo --preset h200 --max-devices 1 \
+  --budget-s 5 --out results/walk_compact_s1_budget5
+
+# Stage 2: 收紧到 3 s
+python -m scripts.train_walk_compact_ppo --preset h200 --max-devices 1 \
+  --budget-s 3 --restore results/walk_compact_s1_budget5/params_best \
+  --out results/walk_compact_s2_budget3
+
+# Stage 3: 收紧到 2 s
+python -m scripts.train_walk_compact_ppo --preset h200 --max-devices 1 \
+  --budget-s 2 --restore results/walk_compact_s2_budget3/params_best \
+  --out results/walk_compact_s3_budget2
+
+# Stage 4: 每 episode 在 1.5~3 s 内随机,策略不能依赖固定窗口
+python -m scripts.train_walk_compact_ppo --preset h200 --max-devices 1 \
+  --budget-s 1.5 --budget-s-max 3 \
+  --restore results/walk_compact_s3_budget2/params_best \
+  --out results/walk_compact_s4_budget_random
+```
+
+`--budget-s-max > --budget-s` 时,环境在每个 episode reset 时从
+`[budget_s, budget_s_max]` 均匀采样一个预算,存进 env 内部(不进 observation),
+超时按该预算判定;`episode_length` 取最大预算,短的由自定义 autoreset 提前终止。
+
 ### 3.3 本地合同测试(无需 mujoco/jax)
 
 ```powershell
 python -m unittest tests.test_walk_compact_3d -v
 ```
 
-覆盖:观测/动作合同尺寸、策略关节顺序、运行 XML 只改 option、姿态门公式
-(含 axis-tilt 对前向滚动的旋转不变性)、dense pose 奖励(含"远处梯度非平坦"
-回归)、防跳项、快照 bank 校验、compact 目标在 transition 动作空间内可达、
-采集/训练入口参数、以及 `--dry-run` 端到端;有 mujoco 时附加验证 abd10
-compact keyframe 确为 ±10°、执行器顺序与无自碰撞变体。
+覆盖:观测/动作合同尺寸、策略关节顺序、运行 XML 只改 option、state-space
+成功门(关节/roll/pitch/速度/角速度/高度)、progress/pose/stability/height 各
+奖励项、roll/pitch 四元数解算、预算随机化校验、快照 bank 校验、compact 目标
+在 transition 动作空间内可达、采集/训练入口参数、`--dry-run` 端到端;有 mujoco
+时附加验证 abd10 compact keyframe 确为 ±10°、执行器顺序与无自碰撞变体。
 
 ## 4. 已知边界与后续
 
-- 姿态门不锁四元数,只用滚动轴侧倾(axis tilt)防侧翻:绕 body-Y 的前向滚动
-  相位任意都合法,但绕 body-X 侧翻超过 0.10 rad 会拒。这是**临时训练门,
-  不是验收标准**,`--axis-tilt-rad` 可按需放宽。
+- 成功是 state-space 目标(关节 + roll/pitch + 基座线/角速度 + 高度包络,
+  连续 10 帧),速度只进终点门、不进 dense 奖励(起始 0.4 m/s,直接罚 vx
+  会让机器人一出生就被罚、逼它暴力刹车)。
 - 动作映射已从行走策略的固定 scale 换成 transition 的非对称全范围 scale,
   否则 compact hip(0.11 rad)在行走 scale(0.5、默认 0.9)下根本够不到,
   会导致 success 恒为 0。
 - CPU 诊断(直接命令 compact ctrl)显示:从行走快照收腿时,机身**下压到
   ~0.14 m 并可能前倾/翻滚**,而不是升到 keyframe 的 0.166 m 稳定成球;因此
-  阶段一的"compact"按**关节收拢 + 不侧翻 + 不侧漂**验收,不要求上壳高度。
-  `pose` 指标是整集平均,收拢后若摔倒会把它拉低,应结合 `success/term=`
-  逐分量与 `pose_quality` 峰值一起看。
+  阶段一按"关节收拢 + 大致直立 + 停稳"验收,不要求上壳高度(高度属于滚动
+  阶段)。`pose_quality` 是整集求和,别只看它,以 `success` 与 `term=`
+  逐分量(≤1 即该项达标)为准。
+- **奖励核心是 progress,不是"还没到 compact 就罚"**:`+2.0·clip((D_{t−1}−D_t)/0.02,−1,1)`
+  奖励每帧进步,`+0.5·exp(−D_t)` 只做有界姿态吸引力;侧倾/角速度用**轻权重**
+  进奖励(0.10/0.03),不再让"收腿→倒"变成净负。
+- 时间代价已降到 −0.003/步,成功奖励降到 +8;预算用四段 curriculum
+  收紧(5 s → 3 s → 2 s → 随机 1.5~3 s,见 3.4)。
+- **尚未做(按用户要求不动 observation)**:obs 里加 phase/elapsed time
+  (transition progress α);velocity envelope 奖励(直接罚 vx 会让机器人一出生
+  就被罚,而 time-dependent 包络又需要 obs 时间信息,故暂不引入,速度只进终点门)。
 - 无自碰撞、无足滑罚:收拢过程允许腿/壳互相接近,拖地也不罚;若训练出现
   明显利用(如腿部穿插、跳起),再加回 compact startup 的自碰撞白名单/足滑项。
 - 快照来自 CPU 回放,训练在 MJX:两侧物理选项已逐项对齐(0.002 s、

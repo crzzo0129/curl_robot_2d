@@ -37,6 +37,7 @@ from curl_robot_2d_mjx.environment_3d import (
     pair_coupled_residual_action_3d,
     pair_coupled_reset_noise_3d,
     forward_command_to_target_scale_3d,
+    steering_prior_3d,
     mirror_rolling_observation_3d,
     phase_feedback_observation_3d,
     reference_startup_scale_3d,
@@ -115,7 +116,7 @@ class MJX3DContractTest(unittest.TestCase):
         ):
             self.assertTrue(controller.exists())
         self.assertEqual(len(JOINT_NAMES_3D), ACTION_SIZE_3D)
-        self.assertEqual(OBSERVATION_SIZE_3D, 63)
+        self.assertEqual(OBSERVATION_SIZE_3D, 65)
 
     def test_3d_config_defaults_are_training_smoke_safe(self) -> None:
         config = Rolling3DConfig()
@@ -507,7 +508,9 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(mirrored[60], -observation[60])
         self.assertEqual(mirrored[61], observation[61])
         self.assertEqual(mirrored[62], -observation[62])
-        np.testing.assert_allclose(mirrored[63:67], observation[63:67])
+        self.assertEqual(mirrored[63], -observation[63])
+        self.assertEqual(mirrored[64], observation[64])
+        np.testing.assert_allclose(mirrored[65:69], observation[65:69])
 
     def test_rolling_observation_mirror_supports_base_observation(self) -> None:
         observation = np.arange(OBSERVATION_SIZE_3D, dtype=np.float32)
@@ -1074,8 +1077,12 @@ class MJX3DContractTest(unittest.TestCase):
         self.assertEqual(config.forward_command_max_m_s, 0.90)
         self.assertIsNone(config.forward_command_fixed_m_s)
         self.assertFalse(config.turn_command_enabled)
-        self.assertEqual(config.turn_command_max_rad_s, 0.10)
-        self.assertEqual(config.turn_command_probability, 0.30)
+        self.assertEqual(config.turn_command_max_rad_s, 0.08)
+        self.assertEqual(config.turn_command_straight_fraction, 0.40)
+        self.assertEqual(config.turn_command_left_fraction, 0.30)
+        self.assertEqual(config.turn_command_right_fraction, 0.30)
+        self.assertEqual(config.turn_command_interval_s, 1.5)
+        self.assertEqual(config.turn_command_k_turn, 5.0)
         self.assertIsNone(config.turn_command_fixed_rad_s)
 
     def test_forward_command_validation(self) -> None:
@@ -1087,7 +1094,10 @@ class MJX3DContractTest(unittest.TestCase):
             {"forward_command_fixed_m_s": float("inf")},
             {"turn_command_enabled": 1},
             {"turn_command_max_rad_s": 0.0},
-            {"turn_command_probability": 1.1},
+            {"turn_command_straight_fraction": 1.1},
+            {"turn_command_left_fraction": -0.1},
+            {"turn_command_interval_s": 0.0},
+            {"turn_command_k_turn": 0.0},
             {"turn_command_fixed_rad_s": float("inf")},
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
@@ -1131,6 +1141,23 @@ class MJX3DContractTest(unittest.TestCase):
                 forward_command_to_target_scale_3d(np, np.float32(speed))
             )
             self.assertAlmostEqual(recovered, scale, places=3)
+
+    def test_steering_prior_matches_constant_differential_pattern(self) -> None:
+        prior = steering_prior_3d(np, np.float32(0.04), k_turn=5.0, prior_clip=0.5)
+        # a = 5.0 * 0.04 = 0.2 -> [a, a, -a, -a, a, -a, -a, a]
+        np.testing.assert_allclose(
+            prior,
+            np.asarray((0.2, 0.2, -0.2, -0.2, 0.2, -0.2, -0.2, 0.2)),
+        )
+
+        clipped = steering_prior_3d(
+            np, np.float32(0.20), k_turn=5.0, prior_clip=0.5
+        )
+        # a clipped to 0.5.
+        np.testing.assert_allclose(
+            clipped,
+            np.asarray((0.5, 0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5)),
+        )
 
 
 if __name__ == "__main__":

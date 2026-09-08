@@ -47,7 +47,7 @@ class Rolling3DRewardConfig:
     yaw_rate: float = 1.0
     yaw_rate_sigma_rad_s: float = 0.30
     yaw_rate_command: float = 0.0
-    yaw_rate_command_sigma_rad_s: float = 0.10
+    yaw_rate_command_sigma_rad_s: float = 0.05
     yaw: float = 0.5
     yaw_sigma_rad: float = 0.10
     lateral_velocity_cost: float = 0.0

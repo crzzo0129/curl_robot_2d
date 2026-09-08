@@ -26,13 +26,15 @@ from curl_robot_2d_mjx.walk_compact_3d import (
     SINGLE_OBS_SIZE,
     WalkCompactConfig,
     compact_target_from_keyframe,
-    dense_pose_reward,
-    excess_height_cost,
     gate_errors,
+    height_penalty,
+    joint_cost,
     policy_actuator_names,
     policy_joint_names,
-    pose_cost,
-    pose_potential,
+    pose_reward,
+    progress_reward,
+    roll_pitch_from_quat,
+    stability_cost,
     validate_snapshot_bank,
 )
 
@@ -90,7 +92,9 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
     ctrl_high = jp.asarray(np.asarray(mj.actuator_ctrlrange[:, 1], dtype=np.float32))
     scale = jp.maximum(ctrl_high - nominal, nominal - ctrl_low)
     n_snapshots = int(bank["qpos"].shape[0])
-    budget_steps = cfg.episode_steps(CONTROL_TIMESTEP_S)
+    min_steps = cfg.episode_steps(CONTROL_TIMESTEP_S)
+    max_steps = cfg.max_episode_steps(CONTROL_TIMESTEP_S)
+    randomize_budget = max_steps > min_steps
     command = jp.asarray((COMMAND_M_S, 0.0, 0.0))
     desired_z = jp.asarray((0.0, 0.0, 1.0))
 
@@ -106,7 +110,9 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             self.mj_model = mj
             self.config = cfg
             self.seed = seed
-            self.budget_steps = budget_steps
+            self.min_steps = min_steps
+            self.max_steps = max_steps
+            self.randomize_budget = randomize_budget
             self.joint_qpos_idx = joint_qpos_idx
 
         @property
@@ -119,7 +125,9 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
 
         @property
         def episode_length(self):
-            return budget_steps
+            # Truncation length = the MAX budget; the env itself times out at a
+            # (possibly random) shorter budget stored per episode.
+            return self.max_steps
 
         def _frame(self, ps, info):
             inv_rot = brax_math.quat_inv(ps.x.rot[0])
@@ -138,13 +146,20 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
         def _zero_metrics(self):
             names = ("reward", "success", "failed", "timeout", "gate_eligible",
                      "terminal_gate_error", "terminal_gate_joint",
-                     "terminal_gate_axis_tilt", "terminal_gate_lateral",
-                     "terminal_pose_quality", "pose_quality")
+                     "terminal_gate_roll", "terminal_gate_pitch",
+                     "terminal_gate_velocity", "terminal_gate_angular",
+                     "terminal_gate_height", "terminal_pose_quality",
+                     "pose_quality")
             return {name: jp.zeros((), dtype=jp.float32) for name in names}
 
         def reset(self, rng):
-            key, = jax.random.split(rng, 1)
+            key, budget_key = jax.random.split(rng)
             index = jax.random.randint(key, (), 0, n_snapshots)
+            if self.randomize_budget:
+                budget_steps = jax.random.randint(budget_key, (), self.min_steps,
+                                                  self.max_steps + 1)
+            else:
+                budget_steps = jp.asarray(self.max_steps, dtype=jp.int32)
             qpos = bank["qpos"][index]
             qvel = bank["qvel"][index]
             ps = self.pipeline_init(qpos, qvel)
@@ -153,13 +168,15 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             # history (same as a controller hot-switch to a fresh policy).
             hist = bank["hist"][index].reshape((HISTORY_SIZE, SINGLE_OBS_SIZE))
             hist = hist.at[:, 24:36].set(0.0).reshape(-1)
+            init_joints = qpos[self.joint_qpos_idx]
             info = {
                 "command": command,
                 "last_act": jp.zeros(ACTION_SIZE),
                 "hist": hist,
                 "step": jp.asarray(0, dtype=jp.int32),
                 "confirm": jp.asarray(0, dtype=jp.int32),
-                "initial_y": qpos[1],
+                "budget_steps": budget_steps,
+                "prev_cost": joint_cost(jp, init_joints, target, cfg),
                 "terminal": jp.asarray(False),
             }
             obs = jp.nan_to_num(hist)
@@ -179,41 +196,43 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
             frame = self._frame(ps, old)
             hist = self._push(old["hist"], frame)
 
-            # ---------------- pose gate (pose-only, velocities ignored)
+            # ---------------- state-space gate (joint + orientation + settle)
             quat = ps.x.rot[0]
-            # Rolling-axis tilt: sideways lean of body-Y out of the horizontal,
-            # invariant to the forward roll that curling onto the shell implies.
-            body_y_world = brax_math.rotate(jp.array((0.0, 1.0, 0.0)), quat)
-            axis_tilt = jp.arcsin(jp.clip(jp.abs(body_y_world[2]), 0.0, 1.0))
+            roll, pitch = roll_pitch_from_quat(jp, quat)
             joints = ps.q[self.joint_qpos_idx]
             root_z = ps.q[2]
-            lateral = ps.q[1] - old["initial_y"]
-            errors = gate_errors(jp, joints, axis_tilt, lateral, target, cfg)
-            cost = pose_cost(jp, joints, target, cfg)
-            quality = pose_potential(jp, joints, target, cfg)
+            v_xy_norm = jp.sqrt(jp.sum(jp.square(ps.xd.vel[0, :2])))
+            ang_norm = jp.sqrt(jp.sum(jp.square(ps.xd.ang[0])))
+            errors = gate_errors(jp, joints, roll, pitch, v_xy_norm, ang_norm,
+                                 root_z, target, stand_z, cfg)
+            D = joint_cost(jp, joints, target, cfg)
+            quality = jp.exp(-D)
             finite = jp.all(jp.isfinite(ps.q)) & jp.all(jp.isfinite(ps.qd))
             eligible = (jp.max(errors) <= 1.0) & finite
             confirm = jp.where(eligible, old["confirm"] + 1, 0)
             step_count = old["step"] + 1
             success = (confirm >= cfg.confirmation_steps) & finite
             failed = ~finite
-            timeout = ~success & ~failed & (step_count >= budget_steps)
+            timeout = ~success & ~failed & (step_count >= old["budget_steps"])
             terminal = failed | timeout | success
 
-            # ---------------- rewards
-            excess = excess_height_cost(jp, root_z, stand_z=stand_z,
-                                        compact_z=target["root_z"], cfg=cfg)
-            change = jp.mean(jp.square(action_in - old["last_act"]))
-            torque = jp.mean(jp.square(ps.qfrc_actuator[6:] / 3.0))
-            reward = (dense_pose_reward(jp, cost, cfg)
-                      + cfg.success_bonus * success.astype(jp.float32)
-                      - cfg.time_cost - cfg.action_change_cost * change
-                      - cfg.torque_cost * torque - excess)
+            # ---------------- rewards (transition-skill recipe)
+            progress = progress_reward(jp, old["prev_cost"], D, cfg)
+            pose_r = pose_reward(jp, D, cfg)
+            inv_rot = brax_math.quat_inv(quat)
+            ang_body = brax_math.rotate(ps.xd.ang[0], inv_rot)
+            stability = stability_cost(jp, roll, pitch, ang_body[:2], cfg)
+            hpen = height_penalty(jp, root_z, stand_z, target["root_z"], cfg)
+            smooth = cfg.smooth_weight * jp.mean(jp.square(action_in - old["last_act"]))
+            torque = cfg.torque_cost * jp.mean(jp.square(ps.qfrc_actuator[6:] / 3.0))
+            reward = (progress + pose_r - stability - hpen - smooth - torque
+                      - cfg.time_cost
+                      + cfg.success_bonus * success.astype(jp.float32))
             reward = jp.nan_to_num(reward, nan=-1.0, posinf=-1.0, neginf=-1.0)
 
             info = {**old, "command": command, "last_act": action_in,
                     "hist": hist, "step": step_count, "confirm": confirm,
-                    "terminal": terminal}
+                    "prev_cost": D, "terminal": terminal}
             metrics = {
                 "reward": reward,
                 "success": success.astype(jp.float32),
@@ -222,8 +241,11 @@ def make_walk_compact_env(runtime_xml, snapshot_npz, snapshot_meta,
                 "gate_eligible": eligible.astype(jp.float32),
                 "terminal_gate_error": jp.where(terminal, jp.max(errors), 0.0),
                 "terminal_gate_joint": jp.where(terminal, errors[0], 0.0),
-                "terminal_gate_axis_tilt": jp.where(terminal, errors[1], 0.0),
-                "terminal_gate_lateral": jp.where(terminal, errors[2], 0.0),
+                "terminal_gate_roll": jp.where(terminal, errors[1], 0.0),
+                "terminal_gate_pitch": jp.where(terminal, errors[2], 0.0),
+                "terminal_gate_velocity": jp.where(terminal, errors[3], 0.0),
+                "terminal_gate_angular": jp.where(terminal, errors[4], 0.0),
+                "terminal_gate_height": jp.where(terminal, errors[5], 0.0),
                 "terminal_pose_quality": jp.where(terminal, quality, 0.0),
                 "pose_quality": quality,
             }

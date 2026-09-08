@@ -64,7 +64,8 @@ RUNTIME_OPTION = (
     '<flag eulerdamp="disable"/></option>'
 )
 
-COMPACT_GATE_NAMES = ("joint_position", "axis_tilt", "lateral")
+COMPACT_GATE_NAMES = ("joint_position", "roll", "pitch",
+                       "base_velocity", "base_angular_velocity", "root_height")
 
 # Deploy frame layout, indices 0-based.
 FRAME_GYRO = slice(0, 3)            # base angular velocity, body frame
@@ -168,38 +169,40 @@ def policy_actuator_names() -> tuple[str, ...]:
 @dataclass(frozen=True)
 class WalkCompactConfig:
     # Time budget from the walking snapshot to a confirmed compact window.
+    # budget_s_max > budget_s enables a per-episode uniform random budget
+    # (curriculum stage 4), so the policy cannot rely on a fixed 5 s window.
     budget_s: float = 5.0
-    confirmation_steps: int = 5
-    # Tight terminal gate (pose-only; velocities are intentionally not gated).
-    # Note: root height is deliberately NOT gated in stage one -- tucking the
-    # legs drops the body (~0.14 m) rather than rising onto the shell
-    # (0.166 m); the "roll onto shell" height belongs to the rolling stage.
-    # joint_position_rad is a LOOSE stage-one tolerance (a dynamic tuck cannot
-    # hold 0.02 rad); tighten in a later stage.
-    joint_position_rad: float = 0.10
-    axis_tilt_rad: float = 0.10      # rolling-axis tilt (sideways lean), rad
-    lateral_m: float = 0.05
-    # Quadratic pose-cost sigma (wide, so the cost stays a usable magnitude
-    # from a walking pose) and the reward weight.
-    settling_pose_sigma_rad: float = 0.50
-    # Rewards.
-    pose_reward_weight: float = 1.0
-    success_bonus: float = 20.0
-    time_cost: float = 0.02
-    action_change_cost: float = 0.02
-    torque_cost: float = 0.005
-    # Anti-jump only: penalise the body rising above the pose envelope.  The
-    # natural tumble after tucking (sideways lean / angular velocity) is NOT
-    # penalised in the dense reward -- those live in the terminal gate --
-    # otherwise the fall penalty makes tucking net-negative and the legs never
-    # fold.  No foot-slip cost in v1.
-    excess_height_weight: float = 0.05
-    excess_height_margin_m: float = 0.02
-    excess_height_sigma_m: float = 0.02
+    budget_s_max: float | None = None
+    confirmation_steps: int = 10        # 0.2 s at 50 Hz
+    # D_t = mean(((q - q_compact)/sigma)^2) -- the joint distance-to-compact.
+    joint_cost_sigma_rad: float = 0.50
+    # Terminal (success) gate -- a STATE-space target, not just joint-space.
+    joint_position_rad: float = 0.10    # max |q - q_compact|
+    orientation_rad: float = 0.30       # |roll| and |pitch|
+    base_linear_velocity_m_s: float = 0.30   # |v_xy|
+    base_angular_velocity_rad_s: float = 1.00  # |omega|
+    root_z_min_m: float = 0.10          # lower height envelope (block collapse)
+    root_z_max_margin_m: float = 0.02   # upper envelope = max(stand,compact)+margin
+    # Reward weights (transition-skill recipe).
+    progress_reward_weight: float = 2.0
+    progress_scale: float = 0.02        # clip divisor on (D_prev - D_t)
+    pose_reward_weight: float = 0.5     # exp(-D_t)
+    orientation_stability_weight: float = 0.10   # roll/pitch
+    orientation_stability_sigma_rad: float = 0.30
+    angular_velocity_stability_weight: float = 0.03   # base omega_xy
+    angular_velocity_stability_sigma_rad_s: float = 2.0
+    height_penalty_weight: float = 0.05
+    height_sigma_m: float = 0.02
+    smooth_weight: float = 0.05
+    torque_cost: float = 0.01
+    time_cost: float = 0.003
+    success_bonus: float = 8.0
     discounting: float = 0.999
 
     def validate(self, dt: float) -> None:
         for name, value in asdict(self).items():
+            if value is None:
+                continue
             if not math.isfinite(value) or value <= 0:
                 raise ValueError(f"{name} must be finite and positive")
         if not isinstance(self.confirmation_steps, int) or self.confirmation_steps < 1:
@@ -208,11 +211,20 @@ class WalkCompactConfig:
             raise ValueError("discounting must be in (0, 1)")
         if not np.isclose(round(self.budget_s / dt) * dt, self.budget_s, atol=1e-8, rtol=0):
             raise ValueError("budget_s must align with the control timestep")
+        if self.budget_s_max is not None:
+            if self.budget_s_max < self.budget_s:
+                raise ValueError("budget_s_max must be >= budget_s")
+            if not np.isclose(round(self.budget_s_max / dt) * dt, self.budget_s_max,
+                              atol=1e-8, rtol=0):
+                raise ValueError("budget_s_max must align with the control timestep")
         if self.confirmation_steps > round(self.budget_s / dt):
             raise ValueError("confirmation exceeds the episode budget")
 
     def episode_steps(self, dt: float) -> int:
         return round(self.budget_s / dt)
+
+    def max_episode_steps(self, dt: float) -> int:
+        return round((self.budget_s_max or self.budget_s) / dt)
 
 
 # ------------------------------------------------------------------- gates
@@ -235,64 +247,92 @@ def compact_target_from_keyframe(key_qpos: np.ndarray,
             "root_z": float(root_z) if root_z is not None else float(key_qpos[2])}
 
 
-def gate_errors(xp, joints, axis_tilt, lateral, target, cfg):
-    """Normalized terminal-gate errors: 1.0 == tolerance bound per component.
+def joint_cost(xp, joints, target, cfg):
+    """D_t = mean(((q - q_compact)/sigma)^2) -- the distance-to-compact."""
+    return xp.mean(xp.square(
+        (joints - target["joints"]) / cfg.joint_cost_sigma_rad))
 
-    joints is the 12-vector in policy order; axis_tilt is the rolling-axis
-    tilt (arcsin(|world_z . body_y|), i.e. sideways lean) rather than the full
-    body quaternion, so a forward-rolled compact ball is not rejected.  Root
-    height is intentionally absent in stage one (tucking lowers the body).
+
+def progress_reward(xp, previous_cost, cost, cfg):
+    """Reward PER-STEP PROGRESS toward compact: clip((D_prev - D_t)/scale, -1, 1).
+
+    +1 when this frame is closer than the last, -1 when farther.  This is the
+    primary training signal for a transition skill, replacing a flat penalty
+    for "not yet compact" (which punishes the robot every frame before success).
+    """
+    delta = (previous_cost - cost) / cfg.progress_scale
+    return cfg.progress_reward_weight * xp.clip(delta, -1.0, 1.0)
+
+
+def pose_reward(xp, cost, cfg):
+    """Gaussian pose reward exp(-D_t): bounded, far states not over-penalised."""
+    return cfg.pose_reward_weight * xp.exp(-cost)
+
+
+def roll_pitch_from_quat(xp, quat):
+    """Roll (about body X) and pitch (about body Y) from a wxyz quaternion.
+
+    Uses the body->world rotation matrix: roll = atan2(R21, R22),
+    pitch = atan2(-R20, hypot(R21, R22)).  Both are 0 when the body is upright.
+    """
+    w, x, y, z = quat[0], quat[1], quat[2], quat[3]
+    r21 = 2.0 * (y * z + w * x)
+    r22 = 1.0 - 2.0 * (x * x + y * y)
+    r20 = 2.0 * (x * z - w * y)
+    roll = xp.arctan2(r21, r22)
+    pitch = xp.arctan2(-r20, xp.sqrt(xp.maximum(r21 * r21 + r22 * r22, 1e-12)))
+    return roll, pitch
+
+
+def stability_cost(xp, roll, pitch, angular_xy, cfg):
+    """Positive penalty: body roll/pitch tilt + base angular velocity in xy.
+
+    Mild weights: a transition may legitimately have some body disturbance, so
+    this only nudges the robot to stay roughly upright, not rigidly level.
+    """
+    tilt = (xp.square(roll / cfg.orientation_stability_sigma_rad)
+            + xp.square(pitch / cfg.orientation_stability_sigma_rad))
+    ang = xp.mean(xp.square(
+        angular_xy / cfg.angular_velocity_stability_sigma_rad_s))
+    return (cfg.orientation_stability_weight * tilt
+            + cfg.angular_velocity_stability_weight * ang)
+
+
+def height_penalty(xp, root_z, stand_z, compact_z, cfg):
+    """Positive penalty for leaving the WIDE [z_min, z_max] envelope.
+
+    Upper bound blocks "jump up then curl"; lower bound blocks "collapse to the
+    floor".  Deliberately wide (not height tracking) to leave the policy free.
+    """
+    z_max = xp.maximum(stand_z, compact_z) + cfg.root_z_max_margin_m
+    upper = xp.square(xp.maximum(root_z - z_max, 0.0) / cfg.height_sigma_m)
+    lower = xp.square(xp.maximum(cfg.root_z_min_m - root_z, 0.0) / cfg.height_sigma_m)
+    return cfg.height_penalty_weight * (upper + lower)
+
+
+def gate_errors(xp, joints, roll, pitch, velocity_norm, angular_norm, root_z,
+                target, stand_z, cfg):
+    """Normalized success-gate errors (1.0 == bound).  A STATE-space target:
+    joint pose AND near-upright orientation AND low base velocity/angular
+    velocity AND root height inside the envelope, held for confirmation_steps.
     """
     joint_error = xp.max(xp.abs(joints - target["joints"])) / cfg.joint_position_rad
-    tilt_error = xp.abs(axis_tilt) / cfg.axis_tilt_rad
-    lateral_error = xp.abs(lateral) / cfg.lateral_m
-    return xp.stack((joint_error, tilt_error, lateral_error))
-
-
-def pose_cost(xp, joints, target, cfg):
-    """Quadratic JOINT-tuck cost with LINEAR gradient (not flat far away).
-
-    This is the reward-driving signal.  An exp-potential goes flat from a
-    walking pose, which starves the policy of a gradient and leaves the legs
-    un-tucked.  A quadratic cost keeps a nonzero push all the way in.  Root
-    height and sideways lean are deliberately EXCLUDED: tucking lowers the body
-    and may tip it, and penalising that here makes tucking net-negative.
-    """
-    return xp.mean(xp.square(
-        (joints - target["joints"]) / cfg.settling_pose_sigma_rad))
-
-
-def pose_potential(xp, joints, target, cfg):
-    """0..1 reporting quality derived from pose_cost (NOT the reward signal)."""
-    return xp.exp(-0.5 * pose_cost(xp, joints, target, cfg))
+    roll_error = xp.abs(roll) / cfg.orientation_rad
+    pitch_error = xp.abs(pitch) / cfg.orientation_rad
+    velocity_error = velocity_norm / cfg.base_linear_velocity_m_s
+    angular_error = angular_norm / cfg.base_angular_velocity_rad_s
+    z_max = xp.maximum(stand_z, target["root_z"]) + cfg.root_z_max_margin_m
+    upper = xp.maximum(root_z - z_max, 0.0) / cfg.height_sigma_m
+    lower = xp.maximum(cfg.root_z_min_m - root_z, 0.0) / cfg.height_sigma_m
+    height_error = xp.maximum(upper, lower)
+    return xp.stack((joint_error, roll_error, pitch_error, velocity_error,
+                     angular_error, height_error))
 
 
 def confirmation_update(xp, previous_id, previous_count, candidate_id, eligible):
     count = xp.where(eligible, xp.where(previous_id == candidate_id,
                                         previous_count + 1, 1), 0)
     return count.astype(xp.int32)
-
-
-def dense_pose_reward(xp, cost, cfg):
-    """Quadratic pose reward, zero exactly at the compact target.
-
-    Unlike an exp-of-square potential, the cost (and therefore this reward)
-    grows quadratically with the error, so the gradient is linear and stays
-    meaningful even far from the target.
-    """
-    return -cfg.pose_reward_weight * cost
-
-
-def excess_height_cost(xp, root_z, *, stand_z, compact_z, cfg):
-    """Anti-jump penalty: only the body rising above the pose envelope.
-
-    The natural tumble after tucking (sideways lean / angular velocity) is NOT
-    penalised here -- those belong to the terminal gate -- otherwise the fall
-    penalty makes tucking net-negative and the legs never fold.
-    """
-    envelope = xp.maximum(stand_z, compact_z) + cfg.excess_height_margin_m
-    excess = xp.square(xp.maximum(root_z - envelope, 0.0) / cfg.excess_height_sigma_m)
-    return cfg.excess_height_weight * excess
 
 
 # ------------------------------------------------------------ snapshot format
