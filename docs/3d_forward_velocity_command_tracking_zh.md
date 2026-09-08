@@ -120,18 +120,24 @@ python -m scripts.evaluate_mjx_3d_policy \
 
 ## 转向命令（yaw_rate_cmd）
 
-- `turn_command_enabled=True`，reset 时按 `turn_command_probability=0.30` 采样非零转向，
-  幅值 `Uniform(0.02, turn_command_max_rad_s=0.10)`，左右各 50%。
-- 转向量用 **rolling-axis heading rate**（身体滚动轴在水平面的朝向变化率），不是 Euler yaw
-  （§21-4/5）。每步 `wrapped_phase_error(heading_now, heading_prev)/control_dt`。
-- 观测第 62 位加入 `yaw_rate_command`（反射奇，mirror sign −1），总观测 63（+相位反馈 67）。
+- 控制结构：`q_target = q_reference(v_cmd, phase) + steering_prior(yaw_rate_cmd) + residual_gain·policy_action_8d`。
+  - 转向由策略学 8 维 differential residual，但加一个**转向先验**帮 PPO 快速锁定方向。
+  - `steering_prior` = 恒定差分 `[a,a,a,-a]`（前髋/前膝/后髋同向 +a，后膝反向 −a，左右相反符号），
+    在 actuator 顺序为 `[a,a,-a,-a,a,-a,-a,a]`，`a = clip(k_turn·yaw_rate_cmd, −0.5, 0.5)`，默认 `k_turn=5.0`。
+  - 这个先验不是固定控制器，策略残差在其上微调。
+- command **每隔 `turn_command_interval_s=1.5s` 更新一次**（整集预采样序列，按 step 索引），
+  采样 `40% 直行 / 30% 左 / 30% 右`，幅值 `Uniform(0.02, 0.08)` rad/s。
+- 第一阶段固定速度：`v_cmd ∈ [0.55, 0.65]`，`yaw_rate_cmd ∈ [−0.08, 0.08]`。
+- 转向量用 **rolling-axis heading rate**（身体滚动轴水平投影的朝向变化率），不是 Euler yaw；
+  每步 `wrapped_phase_error(heading_now, heading_prev)/control_dt`。
+- 观测：`yaw_rate_command`（第 62 位，反射奇）、`rolling_axis_heading_rate`（第 63 位，反射奇）、
+  `rolling_axis_elevation`（第 64 位，反射偶），总观测 65（+相位反馈 69）。
 - 奖励互斥（`turning = |yaw_rate_cmd| > 1e-3`）：
-  - 直行（turning=0）：追 `forward_velocity`；`yaw_rate`/`yaw`/`lateral_*` 稳定惩罚生效。
-  - 转向（turning=1）：追 `yaw_rate_command = 8·exp(−(ω−ω_cmd)²/0.05²)`；
-    `forward_velocity` 及 lateral/yaw 稳定项被抑制。
-- 转向回合关闭 `terminate_lateral_drift`（转向自然积累侧漂，不应触发终止）。
-- 保留：`roll_progress`（小前进）、`roll_mismatch`、`backward`、`axis_tilt`、`collision`、
-  `action_rate`、`residual_action`、`termination`。
+  - 直行：`forward_velocity = 1.0·exp(−(v_x−v_cmd)²/0.10²)`，lateral/yaw 稳定项生效。
+  - 转向：`yaw_rate_command = 1.5·exp(−(ω−ω_cmd)²/0.05²)`，forward/lateral/yaw 稳定项被抑制。
+  - 其余：`roll_mismatch=0.5`（锁相/滑移）、`roll_progress=0.5`、`axis_tilt=0.3`、
+    `backward=1.0`、`lateral_velocity=2.0`、`action_rate`、`residual_action`、`torque`、`termination`。
+- 转向回合关闭 `terminate_lateral_drift`（转向自然积累侧漂）。
 
 评估命令（固定转向）：
 
@@ -139,7 +145,7 @@ python -m scripts.evaluate_mjx_3d_policy \
 python -m scripts.evaluate_mjx_3d_policy \
   params_best \
   --out results/mjx_3d_forward_command_v1/eval_turn_008 \
-  --geometry rollingquad_2_primitive_abd10 \
+  --geometry rollingquad_2_abd10 \
   --physics-profile cg20 \
   --controller results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json \
   --forward-command-fixed-m-s 0.60 \
@@ -149,28 +155,23 @@ python -m scripts.evaluate_mjx_3d_policy \
 
 ## 评估指标
 
-- `eval/avg_forward_velocity_command`：平均 v_cmd。
-- `eval/avg_forward_velocity_m_s`：平均实际前向速度。
-- `eval/avg_forward_velocity_error_m_s`：平均速度误差（带符号）。
-- `eval/avg_forward_velocity_error_abs_m_s`：平均绝对速度误差（用于 checkpoint 选择）。
+- `eval/avg_forward_velocity_command` / `_m_s` / `_error_m_s` / `_error_abs_m_s`：速度命令/实测/误差。
 - `eval/avg_yaw_rate_command_rad_s` / `eval/avg_rolling_axis_heading_rate_rad_s` /
   `eval/avg_yaw_rate_error_abs_rad_s`：转向命令/实测/误差。
-- checkpoint 选择 `command_quality` 现在综合 `|v_err|/0.10 + |ω_err|/0.05`。
+- checkpoint 选择 `command_quality` 综合 `|v_err|/0.10 + |ω_err|/0.05`。
 
 ## 单元测试
 
 新增/更新测试（numpy-only，全部通过）：
 
-- `tests/test_mjx_3d_reward.py`：forward_velocity Gaussian 奖励 + yaw_rate_command
-  转向互斥（转向时 forward=0、转向率高斯衰减）；修复 zero_inputs 缺 `same_side_foot_gap`。
-- `tests/test_mjx_3d_contract.py`：forward/turn command 默认/校验/查表单调与往返。
+- `tests/test_mjx_3d_reward.py`：forward_velocity + yaw_rate_command 转向互斥高斯。
+- `tests/test_mjx_3d_contract.py`：forward/turn command 默认/校验、查表单调/往返、
+  `steering_prior_3d` 恒定差分与 clip。
 - `tests/test_mjx_3d_training.py`：`command_tracking_v1` recipe 默认值 + turn command CLI。
 
 ## 注意事项
 
-- 转向用 §14 实验得出的**恒定差分** `[a,a,a,-a]`（前髋/前膝/后髋同向 +a，后膝反向 −a），
-  该模式能产生近似恒定的转向率；幅度 a 由 yaw_rate_cmd 决定，不是让策略自由学差分。
-- v_cmd 采样范围已放宽到 0.40–0.90；但 reference 零接触上限 ~0.81 m/s，**0.82–0.90 会
-  饱和到 scale=1.0（实际 ~0.81），始终差 ~0.09 m/s**；有效可追范围仍是 ~0.41–0.81。
+- 转向用 §14 实验得出的**恒定差分** `[a,a,a,-a]` 作先验，但最终由策略残差微调。
+- v_cmd 第一阶段固定 0.55–0.65；reference 零接触上限 ~0.81 m/s，后续扩展时 0.82+ 会饱和。
 - 低速（< 0.41 m/s）与停止不靠 reference 幅值缩放，属于独立 curriculum（§18）。
 - 不要用 full 高速 CEM 结果（自碰撞换速度）。

@@ -266,7 +266,7 @@ def steering_prior_3d(xp, yaw_rate_command, k_turn, prior_clip):
     """
 
     a = xp.clip(k_turn * yaw_rate_command, -prior_clip, prior_clip)
-    return xp.stack((a, a, -a, -a, a, -a, -a, a))
+    return xp.stack((a, a, -a, -a, a, -a, -a, a), axis=-1)
 
 
 def _rolling_observation_mirror_contract_3d():
@@ -1251,7 +1251,7 @@ def make_brax_env_3d(
                 task.control_timestep,
             )
             self.num_command_segments = max(
-                1, math.ceil(task.episode_length / self.command_interval_steps)
+                1, int(np.ceil(task.episode_length / self.command_interval_steps))
             )
 
         @property
