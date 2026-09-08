@@ -768,8 +768,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
 
         self.assertTrue(args.forward_command_enabled)
-        self.assertEqual(args.forward_command_min_m_s, 0.55)
-        self.assertEqual(args.forward_command_max_m_s, 0.65)
+        self.assertEqual(args.forward_command_min_m_s, 0.60)
+        self.assertEqual(args.forward_command_max_m_s, 0.60)
         self.assertIsNone(args.forward_command_fixed_m_s)
         self.assertTrue(args.turn_command_enabled)
         self.assertEqual(args.turn_command_max_rad_s, 0.08)
@@ -780,16 +780,25 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.turn_command_k_turn, 5.0)
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertTrue(args.explicit_phase_observation)
+        self.assertTrue(args.no_self_collision)
 
         reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
         self.assertEqual(reward.forward_velocity, 1.0)
         self.assertEqual(reward.forward_velocity_sigma_m_s, 0.10)
+        self.assertEqual(reward.turning_forward_velocity_scale, 0.75)
         self.assertEqual(reward.yaw_rate_command, 1.5)
         self.assertEqual(reward.yaw_rate_command_sigma_rad_s, 0.05)
         self.assertEqual(reward.roll_mismatch, 0.5)
         self.assertEqual(reward.axis_tilt, 0.3)
         # The primary speed reward is the command Gaussian, not raw progress.
         self.assertLess(reward.roll_progress, reward.forward_velocity)
+
+    def test_command_tracking_can_explicitly_enable_self_collision(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "command_tracking_v1", "--self-collision"]
+        )
+
+        self.assertFalse(args.no_self_collision)
 
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(

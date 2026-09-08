@@ -40,6 +40,7 @@ class Rolling3DRewardConfig:
     backward: float = 1.5
     forward_velocity: float = 0.0
     forward_velocity_sigma_m_s: float = 0.10
+    turning_forward_velocity_scale: float = 0.0
     lateral_velocity: float = 1.0
     lateral_velocity_sigma_m_s: float = 0.20
     lateral_drift: float = 0.5
@@ -178,9 +179,9 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         -config.recovery_clip,
         config.recovery_clip,
     )
-    # When a turn is commanded the straight-line objectives (forward-velocity
-    # tracking plus lateral/yaw stability) are suppressed and the policy tracks
-    # the rolling-axis heading rate instead.
+    # During a commanded turn, lateral/yaw straight-line stability rewards are
+    # suppressed.  Forward-speed tracking may remain at a recipe-selected
+    # fraction while the policy tracks the rolling-axis heading rate.
     turning = xp.where(
         xp.abs(inputs["yaw_rate_command"]) > 1e-3, 1.0, 0.0
     )
@@ -189,7 +190,12 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         "roll_progress": config.roll_progress * clipped_progress,
         "roll_mismatch": -config.roll_mismatch * inputs["mismatch_progress"],
         "backward": -config.backward * inputs["backward_progress"],
-        "forward_velocity": config.forward_velocity * not_turning * xp.exp(
+        "forward_velocity": config.forward_velocity
+        * (
+            not_turning
+            + config.turning_forward_velocity_scale * turning
+        )
+        * xp.exp(
             -xp.square(
                 inputs["forward_velocity"]
                 - inputs["forward_velocity_command"]

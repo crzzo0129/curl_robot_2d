@@ -178,6 +178,13 @@ ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER = (
     / "03_strict_10s"
     / "best_phase_controller.json"
 )
+ROLLINGQUAD_2_ABD10_HIGH_SPEED_CEM_CONTROLLER = (
+    PROJECT_ROOT
+    / "results"
+    / "rollingquad_abd10_high_speed_zero_contact_refine_smoke"
+    / "01_zero_contact_speed_refine"
+    / "best_phase_controller.json"
+)
 CEM_CONTROLLER_PATHS_3D = {
     "baseline": BASELINE_3D_CEM_CONTROLLER,
     "real": REAL_3D_CEM_CONTROLLER,
@@ -185,9 +192,9 @@ CEM_CONTROLLER_PATHS_3D = {
     "rollingquad_2": ROLLINGQUAD_2_CEM_CONTROLLER,
     "rollingquad_2_simple_convex": ROLLINGQUAD_2_SIMPLE_CONVEX_CEM_CONTROLLER,
     "rollingquad_2_primitive": ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
-    # Same hip/knee oscillator as rollingquad_2: the CEM reference does not
-    # command abduction, which comes entirely from the model's compact keyframe.
-    "rollingquad_2_abd10": ROLLINGQUAD_2_CEM_CONTROLLER,
+    # Canonical abd10 full-geometry controller: smoke speed refinement of the
+    # zero-contact reference. Abduction still comes from the compact keyframe.
+    "rollingquad_2_abd10": ROLLINGQUAD_2_ABD10_HIGH_SPEED_CEM_CONTROLLER,
     "rollingquad_2_primitive_abd10": ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
 }
 DEFAULT_3D_CEM_CONTROLLER = ROLLINGQUAD_2_CEM_CONTROLLER
@@ -255,7 +262,15 @@ def forward_command_to_target_scale_3d(xp, v_cmd):
     return xp.clip(scale, FORWARD_COMMAND_MIN_SCALE, FORWARD_COMMAND_MAX_SCALE)
 
 
-def steering_prior_3d(xp, yaw_rate_command, k_turn, prior_clip):
+def steering_prior_3d(
+    xp,
+    yaw_rate_command,
+    k_turn,
+    prior_clip,
+    *,
+    residual_gain=1.0,
+    differential_scale=1.0,
+):
     """Constant differential steering prior from a yaw-rate command.
 
     The validated differential pattern is [front_hip, front_knee, rear_hip,
@@ -265,7 +280,8 @@ def steering_prior_3d(xp, yaw_rate_command, k_turn, prior_clip):
     tunes it.
     """
 
-    a = xp.clip(k_turn * yaw_rate_command, -prior_clip, prior_clip)
+    raw_a = xp.clip(k_turn * yaw_rate_command, -prior_clip, prior_clip)
+    a = residual_gain * differential_scale * raw_a
     return xp.stack((a, a, -a, -a, a, -a, -a, a), axis=-1)
 
 
@@ -1466,6 +1482,12 @@ def make_brax_env_3d(
                 yaw_cmd_sequence,
                 task.turn_command_k_turn,
                 task.turn_command_prior_clip,
+                residual_gain=reference_settings.residual_gain,
+                differential_scale=(
+                    1.0
+                    if task.residual_pair_differential_scale is None
+                    else task.residual_pair_differential_scale
+                ),
             )
             forward_velocity_command = v_cmd_sequence[0]
             forward_command_scale = scale_sequence[0]

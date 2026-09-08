@@ -20,6 +20,7 @@ from curl_robot_2d_mjx.environment_3d import (
     PUPPER_OPEN60_MODEL_PATH_3D,
     PUPPER_OPEN60_CEM_CONTROLLER,
     ROLLINGQUAD_2_CEM_CONTROLLER,
+    ROLLINGQUAD_2_ABD10_HIGH_SPEED_CEM_CONTROLLER,
     ROLLINGQUAD_2_ABD10_MODEL_PATH_3D,
     ROLLINGQUAD_2_MODEL_PATH_3D,
     ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D,
@@ -342,7 +343,7 @@ class MJX3DContractTest(unittest.TestCase):
         validate_rollingquad_self_collision_contract_3d(model, "rollingquad_2_abd10")
         self.assertEqual(
             cem_controller_path_3d("rollingquad_2_abd10"),
-            ROLLINGQUAD_2_CEM_CONTROLLER,
+            ROLLINGQUAD_2_ABD10_HIGH_SPEED_CEM_CONTROLLER,
         )
 
         compact_id = model.key("compact").id
@@ -1143,17 +1144,27 @@ class MJX3DContractTest(unittest.TestCase):
             self.assertAlmostEqual(recovered, scale, places=3)
 
     def test_steering_prior_matches_constant_differential_pattern(self) -> None:
-        prior = steering_prior_3d(np, np.float32(0.04), k_turn=5.0, prior_clip=0.5)
-        # a = 5.0 * 0.04 = 0.2 -> [a, a, -a, -a, a, -a, -a, a]
+        prior = steering_prior_3d(
+            np,
+            np.float32(0.04),
+            k_turn=5.0,
+            prior_clip=0.5,
+            residual_gain=0.15,
+            differential_scale=0.25,
+        )
+        # raw a=0.2, effective a=0.15*0.25*0.2=0.0075.
         np.testing.assert_allclose(
             prior,
-            np.asarray((0.2, 0.2, -0.2, -0.2, 0.2, -0.2, -0.2, 0.2)),
+            np.asarray(
+                (0.0075, 0.0075, -0.0075, -0.0075,
+                 0.0075, -0.0075, -0.0075, 0.0075)
+            ),
         )
 
         clipped = steering_prior_3d(
             np, np.float32(0.20), k_turn=5.0, prior_clip=0.5
         )
-        # a clipped to 0.5.
+        # Raw a is clipped to 0.5; the default effective scale is one.
         np.testing.assert_allclose(
             clipped,
             np.asarray((0.5, 0.5, -0.5, -0.5, 0.5, -0.5, -0.5, 0.5)),

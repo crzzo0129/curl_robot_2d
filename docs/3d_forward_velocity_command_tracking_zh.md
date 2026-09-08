@@ -87,33 +87,39 @@ cd curl_robot_2d
 python -m scripts.train_mjx_3d_residual_ppo \
   --preset smoke \
   --recipe command_tracking_v1 \
-  --geometry rollingquad_2_primitive_abd10 \
+  --geometry rollingquad_2_abd10 \
   --physics-profile cg20 \
   --controller results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json \
+  --save-ppo-checkpoints \
   --out results/mjx_3d_forward_command_smoke
 
 # 正式训练（4090 preset）
 python -m scripts.train_mjx_3d_residual_ppo \
   --preset 4090 \
   --recipe command_tracking_v1 \
-  --geometry rollingquad_2_primitive_abd10 \
+  --geometry rollingquad_2_abd10 \
   --physics-profile cg20 \
   --controller results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json \
+  --save-ppo-checkpoints \
   --out results/mjx_3d_forward_command_v1
 ```
 
-注意：训练用 `rollingquad_2_primitive_abd10`（解析碰撞近似，速度最快），
-`--controller` 必须显式指向主高速 reference，否则会用 geometry 默认 reference。
+注意：训练使用与 reference 一致的 `rollingquad_2_abd10`。`command_tracking_v1`
+默认关闭训练环境中的机器人自碰撞，以避免 MJX 显存爆炸；训练完成后必须在完整
+`rollingquad_abd10.xml`、自碰撞开启的独立评估中验收。`--controller` 仍建议显式
+指向主高速 reference。保留 PPO checkpoints 是为了在 `params_best` 出现碰撞时，能用
+低 batch 的完整碰撞评估重新挑选，而不必重训。
 
 训练后评估（固定 v_cmd，输出速度误差/自碰撞）：
 
 ```bash
 python -m scripts.evaluate_mjx_3d_policy \
-  params_best \
+  results/mjx_3d_forward_command_v1/params_best \
   --out results/mjx_3d_forward_command_v1/eval_vcmd_060 \
-  --geometry rollingquad_2_primitive_abd10 \
+  --geometry rollingquad_2_abd10 \
   --physics-profile cg20 \
   --controller results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json \
+  --batch-size 16 --chunk-size 4 \
   --forward-command-fixed-m-s 0.60 \
   --zero-residual-policy-init
 ```
@@ -123,18 +129,21 @@ python -m scripts.evaluate_mjx_3d_policy \
 - 控制结构：`q_target = q_reference(v_cmd, phase) + steering_prior(yaw_rate_cmd) + residual_gain·policy_action_8d`。
   - 转向由策略学 8 维 differential residual，但加一个**转向先验**帮 PPO 快速锁定方向。
   - `steering_prior` = 恒定差分 `[a,a,a,-a]`（前髋/前膝/后髋同向 +a，后膝反向 −a，左右相反符号），
-    在 actuator 顺序为 `[a,a,-a,-a,a,-a,-a,a]`，`a = clip(k_turn·yaw_rate_cmd, −0.5, 0.5)`，默认 `k_turn=5.0`。
+    在 actuator 顺序为 `[a,a,-a,-a,a,-a,-a,a]`。先计算
+    `raw_a = clip(k_turn·yaw_rate_cmd, −0.5, 0.5)`，再按与策略差分动作相同的权限缩放：
+    `a = residual_gain·differential_scale·raw_a`；默认分别为 `0.15`、`0.25`、`k_turn=5.0`。
   - 这个先验不是固定控制器，策略残差在其上微调。
 - command **每隔 `turn_command_interval_s=1.5s` 更新一次**（整集预采样序列，按 step 索引），
   采样 `40% 直行 / 30% 左 / 30% 右`，幅值 `Uniform(0.02, 0.08)` rad/s。
-- 第一阶段固定速度：`v_cmd ∈ [0.55, 0.65]`，`yaw_rate_cmd ∈ [−0.08, 0.08]`。
+- 第一阶段固定速度：`v_cmd = 0.60 m/s`，`yaw_rate_cmd ∈ [−0.08, 0.08]`，先隔离转向学习问题。
 - 转向量用 **rolling-axis heading rate**（身体滚动轴水平投影的朝向变化率），不是 Euler yaw；
   每步 `wrapped_phase_error(heading_now, heading_prev)/control_dt`。
 - 观测：`yaw_rate_command`（第 62 位，反射奇）、`rolling_axis_heading_rate`（第 63 位，反射奇）、
   `rolling_axis_elevation`（第 64 位，反射偶），总观测 65（+相位反馈 69）。
 - 奖励互斥（`turning = |yaw_rate_cmd| > 1e-3`）：
   - 直行：`forward_velocity = 1.0·exp(−(v_x−v_cmd)²/0.10²)`，lateral/yaw 稳定项生效。
-  - 转向：`yaw_rate_command = 1.5·exp(−(ω−ω_cmd)²/0.05²)`，forward/lateral/yaw 稳定项被抑制。
+  - 转向：`yaw_rate_command = 1.5·exp(−(ω−ω_cmd)²/0.05²)`；仍保留 75% 的
+    forward tracking，避免策略靠减速、原地旋转或侧滑完成转向；lateral/yaw 直行稳定项被抑制。
   - 其余：`roll_mismatch=0.5`（锁相/滑移）、`roll_progress=0.5`、`axis_tilt=0.3`、
     `backward=1.0`、`lateral_velocity=2.0`、`action_rate`、`residual_action`、`torque`、`termination`。
 - 转向回合关闭 `terminate_lateral_drift`（转向自然积累侧漂）。
@@ -143,11 +152,12 @@ python -m scripts.evaluate_mjx_3d_policy \
 
 ```bash
 python -m scripts.evaluate_mjx_3d_policy \
-  params_best \
+  results/mjx_3d_forward_command_v1/params_best \
   --out results/mjx_3d_forward_command_v1/eval_turn_008 \
   --geometry rollingquad_2_abd10 \
   --physics-profile cg20 \
   --controller results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json \
+  --batch-size 16 --chunk-size 4 \
   --forward-command-fixed-m-s 0.60 \
   --turn-command-fixed-rad-s 0.08 \
   --zero-residual-policy-init
@@ -172,6 +182,6 @@ python -m scripts.evaluate_mjx_3d_policy \
 ## 注意事项
 
 - 转向用 §14 实验得出的**恒定差分** `[a,a,a,-a]` 作先验，但最终由策略残差微调。
-- v_cmd 第一阶段固定 0.55–0.65；reference 零接触上限 ~0.81 m/s，后续扩展时 0.82+ 会饱和。
+- v_cmd 第一阶段固定 0.60 m/s；reference 零接触上限 ~0.81 m/s，后续扩展时 0.82+ 会饱和。
 - 低速（< 0.41 m/s）与停止不靠 reference 幅值缩放，属于独立 curriculum（§18）。
 - 不要用 full 高速 CEM 结果（自碰撞换速度）。

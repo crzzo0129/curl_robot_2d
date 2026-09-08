@@ -102,12 +102,13 @@ class MJX3DRewardTest(unittest.TestCase):
             term(0.80, 0.60), 8.0 * np.exp(-4.0), delta=1e-4
         )
 
-    def test_yaw_rate_command_masks_linear_tracking_while_turning(self) -> None:
+    def test_yaw_rate_command_retains_scaled_linear_tracking_while_turning(self) -> None:
         config = Rolling3DRewardConfig(
             forward_velocity=8.0,
             forward_velocity_sigma_m_s=0.10,
             yaw_rate_command=8.0,
             yaw_rate_command_sigma_rad_s=0.05,
+            turning_forward_velocity_scale=0.75,
         )
 
         def terms(turn_cmd, heading_rate, forward_velocity=0.60):
@@ -124,9 +125,9 @@ class MJX3DRewardTest(unittest.TestCase):
             )
             return reward_terms_3d(np, config, inputs)
 
-        # Turning: forward-velocity tracking suppressed, yaw-rate tracked.
+        # Turning: forward-velocity tracking is retained at reduced weight.
         turning = terms(turn_cmd=0.10, heading_rate=0.10)
-        self.assertEqual(float(turning["forward_velocity"]), 0.0)
+        self.assertAlmostEqual(float(turning["forward_velocity"]), 6.0)
         self.assertAlmostEqual(float(turning["yaw_rate_command"]), 8.0)
 
         # Turning with a rate error: Gaussian decays.

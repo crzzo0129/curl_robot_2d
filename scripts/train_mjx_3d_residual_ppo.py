@@ -753,21 +753,21 @@ RECIPES_3D = {
     },
     "command_tracking_v1": {
         "description": (
-            "Straight-line forward-velocity command tracking plus a turning "
-            "(yaw-rate) command around the phase-locked high-speed reference. "
-            "The reference amplitude is scaled by a target-scale lookup on "
-            "v_cmd; the primary speed reward is a Gaussian on (v_x - v_cmd) "
-            "while straight, and on (omega - yaw_rate_cmd) while turning."
+            "First turning-command stage around the phase-locked high-speed "
+            "reference. Forward speed is held at 0.60 m/s while yaw-rate "
+            "commands change; training self-collision is disabled to keep "
+            "the MJX memory footprint bounded."
         ),
         "args": {
+            "no_self_collision": True,
             "reference_weight": 1.0,
             "minimum_residual_gain": 0.15,
             "phase_rate_scale": 1.0,
             "residual_pair_differential_scale": 0.25,
             "explicit_phase_observation": True,
             "forward_command_enabled": True,
-            "forward_command_min_m_s": 0.55,
-            "forward_command_max_m_s": 0.65,
+            "forward_command_min_m_s": 0.60,
+            "forward_command_max_m_s": 0.60,
             "turn_command_enabled": True,
             "turn_command_max_rad_s": 0.08,
             "turn_command_straight_fraction": 0.40,
@@ -785,6 +785,7 @@ RECIPES_3D = {
             "roll_progress": 0.5,
             "forward_velocity": 1.0,
             "forward_velocity_sigma_m_s": 0.10,
+            "turning_forward_velocity_scale": 0.75,
             "yaw_rate": 0.0,
             "yaw_rate_sigma_rad_s": 0.30,
             "yaw_rate_command": 1.5,
@@ -1775,14 +1776,23 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="CEM reference; defaults to the controller matched to --geometry.",
     )
-    parser.add_argument(
+    self_collision_group = parser.add_mutually_exclusive_group()
+    self_collision_group.add_argument(
+        "--self-collision",
+        dest="no_self_collision",
+        action="store_false",
+        help="retain the rollingquad selective self-collision whitelist",
+    )
+    self_collision_group.add_argument(
         "--no-self-collision",
+        dest="no_self_collision",
         action="store_true",
         help=(
             "drop the rollingquad selective self-collision whitelist so the "
             "full CAD mesh runs without mesh-vs-mesh contact pairs"
         ),
     )
+    parser.set_defaults(no_self_collision=None)
     parser.add_argument("--minimum-foot-gap-mm", type=float)
     parser.add_argument("--foot-gap-tracking-margin-mm", type=float)
     parser.add_argument("--reference-weight", type=float)
@@ -2055,6 +2065,8 @@ def parse_args(argv=None):
     parser = _build_parser()
     args = parser.parse_args(argv)
     _apply_recipe_defaults(args)
+    if args.no_self_collision is None:
+        args.no_self_collision = False
     if args.reflection_equivariant_policy is None:
         args.reflection_equivariant_policy = False
     if args.differential_mean_zero_weight is None:
@@ -2449,6 +2461,10 @@ def main(argv=None) -> None:
         "evaluation": {
             "skip": args.skip_evaluation,
             "post_training_domain_randomization": False,
+            "training_self_collision_enabled": task.self_collision_enabled,
+            "requires_external_self_collision_validation": (
+                not task.self_collision_enabled
+            ),
         },
         "curriculum": {
             "name": args.curriculum,
@@ -2483,6 +2499,16 @@ def main(argv=None) -> None:
                     "0.20 survival + 0.25 forward turns + 0.30 "
                     "non-failure + 0.15 lateral stability + 0.05 axis "
                     "stability + 0.05 forbidden-contact safety"
+                )
+            ),
+            "self_collision_observable": task.self_collision_enabled,
+            "warning": (
+                None
+                if task.self_collision_enabled
+                else (
+                    "Self-collision is disabled in training evaluation; "
+                    "contact terms are not evidence of collision safety. "
+                    "Validate saved checkpoints with the full collision model."
                 )
             ),
             "target_turns": args.selection_target_turns,
@@ -2555,6 +2581,11 @@ def main(argv=None) -> None:
         )
         for item in curriculum_plan
     )
+    selection_contact_text = (
+        "contact safety"
+        if task.self_collision_enabled
+        else "contact UNOBSERVABLE (external validation required)"
+    )
     print(
         "[training]\n"
         f"  preset={args.preset} recipe={args.recipe} "
@@ -2605,7 +2636,7 @@ def main(argv=None) -> None:
         f"clawback={reward_config.failure_progress_clawback:g} "
         f"termination={reward_config.termination:g}\n"
         f"  selection={args.selection_objective}: survival, turns, lateral, "
-        "axis, contact safety "
+        f"axis, {selection_contact_text} "
         f"(target_turns={args.selection_target_turns:g})\n"
         f"  controller={reference.source}\n"
         f"  output={args.out.resolve()}",
