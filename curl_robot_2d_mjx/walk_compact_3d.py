@@ -254,14 +254,15 @@ def joint_cost(xp, joints, target, cfg):
 
 
 def progress_reward(xp, previous_cost, cost, cfg):
-    """Reward PER-STEP PROGRESS toward compact: clip((D_prev - D_t)/scale, -1, 1).
+    """Potential-based PROGRESS reward (telescopes; intentionally UNCLIPPED).
 
-    +1 when this frame is closer than the last, -1 when farther.  This is the
-    primary training signal for a transition skill, replacing a flat penalty
-    for "not yet compact" (which punishes the robot every frame before success).
+    ``sum_t (D_{t-1} - D_t) = D_0 - D_T`` exactly, so the episode total depends
+    only on NET progress toward compact, not on the path.  A ``clip()`` (as in
+    the original recipe) breaks this telescoping and lets the policy harvest
+    reward by tucking then un-tucking back -- which we observed as reward
+    climbing while the terminal joint error stayed at the walking value.
     """
-    delta = (previous_cost - cost) / cfg.progress_scale
-    return cfg.progress_reward_weight * xp.clip(delta, -1.0, 1.0)
+    return cfg.progress_reward_weight * (previous_cost - cost) / cfg.progress_scale
 
 
 def pose_reward(xp, cost, cfg):

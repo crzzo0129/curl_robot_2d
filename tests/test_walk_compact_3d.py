@@ -222,15 +222,20 @@ class GateMathTest(unittest.TestCase):
 
     def test_progress_reward_rewards_approach(self):
         # closer (D down) -> positive; farther -> negative; unchanged -> zero
-        self.assertAlmostEqual(float(progress_reward(np, 1.0, 0.5, self.cfg)), 2.0,
-                               places=6)
-        self.assertAlmostEqual(float(progress_reward(np, 0.5, 1.0, self.cfg)), -2.0,
-                               places=6)
+        self.assertAlmostEqual(float(progress_reward(np, 1.0, 0.5, self.cfg)), 50.0,
+                               places=5)
+        self.assertAlmostEqual(float(progress_reward(np, 0.5, 1.0, self.cfg)), -50.0,
+                               places=5)
         self.assertAlmostEqual(float(progress_reward(np, 0.5, 0.5, self.cfg)), 0.0,
-                               places=6)
-        # small progress stays linear (not clipped)
-        self.assertAlmostEqual(float(progress_reward(np, 0.02, 0.0, self.cfg)), 2.0,
-                               places=6)
+                               places=5)
+
+    def test_progress_reward_telescopes_no_harvesting(self):
+        # tuck (D 1.0 -> 0.0) then un-tuck (0.0 -> 1.0) nets exactly zero: the
+        # reward only pays NET progress, so oscillating the pose cannot be
+        # harvested (this is the regression for the clipped-difference exploit).
+        tuck = progress_reward(np, 1.0, 0.0, self.cfg)
+        untuck = progress_reward(np, 0.0, 1.0, self.cfg)
+        self.assertAlmostEqual(float(tuck + untuck), 0.0, places=5)
 
     def test_roll_pitch_from_quat(self):
         import math
