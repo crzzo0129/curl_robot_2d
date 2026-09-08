@@ -166,7 +166,8 @@ def make_autonomous_startup_env(task, reference, reward, bank, teacher_path, tea
                                            task.startup_action_ramp_s),
                 lateral_drift=d.qpos[1] - info["initial_root_y"],
                 lateral_velocity_command=info["lateral_velocity_command"],
-                forward_velocity_command=info["forward_velocity_command"])
+                forward_velocity_command=info["forward_velocity_command"],
+                yaw_rate_command=info["yaw_rate_command"])
             return b.replace(info=info, obs=obs)
 
         def first_teacher_command(self, prepared):

@@ -95,6 +95,12 @@ def _summarize_arrays(arrays: dict[str, np.ndarray]) -> dict[str, object]:
         "average_forward_velocity_error_abs_m_s": _distribution(
             arrays["average_forward_velocity_error_abs_m_s"]
         ),
+        "yaw_rate_command_rad_s": _distribution(
+            arrays["yaw_rate_command_rad_s"]
+        ),
+        "average_yaw_rate_error_abs_rad_s": _distribution(
+            arrays["average_yaw_rate_error_abs_rad_s"]
+        ),
         "average_lateral_drift_m": _distribution(
             arrays["average_lateral_drift_m"]
         ),
@@ -398,9 +404,17 @@ def parse_args(argv=None):
         action=argparse.BooleanOptionalAction,
         default=False,
     )
-    parser.add_argument("--forward-command-min-m-s", type=float, default=0.47)
-    parser.add_argument("--forward-command-max-m-s", type=float, default=0.80)
+    parser.add_argument("--forward-command-min-m-s", type=float, default=0.40)
+    parser.add_argument("--forward-command-max-m-s", type=float, default=0.90)
     parser.add_argument("--forward-command-fixed-m-s", type=float)
+    parser.add_argument(
+        "--turn-command-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+    )
+    parser.add_argument("--turn-command-max-rad-s", type=float, default=0.10)
+    parser.add_argument("--turn-command-probability", type=float, default=0.30)
+    parser.add_argument("--turn-command-fixed-rad-s", type=float)
     parser.add_argument(
         "--explicit-phase-observation",
         action=argparse.BooleanOptionalAction,
@@ -605,6 +619,10 @@ def main(argv=None) -> None:
             forward_command_min_m_s=args.forward_command_min_m_s,
             forward_command_max_m_s=args.forward_command_max_m_s,
             forward_command_fixed_m_s=args.forward_command_fixed_m_s,
+            turn_command_enabled=args.turn_command_enabled,
+            turn_command_max_rad_s=args.turn_command_max_rad_s,
+            turn_command_probability=args.turn_command_probability,
+            turn_command_fixed_rad_s=args.turn_command_fixed_rad_s,
             explicit_phase_observation=args.explicit_phase_observation,
         ),
     )
@@ -697,6 +715,8 @@ def main(argv=None) -> None:
         forward_velocity_error_abs_sum = jp.zeros(
             (batch,), dtype=jp.float32
         )
+        yaw_rate_command = jp.zeros((batch,), dtype=jp.float32)
+        yaw_rate_error_abs_sum = jp.zeros((batch,), dtype=jp.float32)
         lateral_sum = jp.zeros((batch,), dtype=jp.float32)
         lateral_path = jp.zeros((batch,), dtype=jp.float32)
         previous_lateral = jp.zeros((batch,), dtype=jp.float32)
@@ -764,6 +784,14 @@ def main(argv=None) -> None:
             )
             forward_velocity_error_abs_sum += (
                 weight * state.metrics["forward_velocity_error_abs_m_s"]
+            )
+            yaw_rate_command = jp.where(
+                was_active,
+                state.metrics["yaw_rate_command_rad_s"],
+                yaw_rate_command,
+            )
+            yaw_rate_error_abs_sum += (
+                weight * state.metrics["yaw_rate_error_abs_rad_s"]
             )
             lateral = state.metrics["lateral_drift_m"]
             lateral_sum += weight * lateral
@@ -880,6 +908,12 @@ def main(argv=None) -> None:
             ),
             "average_forward_velocity_error_abs_m_s": np.asarray(
                 jax.device_get(forward_velocity_error_abs_sum / denominator)
+            ),
+            "yaw_rate_command_rad_s": np.asarray(
+                jax.device_get(yaw_rate_command)
+            ),
+            "average_yaw_rate_error_abs_rad_s": np.asarray(
+                jax.device_get(yaw_rate_error_abs_sum / denominator)
             ),
             "average_lateral_drift_m": np.asarray(
                 jax.device_get(lateral_sum / denominator)
@@ -1270,6 +1304,10 @@ def main(argv=None) -> None:
         f"{summary['average_forward_velocity_m_s']['median']:.3f} m/s "
         f"|err| median="
         f"{summary['average_forward_velocity_error_abs_m_s']['median']:.3f} m/s\n"
+        f"  turn_cmd median="
+        f"{summary['yaw_rate_command_rad_s']['median']:+.3f} rad/s "
+        f"|turn_err| median="
+        f"{summary['average_yaw_rate_error_abs_rad_s']['median']:.3f} rad/s\n"
         f"  per_rollout={args.out.resolve() / 'eval_arrays.npz'}\n"
         f"  output={args.out.resolve()}",
         flush=True,

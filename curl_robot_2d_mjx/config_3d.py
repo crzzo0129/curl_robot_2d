@@ -94,9 +94,16 @@ class Rolling3DConfig:
     # reference amplitude is scaled by a target-scale lookup on v_cmd, so the
     # reference shape stays the same while the commanded rolling speed changes.
     forward_command_enabled: bool = False
-    forward_command_min_m_s: float = 0.47
-    forward_command_max_m_s: float = 0.80
+    forward_command_min_m_s: float = 0.40
+    forward_command_max_m_s: float = 0.90
     forward_command_fixed_m_s: float | None = None
+    # Turning angular-velocity command (yaw_rate_cmd). When a turn is commanded
+    # the linear-velocity tracking reward is suppressed and the policy tracks
+    # the rolling-axis heading rate instead.
+    turn_command_enabled: bool = False
+    turn_command_max_rad_s: float = 0.10
+    turn_command_probability: float = 0.30
+    turn_command_fixed_rad_s: float | None = None
     explicit_phase_observation: bool = False
     direct_effective_action: bool = False
     disable_root_damping: bool = True
@@ -270,6 +277,20 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         config.forward_command_fixed_m_s
     ):
         raise ValueError("forward_command_fixed_m_s must be finite")
+    if not isinstance(config.turn_command_enabled, bool):
+        raise ValueError("turn_command_enabled must be boolean")
+    for value, name in (
+        (config.turn_command_max_rad_s, "turn_command_max_rad_s"),
+        (config.turn_command_probability, "turn_command_probability"),
+    ):
+        if not math.isfinite(value) or value <= 0.0:
+            raise ValueError(f"{name} must be finite and positive")
+    if not 0.0 <= config.turn_command_probability <= 1.0:
+        raise ValueError("turn_command_probability must be in [0, 1]")
+    if config.turn_command_fixed_rad_s is not None and not math.isfinite(
+        config.turn_command_fixed_rad_s
+    ):
+        raise ValueError("turn_command_fixed_rad_s must be finite")
     if not isinstance(config.explicit_phase_observation, bool):
         raise ValueError("explicit_phase_observation must be boolean")
     if not isinstance(config.direct_effective_action, bool):

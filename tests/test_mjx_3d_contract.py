@@ -115,7 +115,7 @@ class MJX3DContractTest(unittest.TestCase):
         ):
             self.assertTrue(controller.exists())
         self.assertEqual(len(JOINT_NAMES_3D), ACTION_SIZE_3D)
-        self.assertEqual(OBSERVATION_SIZE_3D, 62)
+        self.assertEqual(OBSERVATION_SIZE_3D, 63)
 
     def test_3d_config_defaults_are_training_smoke_safe(self) -> None:
         config = Rolling3DConfig()
@@ -506,7 +506,8 @@ class MJX3DContractTest(unittest.TestCase):
         ])
         self.assertEqual(mirrored[60], -observation[60])
         self.assertEqual(mirrored[61], observation[61])
-        np.testing.assert_allclose(mirrored[62:66], observation[62:66])
+        self.assertEqual(mirrored[62], -observation[62])
+        np.testing.assert_allclose(mirrored[63:67], observation[63:67])
 
     def test_rolling_observation_mirror_supports_base_observation(self) -> None:
         observation = np.arange(OBSERVATION_SIZE_3D, dtype=np.float32)
@@ -1069,9 +1070,13 @@ class MJX3DContractTest(unittest.TestCase):
         config = Rolling3DConfig()
 
         self.assertFalse(config.forward_command_enabled)
-        self.assertEqual(config.forward_command_min_m_s, 0.47)
-        self.assertEqual(config.forward_command_max_m_s, 0.80)
+        self.assertEqual(config.forward_command_min_m_s, 0.40)
+        self.assertEqual(config.forward_command_max_m_s, 0.90)
         self.assertIsNone(config.forward_command_fixed_m_s)
+        self.assertFalse(config.turn_command_enabled)
+        self.assertEqual(config.turn_command_max_rad_s, 0.10)
+        self.assertEqual(config.turn_command_probability, 0.30)
+        self.assertIsNone(config.turn_command_fixed_rad_s)
 
     def test_forward_command_validation(self) -> None:
         for values in (
@@ -1080,6 +1085,10 @@ class MJX3DContractTest(unittest.TestCase):
             {"forward_command_max_m_s": float("nan")},
             {"forward_command_min_m_s": 0.9, "forward_command_max_m_s": 0.5},
             {"forward_command_fixed_m_s": float("inf")},
+            {"turn_command_enabled": 1},
+            {"turn_command_max_rad_s": 0.0},
+            {"turn_command_probability": 1.1},
+            {"turn_command_fixed_rad_s": float("inf")},
         ):
             with self.subTest(values=values), self.assertRaises(ValueError):
                 validate_3d_config(Rolling3DConfig(**values))

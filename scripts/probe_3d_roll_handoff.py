@@ -388,7 +388,8 @@ class MJXRunner:
                 action_ramp=smoothstep_ramp(jp, ref_time, task.startup_action_ramp_s),
                 lateral_drift=d.qpos[1] - info["initial_root_y"],
                 lateral_velocity_command=info["lateral_velocity_command"],
-                forward_velocity_command=info["forward_velocity_command"])
+                forward_velocity_command=info["forward_velocity_command"],
+                yaw_rate_command=info["yaw_rate_command"])
             # Preserve global coordinates, time, counters, warm start, and ALL
             # unchanged teacher history; never reset at a proposed handoff.
             return s.replace(pipeline_state=d, info=info, obs=obs)

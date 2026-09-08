@@ -753,11 +753,11 @@ RECIPES_3D = {
     },
     "command_tracking_v1": {
         "description": (
-            "Straight-line forward-velocity command tracking around the "
-            "phase-locked high-speed reference. The reference amplitude is "
-            "scaled by a target-scale lookup on v_cmd, and the primary speed "
-            "reward is a Gaussian on (v_x - v_cmd), so the policy must match "
-            "the commanded speed instead of always rolling flat out."
+            "Straight-line forward-velocity command tracking plus a turning "
+            "(yaw-rate) command around the phase-locked high-speed reference. "
+            "The reference amplitude is scaled by a target-scale lookup on "
+            "v_cmd; the primary speed reward is a Gaussian on (v_x - v_cmd) "
+            "while straight, and on (omega - yaw_rate_cmd) while turning."
         ),
         "args": {
             "reference_weight": 1.0,
@@ -766,8 +766,11 @@ RECIPES_3D = {
             "residual_pair_differential_scale": 0.25,
             "explicit_phase_observation": True,
             "forward_command_enabled": True,
-            "forward_command_min_m_s": 0.47,
-            "forward_command_max_m_s": 0.80,
+            "forward_command_min_m_s": 0.40,
+            "forward_command_max_m_s": 0.90,
+            "turn_command_enabled": True,
+            "turn_command_max_rad_s": 0.10,
+            "turn_command_probability": 0.30,
             "learning_rate": 1e-5,
             "entropy_cost": 2.5e-4,
             "selection_target_turns": 8.0,
@@ -778,11 +781,14 @@ RECIPES_3D = {
             "roll_progress": 1.0,
             "forward_velocity": 8.0,
             "forward_velocity_sigma_m_s": 0.10,
+            "yaw_rate": 2.0,
+            "yaw_rate_sigma_rad_s": 0.30,
+            "yaw_rate_command": 8.0,
+            "yaw_rate_command_sigma_rad_s": 0.05,
             "roll_mismatch": 0.8,
             "backward": 1.0,
             "lateral_velocity": 2.0,
             "lateral_drift": 3.0,
-            "yaw_rate": 2.0,
             "yaw": 3.0,
             "axis_tilt": 10.0,
             "action_rate": 0.02,
@@ -1044,6 +1050,9 @@ PER_STEP_EVAL_METRICS_3D = (
     "forward_velocity_m_s",
     "forward_velocity_error_m_s",
     "forward_velocity_error_abs_m_s",
+    "yaw_rate_command_rad_s",
+    "rolling_axis_heading_rate_rad_s",
+    "yaw_rate_error_abs_rad_s",
     "stability_error_cost",
     "axis_tilt_rad",
     "axis_tilt_step_count",
@@ -1170,13 +1179,20 @@ def _checkpoint_selection_3d(
     velocity_error_abs = metrics.get(
         "eval/avg_forward_velocity_error_abs_m_s", 0.0
     )
+    yaw_rate_error_abs = metrics.get(
+        "eval/avg_yaw_rate_error_abs_rad_s", 0.0
+    )
     survival = min(max(average_length / episode_length, 0.0), 1.0)
     turns = roll_total / (2.0 * math.pi)
     progress_quality = min(max(turns / target_turns, -1.0), 1.0)
     nonfailure_quality = 1.0 - min(max(failed_rate, 0.0), 1.0)
     lateral_quality = 1.0 - min(max(lateral_drift / 0.05, 0.0), 1.0)
     tilt_quality = 1.0 - min(max(axis_tilt / 0.25, 0.0), 1.0)
-    command_quality = 1.0 - min(max(velocity_error_abs / 0.10, 0.0), 1.0)
+    command_quality = 1.0 - min(
+        max(velocity_error_abs / 0.10, 0.0)
+        + max(yaw_rate_error_abs / 0.05, 0.0),
+        1.0,
+    )
     contact_quality = 1.0 - min(
         max(forbidden_depth / 0.001, 0.0)
         + max(forbidden_contact / 0.05, 0.0),
@@ -1219,6 +1235,7 @@ def _checkpoint_selection_3d(
         or not math.isfinite(forbidden_contact)
         or not math.isfinite(first_turn_forbidden_contact)
         or not math.isfinite(velocity_error_abs)
+        or not math.isfinite(yaw_rate_error_abs)
         or not math.isfinite(score)
         or (objective == "contact" and turns < target_turns)
     )
@@ -1235,6 +1252,7 @@ def _checkpoint_selection_3d(
         "axis_tilt_rad": axis_tilt,
         "command_quality": command_quality,
         "forward_velocity_error_abs_m_s": velocity_error_abs,
+        "yaw_rate_error_abs_rad_s": yaw_rate_error_abs,
         "contact_quality": contact_quality,
         "forbidden_contact_count": forbidden_contact,
         "first_turn_forbidden_contact_count": first_turn_forbidden_contact,
@@ -1338,7 +1356,13 @@ def _format_eval_report_3d(
             f"v_cmd={_metric(metrics, 'eval/avg_forward_velocity_command'):.3f} "
             f"v_act={_metric(metrics, 'eval/avg_forward_velocity_m_s'):.3f} "
             f"v_err="
-            f"{_metric(metrics, 'eval/avg_forward_velocity_error_m_s'):+.3f} m/s"
+            f"{_metric(metrics, 'eval/avg_forward_velocity_error_m_s'):+.3f} m/s "
+            f"| turn_cmd="
+            f"{_metric(metrics, 'eval/avg_yaw_rate_command_rad_s'):+.3f} rad/s "
+            f"turn_act="
+            f"{_metric(metrics, 'eval/avg_rolling_axis_heading_rate_rad_s'):+.3f} "
+            f"turn_err="
+            f"{_metric(metrics, 'eval/avg_yaw_rate_error_abs_rad_s'):.3f}"
         ),
         (
             "  mean pose "
@@ -1838,6 +1862,31 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Fixed forward velocity command (m/s); overrides sampling.",
     )
     parser.add_argument(
+        "--turn-command-enabled",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Sample a turning (yaw-rate) command at reset. When a turn is "
+            "commanded the linear-velocity tracking reward is suppressed. "
+            "Defaults from the selected recipe."
+        ),
+    )
+    parser.add_argument(
+        "--turn-command-max-rad-s",
+        type=float,
+        help="Maximum turning (yaw-rate) command magnitude (rad/s).",
+    )
+    parser.add_argument(
+        "--turn-command-probability",
+        type=float,
+        help="Probability a reset samples a non-zero turning command.",
+    )
+    parser.add_argument(
+        "--turn-command-fixed-rad-s",
+        type=float,
+        help="Fixed turning command (rad/s); overrides sampling.",
+    )
+    parser.add_argument(
         "--explicit-phase-observation",
         action=argparse.BooleanOptionalAction,
         default=None,
@@ -2009,6 +2058,14 @@ def parse_args(argv=None):
         args.forward_command_max_m_s = 0.80
     if args.forward_command_fixed_m_s is None:
         args.forward_command_fixed_m_s = None
+    if args.turn_command_enabled is None:
+        args.turn_command_enabled = False
+    if args.turn_command_max_rad_s is None:
+        args.turn_command_max_rad_s = 0.10
+    if args.turn_command_probability is None:
+        args.turn_command_probability = 0.30
+    if args.turn_command_fixed_rad_s is None:
+        args.turn_command_fixed_rad_s = None
     for value, name in (
         (args.forward_command_min_m_s, "--forward-command-min-m-s"),
         (args.forward_command_max_m_s, "--forward-command-max-m-s"),
@@ -2025,6 +2082,19 @@ def parse_args(argv=None):
         and not math.isfinite(args.forward_command_fixed_m_s)
     ):
         parser.error("--forward-command-fixed-m-s must be finite")
+    for value, name in (
+        (args.turn_command_max_rad_s, "--turn-command-max-rad-s"),
+        (args.turn_command_probability, "--turn-command-probability"),
+    ):
+        if not math.isfinite(value) or value <= 0.0:
+            parser.error(f"{name} must be finite and positive")
+    if not 0.0 <= args.turn_command_probability <= 1.0:
+        parser.error("--turn-command-probability must be in [0, 1]")
+    if (
+        args.turn_command_fixed_rad_s is not None
+        and not math.isfinite(args.turn_command_fixed_rad_s)
+    ):
+        parser.error("--turn-command-fixed-rad-s must be finite")
     if args.differential_mean_zero_weight < 0.0:
         parser.error("--differential-mean-zero-weight must be nonnegative")
     if (
@@ -2243,6 +2313,10 @@ def main(argv=None) -> None:
             forward_command_min_m_s=args.forward_command_min_m_s,
             forward_command_max_m_s=args.forward_command_max_m_s,
             forward_command_fixed_m_s=args.forward_command_fixed_m_s,
+            turn_command_enabled=args.turn_command_enabled,
+            turn_command_max_rad_s=args.turn_command_max_rad_s,
+            turn_command_probability=args.turn_command_probability,
+            turn_command_fixed_rad_s=args.turn_command_fixed_rad_s,
             explicit_phase_observation=bool(
                 args.explicit_phase_observation
             ),

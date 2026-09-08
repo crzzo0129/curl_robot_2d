@@ -24,6 +24,8 @@ def zero_inputs():
         "lateral_drift": zero,
         "yaw_rate": zero,
         "yaw": zero,
+        "yaw_rate_command": zero,
+        "rolling_axis_heading_rate": zero,
         "previous_stability_cost": zero,
         "axis_tilt_squared": zero,
         "action_rate": zero,
@@ -99,6 +101,46 @@ class MJX3DRewardTest(unittest.TestCase):
         self.assertAlmostEqual(
             term(0.80, 0.60), 8.0 * np.exp(-4.0), delta=1e-4
         )
+
+    def test_yaw_rate_command_masks_linear_tracking_while_turning(self) -> None:
+        config = Rolling3DRewardConfig(
+            forward_velocity=8.0,
+            forward_velocity_sigma_m_s=0.10,
+            yaw_rate_command=8.0,
+            yaw_rate_command_sigma_rad_s=0.05,
+        )
+
+        def terms(turn_cmd, heading_rate, forward_velocity=0.60):
+            inputs = zero_inputs()
+            inputs["yaw_rate_command"] = np.asarray(turn_cmd, dtype=np.float32)
+            inputs["rolling_axis_heading_rate"] = np.asarray(
+                heading_rate, dtype=np.float32
+            )
+            inputs["forward_velocity"] = np.asarray(
+                forward_velocity, dtype=np.float32
+            )
+            inputs["forward_velocity_command"] = np.asarray(
+                0.60, dtype=np.float32
+            )
+            return reward_terms_3d(np, config, inputs)
+
+        # Turning: forward-velocity tracking suppressed, yaw-rate tracked.
+        turning = terms(turn_cmd=0.10, heading_rate=0.10)
+        self.assertEqual(float(turning["forward_velocity"]), 0.0)
+        self.assertAlmostEqual(float(turning["yaw_rate_command"]), 8.0)
+
+        # Turning with a rate error: Gaussian decays.
+        turning_err = terms(turn_cmd=0.10, heading_rate=0.15)
+        self.assertAlmostEqual(
+            float(turning_err["yaw_rate_command"]),
+            8.0 * np.exp(-1.0),
+            delta=1e-4,
+        )
+
+        # Straight: forward tracking active, yaw-rate-command term zero.
+        straight = terms(turn_cmd=0.0, heading_rate=0.0)
+        self.assertEqual(float(straight["yaw_rate_command"]), 0.0)
+        self.assertAlmostEqual(float(straight["forward_velocity"]), 8.0)
 
     def test_lateral_and_yaw_rewards_use_four_independent_signals(self) -> None:
         config = Rolling3DRewardConfig(

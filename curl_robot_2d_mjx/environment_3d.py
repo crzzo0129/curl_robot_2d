@@ -192,7 +192,7 @@ CEM_CONTROLLER_PATHS_3D = {
 }
 DEFAULT_3D_CEM_CONTROLLER = ROLLINGQUAD_2_CEM_CONTROLLER
 ACTION_SIZE_3D = 8
-OBSERVATION_SIZE_3D = 62
+OBSERVATION_SIZE_3D = 63
 PHASE_FEEDBACK_SIZE_3D = 4
 PLANAR_ACTION_SCALES = np.asarray((0.8, 1.2, 0.8, 1.2), dtype=np.float64)
 PLANAR_COMPACT = np.asarray(
@@ -268,6 +268,7 @@ def _rolling_observation_mirror_contract_3d():
     signs[12:15] = (-1.0, 1.0, -1.0)  # root angular velocity
     signs[60] = -1.0  # lateral velocity command
     signs[61] = 1.0  # forward velocity command (reflection-even)
+    signs[62] = -1.0  # turning (yaw-rate) command (reflection-odd)
 
     pair_permutation = (2, 3, 0, 1, 6, 7, 4, 5)
     for start in (15, 23, 31, 47):
@@ -1277,6 +1278,9 @@ def make_brax_env_3d(
                 "forward_velocity_m_s": zero,
                 "forward_velocity_error_m_s": zero,
                 "forward_velocity_error_abs_m_s": zero,
+                "yaw_rate_command_rad_s": zero,
+                "rolling_axis_heading_rate_rad_s": zero,
+                "yaw_rate_error_abs_rad_s": zero,
                 "stability_error_cost": zero,
                 "axis_tilt_rad": zero,
                 "axis_tilt_step_count": zero,
@@ -1392,6 +1396,34 @@ def make_brax_env_3d(
                 forward_command_scale = jp.asarray(
                     task.reference_action_scale, dtype=jp.float32
                 )
+            if task.turn_command_fixed_rad_s is not None:
+                yaw_rate_command = jp.asarray(
+                    task.turn_command_fixed_rad_s, dtype=jp.float32
+                )
+            elif task.turn_command_enabled:
+                turn_key = jax.random.fold_in(rng, 781)
+                turn_uniform = jax.random.uniform(
+                    turn_key, shape=(), minval=0.0, maxval=1.0
+                )
+                turn_active = (
+                    turn_uniform < task.turn_command_probability
+                )
+                magnitude_key = jax.random.fold_in(rng, 782)
+                sign_key = jax.random.fold_in(rng, 783)
+                turn_magnitude = jax.random.uniform(
+                    magnitude_key,
+                    shape=(),
+                    minval=0.02,
+                    maxval=task.turn_command_max_rad_s,
+                )
+                turn_sign = jax.random.bernoulli(sign_key, 0.5)
+                yaw_rate_command = (
+                    turn_active
+                    * turn_magnitude
+                    * (2.0 * turn_sign - 1.0)
+                )
+            else:
+                yaw_rate_command = jp.zeros((), dtype=jp.float32)
             if task.reset_pair_differential_scale is None:
                 joint_key, velocity_key, root_velocity_key = jax.random.split(
                     rng, 3
@@ -1553,6 +1585,10 @@ def make_brax_env_3d(
                 "lateral_velocity_command": lateral_velocity_command,
                 "forward_velocity_command": forward_velocity_command,
                 "forward_command_scale": forward_command_scale,
+                "yaw_rate_command": yaw_rate_command,
+                "previous_rolling_axis_heading": rolling_axis_heading_3d(
+                    jp, body_y_axis
+                ),
                 "previous_root_x": data.qpos[0],
                 "cumulative_rotation": jp.zeros((), dtype=jp.float32),
                 "previous_roll_potential": jp.zeros(
@@ -1597,6 +1633,7 @@ def make_brax_env_3d(
                 lateral_drift=jp.zeros((), dtype=jp.float32),
                 lateral_velocity_command=lateral_velocity_command,
                 forward_velocity_command=forward_velocity_command,
+                yaw_rate_command=yaw_rate_command,
             )
             return State(
                 data,
@@ -1884,6 +1921,17 @@ def make_brax_env_3d(
             body_y_axis, _ = self._body_axes(data)
             lateral_yaw = rolling_axis_heading_3d(jp, body_y_axis)
             yaw_rate = data.qvel[5]
+            rolling_axis_heading_rate = (
+                wrapped_phase_error(
+                    jp,
+                    lateral_yaw,
+                    state.info["previous_rolling_axis_heading"],
+                )
+                / control_dt
+            )
+            turning = (
+                jp.abs(state.info["yaw_rate_command"]) > 1e-3
+            ).astype(jp.float32)
             stability_cost = stability_error_cost_3d(
                 jp,
                 reward_settings,
@@ -1969,10 +2017,13 @@ def make_brax_env_3d(
             lateral_velocity_error = jp.abs(
                 lateral_velocity - state.info["lateral_velocity_command"]
             )
-            failure_lateral_drift = jp.where(
-                jp.abs(state.info["lateral_velocity_command"]) > 1e-6,
-                lateral_velocity_error > task.lateral_command_error_limit,
-                lateral_drift_abs > task.terminate_lateral_drift_m,
+            failure_lateral_drift = (
+                jp.where(
+                    jp.abs(state.info["lateral_velocity_command"]) > 1e-6,
+                    lateral_velocity_error > task.lateral_command_error_limit,
+                    lateral_drift_abs > task.terminate_lateral_drift_m,
+                )
+                & (turning < 0.5)
             )
             failure_forbidden_depth = (
                 contacts["forbidden_depth"]
@@ -2018,6 +2069,8 @@ def make_brax_env_3d(
                     "lateral_drift": lateral_drift,
                     "yaw_rate": yaw_rate,
                     "yaw": lateral_yaw,
+                    "yaw_rate_command": state.info["yaw_rate_command"],
+                    "rolling_axis_heading_rate": rolling_axis_heading_rate,
                     "previous_stability_cost": state.info["previous_stability_cost"],
                     "axis_tilt_squared": jp.square(axis_tilt),
                     "action_rate": action_rate,
@@ -2089,6 +2142,7 @@ def make_brax_env_3d(
                 "last_reference_action": next_reference_action,
                 "oscillator_phase": oscillator_phase,
                 "rolling_phase": rolling_phase,
+                "previous_rolling_axis_heading": lateral_yaw,
                 "maximum_forbidden_penetration": new_forbidden_max,
                 "maximum_same_side_foot_excess": new_same_side_foot_max,
                 "previous_same_side_foot_contact": same_side_foot_active,
@@ -2128,6 +2182,12 @@ def make_brax_env_3d(
                 "forward_velocity_error_abs_m_s": jp.abs(
                     forward_velocity_m_s
                     - state.info["forward_velocity_command"]
+                ),
+                "yaw_rate_command_rad_s": state.info["yaw_rate_command"],
+                "rolling_axis_heading_rate_rad_s": rolling_axis_heading_rate,
+                "yaw_rate_error_abs_rad_s": jp.abs(
+                    rolling_axis_heading_rate
+                    - state.info["yaw_rate_command"]
                 ),
                 "stability_error_cost": stability_cost,
                 "axis_tilt_rad": axis_tilt,
@@ -2247,6 +2307,7 @@ def make_brax_env_3d(
                 forward_velocity_command=state.info[
                     "forward_velocity_command"
                 ],
+                yaw_rate_command=state.info["yaw_rate_command"],
             )
             metrics = {
                 name: jp.nan_to_num(
@@ -2443,6 +2504,7 @@ def make_brax_env_3d(
             lateral_drift,
             lateral_velocity_command,
             forward_velocity_command,
+            yaw_rate_command,
         ):
             body_y_axis, body_z_axis = self._body_axes(data)
             yaw = rolling_axis_heading_3d(jp, body_y_axis)
@@ -2498,6 +2560,7 @@ def make_brax_env_3d(
                     ),
                     jp.asarray((lateral_velocity_command,)),
                     jp.asarray((forward_velocity_command,)),
+                    jp.asarray((yaw_rate_command,)),
                 )
             if task.explicit_phase_observation:
                 observation_parts += (

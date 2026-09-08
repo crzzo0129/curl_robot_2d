@@ -649,8 +649,23 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
 
         self.assertEqual(args.forward_command_fixed_m_s, 0.60)
         self.assertFalse(args.forward_command_enabled)
-        self.assertEqual(args.forward_command_min_m_s, 0.47)
-        self.assertEqual(args.forward_command_max_m_s, 0.80)
+        self.assertEqual(args.forward_command_min_m_s, 0.40)
+        self.assertEqual(args.forward_command_max_m_s, 0.90)
+
+    def test_evaluator_exposes_turn_command(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "params_best",
+                "--out",
+                "eval_turn",
+                "--turn-command-fixed-rad-s",
+                "0.08",
+            ]
+        )
+
+        self.assertEqual(args.turn_command_fixed_rad_s, 0.08)
+        self.assertFalse(args.turn_command_enabled)
+        self.assertEqual(args.turn_command_max_rad_s, 0.10)
 
     def test_phase_locked_meanzero_v10_uses_mean_zero_regularizer(
         self,
@@ -751,15 +766,20 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
 
         self.assertTrue(args.forward_command_enabled)
-        self.assertEqual(args.forward_command_min_m_s, 0.47)
-        self.assertEqual(args.forward_command_max_m_s, 0.80)
+        self.assertEqual(args.forward_command_min_m_s, 0.40)
+        self.assertEqual(args.forward_command_max_m_s, 0.90)
         self.assertIsNone(args.forward_command_fixed_m_s)
+        self.assertTrue(args.turn_command_enabled)
+        self.assertEqual(args.turn_command_max_rad_s, 0.10)
+        self.assertEqual(args.turn_command_probability, 0.30)
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertTrue(args.explicit_phase_observation)
 
         reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
         self.assertEqual(reward.forward_velocity, 8.0)
         self.assertEqual(reward.forward_velocity_sigma_m_s, 0.10)
+        self.assertEqual(reward.yaw_rate_command, 8.0)
+        self.assertEqual(reward.yaw_rate_command_sigma_rad_s, 0.05)
         # The primary speed reward is the command Gaussian, not raw progress.
         self.assertLess(reward.roll_progress, reward.forward_velocity)
 

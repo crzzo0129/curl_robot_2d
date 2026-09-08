@@ -13,6 +13,7 @@ REWARD_3D_TERM_NAMES = (
     "lateral_velocity",
     "lateral_drift",
     "yaw_rate",
+    "yaw_rate_command",
     "yaw",
     "lateral_velocity_cost",
     "lateral_drift_cost",
@@ -45,6 +46,8 @@ class Rolling3DRewardConfig:
     lateral_drift_sigma_m: float = 0.10
     yaw_rate: float = 1.0
     yaw_rate_sigma_rad_s: float = 0.30
+    yaw_rate_command: float = 0.0
+    yaw_rate_command_sigma_rad_s: float = 0.10
     yaw: float = 0.5
     yaw_sigma_rad: float = 0.10
     lateral_velocity_cost: float = 0.0
@@ -175,30 +178,44 @@ def reward_terms_3d(xp, config: Rolling3DRewardConfig, inputs):
         -config.recovery_clip,
         config.recovery_clip,
     )
+    # When a turn is commanded the straight-line objectives (forward-velocity
+    # tracking plus lateral/yaw stability) are suppressed and the policy tracks
+    # the rolling-axis heading rate instead.
+    turning = xp.where(
+        xp.abs(inputs["yaw_rate_command"]) > 1e-3, 1.0, 0.0
+    )
+    not_turning = 1.0 - turning
     return {
         "roll_progress": config.roll_progress * clipped_progress,
         "roll_mismatch": -config.roll_mismatch * inputs["mismatch_progress"],
         "backward": -config.backward * inputs["backward_progress"],
-        "forward_velocity": config.forward_velocity * xp.exp(
+        "forward_velocity": config.forward_velocity * not_turning * xp.exp(
             -xp.square(
                 inputs["forward_velocity"]
                 - inputs["forward_velocity_command"]
             )
             / config.forward_velocity_sigma_m_s**2
         ),
-        "lateral_velocity": config.lateral_velocity * xp.exp(
+        "lateral_velocity": config.lateral_velocity * not_turning * xp.exp(
             -xp.square(inputs["lateral_velocity"])
             / config.lateral_velocity_sigma_m_s**2
         ),
-        "lateral_drift": config.lateral_drift * xp.exp(
+        "lateral_drift": config.lateral_drift * not_turning * xp.exp(
             -xp.square(inputs["lateral_drift"])
             / config.lateral_drift_sigma_m**2
         ),
-        "yaw_rate": config.yaw_rate * xp.exp(
+        "yaw_rate": config.yaw_rate * not_turning * xp.exp(
             -xp.square(inputs["yaw_rate"])
             / config.yaw_rate_sigma_rad_s**2
         ),
-        "yaw": config.yaw * xp.exp(
+        "yaw_rate_command": config.yaw_rate_command * turning * xp.exp(
+            -xp.square(
+                inputs["rolling_axis_heading_rate"]
+                - inputs["yaw_rate_command"]
+            )
+            / config.yaw_rate_command_sigma_rad_s**2
+        ),
+        "yaw": config.yaw * not_turning * xp.exp(
             -xp.square(inputs["yaw"]) / config.yaw_sigma_rad**2
         ),
         **{
