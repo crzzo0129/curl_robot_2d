@@ -12,7 +12,10 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
 )
 
 
-TRANSITION_GEOMETRY_NAMES_3D = ("rollingquad_2", "rollingquad_2_primitive")
+TRANSITION_GEOMETRY_NAMES_3D = (
+    "rollingquad_2", "rollingquad_2_primitive",
+    "rollingquad_2_abd10_no_self_collision",
+)
 TRANSITION_PHYSICS_PROFILE_NAMES_3D = ("accurate", "newton4", "cg12")
 TRANSITION_CURRICULUM_STAGE_NAMES_3D = (
     "walking_start",
@@ -51,6 +54,10 @@ class Transition3DConfig:
 
     geometry: str = "rollingquad_2"
     dynamic_roll_to_stand: bool = False
+    handcrafted_reference_residual: bool = False
+    stand_abduction_zero: bool = False
+    reference_deploy_duration_s: float = 0.15
+    reference_residual_scale: float = 0.35
     stand_verification_s: float = 2.0
     physics_profile: str = "newton4"
     curriculum_stage: str = "walking_start"
@@ -293,6 +300,10 @@ def transition_physics_profile_3d(
 def validate_transition_config_3d(config: Transition3DConfig) -> None:
     if not math.isfinite(config.stand_verification_s) or config.stand_verification_s < 0:
         raise ValueError("stand verification duration must be finite and nonnegative")
+    if not math.isfinite(config.reference_deploy_duration_s) or config.reference_deploy_duration_s <= 0:
+        raise ValueError("reference deploy duration must be finite and positive")
+    if not math.isfinite(config.reference_residual_scale) or not 0 <= config.reference_residual_scale <= 1:
+        raise ValueError("reference residual scale must be in [0,1]")
     if config.geometry not in TRANSITION_GEOMETRY_NAMES_3D:
         raise ValueError(f"unknown transition geometry: {config.geometry}")
     if config.curriculum_stage not in TRANSITION_CURRICULUM_STAGE_NAMES_3D:

@@ -1,5 +1,10 @@
 # 结果目录索引
 
+## 2026-09-08 Stand 直接切入滚动 reference
+
+- `pupper_reference_rollingquad2_abd10_stand_direct_20260908/`：正确的 RollingQuad 2 ABD10 mesh 模型从 Stand 直接运行指定 reference。10 s 正式评估前进 5.246 m、滚动 6.537 圈，能够进入持续滚动；包含 MP4/GIF、两套求解器结果和逐时刻能耗数据。详见 [`RollingQuad 2 ABD10 报告`](../docs/pupper_reference_rollingquad2_abd10_stand_direct_20260908_zh.md)。
+- `pupper_reference_primitive_stand_direct_20260908/`：primitive 模型从 `stand` 静止初态直接运行指定 shell150/45 reference，不使用姿态过渡。标准 reference 启动在 10 s 内仅净滚动 0.103 圈，完整幅值切入仅 0.520 圈，均未进入持续滚动；compact 对照为 5.278 圈。包含 MP4/GIF、对照图、两套评估 JSON 和逐时刻数据。详见 [`实验报告`](../docs/pupper_reference_primitive_stand_direct_20260908_zh.md)。
+
 ## 2026-09-07 指定 Pupper reference 与 mesh ABD 实验
 
 - `pupper_reference_primitive_abd10_20260907/`：指定 shell150/45 reference 在 primitive 模型、前 ABD −10°/后 +10°下的 10 s 回放。正式评估前进 4.661 m、滚动 5.194 圈，无自接触或力矩饱和；能耗评估器复核前进 4.727 m、滚动 5.278 圈。详见 [`primitive 回放报告`](../docs/pupper_reference_primitive_abd10_20260907_zh.md)。

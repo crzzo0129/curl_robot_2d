@@ -83,6 +83,11 @@ def parse_args(argv=None):
                         default="rollingquad_2")
     parser.add_argument("--dynamic-roll-to-stand", action="store_true",
                         help="unrestricted recovery followed by continuous standing verification")
+    parser.add_argument("--handcrafted-reference-residual", action="store_true",
+                        help="zero action follows the 90-degree fast-deploy reference")
+    parser.add_argument("--stand-abduction-zero", action="store_true")
+    parser.add_argument("--reference-deploy-duration", type=float, default=0.15)
+    parser.add_argument("--reference-residual-scale", type=float, default=0.35)
     parser.add_argument("--roll-snapshots", type=Path)
     parser.add_argument("--eval-roll-snapshots", type=Path,
                         help="held-out reference trajectories, required for dynamic snapshot training")
@@ -124,15 +129,39 @@ def parse_args(argv=None):
 
 
 def build_task(args) -> Transition3DConfig:
-    if args.dynamic_roll_to_stand and args.geometry != "rollingquad_2_primitive" and not args.eval_only:
-        raise ValueError("Roll to Stand training and training evaluation require primitive; mesh is eval-only")
+    allowed_training_geometry = (
+        ("rollingquad_2_abd10_no_self_collision",)
+        if args.handcrafted_reference_residual
+        # Absolute (non-residual) Roll to Stand may train on the analytic
+        # primitive model OR the abd10 no-self-collision mesh. The mesh variant
+        # is the deployment Option B path that reuses the existing handoff bank
+        # and the "model unchanged" requirement; it is guarded only against the
+        # unrelated plain rollingquad_2 walking mesh.
+        else ("rollingquad_2_primitive", "rollingquad_2_abd10_no_self_collision")
+    )
+    if args.dynamic_roll_to_stand and args.geometry not in allowed_training_geometry and not args.eval_only:
+        if args.handcrafted_reference_residual:
+            raise ValueError(
+                "handcrafted Roll to Stand requires the abd10 no-self-collision model"
+            )
+        raise ValueError(
+            "Roll to Stand training requires the primitive or abd10 no-self-collision geometry"
+        )
     task = transition_curriculum_config_3d(
         args.stage, Transition3DConfig(
             geometry=args.geometry, curriculum_stage=args.stage,
             dynamic_roll_to_stand=args.dynamic_roll_to_stand,
+            handcrafted_reference_residual=args.handcrafted_reference_residual,
+            stand_abduction_zero=args.stand_abduction_zero,
+            reference_deploy_duration_s=args.reference_deploy_duration,
+            reference_residual_scale=args.reference_residual_scale,
             physics_timestep=0.001 if args.dynamic_roll_to_stand else Transition3DConfig().physics_timestep,
             ready_hold_s=1.0 if args.dynamic_roll_to_stand else 0.40,
             episode_length=500 if args.dynamic_roll_to_stand else 350,
+            # Match scripts/train_ppo_deploy.py exactly for the actor ABI.
+            observation_noise_velocity=0.20 if args.handcrafted_reference_residual else 0.05,
+            observation_noise_gravity=0.05 if args.handcrafted_reference_residual else 0.02,
+            observation_noise_joint_position=0.01,
             roll_snapshots_path=str(args.roll_snapshots.resolve())
             if args.roll_snapshots else None,
             snapshot_tail_fraction=args.snapshot_tail_fraction,
@@ -296,7 +325,9 @@ def main(argv=None) -> None:
         "critic_observation_size": TRANSITION_CRITIC_OBSERVATION_SIZE_3D,
         "actor_activation": "elu",
         "actor_distribution": "default_tanh_normal",
-        "control": "dynamic roll-to-stand; no brake gate; 1s stand + 2s verification"
+        "control": ("90deg linear-reference plus residual; ABD=0 stand"
+                    if task.handcrafted_reference_residual else
+                    "dynamic roll-to-stand; no brake gate; 1s stand + 2s verification")
                    if task.dynamic_roll_to_stand else "one policy; fixed Walking action center; no external brake",
         "reset_source": "roll_snapshots" if args.stage.startswith("brake_")
                         else "walking_start_neighborhood",

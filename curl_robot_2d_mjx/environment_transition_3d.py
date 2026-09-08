@@ -117,7 +117,8 @@ def make_brax_transition_env_3d(
 
     task = config or transition_curriculum_config_3d("walking_start")
     validate_transition_config_3d(task)
-    use_roll_snapshots = task.curriculum_stage.startswith("brake_")
+    use_roll_snapshots = (task.curriculum_stage.startswith("brake_")
+                          or task.handcrafted_reference_residual)
     if use_roll_snapshots and not task.roll_snapshots_path:
         raise ValueError("BRAKE training requires --roll-snapshots from a frozen "
                          "rollingquad_2 ROLL policy (qpos, qvel and ctrl)")
@@ -192,6 +193,13 @@ def make_brax_transition_env_3d(
             walking_start = walking_start_state_3d(self.mj_model, task)
             self.stand_qpos = jp.asarray(walking_start["qpos"])
             self.stand_ctrl = jp.asarray(walking_start["ctrl"])
+            if task.stand_abduction_zero:
+                abduction = jp.asarray((0, 3, 6, 9), dtype=jp.int32)
+                self.stand_ctrl = self.stand_ctrl.at[abduction].set(0.0)
+                self.stand_qpos = self.stand_qpos.at[
+                    self.joint_qpos_indices[abduction]
+                ].set(0.0)
+            self.deploy_action_scale = jp.asarray((0.17, 0.50, 0.50) * 4)
             self.stand_root_height = (
                 self.stand_qpos[2] - task.walking_start_height_offset_m
             )
@@ -367,8 +375,14 @@ def make_brax_transition_env_3d(
                 ),
             )
 
-        def _reference(self, mode, mode_steps):
-            del mode, mode_steps
+        def _reference(self, mode, mode_steps, handoff_ctrl=None):
+            del mode
+            if task.handcrafted_reference_residual and handoff_ctrl is not None:
+                alpha = jp.clip(
+                    mode_steps * task.control_timestep
+                    / task.reference_deploy_duration_s, 0.0, 1.0
+                )
+                return handoff_ctrl + alpha * (self.stand_ctrl - handoff_ctrl)
             return transition_reference_ctrl_3d(jp, self.stand_ctrl)
 
         def _gates(self, data, contacts, kinematics, reference):
@@ -609,7 +623,7 @@ def make_brax_transition_env_3d(
             source_phase_bin=None, source_cycle=None,
         ):
             mode_steps = jp.asarray(0, dtype=jp.int32)
-            reference = self._reference(mode, mode_steps)
+            reference = self._reference(mode, mode_steps, data.ctrl)
             contacts = self._contacts(data)
             kinematics = self._kinematics(data)
             gates = self._gates(data, contacts, kinematics, reference)
@@ -617,7 +631,8 @@ def make_brax_transition_env_3d(
             # Hot carry-over is explicit and requires identical obs/action ABI.
             previous_action = (jp.zeros((12,), dtype=data.qpos.dtype)
                                if last_action is None else last_action)
-            if task.dynamic_roll_to_stand and last_action is None:
+            if (task.dynamic_roll_to_stand and last_action is None
+                    and not task.handcrafted_reference_residual):
                 previous_action = transition_action_from_ctrl_3d(
                     jp, data.ctrl, self.stand_ctrl, self.joint_low,
                     self.joint_high, task.action_range_fraction)
@@ -636,6 +651,7 @@ def make_brax_transition_env_3d(
                 "ready_steps": jp.asarray(0, dtype=jp.int32),
                 "stabilize_bad_steps": jp.asarray(0, dtype=jp.int32),
                 "last_action": previous_action,
+                "handoff_ctrl": data.ctrl,
                 "last_foot_position": data.site_xpos[self.foot_site_ids],
                 "previous_combined_speed": jp.sqrt(
                     jp.square(kinematics["linear_speed"])
@@ -679,24 +695,55 @@ def make_brax_transition_env_3d(
         def step(self, state, action):
             mode = state.info["mode"]
             mode_steps = state.info["mode_steps"]
-            reference = self._reference(mode, mode_steps)
+            reference = self._reference(
+                mode, mode_steps, state.info["handoff_ctrl"]
+            )
             action_finite = jp.all(jp.isfinite(action))
             policy_action = jp.nan_to_num(
                 action, nan=0.0, posinf=1.0, neginf=-1.0
             )
-            target = transition_target_ctrl_3d(
-                jp, policy_action, reference, self.joint_low, self.joint_high,
-                task.action_range_fraction,
-            )
-            data = state.pipeline_state.replace(ctrl=target)
+            residual = (policy_action * self.deploy_action_scale
+                        * task.reference_residual_scale)
+            if not task.handcrafted_reference_residual:
+                target = transition_target_ctrl_3d(
+                    jp, policy_action, reference, self.joint_low, self.joint_high,
+                    task.action_range_fraction,
+                )
+                data = state.pipeline_state.replace(ctrl=target)
 
-            def physics_step(carry, unused):
-                del unused
-                return mjx.step(self.sys, carry), None
+                def physics_step(carry, unused):
+                    del unused
+                    return mjx.step(self.sys, carry), None
 
-            data, _ = jax.lax.scan(
-                physics_step, data, None, length=task.action_repeat
-            )
+                data, _ = jax.lax.scan(
+                    physics_step, data, None, length=task.action_repeat
+                )
+            else:
+                # The successful hand-written transition updates the linear
+                # interpolation every 1 ms MuJoCo step.  Keep that exact
+                # timing while holding the learned residual for one 20 ms
+                # policy period.
+                def physics_step(carry, substep):
+                    elapsed_s = (
+                        mode_steps * task.action_repeat + substep
+                    ) * task.physics_timestep
+                    alpha = jp.clip(
+                        elapsed_s / task.reference_deploy_duration_s, 0.0, 1.0
+                    )
+                    substep_reference = state.info["handoff_ctrl"] + alpha * (
+                        self.stand_ctrl - state.info["handoff_ctrl"]
+                    )
+                    target = jp.clip(
+                        substep_reference + residual,
+                        self.joint_low, self.joint_high,
+                    )
+                    return mjx.step(self.sys, carry.replace(ctrl=target)), None
+
+                data, _ = jax.lax.scan(
+                    physics_step,
+                    state.pipeline_state,
+                    jp.arange(task.action_repeat),
+                )
             contacts = self._contacts(data)
             kinematics = self._kinematics(data)
             gates = self._gates(data, contacts, kinematics, reference)
@@ -823,7 +870,9 @@ def make_brax_transition_env_3d(
                 jp.square(kinematics["linear_speed"])
                 + 0.04 * jp.square(kinematics["angular_speed"])
             )
-            next_reference = self._reference(next_mode, next_mode_steps)
+            next_reference = self._reference(
+                next_mode, next_mode_steps, state.info["handoff_ctrl"]
+            )
             next_reference_error = jp.sqrt(
                 jp.mean(
                     jp.square(

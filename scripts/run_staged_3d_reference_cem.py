@@ -343,6 +343,8 @@ class ReferenceRollout3D:
         torque_limit: float,
         tracking_margin_m: float,
         ramp_duration_s: float = 0.25,
+        reset_keyframe: str = "compact",
+        stand_abduction_rad: float = 0.0,
     ) -> None:
         activate_planar_geometry(PUPPER_ORIGINAL_SHELL_60_PARAMETERS)
         self.model = mujoco.MjModel.from_xml_path(str(Path(xml_path).resolve()))
@@ -379,7 +381,22 @@ class ReferenceRollout3D:
         self.model.actuator_forcerange[self.actuator_ids, 0] = -torque_limit
         self.model.actuator_forcerange[self.actuator_ids, 1] = torque_limit
 
-        self.compact_key_id = self.model.key("compact").id
+        self.reset_key_id = self.model.key(reset_keyframe).id
+        self.reset_keyframe = reset_keyframe
+        self.stand_abduction_rad = float(stand_abduction_rad)
+        abduction_names = (
+            "front_left_hip_abduction",
+            "front_right_hip_abduction",
+            "rear_left_hip_abduction",
+            "rear_right_hip_abduction",
+        )
+        self.abduction_qpos_indices = np.asarray(
+            [
+                self.model.jnt_qposadr[self.model.joint(name).id]
+                for name in abduction_names
+            ],
+            dtype=np.int32,
+        )
         self.torso_body_id = self.model.body("torso").id
         self.floor_geom_id = self.model.geom("floor").id
         self.foot_geom_ids = {
@@ -419,8 +436,16 @@ class ReferenceRollout3D:
             self.ctrl_low,
             self.ctrl_high,
         )
-        mujoco.mj_resetDataKeyframe(self.model, self.data, self.compact_key_id)
-        self.data.qpos[self.qpos_indices] = initial_ctrl
+        mujoco.mj_resetDataKeyframe(self.model, self.data, self.reset_key_id)
+        if self.reset_keyframe == "compact":
+            self.data.qpos[self.qpos_indices] = initial_ctrl
+        else:
+            # Stand start: keep the keyframe's sagittal hip/knee posture but
+            # drop the four abduction joints to neutral so the rolling targets
+            # (abd10) have to abduct the legs from zero during the fold.  The
+            # keyframe's abduction ctrl is left intact, so the PD servos drive
+            # the abduction from neutral to the rolling abduction.
+            self.data.qpos[self.abduction_qpos_indices] = self.stand_abduction_rad
         self.data.qvel[:] = 0.0
         self.data.ctrl[self.actuator_ids] = initial_ctrl
         mujoco.mj_forward(self.model, self.data)
@@ -607,6 +632,8 @@ class ReferenceRollout3D:
         )
         summary: dict[str, object] = {
             "score": float(score),
+            "reset_keyframe": self.reset_keyframe,
+            "stand_abduction_deg": float(math.degrees(self.stand_abduction_rad)),
             "duration_s": float(elapsed),
             "rolling_turns": float(rolling_turns),
             "distance_turns": float(distance_turns),
@@ -663,6 +690,8 @@ def _initialize_worker(
     torque_limit: float,
     tracking_margin_m: float,
     ramp_duration_s: float,
+    reset_keyframe: str,
+    stand_abduction_rad: float,
 ) -> None:
     global _WORKER
     _WORKER = ReferenceRollout3D(
@@ -674,6 +703,8 @@ def _initialize_worker(
         torque_limit=torque_limit,
         tracking_margin_m=tracking_margin_m,
         ramp_duration_s=ramp_duration_s,
+        reset_keyframe=reset_keyframe,
+        stand_abduction_rad=stand_abduction_rad,
     )
 
 
@@ -946,6 +977,26 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=0.25,
         help="Startup target ramp duration in seconds (default 0.25).",
     )
+    parser.add_argument(
+        "--reset-keyframe",
+        choices=("compact", "stand"),
+        default="compact",
+        help=(
+            "Physical reset pose before the rolling reference is applied. "
+            "'stand' keeps the stand keyframe's sagittal hip/knee posture and "
+            "zeroes the abduction joints (see --stand-abduction-deg)."
+        ),
+    )
+    parser.add_argument(
+        "--stand-abduction-deg",
+        type=float,
+        default=0.0,
+        help=(
+            "Abduction angle applied to all four abduction joints at a 'stand' "
+            "reset. 0 = neutral legs. The rolling abduction still comes from "
+            "the model keyframe (abd10 = front -10 deg, rear +10 deg)."
+        ),
+    )
     parser.add_argument("--physics-profile", default="cg20")
     parser.add_argument("--control-dt", type=float, default=0.02)
     parser.add_argument("--kp", type=float, default=5.0)
@@ -1046,6 +1097,8 @@ def main(argv: list[str] | None = None) -> None:
         args.torque_limit,
         args.tracking_margin_mm / 1000.0,
         args.target_ramp_duration_s,
+        args.reset_keyframe,
+        math.radians(args.stand_abduction_deg),
     )
     if args.workers == 1:
         runner = ReferenceRollout3D(
@@ -1057,6 +1110,8 @@ def main(argv: list[str] | None = None) -> None:
             torque_limit=args.torque_limit,
             tracking_margin_m=args.tracking_margin_mm / 1000.0,
             ramp_duration_s=args.target_ramp_duration_s,
+            reset_keyframe=args.reset_keyframe,
+            stand_abduction_rad=math.radians(args.stand_abduction_deg),
         )
     else:
         executor = ProcessPoolExecutor(

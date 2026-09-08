@@ -61,6 +61,11 @@ def parse_args(argv=None):
     )
     parser.add_argument("--duration", type=float, default=10.0)
     add_stand_startup_arguments(parser)
+    parser.add_argument(
+        "--direct-reference-from-stand",
+        action="store_true",
+        help="Reset at stand and apply the rolling reference immediately, without a stand-to-compact controller.",
+    )
     parser.add_argument("--control-dt", type=float, default=0.02)
     parser.add_argument("--initial-phase-rad", type=float, default=0.0)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
@@ -99,6 +104,16 @@ def parse_args(argv=None):
         default=None,
         help="Fixed rear-leg abduction angle (deg); positive is outward. "
         "Default: use the model's baked keyframe value.",
+    )
+    parser.add_argument(
+        "--stand-abduction-deg",
+        type=float,
+        default=None,
+        help=(
+            "Abduction qpos applied at a stand reset (deg). Default: keep the "
+            "model's baked stand keyframe abduction. Pass 0 for neutral legs "
+            "that the rolling targets then abduct (stand abd=0)."
+        ),
     )
     parser.add_argument(
         "--differential-residual",
@@ -190,6 +205,10 @@ def run(argv=None):
         and math.isfinite(args.rear_abduction_deg)
     ):
         raise SystemExit("abduction targets must be finite")
+    if args.stand_abduction_deg is not None and not math.isfinite(
+        args.stand_abduction_deg
+    ):
+        raise SystemExit("--stand-abduction-deg must be finite")
     if not np.isfinite(args.differential_residual).all():
         raise SystemExit("differential residual values must be finite")
     if not 0.0 <= args.residual_gain <= 1.0:
@@ -323,7 +342,7 @@ def run(argv=None):
         ctrl_high,
     ) + differential_target_offset, ctrl_low, ctrl_high)
     _, stand_action = reset_pose_arrays_3d(model, task)
-    if task.reset_pose == "stand":
+    if task.reset_pose == "stand" or args.direct_reference_from_stand:
         mujoco.mj_resetDataKeyframe(model, data, model.key("stand").id)
         mujoco.mj_forward(model, data)
     else:
@@ -331,6 +350,13 @@ def run(argv=None):
     if override_abduction:
         data.qpos[abduction_qpos_indices] = abduction_ctrl
         data.ctrl[abduction_actuator_ids] = abduction_ctrl
+    if (
+        (task.reset_pose == "stand" or args.direct_reference_from_stand)
+        and args.stand_abduction_deg is not None
+    ):
+        data.qpos[abduction_qpos_indices] = float(
+            np.deg2rad(args.stand_abduction_deg)
+        )
     mujoco.mj_forward(model, data)
     start_x = float(data.qpos[0])
     start_y = float(data.qpos[1])
@@ -388,8 +414,15 @@ def run(argv=None):
             wall_start = time.perf_counter()
             for _ in range(control_repeat):
                 previous_phase = phase
-                rolling_active = float(data.time) >= task.rolling_start_time_s
-                if task.reset_pose == "stand" and rolling_active and startup_handoff is None:
+                rolling_active = (
+                    True if args.direct_reference_from_stand
+                    else float(data.time) >= task.rolling_start_time_s
+                )
+                if (
+                    (task.reset_pose == "stand" or args.direct_reference_from_stand)
+                    and rolling_active
+                    and startup_handoff is None
+                ):
                     startup_handoff = {
                         "time_s": float(data.time), "qpos": data.qpos.tolist(),
                         "qvel": data.qvel.tolist(),
@@ -416,11 +449,15 @@ def run(argv=None):
                     args.target_ramp_duration_s,
                     args.startup_target_boost,
                     args.startup_target_boost_duration_s,
-                    float(rolling_elapsed_3d(np, data.time, task)),
+                    (
+                        float(data.time)
+                        if args.direct_reference_from_stand
+                        else float(rolling_elapsed_3d(np, data.time, task))
+                    ),
                     ctrl_low,
                     ctrl_high,
                 )
-                if task.reset_pose == "stand":
+                if task.reset_pose == "stand" and not args.direct_reference_from_stand:
                     ctrl = np.clip(ctrl + stand_startup_action_3d(
                         np, data.time, stand_action, task
                     ) * np.asarray(task.action_scales), ctrl_low, ctrl_high)
@@ -495,7 +532,10 @@ def run(argv=None):
         "shell_contact_radius_m": geometry_parameters.shell_contact_radius,
         "solver": task.solver_name,
         "elapsed_s": float(elapsed),
-        "reset_pose": task.reset_pose,
+        "reset_pose": (
+            "stand_direct" if args.direct_reference_from_stand else task.reset_pose
+        ),
+        "stand_abduction_deg": args.stand_abduction_deg,
         "stand_hold_s": task.stand_hold_s,
         "stand_to_compact_s": task.stand_to_compact_s,
         "rolling_start_time_s": task.rolling_start_time_s,

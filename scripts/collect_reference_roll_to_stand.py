@@ -1,71 +1,154 @@
-"""Collect primitive CEM reference states; no learned ROLL weights or mesh."""
+"""Collect true +90 degree CEM handoff states for residual Roll-to-Stand."""
+
+from __future__ import annotations
 
 import argparse
-from dataclasses import asdict, replace
+from dataclasses import asdict
 import hashlib
 import json
+import math
 from pathlib import Path
 
-from curl_robot_2d_mjx.config_3d import Rolling3DConfig
-from curl_robot_2d_mjx.config_transition_3d import Transition3DConfig, transition_physics_profile_3d
-from curl_robot_2d_mjx.cem_reference import load_cem_reference
-from curl_robot_2d_mjx.environment_3d import ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER
+import mujoco
+import numpy as np
+
+from curl_robot_2d.model_3d import JOINT_NAMES_3D
+from curl_robot_2d.parameters import PUPPER_ORIGINAL_SHELL_60_PARAMETERS
+from curl_robot_2d_mjx.cem_reference import advance_oscillator, load_cem_reference
+from curl_robot_2d_mjx.config_transition_3d import (
+    Transition3DConfig, transition_curriculum_config_3d,
+    transition_physics_profile_3d,
+)
+from curl_robot_2d_mjx.environment_3d import model_path_3d
+from curl_robot_2d_mjx.transition_initialization_3d import save_roll_snapshots_3d
+from scripts.evaluate_3d_symmetric_cem_reference import activate_planar_geometry
+from scripts.run_handcrafted_roll_to_stand import MODEL, REFERENCE, near_target
+from scripts.view_3d_cem_reference import _target_for_phase
+
+
+GEOMETRY = "rollingquad_2_abd10_no_self_collision"
+
+
+def _collect_handoff(model, reference, *, minimum_turns, max_time_s=30.0):
+    data = mujoco.MjData(model)
+    mujoco.mj_resetDataKeyframe(model, data, model.key("compact").id)
+    joint_ids = np.asarray([model.joint(name).id for name in JOINT_NAMES_3D])
+    qpos_ids = model.jnt_qposadr[joint_ids]
+    actuator_ids = np.asarray([
+        model.actuator(f"{name}_servo").id for name in JOINT_NAMES_3D
+    ])
+    low, high = model.actuator_ctrlrange[actuator_ids].T
+    data.ctrl[actuator_ids] = _target_for_phase(
+        0.0, reference, 1.0, 0.0, 0.25, 0.0, 0.25, 0.0, low, high
+    )
+    data.qpos[qpos_ids] = data.ctrl[actuator_ids]
+    mujoco.mj_forward(model, data)
+
+    torso = model.body("torso").id
+    dt = float(model.opt.timestep)
+    phase = 0.0
+    rolled = 0.0
+    previous_in_window = False
+    while data.time < max_time_s:
+        rotation = data.xmat[torso].reshape(3, 3)
+        pitch = math.atan2(rotation[2, 0], rotation[2, 2])
+        pitch_rate = -float(data.qvel[4])
+        gate_target = math.radians(90.0 + np.sign(pitch_rate) * 15.0)
+        in_window = near_target(
+            pitch, pitch_rate, gate_target, math.radians(15.0)
+        )
+        if abs(rolled) >= minimum_turns * 2.0 * math.pi and in_window and not previous_in_window:
+            return {
+                "qpos": data.qpos.copy(), "qvel": data.qvel.copy(),
+                "ctrl": data.ctrl.copy(), "time_s": float(data.time),
+                "pitch_deg": math.degrees(pitch),
+                "turns": rolled / (2.0 * math.pi),
+            }
+        previous_in_window = in_window
+        phase = float(advance_oscillator(np, rolled, phase, dt, reference))
+        data.ctrl[actuator_ids] = _target_for_phase(
+            phase, reference, 1.0, 0.0, 0.25, 0.0, 0.25,
+            float(data.time), low, high,
+        )
+        mujoco.mj_step(model, data)
+        rolled += float(data.qvel[4]) * dt
+        if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
+            raise RuntimeError("nonfinite CEM reference rollout")
+    raise RuntimeError(f"no +90 degree handoff after {minimum_turns:g} turns")
 
 
 def main(argv=None):
-    p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--reference", type=Path, default=ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER)
-    p.add_argument("--out", type=Path, required=True)
-    p.add_argument("--episodes", type=int, default=8)
-    p.add_argument("--steps", type=int, default=600)
-    p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--physics-profile", choices=("newton4", "accurate", "cg12"), default="cg12")
-    p.add_argument("--dry-run", action="store_true")
-    args = p.parse_args(argv)
-    if args.episodes < 1 or args.steps < 2:
-        p.error("episodes must be positive and steps >= 2")
-    if args.out.suffix != ".npz" or args.out.exists() or args.out.with_suffix(".summary.json").exists():
-        p.error("--out must be a new .npz bank and summary path")
-    config = transition_physics_profile_3d(args.physics_profile,
-        Transition3DConfig(geometry="rollingquad_2_primitive", dynamic_roll_to_stand=True,
-                           physics_timestep=0.001))
-    # Identical nominal dynamics/control period to the recovery environment.
-    common = {name: value for name, value in asdict(config).items()
-              if name in Rolling3DConfig.__dataclass_fields__}
-    task = replace(Rolling3DConfig(**common), episode_length=args.steps + 1)
-    reference = load_cem_reference(args.reference, reference_weight=1.0, minimum_residual_gain=0.0)
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reference", type=Path, default=REFERENCE)
+    parser.add_argument("--xml", type=Path, default=MODEL)
+    parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument("--samples", type=int, default=8)
+    parser.add_argument("--first-turn", type=int, default=1)
+    parser.add_argument("--seed", type=int, default=0,
+                        help="provenance/split id; collection is deterministic")
+    args = parser.parse_args(argv)
+    summary_path = args.out.with_suffix(".summary.json")
+    if args.samples < 1 or args.first_turn < 1:
+        parser.error("samples and first-turn must be positive")
+    if args.out.suffix != ".npz" or args.out.exists() or summary_path.exists():
+        parser.error("--out must be a new .npz bank and summary path")
+    if args.xml.resolve() != model_path_3d(GEOMETRY).resolve():
+        parser.error("--xml must remain the abd10 no-self-collision model")
+
+    activate_planar_geometry(PUPPER_ORIGINAL_SHELL_60_PARAMETERS)
+    model = mujoco.MjModel.from_xml_path(str(args.xml.resolve()))
+    reference = load_cem_reference(args.reference)
+    task = transition_physics_profile_3d(
+        "accurate",
+        transition_curriculum_config_3d(
+            "brake_full",
+            Transition3DConfig(
+                geometry=GEOMETRY, dynamic_roll_to_stand=True,
+                handcrafted_reference_residual=True,
+                stand_abduction_zero=True, physics_timestep=0.001,
+                ready_hold_s=1.0, episode_length=500,
+                observation_noise_velocity=0.20,
+                observation_noise_gravity=0.05,
+                observation_noise_joint_position=0.01,
+            ),
+        ),
+    )
+    rows = []
+    for offset in range(args.samples):
+        minimum_turns = args.first_turn + offset
+        row = _collect_handoff(model, reference, minimum_turns=minimum_turns)
+        rows.append(row)
+        print(json.dumps({"sample": offset, **{k: row[k] for k in
+              ("time_s", "pitch_deg", "turns")}}), flush=True)
+
     digest = hashlib.sha256(args.reference.read_bytes()).hexdigest()
-    report = dict(source_kind="cem_reference_zero_residual", reference=asdict(reference),
-                  reference_sha256=digest, task=asdict(task), episodes=args.episodes,
-                  steps=args.steps, seed=args.seed, mesh_used=False,
-                  status="dry_run" if args.dry_run else "collecting")
-    if args.dry_run:
-        print(json.dumps(report, indent=2))
-        return
-    from curl_robot_2d_mjx.runtime import configure_cloud_runtime
-    configure_cloud_runtime(preallocate=False, mujoco_gl="disable", verbose=True)
-    import jax.numpy as jp
-    from curl_robot_2d_mjx.environment_3d import make_brax_env_3d
-    from curl_robot_2d_mjx.transition_initialization_3d import collect_roll_snapshots_3d
-    from scripts.inspect_transition_roll_snapshots import inspect_bank
-    env = make_brax_env_3d(task, cem_reference=reference, seed=args.seed)
-    def policy(obs, key):
-        del obs, key
-        return jp.zeros((env.action_size,)), {}
-    result = collect_roll_snapshots_3d(env, policy, args.out, config=config,
-        source_policy=f"cem_reference:{args.reference.resolve()}#sha256={digest};residual=0",
-        seed=args.seed, episodes=args.episodes, steps_per_episode=args.steps,
-        progress_fn=lambda row: print(json.dumps(row), flush=True))
-    report["collection"] = result
-    try:
-        report["coverage"] = inspect_bank(args.out, replace(config, curriculum_stage="brake_full"))
-        report["status"] = "ok"
-    except ValueError as error:
-        report.update(status="insufficient_coverage", error=str(error))
-    args.out.with_suffix(".summary.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps(report, indent=2))
-    if report["status"] != "ok":
-        raise SystemExit("reference bank has insufficient rolling coverage; inspect summary before training")
+    provenance = (
+        f"cem_reference:{args.reference.resolve()}#sha256={digest};"
+        "residual=0;trigger_pitch_deg=90;stand_abduction_deg=0"
+    )
+    save_roll_snapshots_3d(
+        args.out, model, task,
+        qpos=[row["qpos"] for row in rows],
+        qvel=[row["qvel"] for row in rows],
+        ctrl=[row["ctrl"] for row in rows],
+        time_s=[row["time_s"] for row in rows],
+        episode_id=np.arange(args.samples, dtype=np.int32),
+        source_policy=provenance,
+    )
+    report = {
+        "source_kind": "handcrafted_roll_to_stand_90_reference",
+        "status": "ok", "reference_path": str(args.reference.resolve()),
+        "reference_sha256": digest, "model": str(args.xml.resolve()),
+        "mesh_used": True, "trigger_pitch_deg": 90.0,
+        "deploy_duration_s": 0.15, "stand_abduction_deg": [0.0] * 4,
+        "seed": args.seed, "first_turn": args.first_turn,
+        "samples": args.samples, "task": asdict(task),
+        "handoffs": [{k: row[k] for k in ("time_s", "pitch_deg", "turns")}
+                     for row in rows],
+    }
+    summary_path.parent.mkdir(parents=True, exist_ok=True)
+    summary_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, indent=2), flush=True)
 
 
 if __name__ == "__main__":

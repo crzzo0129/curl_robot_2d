@@ -44,9 +44,13 @@ def transition_controller_metadata_3d(model, config):
     import numpy as np
     from curl_robot_2d_mjx.transition_initialization_3d import walking_start_state_3d
     target = walking_start_state_3d(model, config)["ctrl"]
+    if config.stand_abduction_zero:
+        target[np.asarray((0, 3, 6, 9), dtype=np.int32)] = 0.0
     ids = [model.joint(name).id for name in CONTROLLER_JOINT_NAMES_3D]
     low, high = model.jnt_range[ids].T
-    scale = config.action_range_fraction * np.maximum(high - target, target - low)
+    scale = (np.asarray((0.17, 0.50, 0.50) * 4) * config.reference_residual_scale
+             if config.handcrafted_reference_residual else
+             config.action_range_fraction * np.maximum(high - target, target - low))
     kp, kd = model.actuator_gainprm[:, 0], -model.actuator_biasprm[:, 2]
     # Current C++ uses set_param_from_json_scalar for kp/kd (unlike scales).
     if not np.allclose(kp, kp[0]) or not np.allclose(kd, kd[0]):
@@ -66,4 +70,6 @@ def transition_controller_metadata_3d(model, config):
         "transition_cmd_vel": [0.0, 0.0, 0.0],
         "desired_world_z": [0.0, 0.0, 1.0],
         "live_takeover_requires_hot_switch": True,
+        "action_semantics": ("residual_over_150ms_linear_reference"
+                             if config.handcrafted_reference_residual else "absolute_about_default"),
     }

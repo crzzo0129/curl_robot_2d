@@ -33,7 +33,8 @@ class DynamicContracts(unittest.TestCase):
                 validate_reference_split(train, evaluation, task)
 
     def test_mesh_training_rejected_before_runtime(self):
-        with self.assertRaisesRegex(ValueError, "require primitive"):
+        # The plain rollingquad_2 walking mesh is not a Roll to Stand geometry.
+        with self.assertRaisesRegex(ValueError, "requires the primitive"):
             build_task(parse_args(["--dynamic-roll-to-stand"]))
 
     def test_primitive_config_and_stand_duration(self):
@@ -42,6 +43,41 @@ class DynamicContracts(unittest.TestCase):
         self.assertEqual(task.ready_hold_s + task.stand_verification_s, 3.0)
         self.assertEqual(task.episode_length, 500)
         self.assertEqual(task.control_timestep, 0.02)
+
+    def test_handcrafted_residual_matches_deploy_actor_contract(self):
+        import mujoco
+        from curl_robot_2d_mjx.deployment_transition_3d import (
+            transition_controller_metadata_3d,
+        )
+        task = build_task(parse_args([
+            "--dynamic-roll-to-stand", "--handcrafted-reference-residual",
+            "--stand-abduction-zero", "--stage", "brake_full",
+            "--geometry", "rollingquad_2_abd10_no_self_collision",
+            "--physics-profile", "accurate",
+        ]))
+        self.assertEqual(task.control_timestep, 0.02)
+        self.assertEqual(task.observation_noise_velocity, 0.20)
+        self.assertEqual(task.observation_noise_gravity, 0.05)
+        self.assertEqual(task.observation_noise_joint_position, 0.01)
+        self.assertEqual(task.solver_iterations, 20)
+        self.assertEqual(task.solver_ls_iterations, 10)
+        model = mujoco.MjModel.from_xml_path(str(model_path_3d(task.geometry)))
+        metadata = transition_controller_metadata_3d(model, task)
+        np.testing.assert_allclose(
+            np.asarray(metadata["default_joint_pos"])[[0, 3, 6, 9]], 0.0
+        )
+        np.testing.assert_allclose(
+            metadata["action_scale"],
+            np.asarray((0.17, 0.50, 0.50) * 4) * 0.35,
+        )
+        self.assertEqual(
+            metadata["observation_history"] * metadata["single_observation_size"],
+            720,
+        )
+        self.assertEqual(
+            metadata["action_semantics"],
+            "residual_over_150ms_linear_reference",
+        )
 
     def test_primitive_actuators_and_contacts(self):
         import mujoco

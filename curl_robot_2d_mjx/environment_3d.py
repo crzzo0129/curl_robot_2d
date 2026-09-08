@@ -86,6 +86,10 @@ ROLLINGQUAD_2_ABD10_MODEL_PATH_3D = (
     / "mjcf"
     / "rollingquad_abd10.xml"
 )
+ROLLINGQUAD_2_ABD10_NO_SELF_COLLISION_MODEL_PATH_3D = (
+    PROJECT_ROOT / "assets" / "rollingquad_description_2" / "mjcf"
+    / "rollingquad_abd10_no_self_collision.xml"
+)
 ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D = (
     PROJECT_ROOT
     / "assets"
@@ -115,6 +119,7 @@ ROLLINGQUAD_GEOMETRIES_3D = (
     "rollingquad_2_simple_convex",
     "rollingquad_2_primitive",
     "rollingquad_2_abd10",
+    "rollingquad_2_abd10_no_self_collision",
     "rollingquad_2_primitive_abd10",
 )
 # Analytic-primitive collision variants (with or without the baked abduction
@@ -132,6 +137,7 @@ MODEL_PATHS_3D = {
     "rollingquad_2_simple_convex": ROLLINGQUAD_2_SIMPLE_CONVEX_MODEL_PATH_3D,
     "rollingquad_2_primitive": ROLLINGQUAD_2_PRIMITIVE_MODEL_PATH_3D,
     "rollingquad_2_abd10": ROLLINGQUAD_2_ABD10_MODEL_PATH_3D,
+    "rollingquad_2_abd10_no_self_collision": ROLLINGQUAD_2_ABD10_NO_SELF_COLLISION_MODEL_PATH_3D,
     "rollingquad_2_primitive_abd10": ROLLINGQUAD_2_PRIMITIVE_ABD10_MODEL_PATH_3D,
 }
 # hfield-floor variants used when the terrain curriculum is enabled.  The
@@ -195,6 +201,7 @@ CEM_CONTROLLER_PATHS_3D = {
     # Canonical abd10 full-geometry controller: smoke speed refinement of the
     # zero-contact reference. Abduction still comes from the compact keyframe.
     "rollingquad_2_abd10": ROLLINGQUAD_2_ABD10_HIGH_SPEED_CEM_CONTROLLER,
+    "rollingquad_2_abd10_no_self_collision": ROLLINGQUAD_2_ABD10_HIGH_SPEED_CEM_CONTROLLER,
     "rollingquad_2_primitive_abd10": ROLLINGQUAD_2_PRIMITIVE_CEM_CONTROLLER,
 }
 DEFAULT_3D_CEM_CONTROLLER = ROLLINGQUAD_2_CEM_CONTROLLER
@@ -882,6 +889,20 @@ def reference_startup_scale_3d(
     )
     return ramped_scale * (
         1.0 + task.reference_startup_boost * boost_decay
+    )
+
+
+def rolling_ramp_3d(xp, elapsed_s, task: Rolling3DConfig):
+    """Smooth 0->1 gate that only opens after the rolling phase starts.
+
+    Used to keep the steering prior off during a stand startup (and at reset)
+    so it cannot tilt the robot before rolling begins.
+    """
+
+    return smoothstep_ramp(
+        xp,
+        rolling_elapsed_3d(xp, elapsed_s, task),
+        task.reference_ramp_duration_s,
     )
 
 
@@ -1593,15 +1614,12 @@ def make_brax_env_3d(
                 maxval=task.reset_axis_tilt_noise_rad,
             )
             oscillator_phase = jp.zeros((), dtype=jp.float32)
-            cem_action = jp.clip(
-                self._scaled_reference_action_8d(
-                    oscillator_phase,
-                    jp.zeros((), dtype=jp.float32),
-                    forward_command_scale,
-                )
-                + steering_prior,
-                -1.0,
-                1.0,
+            # Steering prior is gated off at reset (rolling_ramp == 0), so the
+            # robot starts in the pure stand/compact pose without a tilt.
+            cem_action = self._scaled_reference_action_8d(
+                oscillator_phase,
+                jp.zeros((), dtype=jp.float32),
+                forward_command_scale,
             )
             start_ctrl = rolling_target_ctrl_3d(
                 jp,
@@ -1838,7 +1856,8 @@ def make_brax_env_3d(
                         controller_time,
                         forward_command_scale,
                     )
-                    + steering_prior,
+                    + rolling_ramp_3d(jp, controller_time, task)
+                    * steering_prior,
                     -1.0,
                     1.0,
                 )

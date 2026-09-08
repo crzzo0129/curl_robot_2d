@@ -24,7 +24,7 @@ from scripts.view_3d_cem_reference import _target_for_phase
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL = ROOT / "assets/rollingquad_description_2/mjcf/rollingquad_abd10_no_self_collision.xml"
-REFERENCE = ROOT / "results/pupper_r127p5_open60_shell150_45_three_stage_cem/03_strict_forbidden_collision/best_phase_controller.json"
+REFERENCE = ROOT / "results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json"
 
 
 def near_target(pitch, angular_speed, target, lead, *, min_speed=0.5):
@@ -45,6 +45,8 @@ def parse_args(argv=None):
     p.add_argument("--trigger-pitch-deg", type=float, default=0.0,
                    help="nose-up positive; Stand torso orientation=0")
     p.add_argument("--lead-deg", type=float, default=15.0)
+    p.add_argument("--deploy-at-pitch-deg", type=float,
+                   help="explicit window-entry pitch; e.g. -15 triggers at nose-down 15 degrees")
     p.add_argument("--deploy-duration", type=float, default=0.15)
     p.add_argument("--min-roll-duration", type=float, default=2.0)
     p.add_argument("--min-roll-turns", type=float, default=1.0)
@@ -60,6 +62,8 @@ def parse_args(argv=None):
             p.error(f"{name} must be finite and positive")
     if not math.isfinite(args.trigger_pitch_deg) or not 0 < args.lead_deg < 90:
         p.error("trigger must be finite and lead must be in (0,90) degrees")
+    if args.deploy_at_pitch_deg is not None and not math.isfinite(args.deploy_at_pitch_deg):
+        p.error("deploy-at-pitch must be finite")
     if not (0 <= args.min_roll_duration < args.max_roll_duration) or not math.isfinite(args.min_roll_turns) or args.min_roll_turns < 0:
         p.error("invalid rolling warmup")
     return args
@@ -79,6 +83,7 @@ def run(args):
     data.ctrl[aids] = _target_for_phase(0., reference, 1., 0., .25, 0., .25, 0., low, high)
     data.qpos[qids] = data.ctrl[aids]  # initial reset only
     stand = model.key_ctrl[model.key(args.stand_keyframe).id].copy()
+    stand[np.asarray((0, 3, 6, 9), dtype=np.int32)] = 0.0
     torso = model.body("torso").id
     floor = model.geom("floor").id
     feet = {model.geom(f"{leg}_foot_proxy").id for leg in
@@ -94,6 +99,8 @@ def run(args):
     longest_stand = current_stand = 0.0
     self_contacts = 0
     writer = renderer = None
+    last_frame = None
+    saved_trigger_frame = False
     args.out.mkdir(parents=True, exist_ok=True)
     if args.video:
         import imageio.v2 as imageio
@@ -122,7 +129,11 @@ def run(args):
                 if trigger is None:
                     if data.time >= args.max_roll_duration:
                         break
-                    in_window = near_target(pitch, -float(data.qvel[4]), math.radians(args.trigger_pitch_deg), math.radians(args.lead_deg))
+                    pitch_rate = -float(data.qvel[4])
+                    gate_target = args.trigger_pitch_deg
+                    if args.deploy_at_pitch_deg is not None:
+                        gate_target = args.deploy_at_pitch_deg + np.sign(pitch_rate) * args.lead_deg
+                    in_window = near_target(pitch, pitch_rate, math.radians(gate_target), math.radians(args.lead_deg))
                     # Trigger on entering the early window, never midway
                     # through it merely because the warmup just expired.
                     if (data.time >= args.min_roll_duration and abs(rolled) >= args.min_roll_turns * 2 * math.pi
@@ -173,10 +184,12 @@ def run(args):
                 if renderer is not None and data.time >= next_frame:
                     renderer.update_scene(data, camera=camera)
                     frame = renderer.render()
+                    last_frame = frame.copy()
                     writer.append_data(frame)
-                    if trigger is not None and not (args.out / "trigger.png").exists():
+                    if trigger is not None and not saved_trigger_frame:
                         import imageio.v2 as imageio
                         imageio.imwrite(args.out / "trigger.png", frame)
+                        saved_trigger_frame = True
                     next_frame += 1 / 30
                 if window is not None:
                     if not window.is_running():
@@ -188,9 +201,14 @@ def run(args):
             writer.close()
         if renderer is not None:
             renderer.close()
+    if last_frame is not None:
+        import imageio.v2 as imageio
+        imageio.imwrite(args.out / "stand.png", last_frame)
     summary = dict(model=str(args.xml.resolve()), reference=str(args.reference.resolve()),
                    trigger=trigger, pitch_convention="nose_up_positive", trigger_target_deg=args.trigger_pitch_deg, lead_deg=args.lead_deg,
+                   requested_deploy_pitch_deg=args.deploy_at_pitch_deg,
                    deploy_duration_s=args.deploy_duration, stand_keyframe=args.stand_keyframe,
+                   stand_abduction_deg=[float(math.degrees(stand[i])) for i in (0, 3, 6, 9)],
                    longest_stable_stand_s=longest_stand, stable_stand_success=longest_stand >= 1.,
                    final_height_m=float(data.qpos[2]), final_tilt_deg=math.degrees(tilt),
                    peak_torque_nm=max_torque, self_contact_samples=self_contacts,

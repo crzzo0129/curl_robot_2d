@@ -134,6 +134,23 @@ def load_roll_snapshots_3d(path, model, config, *, return_report=False,
     with np.load(path, allow_pickle=False) as archive:
         arrays = {key: archive[key] for key in archive.files}
     validate_roll_snapshots_3d(arrays, model, config)
+    # The +90° handoff bank is the reset distribution for BOTH the residual
+    # path and the absolute (Option B) path. Detect it from its provenance
+    # marker rather than coupling it to the action semantics flag.
+    handoff_states = config.handcrafted_reference_residual or (
+        "trigger_pitch_deg=90" in str(arrays["source_policy"].item())
+    )
+    if handoff_states:
+        count = len(arrays["qpos"])
+        bank = {key: arrays[key].copy() for key in
+                ("qpos", "qvel", "ctrl", "time_s", "episode_id")}
+        bank["source_phase_bin"] = np.zeros(count, dtype=np.int32)
+        bank["source_cycle"] = np.arange(count, dtype=np.int32)
+        bank["sampling_cdf"] = np.linspace(1 / count, 1, count, dtype=np.float32)
+        report = {"selection": "measured_pitch_90_handoffs", "selected_samples": count,
+                  "coverage_complete": True, "source_policy": str(arrays["source_policy"].item()),
+                  "velocities_modified": False}
+        return (bank, report) if return_report else bank
     if config.curriculum_stage.startswith("brake_"):
         bank, report = select_roll_cycle_snapshots(arrays, config,
                                                   require_coverage=require_coverage)

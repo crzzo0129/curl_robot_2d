@@ -24,6 +24,7 @@ GEOMETRY_NAMES_3D = (
     # Full CAD mesh with front/rear abduction baked to -10 deg / +10 deg so the
     # folded shanks clear each other under the selective self-collision ABI.
     "rollingquad_2_abd10",
+    "rollingquad_2_abd10_no_self_collision",
     # Analytic-primitive collision with the same -10/+10 deg abduction offset.
     # This is the training geometry; the full CAD mesh is used only for
     # verification because mesh-vs-mesh contact is too expensive for MJX.
