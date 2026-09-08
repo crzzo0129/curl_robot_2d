@@ -3,15 +3,16 @@
 
 Examples:
   python -m scripts.train_mjx_3d_stand_to_roll --stage bc --out results/stand_to_roll
-  python -m scripts.train_mjx_3d_stand_to_roll --stage compact \
+  python -m scripts.train_mjx_3d_stand_to_roll --stage rolling_orbit \
       --bc-params results/stand_to_roll/bc/bc_params --out results/stand_to_roll
-  python -m scripts.train_mjx_3d_stand_to_roll --stage slightly_open \
+  python -m scripts.train_mjx_3d_stand_to_roll --stage mixed_75 \
       --bc-params results/stand_to_roll/bc/bc_params \
-      --restore-checkpoint results/stand_to_roll/compact/ppo_checkpoint \
+      --restore-checkpoint results/stand_to_roll/rolling_orbit/ppo_checkpoint \
       --out results/stand_to_roll
 
 Every PPO stage uses the same actor, the same fixed BC observation normalizer,
-the same reward weights, and pure policy actions.  Only reset alpha changes.
+the same reward weights, and pure policy actions. Snapshot resets precede
+the static compact-to-stand curriculum. Version 2 requires retraining BC.
 """
 
 from __future__ import annotations
@@ -19,6 +20,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import asdict, replace
 import inspect
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -44,6 +46,8 @@ from curl_robot_2d_mjx.stand_to_roll_training import (
     build_cem_bc_dataset,
     initialize_ppo_actor_from_bc,
     observation_normalizer,
+    preprocess_observation,
+    BC_CONTRACT_VERSION,
 )
 
 
@@ -97,12 +101,16 @@ def parse_args(argv=None):
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hidden-layers", type=int, nargs="+",
                         default=STAND_TO_ROLL_HIDDEN_LAYERS)
-    parser.add_argument("--initial-policy-std", type=float, default=0.05)
-    parser.add_argument("--learning-rate", type=float, default=2.0e-4)
-    parser.add_argument("--entropy-cost", type=float, default=3.0e-4)
+    parser.add_argument("--initial-policy-std", type=float, default=0.02)
+    parser.add_argument("--learning-rate", type=float, default=2.0e-5)
+    parser.add_argument("--entropy-cost", type=float, default=0.0)
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--unroll-length", type=int, default=20)
-    parser.add_argument("--updates-per-batch", type=int, default=4)
+    parser.add_argument("--updates-per-batch", type=int, default=1)
+    parser.add_argument("--max-kl", type=float, default=1.0,
+                        help="Abort at evaluation callbacks when reported KL exceeds this limit.")
+    parser.add_argument("--eval-only", action="store_true",
+                        help="Evaluate the BC actor without PPO updates; no restore checkpoint.")
     parser.add_argument("--bc-steps", type=int, default=5000)
     parser.add_argument("--bc-batch-size", type=int, default=256)
     parser.add_argument("--bc-learning-rate", type=float, default=3.0e-4)
@@ -114,16 +122,21 @@ def parse_args(argv=None):
         parser.error(f"CEM data does not exist: {args.cem_data}")
     if args.stage != "bc" and args.bc_params is None and not args.dry_run:
         parser.error("PPO stages require --bc-params for the fixed normalizer")
-    if args.stage != "bc" and args.stage != "compact" and args.restore_checkpoint is None:
-        parser.error("post-compact stages must restore the preceding PPO checkpoint")
-    if args.stage == "compact" and args.restore_checkpoint is not None:
-        parser.error("compact starts from BC; do not pass --restore-checkpoint")
+    if args.eval_only and (args.stage == "bc" or args.restore_checkpoint is not None):
+        parser.error("--eval-only evaluates BC at a PPO stage without --restore-checkpoint")
+    if args.stage not in ("bc", "rolling_orbit") and args.restore_checkpoint is None and not args.eval_only:
+        parser.error("stages after rolling_orbit must restore the preceding PPO checkpoint")
+    if args.stage == "rolling_orbit" and args.restore_checkpoint is not None:
+        parser.error("rolling_orbit starts from BC; do not pass --restore-checkpoint")
+    if args.initial_policy_std <= 0.001 or args.updates_per_batch < 1:
+        parser.error("initial policy std must exceed 0.001; updates must be positive")
     if args.bc_steps < 1 or args.bc_batch_size < 1:
         parser.error("BC step and batch counts must be positive")
     for value, name in (
         (args.learning_rate, "learning rate"),
         (args.bc_learning_rate, "BC learning rate"),
         (args.initial_policy_std, "initial policy std"),
+        (args.max_kl, "max KL"),
     ):
         if not math.isfinite(value) or value <= 0.0:
             parser.error(f"{name} must be finite and positive")
@@ -156,11 +169,19 @@ def _train_bc(args, stage_out):
     observations, targets = build_cem_bc_dataset(
         args.cem_data,
         controller_qpos_indices=_controller_qpos_indices(model),
+        controller_actuator_indices=np.asarray([
+            model.actuator(f"{name}_servo").id for name in CONTROLLER_JOINT_NAMES_3D
+        ]),
         action_center=center,
         action_scale=scale,
     )
-    normalizer = observation_normalizer(observations)
-    normalized = (observations - normalizer["mean"]) / normalizer["std"]
+    # A contiguous holdout plus a history-sized gap avoids shared frames.
+    split = int(len(observations) * 0.8)
+    validation_start = split + 20
+    if split < 1 or validation_start >= len(observations):
+        raise ValueError("CEM dataset too short for a temporal holdout with a 20-frame gap")
+    normalizer = observation_normalizer(observations[:split])
+    normalized = preprocess_observation(np, observations, normalizer)
 
     class BCPolicy(linen.Module):
         hidden_layers: tuple[int, ...]
@@ -198,7 +219,7 @@ def _train_bc(args, stage_out):
     for step in range(args.bc_steps):
         rng, batch_key = jax.random.split(rng)
         indices = jax.random.randint(
-            batch_key, (args.bc_batch_size,), 0, normalized.shape[0]
+            batch_key, (args.bc_batch_size,), 0, split
         )
         params, optimizer_state, loss, diagnostics = update(
             params,
@@ -222,6 +243,12 @@ def _train_bc(args, stage_out):
     )
     model_io.save_params(stage_out / "bc_params", checkpoint)
     report = {
+        "contract_version": BC_CONTRACT_VERSION,
+        "training_samples": split,
+        "validation_samples": len(observations) - validation_start,
+        "validation_rmse": float(jp.sqrt(jp.mean(jp.square(
+            policy.apply(params, jp.asarray(normalized[validation_start:]))
+            - jp.asarray(targets[validation_start:]))))),
         "samples": int(observations.shape[0]),
         "observation_size": int(observations.shape[1]),
         "action_size": int(targets.shape[1]),
@@ -249,9 +276,26 @@ def _train_ppo(args, stage_out):
     )
 
     bc_normalizer, bc_params = model_io.load_params(args.bc_params)
+    if args.restore_checkpoint is not None:
+        checkpoint = args.restore_checkpoint.resolve()
+        config_path = next((parent / "training_config.json"
+                            for parent in (checkpoint, *checkpoint.parents)
+                            if (parent / "training_config.json").is_file()), None)
+        if config_path is None:
+            raise ValueError("Restore requires the preceding stage's training_config.json")
+        previous = json.loads(config_path.read_text(encoding="utf-8"))
+        expected = STAND_TO_ROLL_CURRICULUM_STAGES[
+            STAND_TO_ROLL_CURRICULUM_STAGES.index(args.stage) - 1]
+        if (previous.get("pipeline") != "one_policy_bc_then_snapshot_reset_curriculum_v2"
+                or previous.get("stage") != expected
+                or previous.get("bc_sha256") != hashlib.sha256(args.bc_params.read_bytes()).hexdigest()):
+            raise ValueError("Restore must use the preceding v2 stage and identical BC normalization/weights")
+    if int(bc_normalizer.get("contract_version", 0)) != BC_CONTRACT_VERSION:
+        raise ValueError("Legacy BC checkpoint: retrain --stage bc into a new output directory (contract v2)")
     mean = jp.asarray(bc_normalizer["mean"])
     std = jp.asarray(bc_normalizer["std"])
-    if mean.shape != (720,) or std.shape != (720,) or bool(jp.any(std <= 0.0)):
+    if (mean.shape != (720,) or std.shape != (720,) or bool(jp.any(std <= 0.0))
+            or not bool(jp.all(jp.isfinite(mean))) or not bool(jp.all(jp.isfinite(std)))):
         raise ValueError("BC normalizer must contain positive 720-value mean/std")
     bc_params = jax.tree_util.tree_map(jp.asarray, bc_params)
     task = stand_to_roll_curriculum_config(args.stage)
@@ -266,7 +310,9 @@ def _train_ppo(args, stage_out):
 
     def fixed_preprocess(observation, unused_statistics):
         del unused_statistics
-        return (observation - mean) / std
+        return preprocess_observation(jp, observation, {
+            "mean": mean, "std": std, "clip": float(bc_normalizer["clip"]),
+        })
 
     def network_factory(observation_size, action_size, preprocess_observations_fn):
         del preprocess_observations_fn
@@ -298,6 +344,41 @@ def _train_ppo(args, stage_out):
         return networks
 
     preset = PRESETS[args.preset]
+    if args.eval_only:
+        networks = network_factory(720, 12, fixed_preprocess)
+        actor = networks.policy_network.init(jax.random.PRNGKey(args.seed))
+        def policy(obs):
+            logits = networks.policy_network.apply(None, actor, obs)
+            return networks.parametric_action_distribution.mode(logits)
+        # Check the actual Brax distribution output against the BC forward pass.
+        reset = jax.jit(jax.vmap(eval_env.reset))
+        step_env = jax.jit(jax.vmap(eval_env.step))
+        act = jax.jit(policy)
+        state = reset(jax.random.split(jax.random.PRNGKey(args.seed), preset["eval_envs"]))
+        value = fixed_preprocess(state.obs, None)
+        for i in range(len(args.hidden_layers)):
+            layer = bc_params["params"][f"hidden_{i}"]
+            value = jnn.elu(value @ layer["kernel"] + layer["bias"])
+        layer = bc_params["params"]["location"]
+        expected = jp.tanh(value @ layer["kernel"] + layer["bias"])
+        error = float(jp.max(jp.abs(act(state.obs) - expected)))
+        if not math.isfinite(error) or error > 1e-5:
+            raise RuntimeError(f"BC/PPO deterministic output mismatch: {error}")
+        alive = jp.ones((preset["eval_envs"],), dtype=bool)
+        totals = {name: jp.zeros_like(alive, dtype=jp.float32) for name in state.metrics}
+        lengths = jp.zeros_like(alive, dtype=jp.float32)
+        for _ in range(task.episode_length):
+            state = step_env(state, act(state.obs))
+            totals = {name: value + jp.where(alive, state.metrics[name], 0.0)
+                      for name, value in totals.items()}
+            lengths = lengths + alive
+            alive = alive & (~state.done.astype(bool))
+        result = {name: float(jp.mean(value)) for name, value in totals.items()}
+        result["avg_episode_length"] = float(jp.mean(lengths))
+        result["bc_ppo_max_action_error"] = error
+        (stage_out / "bc_closed_loop_eval.json").write_text(
+            json.dumps(result, indent=2) + "\n", encoding="utf-8")
+        return result
     progress_history = []
 
     def progress(step, metrics):
@@ -308,11 +389,20 @@ def _train_ppo(args, stage_out):
             except (TypeError, ValueError):
                 row[name] = float(value.item())
         progress_history.append(row)
+        (stage_out / "metrics_history.json").write_text(
+            json.dumps(progress_history, indent=2) + "\n", encoding="utf-8")
+        kl = row.get("training/kl_mean", 0.0)
+        if any(not math.isfinite(v) for v in row.values()) or kl > args.max_kl:
+            (stage_out / "training_aborted.json").write_text(
+                json.dumps({"reason": "nonfinite metrics or excessive KL", "metrics": row}, indent=2)
+                + "\n", encoding="utf-8")
+            raise RuntimeError(f"PPO instability at step {step}: KL={kl}; see training_aborted.json")
         print(
             f"[PPO {args.stage}] step={step} "
             f"capture={row.get('eval/episode_captured', 0.0):.3f} "
             f"roll={row.get('eval/episode_roll_progress', 0.0):.3f} "
-            f"failed={row.get('eval/episode_failed', 0.0):.3f}",
+            f"failed={row.get('eval/episode_failed', 0.0):.3f} "
+            f"sustained={row.get('eval/episode_sustained_success', 0.0):.3f} KL={kl:.4g}",
             flush=True,
         )
 
@@ -320,6 +410,10 @@ def _train_ppo(args, stage_out):
     kwargs = {}
     if "save_checkpoint_path" in train_parameters:
         kwargs["save_checkpoint_path"] = str((stage_out / "ppo_checkpoint").resolve())
+    else:
+        raise RuntimeError("Brax PPO must support save_checkpoint_path")
+    if "max_grad_norm" in train_parameters:
+        kwargs["max_grad_norm"] = 0.5
     if args.restore_checkpoint is not None:
         if "restore_checkpoint_path" not in train_parameters:
             raise RuntimeError("installed Brax PPO cannot restore curriculum checkpoints")
@@ -361,7 +455,8 @@ def _train_ppo(args, stage_out):
         "final_metrics": clean_metrics,
         "capture_rate": capture_rate,
         "failure_rate": failure_rate,
-        "stage_passed": capture_rate >= 0.80 and failure_rate <= 0.20,
+        "stage_passed": (capture_rate >= 0.80 and failure_rate <= 0.20
+                         and clean_metrics.get("eval/episode_sustained_success", 0.0) >= 0.80),
         "next_stage": (
             STAND_TO_ROLL_CURRICULUM_STAGES[
                 STAND_TO_ROLL_CURRICULUM_STAGES.index(args.stage) + 1
@@ -383,7 +478,8 @@ def main(argv=None):
     args = parse_args(argv)
     task = None if args.stage == "bc" else stand_to_roll_curriculum_config(args.stage)
     payload = {
-        "pipeline": "one_policy_bc_then_reset_curriculum_v1",
+        "pipeline": "one_policy_bc_then_snapshot_reset_curriculum_v2",
+        "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "stage": args.stage,
         "actor_observation": "train_ppo_deploy 36x20 newest-first",
         "actor_observation_size": ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
@@ -396,7 +492,7 @@ def main(argv=None):
     if args.dry_run:
         print(json.dumps(payload, indent=2))
         return payload
-    stage_out = args.out / args.stage
+    stage_out = args.out / (f"eval_bc_{args.stage}" if args.eval_only else args.stage)
     if stage_out.exists() and any(stage_out.iterdir()):
         raise SystemExit(f"output directory is not empty: {stage_out}")
     configure_cloud_runtime(
@@ -408,6 +504,8 @@ def main(argv=None):
     )
     stage_out.mkdir(parents=True, exist_ok=True)
     payload["runtime"] = describe_runtime()
+    if args.bc_params is not None:
+        payload["bc_sha256"] = hashlib.sha256(args.bc_params.read_bytes()).hexdigest()
     (stage_out / "training_config.json").write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
     )

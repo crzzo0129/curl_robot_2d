@@ -31,7 +31,9 @@ from curl_robot_2d_mjx.environment_3d import (
     geometry_parameters_3d,
     model_path_3d,
 )
-from curl_robot_2d_mjx.stand_to_roll_training import action_center_and_scale
+from curl_robot_2d_mjx.stand_to_roll_training import (
+    action_center_and_scale, build_cem_bc_dataset,
+)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -121,6 +123,31 @@ def make_stand_to_roll_env_3d(
             center, scale = action_center_and_scale(config)
             self.action_center = jp.asarray(center)
             self.action_scale = jp.asarray(scale)
+            self.controller_actuator_indices = jp.asarray([
+                object_id(mujoco.mjtObj.mjOBJ_ACTUATOR, f"{name}_servo")
+                for name in CONTROLLER_JOINT_NAMES_3D
+            ])
+            self.snapshot_history = None
+            if config.snapshot_reset_probability > 0:
+                histories, _ = build_cem_bc_dataset(
+                    matcher_path, controller_qpos_indices=qpos_indices,
+                    controller_actuator_indices=np.asarray(self.controller_actuator_indices),
+                    action_center=center, action_scale=scale,
+                )
+                with np.load(matcher_path) as bank:
+                    snapshot_qpos = np.array(bank["qpos"][19:-1], copy=True)
+                    snapshot_qvel = np.array(bank["qvel"][19:-1], copy=True)
+                if (snapshot_qpos.shape != (len(histories), self.mj_model.nq)
+                        or snapshot_qvel.shape != (len(histories), self.mj_model.nv)
+                        or not np.isfinite(snapshot_qpos).all()
+                        or not np.isfinite(snapshot_qvel).all()):
+                    raise ValueError("snapshot bank does not match model state dimensions")
+                # Flat floor is translation invariant; keep recorded orientation
+                # and velocities, but remove accumulated world displacement.
+                snapshot_qpos[:, :2] = 0.0
+                self.snapshot_qpos = jp.asarray(snapshot_qpos)
+                self.snapshot_qvel = jp.asarray(snapshot_qvel)
+                self.snapshot_history = jp.asarray(histories)
 
             compact_id = object_id(mujoco.mjtObj.mjOBJ_KEY, "compact")
             stand_id = object_id(mujoco.mjtObj.mjOBJ_KEY, "stand")
@@ -249,11 +276,18 @@ def make_stand_to_roll_env_3d(
                 "forbidden_contact": zero,
                 "failed": zero,
                 "timeout": zero,
+                "failure_nonfinite": zero,
+                "failure_height": zero,
+                "failure_lateral": zero,
+                "failure_axis_tilt": zero,
+                "snapshot_episode": zero,
+                "sustained_success": zero,
+                "action_saturation": zero,
             }
 
         def reset(self, rng):
-            alpha_key, joint_key, velocity_key, obs_key, next_rng = jax.random.split(
-                jax.random.fold_in(rng, self.seed), 5
+            alpha_key, joint_key, velocity_key, obs_key, next_rng, bank_key, mix_key = jax.random.split(
+                jax.random.fold_in(rng, self.seed), 7
             )
             alpha = jax.random.uniform(
                 alpha_key,
@@ -282,19 +316,38 @@ def make_stand_to_roll_env_3d(
                 minval=-config.reset_velocity_noise_rad_s,
                 maxval=config.reset_velocity_noise_rad_s,
             )
-            data = self.base_data.replace(qpos=qpos, qvel=qvel, ctrl=joints)
-            data = mjx.forward(self.mjx_model, data)
+            snapshot = jp.asarray(False)
             zero_action = jp.zeros((12,), dtype=jp.float32)
+            saved_history = initial_rolling_deploy_history_3d(jp)
+            if self.snapshot_history is not None:
+                index = jax.random.randint(bank_key, (), 0, self.snapshot_history.shape[0])
+                snapshot = jax.random.uniform(mix_key) < config.snapshot_reset_probability
+                qpos = jp.where(snapshot, self.snapshot_qpos[index], qpos)
+                qvel = jp.where(snapshot, self.snapshot_qvel[index], qvel)
+                saved_history = self.snapshot_history[index]
+                zero_action = jp.where(snapshot, saved_history[24:36], zero_action)
+            joints = qpos[self.controller_qpos_indices]
+            ctrl = self.base_data.ctrl.at[self.controller_actuator_indices].set(joints)
+            ctrl = jp.where(snapshot, self.base_data.ctrl.at[self.controller_actuator_indices].set(
+                self.action_center + self.action_scale * zero_action), ctrl)
+            data = self.base_data.replace(qpos=qpos, qvel=qvel, ctrl=ctrl)
+            data = mjx.forward(self.mjx_model, data)
             history = initial_rolling_deploy_history_3d(jp)
             history = push_rolling_deploy_frame_3d(
                 jp, history, self._frame(data, zero_action, obs_key)
             )
+            if self.snapshot_history is not None:
+                if config.observation_noise_enabled:
+                    saved_history = saved_history + jp.tile(self.frame_sigma, 20) * jax.random.normal(
+                        bank_key, saved_history.shape)
+                history = jp.where(snapshot, saved_history, history)
             _, distance = self._match(data)
             compact_distance = jp.sqrt(
                 jp.mean(jp.square(joints - self.compact_joint_position))
             )
             info = {
                 "rng": next_rng,
+                "snapshot": snapshot,
                 "alpha": alpha,
                 "history": history,
                 "last_action": zero_action,
@@ -330,7 +383,8 @@ def make_stand_to_roll_env_3d(
             )
 
             def physics_step(data, _):
-                return mjx.step(self.mjx_model, data.replace(ctrl=target)), None
+                ctrl = data.ctrl.at[self.controller_actuator_indices].set(target)
+                return mjx.step(self.mjx_model, data.replace(ctrl=ctrl)), None
 
             candidate, _ = jax.lax.scan(
                 physics_step, state.pipeline_state, (), length=self.action_repeat
@@ -451,6 +505,14 @@ def make_stand_to_roll_env_3d(
                 "forbidden_contact": forbidden.astype(jp.float32),
                 "failed": failed.astype(jp.float32),
                 "timeout": timeout.astype(jp.float32),
+                "failure_nonfinite": (~finite).astype(jp.float32),
+                "failure_height": (data.qpos[2] > config.terminate_root_z_max_m).astype(jp.float32),
+                "failure_lateral": (jp.abs(data.qpos[1]) > config.terminate_lateral_m).astype(jp.float32),
+                "failure_axis_tilt": (axis_tilt > config.terminate_axis_tilt_rad).astype(jp.float32),
+                "snapshot_episode": (state.info["snapshot"] & (step_count == 1)).astype(jp.float32),
+                "sustained_success": (timeout & (~failed) & captured
+                                      & (roll_potential >= 2.0 * jp.pi)).astype(jp.float32),
+                "action_saturation": jp.mean((jp.abs(action) > 0.98).astype(jp.float32)),
             }
             return State(data, history, reward, done, metrics=metrics, info=info)
 

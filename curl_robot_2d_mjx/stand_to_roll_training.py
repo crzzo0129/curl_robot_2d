@@ -17,6 +17,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
 
 STAND_TO_ROLL_ACTION_SIZE = 12
 STAND_TO_ROLL_HIDDEN_LAYERS = (512, 256, 128)
+BC_CONTRACT_VERSION = 2
 
 
 def action_center_and_scale(config) -> tuple[np.ndarray, np.ndarray]:
@@ -44,6 +45,7 @@ def build_cem_bc_dataset(
     controller_qpos_indices,
     action_center,
     action_scale,
+    controller_actuator_indices=None,
     history: int = ROLLING_DEPLOY_OBSERVATION_HISTORY_3D,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Convert the CEM rollout into deploy-observation/action BC pairs.
@@ -72,6 +74,14 @@ def build_cem_bc_dataset(
         orientation = np.asarray(data["orientation"], dtype=np.float64)
         angular_world = np.asarray(data["angular_velocity"], dtype=np.float64)
         target = np.asarray(data["joint_target"], dtype=np.float64)
+        # The legacy collector stores free-joint LOCAL angular velocity under
+        # angular_velocity. qvel is authoritative for those recordings.
+        angular_body_recorded = (
+            np.asarray(data["qvel"], dtype=np.float64)[:, 3:6]
+            if "qvel" in data.files else None
+        )
+    if controller_actuator_indices is not None:
+        target = target[:, np.asarray(controller_actuator_indices, dtype=np.int64)]
 
     n = qpos.shape[0]
     if (
@@ -79,17 +89,20 @@ def build_cem_bc_dataset(
         or orientation.shape != (n, 3, 3)
         or angular_world.shape != (n, 3)
         or target.shape != (n, 12)
-        or n < history
+        or n <= history
     ):
         raise ValueError("invalid CEM BC array shapes")
     if indices.min() < 0 or indices.max() >= qpos.shape[1]:
         raise ValueError("controller qpos index is outside the CEM qpos array")
 
     angular_body = np.einsum("nji,nj->ni", orientation, angular_world)
+    if angular_body_recorded is not None:
+        angular_body = angular_body_recorded
     gravity_world = np.broadcast_to(np.asarray((0.0, 0.0, -1.0)), (n, 3))
     projected_gravity = np.einsum("nji,nj->ni", orientation, gravity_world)
     action = np.clip((target - center) / scale, -1.0, 1.0)
-    previous_action = np.vstack((np.zeros((1, 12)), action[:-1]))
+    # Row i is recorded AFTER executing action i. Predict action i+1.
+    previous_action = action
     frames = rolling_deploy_frame_3d(
         np,
         angular_velocity_body=angular_body,
@@ -100,9 +113,9 @@ def build_cem_bc_dataset(
     # For sample i, history is [frame_i, frame_(i-1), ...], matching the C++
     # std::rotate buffer and train_ppo_deploy._push.
     observations = np.stack(
-        [frames[i - np.arange(history)].reshape(-1) for i in range(history - 1, n)]
+        [frames[i - np.arange(history)].reshape(-1) for i in range(history - 1, n - 1)]
     )
-    actions = action[history - 1 :]
+    actions = action[history:]
     observations = observations.astype(np.float32)
     actions = actions.astype(np.float32)
     if observations.shape[1] != ROLLING_DEPLOY_OBSERVATION_SIZE_3D:
@@ -120,8 +133,17 @@ def observation_normalizer(observations: np.ndarray) -> dict[str, np.ndarray]:
         raise ValueError("observations must have shape (N, 720)")
     return {
         "mean": observations.mean(axis=0),
-        "std": np.maximum(observations.std(axis=0), 1.0e-3),
+        "std": np.maximum(observations.std(axis=0), np.tile(
+            np.asarray([0.2] * 3 + [0.1] * 3 + [1.0] * 6
+                       + [0.1] * 12 + [0.1] * 12, dtype=np.float32), 20)),
+        "clip": np.asarray(5.0, dtype=np.float32),
+        "contract_version": np.asarray(BC_CONTRACT_VERSION),
     }
+
+
+def preprocess_observation(xp, observation, normalizer):
+    return xp.clip((observation - normalizer["mean"]) / normalizer["std"],
+                   -normalizer["clip"], normalizer["clip"])
 
 
 def tanh_normal_scale_logit(initial_std: float) -> float:

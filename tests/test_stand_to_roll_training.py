@@ -17,6 +17,7 @@ from curl_robot_2d_mjx.stand_to_roll_training import (
     build_cem_bc_dataset,
     initialize_ppo_actor_from_bc,
     observation_normalizer,
+    preprocess_observation,
 )
 from scripts.train_mjx_3d_stand_to_roll import parse_args
 
@@ -53,8 +54,16 @@ class StandToRollContractTest(unittest.TestCase):
     def test_cli_requires_restore_after_compact(self):
         with self.assertRaises(SystemExit):
             parse_args(["--stage", "crouch", "--dry-run"])
-        args = parse_args(["--stage", "compact", "--dry-run"])
-        self.assertEqual(args.stage, "compact")
+        args = parse_args(["--stage", "rolling_orbit", "--dry-run"])
+        self.assertEqual(args.stage, "rolling_orbit")
+        with self.assertRaises(SystemExit):
+            parse_args(["--stage", "compact", "--dry-run"])
+        parse_args(["--stage", "compact", "--eval-only", "--dry-run"])
+
+    def test_snapshot_curriculum_exits_before_static_compact(self):
+        probabilities = [stand_to_roll_curriculum_config(stage).snapshot_reset_probability
+                         for stage in STAND_TO_ROLL_CURRICULUM_STAGES]
+        self.assertEqual(probabilities, [1.0, 0.75, 0.25, 0.0, 0.0, 0.0, 0.0, 0.0])
 
 
 class CEMBehaviorCloningDatasetTest(unittest.TestCase):
@@ -84,17 +93,38 @@ class CEMBehaviorCloningDatasetTest(unittest.TestCase):
                 action_center=center,
                 action_scale=scale,
             )
-        self.assertEqual(observations.shape, (5, 720))
-        self.assertEqual(actions.shape, (5, 12))
+        self.assertEqual(observations.shape, (4, 720))
+        self.assertEqual(actions.shape, (4, 12))
+        np.testing.assert_allclose(actions[0], targets[20])
         frames = observations[0].reshape(20, 36)
         self.assertEqual(frames[0, 0], 19.0)
         self.assertEqual(frames[-1, 0], 0.0)
         self.assertEqual(frames[0, 12], 19.0)
         self.assertEqual(frames[-1, 12], 0.0)
+        np.testing.assert_allclose(frames[0, 24:36], targets[19])
 
     def test_normalizer_has_positive_floor(self):
         norm = observation_normalizer(np.zeros((4, 720), dtype=np.float32))
-        self.assertTrue(np.all(norm["std"] == 1.0e-3))
+        self.assertTrue(np.all(norm["std"] >= 0.1))
+        np.testing.assert_allclose(preprocess_observation(np, np.full((2, 720), 1e6), norm), 5.0)
+
+    def test_legacy_local_angular_velocity_and_actuator_mapping(self):
+        n = 24
+        rotation = np.asarray([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+        qvel = np.zeros((n, 18))
+        qvel[:, 3] = 2.0
+        target = np.tile(np.linspace(-0.5, 0.5, 12), (n, 1))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "cem.npz"
+            np.savez(path, qpos=np.zeros((n, 19)), qvel=qvel,
+                     orientation=np.tile(rotation, (n, 1, 1)),
+                     angular_velocity=qvel[:, 3:6], joint_target=target)
+            obs, actions = build_cem_bc_dataset(
+                path, controller_qpos_indices=np.arange(7, 19),
+                controller_actuator_indices=np.arange(11, -1, -1),
+                action_center=np.zeros(12), action_scale=np.ones(12))
+        np.testing.assert_allclose(obs[0, :3], [2., 0., 0.])
+        np.testing.assert_allclose(actions[0], target[20, ::-1])
 
     def test_bc_actor_copies_into_location_half_of_ppo_head(self):
         hidden = (4, 3, 2)

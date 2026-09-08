@@ -1,5 +1,10 @@
 # 3D unified stand-to-roll：BC + reset curriculum
 
+> v2 更新：当前入口先训练 rolling_orbit -> mixed_75 -> mixed_25 -> compact，
+> 后续再进入站姿课程。BC 标签时序和归一化已经修改，必须重新训练 BC，
+> 不兼容旧 checkpoint。请按 [v2 云端验证说明](stand_to_roll_v2_cloud.md) 执行；
+> 下文直接从 BC 开始 compact 的旧命令已被替代。v2 未在本地运行验证。
+
 当前目标截止到 full-stand 能稳定进入持续滚动。CEM、compact 和 capture
 shaping 在五个 PPO 阶段保持不变；teacher shaping annealing 不在本阶段执行。
 

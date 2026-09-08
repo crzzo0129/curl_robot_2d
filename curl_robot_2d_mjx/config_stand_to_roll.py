@@ -7,6 +7,9 @@ import math
 
 
 STAND_TO_ROLL_CURRICULUM_STAGES = (
+    "rolling_orbit",
+    "mixed_75",
+    "mixed_25",
     "compact",
     "slightly_open",
     "crouch",
@@ -42,6 +45,7 @@ class StandToRollConfig:
     reset_alpha_max: float = 0.10
     reset_joint_noise_rad: float = 0.01
     reset_velocity_noise_rad_s: float = 0.05
+    snapshot_reset_probability: float = 0.0
 
     # Actor observation exactly follows train_ppo_deploy: a raw 36-value frame
     # stacked newest-first over 20 policy steps.
@@ -85,6 +89,9 @@ def stand_to_roll_curriculum_config(
 
     config = base or StandToRollConfig()
     bounds = {
+        "rolling_orbit": (0.0, 0.10),
+        "mixed_75": (0.0, 0.10),
+        "mixed_25": (0.0, 0.10),
         "compact": (0.0, 0.10),
         "slightly_open": (0.0, 0.30),
         "crouch": (0.20, 0.60),
@@ -94,7 +101,11 @@ def stand_to_roll_curriculum_config(
     if stage not in bounds:
         raise ValueError(f"unknown stand-to-roll curriculum stage: {stage}")
     lo, hi = bounds[stage]
-    result = replace(config, reset_alpha_min=lo, reset_alpha_max=hi)
+    result = replace(config, reset_alpha_min=lo, reset_alpha_max=hi,
+                     snapshot_reset_probability={
+                         "rolling_orbit": 1.0, "mixed_75": 0.75,
+                         "mixed_25": 0.25,
+                     }.get(stage, 0.0))
     validate_stand_to_roll_config(result)
     return result
 
@@ -102,6 +113,8 @@ def stand_to_roll_curriculum_config(
 def validate_stand_to_roll_config(config: StandToRollConfig) -> None:
     if config.episode_length < 1:
         raise ValueError("episode_length must be positive")
+    if not 0.0 <= config.snapshot_reset_probability <= 1.0:
+        raise ValueError("snapshot_reset_probability must be in [0, 1]")
     if not 0.0 <= config.reset_alpha_min <= config.reset_alpha_max <= 1.0:
         raise ValueError("reset alpha bounds must satisfy 0 <= min <= max <= 1")
     if config.observation_history != 20:
