@@ -3,11 +3,41 @@ import numpy as np
 from scripts.train_mjx_3d_transition_ppo import parse_args, build_task
 from curl_robot_2d_mjx.transition_control_3d import interpolated_stand_target, limit_transition_target
 from curl_robot_2d_mjx.reward_transition_3d import guided_absolute_reward_config_3d
+from curl_robot_2d_mjx.reward_transition_3d import guided_hold_reward_config_3d
 from curl_robot_2d_mjx.reward_transition_3d import guided_landing_reward_config_3d, touchdown_downward_speed_squared
 from tests.test_smooth_stand_reward import SmoothStandRewardTests
 
 
 class GuidedAbsoluteTests(unittest.TestCase):
+    def test_hold_profile_preserves_deploy_rewards(self):
+        helper = SmoothStandRewardTests()
+        moving = dict(deploy_window_fraction=1., combined_speed=.4,
+                      target_rate_squared=100., joint_velocity_squared=64.,
+                      foot_slip_velocity_squared=.1)
+        old = helper.terms(guided_absolute_reward_config_3d(), **moving)
+        new = helper.terms(guided_hold_reward_config_3d(), **moving)
+        self.assertEqual(old, new)
+
+    def test_hold_costs_active_before_ready_without_positive_bonus(self):
+        helper = SmoothStandRewardTests()
+        config = guided_hold_reward_config_3d()
+        quiet = helper.terms(config, deploy_window_fraction=0.)
+        moving = helper.terms(config, deploy_window_fraction=0., combined_speed=.2,
+                              target_rate_squared=100., joint_velocity_squared=64.,
+                              foot_slip_velocity_squared=.0625)
+        self.assertAlmostEqual(sum(quiet.values()), 0.)
+        self.assertEqual(moving['hold_body_motion'], -.5)
+        self.assertEqual(moving['hold_foot_slip'], -.2)
+        self.assertLess(moving['hold_joint_motion'], 0.)
+        self.assertEqual(moving['stabilize'], 0.)
+
+    def test_hold_defaults_to_all_six(self):
+        args = parse_args(['--geometry','rollingquad_2_abd10_no_self_collision',
+                           '--dynamic-roll-to-stand','--reward-profile','guided_hold'])
+        task = build_task(args)
+        self.assertEqual(task.target_rate_limits_rad_s, (6.,)*12)
+        self.assertEqual(task.reference_deploy_duration_s, .3)
+
     def test_landing_proxy_keeps_preimpact_speed_only_at_contact_onset(self):
         previous = np.zeros((4, 3)); previous[0, 2] = -2.
         stopped = np.zeros((4, 3))

@@ -23,6 +23,8 @@ TRANSITION_REWARD_TERM_NAMES_3D = (
     "touchdown_speed",
     "target_acceleration",
     "hold_joint_motion",
+    "hold_body_motion",
+    "hold_foot_slip",
     "deploy_instability",
     "action_magnitude",
     "joint_velocity",
@@ -74,6 +76,9 @@ class Transition3DRewardConfig:
     reference_tracking_sigma_rad: float = 0.30
     touchdown_speed: float = 0.0
     touchdown_speed_sigma_m_s: float = 0.5
+    hold_body_motion: float = 0.0
+    hold_body_speed_sigma: float = 0.20
+    hold_foot_slip: float = 0.0
 
 
 def smooth_stand_reward_config_3d():
@@ -156,6 +161,12 @@ def reward_terms_roll_to_stand_3d(xp, config, inputs):
             / config.target_rate_sigma_rad_s**2
             + config.hold_joint_velocity * inputs["joint_velocity_squared"]
             / config.joint_velocity_sigma_rad_s**2)
+        # Post-deploy costs, not a living bonus. Do not gate on READY or support:
+        # a policy must not avoid these costs by remaining just outside the gate.
+        terms["hold_body_motion"] = -(1.0 - window) * config.hold_body_motion * xp.minimum(
+            xp.square(inputs["combined_speed"] / config.hold_body_speed_sigma), 4.0)
+        terms["hold_foot_slip"] = -(1.0 - window) * config.hold_foot_slip * (
+            inputs["foot_slip_velocity_squared"] / config.foot_slip_sigma_m_s**2)
         # Near upright, suppress residual body motion; preserve initial rolling momentum.
         terms["deploy_instability"] = -config.deploy_instability * window * upright * (
             1.0 - xp.exp(-xp.square(inputs["combined_speed"] / config.stabilize_speed_sigma)))
@@ -176,6 +187,13 @@ def guided_landing_reward_config_3d():
                    reference_tracking=2.5, target_acceleration=0.30,
                    joint_velocity=0.50, hold_joint_velocity=0.30,
                    touchdown_speed=0.5)
+
+
+def guided_hold_reward_config_3d():
+    """Preserve guided_absolute deployment rewards, refine only the hold phase."""
+    return replace(guided_absolute_reward_config_3d(),
+                   hold_target_rate=0.75, hold_joint_velocity=0.30,
+                   hold_body_motion=0.50, hold_foot_slip=0.20)
 
 
 def touchdown_downward_speed_squared(xp, previous_contact, contact,
@@ -245,6 +263,8 @@ def reward_terms_transition_3d(
         "reference_tracking": xp.asarray(0.0),
         "touchdown_speed": xp.asarray(0.0),
         "hold_joint_motion": xp.asarray(0.0),
+        "hold_body_motion": xp.asarray(0.0),
+        "hold_foot_slip": xp.asarray(0.0),
         "deploy_instability": xp.asarray(0.0),
         "action_magnitude": (
             -config.action_magnitude * inputs["action_squared"]
