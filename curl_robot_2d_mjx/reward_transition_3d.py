@@ -20,6 +20,7 @@ TRANSITION_REWARD_TERM_NAMES_3D = (
     "action_rate",
     "target_rate",
     "reference_tracking",
+    "touchdown_speed",
     "target_acceleration",
     "hold_joint_motion",
     "deploy_instability",
@@ -71,6 +72,8 @@ class Transition3DRewardConfig:
     deploy_instability: float = 0.0
     reference_tracking: float = 0.0
     reference_tracking_sigma_rad: float = 0.30
+    touchdown_speed: float = 0.0
+    touchdown_speed_sigma_m_s: float = 0.5
 
 
 def smooth_stand_reward_config_3d():
@@ -158,11 +161,29 @@ def reward_terms_roll_to_stand_3d(xp, config, inputs):
             1.0 - xp.exp(-xp.square(inputs["combined_speed"] / config.stabilize_speed_sigma)))
     terms["reference_tracking"] = -config.reference_tracking * (
         inputs.get("executed_reference_error_squared", 0.0) / config.reference_tracking_sigma_rad**2)
+    terms["touchdown_speed"] = -config.touchdown_speed * (
+        inputs.get("touchdown_downward_speed_squared", 0.0) / config.touchdown_speed_sigma_m_s**2)
     return terms
 
 
 def guided_absolute_reward_config_3d():
     return replace(smooth_deploy_v3_reward_config_3d(), reference_tracking=2.0)
+
+
+def guided_landing_reward_config_3d():
+    """Small refinement of guided_absolute; touchdown velocity is a proxy, not force."""
+    return replace(guided_absolute_reward_config_3d(),
+                   reference_tracking=2.5, target_acceleration=0.30,
+                   joint_velocity=0.50, hold_joint_velocity=0.30,
+                   touchdown_speed=0.5)
+
+
+def touchdown_downward_speed_squared(xp, previous_contact, contact,
+                                     previous_velocity, interval_velocity):
+    """20 ms contact-onset proxy; retain pre-impact speed after foot arrest."""
+    onset = (contact > 0) & (previous_contact <= 0)
+    downward = xp.maximum(0.0, -xp.minimum(previous_velocity[:, 2], interval_velocity[:, 2]))
+    return xp.mean(onset * xp.square(downward))
 
 
 def reward_terms_transition_3d(
@@ -222,6 +243,7 @@ def reward_terms_transition_3d(
             inputs.get("target_rate_squared", 0.0) / config.target_rate_sigma_rad_s**2),
         "target_acceleration": xp.asarray(0.0),
         "reference_tracking": xp.asarray(0.0),
+        "touchdown_speed": xp.asarray(0.0),
         "hold_joint_motion": xp.asarray(0.0),
         "deploy_instability": xp.asarray(0.0),
         "action_magnitude": (

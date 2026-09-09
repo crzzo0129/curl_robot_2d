@@ -38,6 +38,7 @@ from curl_robot_2d_mjx.reward_transition_3d import (
     reward_terms_transition_3d,
     reward_terms_roll_to_stand_3d,
     deploy_window_fraction_3d,
+    touchdown_downward_speed_squared,
 )
 from curl_robot_2d_mjx.transition_control_3d import interpolated_stand_target, limit_transition_target
 from curl_robot_2d_mjx.transition_initialization_3d import (
@@ -656,6 +657,8 @@ def make_brax_transition_env_3d(
                 "handoff_ctrl": data.ctrl,
                 "last_target_velocity": jp.zeros_like(data.ctrl),
                 "last_foot_position": data.site_xpos[self.foot_site_ids],
+                "last_foot_velocity": jp.zeros((4, 3), dtype=data.qpos.dtype),
+                "last_foot_ground": contacts["foot_ground"],
                 "previous_combined_speed": jp.sqrt(
                     jp.square(kinematics["linear_speed"])
                     + 0.04 * jp.square(kinematics["angular_speed"])
@@ -894,6 +897,9 @@ def make_brax_transition_env_3d(
                 mode == int(TransitionMode3D.STABILIZE)
             ).astype(jp.float32)
             reward_inputs = {
+                "touchdown_downward_speed_squared": touchdown_downward_speed_squared(
+                    jp, state.info["last_foot_ground"], contacts["foot_ground"],
+                    state.info["last_foot_velocity"], foot_velocity),
                 "executed_reference_error_squared": jp.mean(jp.square(
                     data.ctrl - interpolated_stand_target(
                         jp, state.info["handoff_ctrl"], self.stand_ctrl,
@@ -959,6 +965,8 @@ def make_brax_transition_env_3d(
                 "last_action": policy_action,
                 "last_target_velocity": (data.ctrl - state.pipeline_state.ctrl) / task.control_timestep,
                 "last_foot_position": foot_position,
+                "last_foot_velocity": foot_velocity,
+                "last_foot_ground": contacts["foot_ground"],
                 "previous_combined_speed": combined_speed,
                 "previous_reference_error": next_reference_error,
                 "time_out": timeout.astype(jp.float32),

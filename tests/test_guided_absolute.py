@@ -3,10 +3,27 @@ import numpy as np
 from scripts.train_mjx_3d_transition_ppo import parse_args, build_task
 from curl_robot_2d_mjx.transition_control_3d import interpolated_stand_target, limit_transition_target
 from curl_robot_2d_mjx.reward_transition_3d import guided_absolute_reward_config_3d
+from curl_robot_2d_mjx.reward_transition_3d import guided_landing_reward_config_3d, touchdown_downward_speed_squared
 from tests.test_smooth_stand_reward import SmoothStandRewardTests
 
 
 class GuidedAbsoluteTests(unittest.TestCase):
+    def test_landing_proxy_keeps_preimpact_speed_only_at_contact_onset(self):
+        previous = np.zeros((4, 3)); previous[0, 2] = -2.
+        stopped = np.zeros((4, 3))
+        contact = np.array([1., 0., 0., 0.])
+        self.assertEqual(touchdown_downward_speed_squared(np, np.zeros(4), contact, previous, stopped), 1.)
+        self.assertEqual(touchdown_downward_speed_squared(np, contact, contact, previous, stopped), 0.)
+        self.assertEqual(touchdown_downward_speed_squared(np, np.zeros(4), contact, -previous, stopped), 0.)
+
+    def test_landing_cost_remains_after_deploy_window(self):
+        helper = SmoothStandRewardTests()
+        terms = helper.terms(guided_landing_reward_config_3d(),
+                             deploy_window_fraction=0., touchdown_downward_speed_squared=1.)
+        self.assertEqual(terms['touchdown_speed'], -2.)
+        old = helper.terms(guided_absolute_reward_config_3d(), touchdown_downward_speed_squared=1.)
+        self.assertEqual(old['touchdown_speed'], 0.)
+
     def test_reference_endpoints_and_no_overshoot(self):
         start = np.array([1., -2., 3.])
         end = np.zeros(3)
