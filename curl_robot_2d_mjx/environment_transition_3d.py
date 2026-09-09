@@ -903,6 +903,9 @@ def make_brax_transition_env_3d(
                     jp.square(policy_action - state.info["last_action"])
                 ),
                 "action_squared": jp.mean(jp.square(policy_action)),
+                "target_rate_squared": jp.mean(jp.square(
+                    (data.ctrl - state.pipeline_state.ctrl) / task.control_timestep
+                )),
                 "joint_velocity_squared": jp.mean(
                     jp.square(data.qvel[self.joint_dof_indices])
                 ),

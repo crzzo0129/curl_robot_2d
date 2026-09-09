@@ -18,6 +18,7 @@ TRANSITION_REWARD_TERM_NAMES_3D = (
     "stabilize_pose",
     "ready",
     "action_rate",
+    "target_rate",
     "action_magnitude",
     "joint_velocity",
     "foot_slip",
@@ -55,6 +56,20 @@ class Transition3DRewardConfig:
     impact_scale_n: float = 80.0
     nonfoot_contact: float = 0.15
     termination: float = 20.0
+    target_rate: float = 0.0
+    target_rate_sigma_rad_s: float = 10.0
+    smooth_stand: bool = False
+
+
+def smooth_stand_reward_config_3d():
+    """Opt-in absolute-policy refinement; preserve the existing action ABI."""
+    return Transition3DRewardConfig(
+        smooth_stand=True, brake_speed=0.0, brake_progress=0.0,
+        brake_capture=0.0, stabilize=4.0, stabilize_pose=0.5,
+        stabilize_speed_sigma=0.15, action_rate=0.10,
+        target_rate=0.10, joint_velocity=0.05, foot_slip=0.40,
+        nonfoot_contact=0.30, impact=0.0,
+    )
 
 
 def reward_terms_roll_to_stand_3d(xp, config, inputs):
@@ -78,6 +93,12 @@ def reward_terms_roll_to_stand_3d(xp, config, inputs):
                  support=config.support * upright * height * foot_support,
                  stabilize=config.stabilize * standing * xp.exp(-xp.square(
                      inputs["combined_speed"] / config.stabilize_speed_sigma)))
+    if config.smooth_stand:
+        # Keep recovery free to rotate; apply holding costs near supported upright poses.
+        hold_gate = upright * height * inputs["support_fraction"]
+        terms["stabilize_pose"] = -config.stabilize_pose * hold_gate * xp.minimum(
+            xp.square(inputs["reference_pose_error_rms"] / config.deploy_pose_sigma_rad), 4.0)
+        terms["nonfoot_contact"] = -config.nonfoot_contact * hold_gate * inputs["nonfoot_contact_count"]
     return terms
 
 
@@ -134,6 +155,8 @@ def reward_terms_transition_3d(
             xp.square(pose_error / config.deploy_pose_sigma_rad), 1.0),
         "ready": config.ready * inputs["newly_ready"],
         "action_rate": -config.action_rate * inputs["action_rate_squared"],
+        "target_rate": -config.target_rate * (
+            inputs.get("target_rate_squared", 0.0) / config.target_rate_sigma_rad_s**2),
         "action_magnitude": (
             -config.action_magnitude * inputs["action_squared"]
         ),

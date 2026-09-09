@@ -22,7 +22,9 @@ from curl_robot_2d_mjx.config_transition_3d import (
     transition_curriculum_config_3d,
     transition_physics_profile_3d,
 )
-from curl_robot_2d_mjx.reward_transition_3d import Transition3DRewardConfig
+from curl_robot_2d_mjx.reward_transition_3d import (
+    Transition3DRewardConfig, smooth_stand_reward_config_3d,
+)
 from curl_robot_2d_mjx.failure_transition_3d import (
     TRANSITION_FAILURE_CAUSE_NAMES_3D,
     transition_failure_breakdown_3d,
@@ -86,6 +88,8 @@ def parse_args(argv=None):
     parser.add_argument("--handcrafted-reference-residual", action="store_true",
                         help="zero action follows the 90-degree fast-deploy reference")
     parser.add_argument("--stand-abduction-zero", action="store_true")
+    parser.add_argument("--reward-profile", choices=("default", "smooth_stand"),
+                        default="default")
     parser.add_argument("--reference-deploy-duration", type=float, default=0.15)
     parser.add_argument("--reference-residual-scale", type=float, default=0.35)
     parser.add_argument("--roll-snapshots", type=Path)
@@ -131,6 +135,10 @@ def parse_args(argv=None):
 
 
 def build_task(args) -> Transition3DConfig:
+    if args.reward_profile == "smooth_stand" and (
+        not args.dynamic_roll_to_stand or args.handcrafted_reference_residual
+    ):
+        raise ValueError("smooth_stand requires absolute dynamic Roll to Stand")
     allowed_training_geometry = (
         ("rollingquad_2_abd10_no_self_collision",)
         if args.handcrafted_reference_residual
@@ -343,6 +351,8 @@ def main(argv=None) -> None:
         reward = replace(reward, brake_speed=0.0, brake_progress=0.0,
                          brake_capture=0.0, stabilize_pose=0.0,
                          nonfoot_contact=0.0, impact=0.0)
+    if args.reward_profile == "smooth_stand":
+        reward = smooth_stand_reward_config_3d()
     preset = PRESETS_TRANSITION_3D[args.preset]
     stage_out = args.out / args.stage
     payload = {
@@ -361,6 +371,7 @@ def main(argv=None) -> None:
         "task": asdict(task),
         "eval_roll_snapshots": str(args.eval_roll_snapshots.resolve()) if args.eval_roll_snapshots else None,
         "reward": asdict(reward),
+        "reward_profile": args.reward_profile,
         "training": {
             **preset,
             "learning_rate": args.learning_rate,
