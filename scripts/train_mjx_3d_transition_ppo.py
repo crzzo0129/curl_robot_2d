@@ -29,7 +29,7 @@ from curl_robot_2d_mjx.reward_transition_3d import (
     smooth_deploy_v3_reward_config_3d,
     guided_absolute_reward_config_3d,
     guided_landing_reward_config_3d,
-    guided_hold_reward_config_3d,
+    guided_hold_reward_config_3d, guided_hold_robust_reward_config_3d,
 )
 from curl_robot_2d_mjx.failure_transition_3d import (
     TRANSITION_FAILURE_CAUSE_NAMES_3D,
@@ -98,13 +98,17 @@ def parse_args(argv=None):
     parser.add_argument("--handcrafted-reference-residual", action="store_true",
                         help="zero action follows the 90-degree fast-deploy reference")
     parser.add_argument("--stand-abduction-zero", action="store_true")
-    parser.add_argument("--reward-profile", choices=("default", "smooth_stand", "smooth_deploy", "smooth_deploy_v3", "guided_absolute", "guided_landing", "guided_hold"),
+    parser.add_argument("--reward-profile", choices=("default", "smooth_stand", "smooth_deploy", "smooth_deploy_v3", "guided_absolute", "guided_landing", "guided_hold", "guided_hold_robust"),
                         default="default")
     parser.add_argument("--reference-deploy-duration", type=float, default=None,
                         help="deployment window in seconds (v3: 0.30; other profiles: 0.15)")
     parser.add_argument("--reference-residual-scale", type=float, default=0.35)
     parser.add_argument("--target-rate-limits", type=float, nargs=3, metavar=("ABD", "HIP", "KNEE"),
                         help="rad/s per joint type; guided_absolute defaults to 6 16 16")
+    parser.add_argument("--robustness", choices=("none", "mild"), default="none",
+                        help="mild: horizontal force pulse plus increased observation noise")
+    parser.add_argument("--eval-perturbations", action="store_true",
+                        help="eval-only stress test with selected robustness and sensor noise")
     parser.add_argument("--roll-snapshots", type=Path)
     parser.add_argument("--eval-roll-snapshots", type=Path,
                         help="held-out reference trajectories, required for dynamic snapshot training")
@@ -148,10 +152,14 @@ def parse_args(argv=None):
 
 
 def build_task(args) -> Transition3DConfig:
-    if args.reward_profile in ("smooth_stand", "smooth_deploy", "smooth_deploy_v3", "guided_absolute", "guided_landing", "guided_hold") and (
+    if args.reward_profile in ("smooth_stand", "smooth_deploy", "smooth_deploy_v3", "guided_absolute", "guided_landing", "guided_hold", "guided_hold_robust") and (
         not args.dynamic_roll_to_stand or args.handcrafted_reference_residual
     ):
         raise ValueError("smoothing profiles require absolute dynamic Roll to Stand")
+    if args.eval_perturbations and (not args.eval_only or args.robustness == "none"):
+        raise ValueError("--eval-perturbations requires --eval-only --robustness mild")
+    if args.robustness != "none" and (not args.dynamic_roll_to_stand or args.handcrafted_reference_residual):
+        raise ValueError("robustness requires absolute dynamic Roll to Stand")
     allowed_training_geometry = (
         ("rollingquad_2_abd10_no_self_collision",)
         if args.handcrafted_reference_residual
@@ -178,10 +186,10 @@ def build_task(args) -> Transition3DConfig:
             stand_abduction_zero=args.stand_abduction_zero,
             reference_deploy_duration_s=(args.reference_deploy_duration
                 if args.reference_deploy_duration is not None else
-                0.30 if args.reward_profile in ("smooth_deploy_v3", "guided_absolute", "guided_landing", "guided_hold") else 0.15),
+                0.30 if args.reward_profile in ("smooth_deploy_v3", "guided_absolute", "guided_landing", "guided_hold", "guided_hold_robust") else 0.15),
             target_rate_limits_rad_s=(tuple(args.target_rate_limits) * 4
                 if args.target_rate_limits is not None else
-                (6.0,) * 12 if args.reward_profile == "guided_hold" else
+                (6.0,) * 12 if args.reward_profile in ("guided_hold", "guided_hold_robust") else
                 (6.0, 16.0, 16.0) * 4 if args.reward_profile in ("guided_absolute", "guided_landing") else ()),
             reference_residual_scale=args.reference_residual_scale,
             physics_timestep=0.001 if args.dynamic_roll_to_stand else Transition3DConfig().physics_timestep,
@@ -196,6 +204,10 @@ def build_task(args) -> Transition3DConfig:
             snapshot_tail_fraction=args.snapshot_tail_fraction,
         )
     )
+    if args.robustness == "mild":
+        task = replace(task, push_acceleration_m_s2=0.4,
+                       observation_noise_velocity=0.075, observation_noise_gravity=0.025,
+                       observation_noise_joint_position=0.012)
     return transition_physics_profile_3d(
         args.physics_profile, apply_cycle_selection_arguments(task, args))
 
@@ -391,6 +403,8 @@ def main(argv=None) -> None:
         reward = guided_landing_reward_config_3d()
     elif args.reward_profile == "guided_hold":
         reward = guided_hold_reward_config_3d()
+    elif args.reward_profile == "guided_hold_robust":
+        reward = guided_hold_robust_reward_config_3d()
     preset = dict(PRESETS_TRANSITION_3D[args.preset])
     if args.preset == "finetune_1m":
         if args.eval_roll_snapshots is None:
@@ -415,6 +429,8 @@ def main(argv=None) -> None:
         "eval_roll_snapshots": str(args.eval_roll_snapshots.resolve()) if args.eval_roll_snapshots else None,
         "reward": asdict(reward),
         "reward_profile": args.reward_profile,
+        "robustness": args.robustness,
+        "eval_perturbations": args.eval_perturbations,
         "evaluation_sampling": "fixed_all_snapshots" if args.preset == "finetune_1m" else "random",
         "training": {
             **preset,
@@ -503,6 +519,12 @@ def main(argv=None) -> None:
             raise SystemExit("Installed Brax must support wrap_env_fn for full Transition resets")
 
     payload["runtime"] = describe_runtime()
+    if args.robustness != "none":
+        print(f"[robustness] {args.robustness} | push <= {task.push_acceleration_m_s2:g}m/s2 "
+              f"for {task.push_duration_s:g}s | probability={task.push_probability:.0%} "
+              f"onset={task.push_start_range_s}s | "
+              f"eval={'perturbed + sensor noise' if args.eval_perturbations else 'clean'}",
+              flush=True)
     stage_out.mkdir(parents=True, exist_ok=True)
     (stage_out / "training_config.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8"
@@ -511,7 +533,8 @@ def main(argv=None) -> None:
         (stage_out / "snapshot_selection.json").write_text(
             json.dumps(payload["snapshot_selection"], indent=2) + "\n", encoding="utf-8")
     eval_env = make_brax_transition_env_3d(
-        replace(task, observation_noise_enabled=False,
+        replace(task, observation_noise_enabled=args.eval_perturbations,
+                push_acceleration_m_s2=task.push_acceleration_m_s2 if args.eval_perturbations else 0.0,
                 roll_snapshots_path=str(args.eval_roll_snapshots.resolve())
                 if args.eval_roll_snapshots else task.roll_snapshots_path),
         reward_config=reward, seed=args.seed + 10_000

@@ -70,6 +70,7 @@ class Transition3DRewardConfig:
     target_acceleration: float = 0.0
     target_acceleration_sigma_rad_s2: float = 500.0
     hold_target_rate: float = 0.0
+    hold_target_acceleration: float = 0.0
     hold_joint_velocity: float = 0.0
     deploy_instability: float = 0.0
     reference_tracking: float = 0.0
@@ -157,6 +158,9 @@ def reward_terms_roll_to_stand_3d(xp, config, inputs):
             inputs.get("target_acceleration_squared", 0.0)
             / config.target_acceleration_sigma_rad_s2**2)
         terms["hold_joint_motion"] = -(1.0 - window) * (
+            config.hold_target_acceleration * inputs.get("target_acceleration_squared", 0.0)
+            / config.target_acceleration_sigma_rad_s2**2
+            +
             config.hold_target_rate * inputs.get("target_rate_squared", 0.0)
             / config.target_rate_sigma_rad_s**2
             + config.hold_joint_velocity * inputs["joint_velocity_squared"]
@@ -194,6 +198,14 @@ def guided_hold_reward_config_3d():
     return replace(guided_absolute_reward_config_3d(),
                    hold_target_rate=0.75, hold_joint_velocity=0.30,
                    hold_body_motion=0.50, hold_foot_slip=0.20)
+
+
+def guided_hold_robust_reward_config_3d():
+    """Stronger post-window damping, retaining all guided_hold deployment costs."""
+    return replace(guided_hold_reward_config_3d(),
+                   hold_target_rate=1.5, hold_joint_velocity=0.60,
+                   hold_target_acceleration=0.60,
+                   hold_body_motion=0.75, hold_foot_slip=0.30)
 
 
 def touchdown_downward_speed_squared(xp, previous_contact, contact,

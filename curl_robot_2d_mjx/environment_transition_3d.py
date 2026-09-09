@@ -712,6 +712,18 @@ def make_brax_transition_env_3d(
             )
 
         def step(self, state, action):
+            pipeline_state = state.pipeline_state
+            if task.push_acceleration_m_s2 > 0:
+                from curl_robot_2d_mjx.transition_robustness_3d import horizontal_push_force
+                # Same episode seed gives a constant pulse schedule, independent
+                # of action/noise RNG. Recompute cheaply to preserve the info ABI.
+                samples = jax.random.uniform(jax.random.fold_in(state.info["rng"], 7123), (4,))
+                force = horizontal_push_force(
+                    jp, samples, state.info["step_count"], task.control_timestep,
+                    jp.sum(self.sys.body_mass), task)
+                pipeline_state = pipeline_state.replace(
+                    xfrc_applied=jp.zeros_like(pipeline_state.xfrc_applied)
+                    .at[self.torso_body_id, :3].set(force))
             mode = state.info["mode"]
             mode_steps = state.info["mode_steps"]
             reference = self._reference(
@@ -733,7 +745,7 @@ def make_brax_transition_env_3d(
                         jp, target, state.pipeline_state.ctrl,
                         task.target_rate_limits_rad_s, task.control_timestep,
                         self.joint_low, self.joint_high)
-                data = state.pipeline_state.replace(ctrl=target)
+                data = pipeline_state.replace(ctrl=target)
 
                 def physics_step(carry, unused):
                     del unused
@@ -765,7 +777,7 @@ def make_brax_transition_env_3d(
 
                 data, _ = jax.lax.scan(
                     physics_step,
-                    state.pipeline_state,
+                    pipeline_state,
                     jp.arange(task.action_repeat),
                 )
             contacts = self._contacts(data)

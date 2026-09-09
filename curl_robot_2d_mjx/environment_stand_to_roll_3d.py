@@ -309,6 +309,9 @@ def make_stand_to_roll_env_3d(
                 "capture_axis_error_rad": zero,
                 "reward_torque_base": zero,
                 "reward_torque_excess": zero,
+                "reward_handoff_y": zero,
+                "reward_handoff_vy": zero,
+                "reward_handoff_axis": zero,
                 "cem_distance": distance,
                 "reset_alpha": alpha,
                 "root_z_m": root_z,
@@ -571,6 +574,16 @@ def make_stand_to_roll_env_3d(
                 * (~state.info["captured"]).astype(jp.float32)
                 * lateral_cost * config.control_timestep)
             sustain_reward = config.reward_sustain * sustain_seconds
+            # Include the capture step; subsequent insurance steps use only
+            # the existing lateral penalty. Scales are independent of failure limits.
+            handoff_dt = (~state.info["captured"]).astype(jp.float32) * config.control_timestep
+            handoff_y_penalty = handoff_dt * config.reward_handoff_y * jp.square(
+                data.qpos[1] / config.handoff_y_scale_m)
+            handoff_vy_penalty = handoff_dt * config.reward_handoff_vy * jp.square(
+                data.qvel[1] / config.handoff_vy_scale_m_s)
+            handoff_axis_penalty = handoff_dt * config.reward_handoff_axis * jp.square(
+                axis_tilt / config.handoff_axis_scale_rad)
+            reward = reward - handoff_y_penalty - handoff_vy_penalty - handoff_axis_penalty
             reward = reward - lateral_penalty + sustain_reward
             reward = (reward + config.reward_insurance_bonus * insurance_success.astype(jp.float32)
                       - config.reward_wait_capture * (~state.info["captured"]).astype(jp.float32)
@@ -624,6 +637,9 @@ def make_stand_to_roll_env_3d(
                 "lateral_cost": lateral_cost,
                 "sustain_seconds": sustain_seconds,
                 "reward_lateral": -lateral_penalty,
+                "reward_handoff_y": -handoff_y_penalty,
+                "reward_handoff_vy": -handoff_vy_penalty,
+                "reward_handoff_axis": -handoff_axis_penalty,
                 "reward_sustain": sustain_reward,
                 "reset_z_correction_m": jp.where(step_count == 1, state.info["reset_z_correction"], 0.0),
                 "reset_floor_gap_m": jp.where(step_count == 1, state.info["reset_floor_gap"], 0.0),

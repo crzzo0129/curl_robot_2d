@@ -83,6 +83,12 @@ class StandToRollConfig:
     # Per-second coefficients; step terms are multiplied by control_timestep.
     reward_lateral: float = 4.0
     reward_lateral_before_capture: float = 0.0  # additional per-second coefficient
+    reward_handoff_y: float = 0.0
+    reward_handoff_vy: float = 0.0
+    reward_handoff_axis: float = 0.0
+    handoff_y_scale_m: float = 0.10
+    handoff_vy_scale_m_s: float = 0.10
+    handoff_axis_scale_rad: float = 0.20
     reward_sustain: float = 1.0
     sustain_forward_speed_min_m_s: float = 0.02
 
@@ -147,6 +153,9 @@ def validate_stand_to_roll_config(config: StandToRollConfig) -> None:
         (config.action_scale_knee_rad, "action_scale_knee_rad"),
         (config.capture_d_threshold, "capture_d_threshold"),
         (config.capture_sustain_s, "capture_sustain_s"),
+        (config.handoff_y_scale_m, "handoff_y_scale_m"),
+        (config.handoff_vy_scale_m_s, "handoff_vy_scale_m_s"),
+        (config.handoff_axis_scale_rad, "handoff_axis_scale_rad"),
         (config.observation_limit, "observation_limit"),
         (config.terminate_root_z_max_m, "terminate_root_z_max_m"),
         (config.terminate_lateral_m, "terminate_lateral_m"),

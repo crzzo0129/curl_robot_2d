@@ -2,6 +2,15 @@
 
 本地未运行测试、仿真或训练。以下全部在云端执行。
 
+当前 --limit-torque 微调还启用 capture 前三项交接软惩罚（包含触发 capture 的那一步）：
+每秒 0.1*(y/0.10m)^2 + 0.1*(vy/0.10m/s)^2 + 0.1*(axis_error/0.20rad)^2。
+尺度只是归一化参考，不是免罚区或硬阈值。轴误差衡量机身 y 轴相对世界 y 轴的
+无向夹角，不是欧拉 yaw。取消旧的额外 capture 前侧移项 1.5*(y/2)^2，
+整回合基础侧移项 0.5*(y/2)^2 保留。日志 Align cost 单独列出三项回合扣分，
+Handoff 仍报告 capture 回合的条件均值。capture 判定和成功率退化停训不变。
+这是新奖励版本：从原成功 checkpoint 重启，使用新目录
+results/stand_to_roll_handoff_guarded_1m；正在运行的训练不会自动加载代码更新。
+
 对同一旧 checkpoint、同一 seed 分别执行基线和限幅评估：
 
 ```bash

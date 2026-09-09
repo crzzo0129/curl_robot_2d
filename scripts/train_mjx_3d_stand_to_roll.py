@@ -111,6 +111,8 @@ def _print_eval(title, metrics, *, training=False):
     print(f"  Reward    total {value('reward')} | lateral {value('reward_lateral')} | "
           f"sustain {value('reward_sustain')}")
     print(f"  Torque    base {value('reward_torque_base')} | excess {value('reward_torque_excess')}")
+    print(f"  Align cost y {value('reward_handoff_y')} | vy {value('reward_handoff_vy')} | "
+          f"axis {value('reward_handoff_axis')}")
     prefix = "eval/episode_" if training else ""
     captured = metrics.get(prefix + "captured", 0.0)
     def at_capture(name):
@@ -672,7 +674,10 @@ def _capture_task(args):
     return replace(stand_to_roll_curriculum_config(args.stage),
                    torque_hard_limit_nm=3.0 if args.limit_torque else 0.0,
                    reward_torque_excess=0.1 if args.limit_torque else 0.0,
-                   reward_lateral_before_capture=1.5 if args.limit_torque else 0.0,
+                   reward_lateral_before_capture=0.0,
+                   reward_handoff_y=0.1 if args.limit_torque else 0.0,
+                   reward_handoff_vy=0.1 if args.limit_torque else 0.0,
+                   reward_handoff_axis=0.1 if args.limit_torque else 0.0,
                    load_diagnostics=args.limit_torque,
                    post_capture_turns=args.insurance_turns,
                    reward_capture_bonus=10.0, reward_roll_progress=0.1,

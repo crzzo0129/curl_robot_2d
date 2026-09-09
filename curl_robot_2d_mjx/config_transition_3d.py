@@ -137,6 +137,11 @@ class Transition3DConfig:
     observation_noise_gravity: float = 0.02
     observation_noise_joint_position: float = 0.01
     observation_limit: float = 100.0
+    # One finite horizontal force pulse per episode; snapshots stay unmodified.
+    push_acceleration_m_s2: float = 0.0
+    push_probability: float = 0.8
+    push_start_range_s: tuple[float, float] = (0.8, 2.4)
+    push_duration_s: float = 0.12
 
     @property
     def control_timestep(self) -> float:
@@ -299,6 +304,14 @@ def transition_physics_profile_3d(
 
 
 def validate_transition_config_3d(config: Transition3DConfig) -> None:
+    if (not math.isfinite(config.push_acceleration_m_s2)
+            or config.push_acceleration_m_s2 < 0
+            or not 0 <= config.push_probability <= 1
+            or not math.isfinite(config.push_duration_s) or config.push_duration_s <= 0
+            or len(config.push_start_range_s) != 2
+            or any(not math.isfinite(v) for v in config.push_start_range_s)
+            or not 0 <= config.push_start_range_s[0] <= config.push_start_range_s[1]):
+        raise ValueError("invalid transition push configuration")
     if config.target_rate_limits_rad_s:
         if (len(config.target_rate_limits_rad_s) != 12 or
                 any(not math.isfinite(v) or v <= 0 for v in config.target_rate_limits_rad_s)):
