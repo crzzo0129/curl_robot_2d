@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from dataclasses import asdict
 import hashlib
 import json
@@ -29,7 +30,8 @@ from scripts.view_3d_cem_reference import _target_for_phase
 GEOMETRY = "rollingquad_2_abd10_no_self_collision"
 
 
-def _collect_handoff(model, reference, *, minimum_turns, target_pitch_deg=90.0, max_time_s=30.0):
+def _collect_handoff(model, reference, *, minimum_turns, target_pitch_deg=90.0,
+                     max_time_s=30.0, replay_until_s=None, preroll_s=0.0):
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, model.key("compact").id)
     joint_ids = np.asarray([model.joint(name).id for name in JOINT_NAMES_3D])
@@ -49,7 +51,10 @@ def _collect_handoff(model, reference, *, minimum_turns, target_pitch_deg=90.0, 
     phase = 0.0
     rolled = 0.0
     previous_in_window = False
+    history = deque(maxlen=max(1, int(round(preroll_s / dt)) + 1))
     while data.time < max_time_s:
+        if preroll_s > 0:
+            history.append((data.qpos.copy(), data.qvel.copy(), data.ctrl.copy()))
         # mj_step's xmat can lag the integrated qpos by one physics step.
         # The free torso quaternion is the state that will actually be restored.
         rotation_flat = np.empty(9)
@@ -61,8 +66,11 @@ def _collect_handoff(model, reference, *, minimum_turns, target_pitch_deg=90.0, 
         in_window = near_target(
             pitch, pitch_rate, gate_target, math.radians(15.0)
         )
-        if abs(rolled) >= minimum_turns * 2.0 * math.pi and in_window and not previous_in_window:
+        reached = (data.time >= replay_until_s - dt * .25 if replay_until_s is not None else
+                   abs(rolled) >= minimum_turns * 2.0 * math.pi and in_window and not previous_in_window)
+        if reached:
             return {
+                "history": list(history),
                 "qpos": data.qpos.copy(), "qvel": data.qvel.copy(),
                 "ctrl": data.ctrl.copy(), "time_s": float(data.time),
                 "pitch_deg": math.degrees(pitch),

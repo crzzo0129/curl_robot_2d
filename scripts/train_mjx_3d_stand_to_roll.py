@@ -89,6 +89,37 @@ PRESETS = {
 }
 
 
+def _print_eval(title, metrics, *, training=False):
+    """Compact, log-file-friendly output; full metrics remain in JSON."""
+    def value(name, fmt=".3f", suffix=""):
+        key = f"eval/episode_{name}" if training else name
+        number = metrics.get(key)
+        return "--" if number is None else f"{number:{fmt}}{suffix}"
+
+    length = metrics.get("eval/avg_episode_length" if training else "avg_episode_length")
+    length_text = "--" if length is None else f"{length:.1f} steps"
+    print("\n" + "-" * 68)
+    print(title)
+    print(f"  Sustained {value('sustained_success', '.1%'):>7}   "
+          f"Capture {value('captured', '.1%'):>7}   Failed {value('failed', '.1%'):>7}")
+    print(f"  Roll      {value('roll_progress'):>7} rad   "
+          f"Sustain {value('sustain_seconds', '.2f'):>7} s   Episode {length_text}")
+    print(f"  Failures  lateral {value('failure_lateral', '.1%')} | "
+          f"tilt {value('failure_axis_tilt', '.1%')} | height {value('failure_height', '.1%')}")
+    print(f"            nonfinite {value('failure_nonfinite', '.1%')} | "
+          f"contact {value('forbidden_contact', '.3f')} (episode sum)")
+    print(f"  Reward    total {value('reward')} | lateral {value('reward_lateral')} | "
+          f"sustain {value('reward_sustain')}")
+    if training:
+        def stat(key, fmt):
+            number = metrics.get(key)
+            return "--" if number is None else format(number, fmt)
+        print(f"  PPO       KL {stat('training/kl_mean', '.4f')} | "
+              f"LR {stat('training/learning_rate', '.1e')} | "
+              f"train SPS {stat('training/sps', ',.0f')}")
+    print("-" * 68, flush=True)
+
+
 def parse_args(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--stage", choices=("bc",) + STAND_TO_ROLL_CURRICULUM_STAGES,
@@ -308,7 +339,10 @@ def _train_bc(args, stage_out):
                 "max_abs_error": float(diagnostics[1]),
             }
             history.append(row)
-            print(f"[BC] {row}", flush=True)
+            if step == 0:
+                print("\n  BC update       Loss          RMSE       Max error", flush=True)
+            print(f"  {step + 1:>6,}/{args.bc_steps:<6,}  {row['loss']:>11.5g}  "
+                  f"{row['rmse']:>11.5f}  {row['max_abs_error']:>11.5f}", flush=True)
 
     checkpoint = (
         {name: np.asarray(value) for name, value in normalizer.items()},
@@ -484,15 +518,13 @@ def _train_ppo(args, stage_out):
             (stage_out / "training_aborted.json").write_text(
                 json.dumps({"reason": "nonfinite metrics or excessive KL", "metrics": row}, indent=2)
                 + "\n", encoding="utf-8")
+            _print_eval(f"PPO {args.stage} | ABORTED at {int(step):,} steps", row, training=True)
             raise RuntimeError(f"PPO instability at step {step}: KL={kl}; see training_aborted.json")
-        print(
-            f"[PPO {args.stage}] step={step} "
-            f"capture={row.get('eval/episode_captured', 0.0):.3f} "
-            f"roll={row.get('eval/episode_roll_progress', 0.0):.3f} "
-            f"failed={row.get('eval/episode_failed', 0.0):.3f} "
-            f"sustained={row.get('eval/episode_sustained_success', 0.0):.3f} KL={kl:.4g}",
-            flush=True,
-        )
+        percent = min(100.0, 100.0 * int(step) / preset["steps"])
+        elapsed = time.perf_counter() - started
+        _print_eval(
+            f"PPO {args.stage} | {int(step):,}/{preset['steps']:,} ({percent:.1f}%)"
+            f" | {elapsed / 60:.1f} min", row, training=True)
 
     train_parameters = inspect.signature(ppo.train).parameters
     kwargs = {}
@@ -602,8 +634,37 @@ def main(argv=None):
     (stage_out / "training_config.json").write_text(
         json.dumps(payload, indent=2) + "\n", encoding="utf-8"
     )
+    mode = "BC evaluation" if args.eval_only else ("BC training" if args.stage == "bc" else "PPO training")
+    print("\n" + "=" * 68)
+    print(f"{mode} | {args.stage}")
+    if args.stage != "bc":
+        p = payload["preset"]
+        print(f"  Budget    {p['steps']:,} steps | envs {p['envs']} | eval envs {p['eval_envs']}")
+        print(f"  Reset     alpha [{task.reset_alpha_min:.2f}, {task.reset_alpha_max:.2f}]"
+              f" | snapshots {task.snapshot_reset_probability:.0%}")
+        print(f"  Noise     velocity +/-{task.reset_velocity_noise_rad_s:g}"
+              f" | observation {'on' if task.observation_noise_enabled else 'off'}")
+    print(f"  Output    {stage_out}")
+    print("=" * 68, flush=True)
     result = _train_bc(args, stage_out) if args.stage == "bc" else _train_ppo(args, stage_out)
-    print(json.dumps(result, indent=2), flush=True)
+    if args.stage == "bc":
+        print(f"\nBC complete | samples {result['samples']:,}")
+        print(f"  Validation RMSE: {result['validation_rmse']:.5f}")
+        if result.get("startup_validation_rmse") is not None:
+            print(f"  Startup validation RMSE: {result['startup_validation_rmse']:.5f}")
+        report_name = "bc_summary.json"
+    elif args.eval_only:
+        _print_eval(f"BC evaluation complete | {args.stage}", result)
+        print(f"  BC/PPO action mismatch: {result['bc_ppo_max_action_error']:.3g}")
+        report_name = "bc_closed_loop_eval.json"
+    else:
+        status = "PASS" if result["stage_passed"] else "NOT PASSED"
+        print(f"\nStage {args.stage}: {status} | elapsed {result['elapsed_s'] / 60:.1f} min")
+        print("  Required: sustained >=80%, capture >=80%, failed <=20%")
+        if result["stage_passed"] and result["next_stage"]:
+            print(f"  Next stage: {result['next_stage']}")
+        report_name = "summary.json"
+    print(f"  Full report: {stage_out / report_name}", flush=True)
     return result
 
 

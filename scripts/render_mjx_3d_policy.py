@@ -234,6 +234,14 @@ def render_rollout(
             )
             frame = Image.fromarray(renderer.render())
             draw = ImageDraw.Draw(frame)
+            if "handoff_index" in rollout:
+                handoff = int(rollout["handoff_index"])
+                phase_label = "CEM ROLL" if index < handoff else "RL TRANSITION / STAND"
+                relative_time = (index - handoff) * control_dt
+                draw.rectangle((12, height-40, width-12, height-10), fill=(18, 22, 30))
+                draw.text((22, height-32),
+                          f"{phase_label} | handoff t={relative_time:+.2f}s",
+                          fill=(244, 247, 251))
             x_displacement = float(qpos[index, 0] - initial_x)
             lateral = float(lateral_series[index])
             max_abs_lateral = float(
