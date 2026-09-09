@@ -112,6 +112,8 @@ def parse_args(argv=None):
         help="params_final/params_best file for --eval-only (alternative to an Orbax checkpoint)",
     )
     parser.add_argument("--eval-envs", type=int, default=256)
+    parser.add_argument("--save-rollouts", action="store_true",
+                        help="save each eval-only episode as a renderable rollout NPZ")
     parser.add_argument("--eval-seed", type=int, default=None)
     parser.add_argument("--seed", type=int, default=31)
     parser.add_argument("--learning-rate", type=float, default=2.0e-4)
@@ -203,7 +205,7 @@ def make_transition_networks(observation_size, action_size,
     return replace(nets, policy_network=replace(nets.policy_network, init=init))
 
 
-def evaluate_transition_policy(env, policy, *, count, seed):
+def evaluate_transition_policy(env, policy, *, count, seed, rollout_dir=None):
     """Evaluate frozen weights in independent raw-environment episodes.
 
     This deliberately bypasses PPO training and its auto-reset wrapper.  Every
@@ -214,6 +216,11 @@ def evaluate_transition_policy(env, policy, *, count, seed):
 
     keys = jax.random.split(jax.random.PRNGKey(seed), count)
     state = jax.jit(jax.vmap(env.reset))(keys)
+    recorded = []
+    if rollout_dir is not None:
+        recorded.append(jax.device_get((state.pipeline_state.qpos,
+                                       state.pipeline_state.qvel,
+                                       state.pipeline_state.ctrl)))
 
     def one_step(single_state, key):
         action = policy(single_state.obs, key)[0]
@@ -229,6 +236,10 @@ def evaluate_transition_policy(env, policy, *, count, seed):
             jax.random.fold_in(jax.random.PRNGKey(seed + 1), step_index), count
         )
         next_state = batched_step(state, step_keys)
+        if rollout_dir is not None:
+            recorded.append(jax.device_get((next_state.pipeline_state.qpos,
+                                           next_state.pipeline_state.qvel,
+                                           next_state.pipeline_state.ctrl)))
         metrics = jax.device_get(next_state.metrics)
         for name in totals:
             values = np.asarray(metrics[name], dtype=np.float64)
@@ -278,11 +289,27 @@ def evaluate_transition_policy(env, policy, *, count, seed):
         "policy_updates": 0,
     }
     arrays = {**totals, "terminal_step": terminal_step}
+    if rollout_dir is not None:
+        rollout_dir = Path(rollout_dir)
+        rollout_dir.mkdir(parents=True, exist_ok=True)
+        trajectories = [np.stack([frame[i] for frame in recorded]) for i in range(3)]
+        for lane in range(count):
+            end = int(terminal_step[lane]) + 1 if terminal_step[lane] else len(recorded)
+            np.savez_compressed(
+                rollout_dir / f"episode_{lane:03d}.npz",
+                **{name: values[:end, lane] for name, values in
+                   zip(("qpos", "qvel", "ctrl"), trajectories)},
+                control_dt=env.config.control_timestep,
+                success=success[lane], failed=failed[lane], timeout=timeout[lane],
+            )
+        report["rollout_directory"] = str(rollout_dir)
     return report, arrays
 
 
 def main(argv=None) -> None:
     args = parse_args(argv)
+    if args.save_rollouts and not args.eval_only:
+        raise SystemExit("--save-rollouts requires --eval-only")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         raise SystemExit("--learning-rate must be positive")
     if not math.isfinite(args.entropy_cost) or args.entropy_cost < 0:
@@ -462,7 +489,8 @@ def main(argv=None) -> None:
         eval_seed = args.eval_seed if args.eval_seed is not None else args.seed + 20_000
         started = time.perf_counter()
         report, arrays = evaluate_transition_policy(
-            eval_env, policy, count=args.eval_envs, seed=eval_seed
+            eval_env, policy, count=args.eval_envs, seed=eval_seed,
+            rollout_dir=stage_out / "rollouts" if args.save_rollouts else None,
         )
         report.update(
             stage=args.stage,
