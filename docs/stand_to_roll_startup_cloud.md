@@ -63,4 +63,18 @@ capture_time_s 与 avg_episode_length。以持续成功率 >=80%、失败率 <=2
 
 同时用 --stage rolling_orbit --eval-only（不带 --static-eval）检查持续滚动
 是否遗忘。失败就保留旧 DAgger 参数，不直接启动大规模 PPO。
-当前 PPO 仍有原来的阶段恢复约束；本次不改变该流程或启动自动晋级。
+## 4. 验收后直接开始静止姿态课程
+
+```bash
+python -m scripts.train_mjx_3d_stand_to_roll \
+  --stage slightly_open --static-curriculum --preset smoke \
+  --bc-params results/stand_to_roll_startup/bc/bc_params \
+  --learning-rate 5e-6 --max-kl 0.2 \
+  --out results/stand_to_roll_static_ppo
+```
+
+--static-curriculum 允许 slightly_open 直接从 BC 初始化，不需要 compact
+PPO checkpoint。训练和评估均为零初速度、无快照、无观测噪声；保留原有
+关节位置小扰动及姿态 alpha 范围。后续 crouch、semi_stand、full_stand
+仍恢复前一姿态阶段的具体 checkpoint，继续传同一个 BC 文件和
+--static-curriculum。不要恢复补学启动之前的 PPO checkpoint。

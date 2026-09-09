@@ -99,6 +99,8 @@ def parse_args(argv=None):
                         help="Pre-action startup BC dataset; never used as matcher data")
     parser.add_argument("--static-eval", action="store_true",
                         help="BC-only evaluation with exactly zero reset velocity and 0 snapshot probability")
+    parser.add_argument("--static-curriculum", action="store_true",
+                        help="Start slightly_open from BC, then restore subsequent posture stages; zero reset velocity, no snapshots or observation noise")
     parser.add_argument("--bc-params", type=Path)
     parser.add_argument("--restore-checkpoint", type=Path)
     parser.add_argument("--preset", choices=tuple(PRESETS), default="smoke")
@@ -122,6 +124,9 @@ def parse_args(argv=None):
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.static_curriculum and args.stage not in (
+            "slightly_open", "crouch", "semi_stand", "full_stand"):
+        parser.error("--static-curriculum applies to slightly_open through full_stand")
     if args.startup_data is not None and (args.stage != "bc" or not args.startup_data.is_file()):
         parser.error("--startup-data requires --stage bc and an existing dataset")
     if args.static_eval and (not args.eval_only or args.stage != "compact"):
@@ -132,7 +137,8 @@ def parse_args(argv=None):
         parser.error("PPO stages require --bc-params for the fixed normalizer")
     if args.eval_only and (args.stage == "bc" or args.restore_checkpoint is not None):
         parser.error("--eval-only evaluates BC at a PPO stage without --restore-checkpoint")
-    if args.stage not in ("bc", "rolling_orbit") and args.restore_checkpoint is None and not args.eval_only:
+    direct_start = args.static_curriculum and args.stage == "slightly_open"
+    if args.stage not in ("bc", "rolling_orbit") and args.restore_checkpoint is None and not args.eval_only and not direct_start:
         parser.error("stages after rolling_orbit must restore the preceding PPO checkpoint")
     if args.stage == "rolling_orbit" and args.restore_checkpoint is not None:
         parser.error("rolling_orbit starts from BC; do not pass --restore-checkpoint")
@@ -371,6 +377,9 @@ def _train_ppo(args, stage_out):
     task = stand_to_roll_curriculum_config(args.stage)
     if args.static_eval:
         task = replace(task, reset_velocity_noise_rad_s=0.0, snapshot_reset_probability=0.0)
+    if args.static_curriculum:
+        task = replace(task, reset_velocity_noise_rad_s=0.0,
+                       snapshot_reset_probability=0.0, observation_noise_enabled=False)
     train_env = make_stand_to_roll_env_3d(task, matcher_npz=args.cem_data, seed=args.seed)
     eval_env = make_stand_to_roll_env_3d(
         StandToRollConfig(**{**asdict(task), "observation_noise_enabled": False}),
@@ -553,6 +562,9 @@ def main(argv=None):
     task = None if args.stage == "bc" else stand_to_roll_curriculum_config(args.stage)
     if args.static_eval:
         task = replace(task, reset_velocity_noise_rad_s=0.0, snapshot_reset_probability=0.0)
+    if args.static_curriculum:
+        task = replace(task, reset_velocity_noise_rad_s=0.0,
+                       snapshot_reset_probability=0.0, observation_noise_enabled=False)
     payload = {
         "pipeline": "one_policy_bc_then_snapshot_reset_curriculum_v2",
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
