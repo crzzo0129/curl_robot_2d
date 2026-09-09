@@ -66,7 +66,7 @@ class StandToRollConfig:
     reward_insurance_bonus: float = 2.0
     reward_wait_capture: float = 0.0
     torque_hard_limit_nm: float = 0.0  # opt-in; zero preserves old checkpoints
-    torque_soft_limit_nm: float = 3.0
+    torque_soft_limit_nm: float = 2.0
     reward_torque_excess: float = 0.0  # per second, sum over joints
     load_diagnostics: bool = False
 

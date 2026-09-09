@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--load-eval", action="store_true", help="Evaluate loads without video or parameter updates")
     parser.add_argument("--episodes", type=int, default=32)
-    parser.add_argument("--limit-torque", action="store_true", help="Override checkpoint task with a 5 Nm cap and 3 Nm penalty")
+    parser.add_argument("--limit-torque", action="store_true", help="Override checkpoint task with a 3 Nm cap and 2 Nm penalty")
     parser.add_argument("--mujoco-gl", default="egl", choices=("egl", "osmesa", "glfw"))
     args = parser.parse_args()
     if args.episodes < 1:
@@ -60,7 +60,7 @@ def main():
     policy = jax.jit(ppo_networks.make_inference_fn(networks)(params, deterministic=True))
     task = replace(StandToRollConfig(**config["task"]), observation_noise_enabled=False)
     if args.limit_torque:
-        task = replace(task, torque_hard_limit_nm=5.0, torque_soft_limit_nm=3.0,
+        task = replace(task, torque_hard_limit_nm=3.0, torque_soft_limit_nm=2.0,
                        reward_torque_excess=1.0)
     if args.load_eval or args.limit_torque:
         task = replace(task, load_diagnostics=True)
@@ -90,8 +90,8 @@ def main():
             joints[name] = {
                 "peak_nm": float(values[f"torque_{i}_peak_nm"].max()),
                 "rms_nm": float(np.sqrt(values[f"torque_{i}_square_integral"].sum() / duration)),
-                "over_3nm_fraction": float(values[f"torque_{i}_over3_s"].sum() / duration),
-                "at_5nm_fraction": float(values[f"torque_{i}_at5_s"].sum() / duration),
+                "over_2nm_fraction": float(values[f"torque_{i}_over2_s"].sum() / duration),
+                "at_3nm_fraction": float(values[f"torque_{i}_at3_s"].sum() / duration),
             }
         report = {
             "checkpoint": str(checkpoint), "seed": args.seed, "episodes": args.episodes,
@@ -109,10 +109,10 @@ def main():
         (args.out / "load_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Capture {report['capture_rate']:.1%} | Insurance {report['insurance_rate']:.1%} "
               f"| Failed {report['failure_rate']:.1%}")
-        print(f"{'Joint':28s} {'Peak Nm':>8s} {'RMS Nm':>8s} {'>3 Nm':>8s} {'>=4.99':>8s}")
+        print(f"{'Joint':28s} {'Peak Nm':>8s} {'RMS Nm':>8s} {'>2 Nm':>8s} {'>=2.99':>8s}")
         for name, row in joints.items():
             print(f"{name:28s} {row['peak_nm']:8.3f} {row['rms_nm']:8.3f} "
-                  f"{row['over_3nm_fraction']:8.1%} {row['at_5nm_fraction']:8.1%}")
+                  f"{row['over_2nm_fraction']:8.1%} {row['at_3nm_fraction']:8.1%}")
         print(f"Ground peak: single contact {report['single_contact_peak_n']:.1f} N | "
               f"total {report['total_ground_normal_peak_n']:.1f} N")
         print(f"Report: {args.out / 'load_report.json'}", flush=True)
