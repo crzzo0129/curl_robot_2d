@@ -95,6 +95,10 @@ def parse_args(argv=None):
                         required=True)
     parser.add_argument("--out", type=Path, default=Path("results/mjx_3d_stand_to_roll"))
     parser.add_argument("--cem-data", type=Path, default=DEFAULT_CEM_DATA)
+    parser.add_argument("--startup-data", type=Path,
+                        help="Pre-action startup BC dataset; never used as matcher data")
+    parser.add_argument("--static-eval", action="store_true",
+                        help="BC-only evaluation with exactly zero reset velocity and 0 snapshot probability")
     parser.add_argument("--bc-params", type=Path)
     parser.add_argument("--restore-checkpoint", type=Path)
     parser.add_argument("--preset", choices=tuple(PRESETS), default="smoke")
@@ -118,6 +122,10 @@ def parse_args(argv=None):
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.startup_data is not None and (args.stage != "bc" or not args.startup_data.is_file()):
+        parser.error("--startup-data requires --stage bc and an existing dataset")
+    if args.static_eval and (not args.eval_only or args.stage != "compact"):
+        parser.error("--static-eval requires --stage compact --eval-only")
     if not args.cem_data.is_file() and not args.dry_run:
         parser.error(f"CEM data does not exist: {args.cem_data}")
     if args.stage != "bc" and args.bc_params is None and not args.dry_run:
@@ -181,6 +189,48 @@ def _train_bc(args, stage_out):
     if split < 1 or validation_start >= len(observations):
         raise ValueError("CEM dataset too short for a temporal holdout with a 20-frame gap")
     normalizer = observation_normalizer(observations[:split])
+    train_ids = np.arange(split)
+    validation_ids = np.arange(validation_start, len(observations))
+    startup_ids = None
+    startup_validation_ids = np.asarray([], dtype=int)
+    if args.startup_data is not None:
+        with np.load(args.startup_data) as bank:
+            if int(bank["schema_version"]) != 1:
+                raise ValueError("Unsupported startup dataset schema")
+            startup_obs = np.asarray(bank["observations"], dtype=np.float32)
+            startup_actions = np.asarray(bank["actions"], dtype=np.float32)
+            episodes = np.asarray(bank["episode_id"])
+            startup_mask = np.asarray(bank["startup"], dtype=bool)
+            if (not np.allclose(bank["action_center"], center)
+                    or not np.allclose(bank["action_scale"], scale)):
+                raise ValueError("Startup action mapping differs from actor")
+        n = len(startup_obs)
+        if (startup_obs.shape != (n, 720) or startup_actions.shape != (n, 12)
+                or episodes.shape != (n,) or startup_mask.shape != (n,)
+                or not np.isfinite(startup_obs).all() or not np.isfinite(startup_actions).all()
+                or np.max(np.abs(startup_actions)) > 1.0):
+            raise ValueError("Invalid startup observation/action arrays")
+        unique = np.unique(episodes)
+        if len(unique) < 5:
+            raise ValueError("At least five successful startup episodes required")
+        train_episodes = unique[:max(1, int(len(unique) * 0.8))]
+        training = np.isin(episodes, train_episodes)
+        offset = len(observations)
+        startup_ids = offset + np.flatnonzero(training & startup_mask)
+        steady_ids = offset + np.flatnonzero(training & ~startup_mask)
+        startup_validation_ids = offset + np.flatnonzero(~training & startup_mask)
+        if not len(startup_ids) or not len(startup_validation_ids):
+            raise ValueError("Startup windows missing in train/held-out episodes")
+        train_ids = np.concatenate((train_ids, steady_ids))
+        validation_ids = np.concatenate((validation_ids, offset + np.flatnonzero(~training)))
+        observations = np.concatenate((observations, startup_obs))
+        targets = np.concatenate((targets, startup_actions))
+        normalizer = observation_normalizer(observations[np.concatenate((train_ids, startup_ids))])
+    initial_params = None
+    if args.bc_params is not None:
+        normalizer, initial_params = model_io.load_params(args.bc_params)
+        if int(normalizer.get("contract_version", 0)) != BC_CONTRACT_VERSION:
+            raise ValueError("BC fine-tuning requires v2 parameters")
     normalized = preprocess_observation(np, observations, normalizer)
 
     class BCPolicy(linen.Module):
@@ -198,6 +248,13 @@ def _train_bc(args, stage_out):
     rng = jax.random.PRNGKey(args.seed)
     rng, init_key = jax.random.split(rng)
     params = policy.init(init_key, jp.zeros((1, 720), dtype=jp.float32))
+    if initial_params is not None:
+        if jax.tree_util.tree_structure(params) != jax.tree_util.tree_structure(initial_params):
+            raise ValueError("BC fine-tuning network structure mismatch")
+        if any(a.shape != np.shape(b) for a, b in zip(
+                jax.tree_util.tree_leaves(params), jax.tree_util.tree_leaves(initial_params))):
+            raise ValueError("BC fine-tuning network widths mismatch")
+        params = jax.tree_util.tree_map(jp.asarray, initial_params)
     optimizer = optax.adam(args.bc_learning_rate)
     optimizer_state = optimizer.init(params)
 
@@ -218,9 +275,16 @@ def _train_bc(args, stage_out):
     history = []
     for step in range(args.bc_steps):
         rng, batch_key = jax.random.split(rng)
-        indices = jax.random.randint(
-            batch_key, (args.bc_batch_size,), 0, split
-        )
+        if startup_ids is None:
+            indices = jp.asarray(train_ids)[jax.random.randint(
+                batch_key, (args.bc_batch_size,), 0, len(train_ids))]
+        else:
+            startup_key, steady_key = jax.random.split(batch_key)
+            count = max(1, args.bc_batch_size // 2)
+            indices = jp.concatenate((
+                jp.asarray(startup_ids)[jax.random.randint(startup_key, (count,), 0, len(startup_ids))],
+                jp.asarray(train_ids)[jax.random.randint(steady_key, (args.bc_batch_size - count,), 0, len(train_ids))],
+            ))
         params, optimizer_state, loss, diagnostics = update(
             params,
             optimizer_state,
@@ -244,11 +308,17 @@ def _train_bc(args, stage_out):
     model_io.save_params(stage_out / "bc_params", checkpoint)
     report = {
         "contract_version": BC_CONTRACT_VERSION,
-        "training_samples": split,
-        "validation_samples": len(observations) - validation_start,
+        "training_samples": len(train_ids) + (len(startup_ids) if startup_ids is not None else 0),
+        "startup_training_samples": len(startup_ids) if startup_ids is not None else 0,
+        "startup_data": str(args.startup_data) if args.startup_data else None,
+        "initialized_from": str(args.bc_params) if args.bc_params else None,
+        "validation_samples": len(validation_ids),
+        "startup_validation_rmse": (float(jp.sqrt(jp.mean(jp.square(
+            policy.apply(params, jp.asarray(normalized[startup_validation_ids]))
+            - jp.asarray(targets[startup_validation_ids]))))) if len(startup_validation_ids) else None),
         "validation_rmse": float(jp.sqrt(jp.mean(jp.square(
-            policy.apply(params, jp.asarray(normalized[validation_start:]))
-            - jp.asarray(targets[validation_start:]))))),
+            policy.apply(params, jp.asarray(normalized[validation_ids]))
+            - jp.asarray(targets[validation_ids]))))),
         "samples": int(observations.shape[0]),
         "observation_size": int(observations.shape[1]),
         "action_size": int(targets.shape[1]),
@@ -299,6 +369,8 @@ def _train_ppo(args, stage_out):
         raise ValueError("BC normalizer must contain positive 720-value mean/std")
     bc_params = jax.tree_util.tree_map(jp.asarray, bc_params)
     task = stand_to_roll_curriculum_config(args.stage)
+    if args.static_eval:
+        task = replace(task, reset_velocity_noise_rad_s=0.0, snapshot_reset_probability=0.0)
     train_env = make_stand_to_roll_env_3d(task, matcher_npz=args.cem_data, seed=args.seed)
     eval_env = make_stand_to_roll_env_3d(
         StandToRollConfig(**{**asdict(task), "observation_noise_enabled": False}),
@@ -376,6 +448,8 @@ def _train_ppo(args, stage_out):
         result = {name: float(jp.mean(value)) for name, value in totals.items()}
         result["avg_episode_length"] = float(jp.mean(lengths))
         result["bc_ppo_max_action_error"] = error
+        result["reset_velocity_noise_rad_s"] = task.reset_velocity_noise_rad_s
+        result["snapshot_reset_probability"] = task.snapshot_reset_probability
         (stage_out / "bc_closed_loop_eval.json").write_text(
             json.dumps(result, indent=2) + "\n", encoding="utf-8")
         return result
@@ -477,6 +551,8 @@ def _train_ppo(args, stage_out):
 def main(argv=None):
     args = parse_args(argv)
     task = None if args.stage == "bc" else stand_to_roll_curriculum_config(args.stage)
+    if args.static_eval:
+        task = replace(task, reset_velocity_noise_rad_s=0.0, snapshot_reset_probability=0.0)
     payload = {
         "pipeline": "one_policy_bc_then_snapshot_reset_curriculum_v2",
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
