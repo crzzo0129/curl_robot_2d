@@ -39,6 +39,7 @@ from curl_robot_2d_mjx.reward_transition_3d import (
     reward_terms_roll_to_stand_3d,
     deploy_window_fraction_3d,
 )
+from curl_robot_2d_mjx.transition_control_3d import interpolated_stand_target, limit_transition_target
 from curl_robot_2d_mjx.transition_initialization_3d import (
     walking_start_state_3d,
     load_roll_snapshots_3d,
@@ -711,6 +712,11 @@ def make_brax_transition_env_3d(
                     jp, policy_action, reference, self.joint_low, self.joint_high,
                     task.action_range_fraction,
                 )
+                if task.target_rate_limits_rad_s:
+                    target = limit_transition_target(
+                        jp, target, state.pipeline_state.ctrl,
+                        task.target_rate_limits_rad_s, task.control_timestep,
+                        self.joint_low, self.joint_high)
                 data = state.pipeline_state.replace(ctrl=target)
 
                 def physics_step(carry, unused):
@@ -888,6 +894,11 @@ def make_brax_transition_env_3d(
                 mode == int(TransitionMode3D.STABILIZE)
             ).astype(jp.float32)
             reward_inputs = {
+                "executed_reference_error_squared": jp.mean(jp.square(
+                    data.ctrl - interpolated_stand_target(
+                        jp, state.info["handoff_ctrl"], self.stand_ctrl,
+                        state.info["step_count"] * task.control_timestep,
+                        task.reference_deploy_duration_s))),
                 "deploy_window_fraction": deploy_window_fraction_3d(
                     jp, state.info["step_count"], task.control_timestep,
                     task.reference_deploy_duration_s),

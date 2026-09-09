@@ -4,7 +4,7 @@ import math
 
 
 REWARD_GROUPS = (
-    ("pose/support", ("deploy_pose", "deploy_progress", "upright", "height", "support")),
+    ("pose/support", ("reference_tracking", "deploy_pose", "deploy_progress", "upright", "height", "support")),
     ("stand", ("stabilize", "stabilize_pose", "ready", "hold_joint_motion", "deploy_instability")),
     ("smooth", ("action_rate", "target_rate", "target_acceleration", "action_magnitude", "joint_velocity", "foot_slip")),
     ("contact/end", ("impact", "nonfoot_contact", "termination")),

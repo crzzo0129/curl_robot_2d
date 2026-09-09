@@ -70,6 +70,11 @@ def transition_controller_metadata_3d(model, config):
         "transition_cmd_vel": [0.0, 0.0, 0.0],
         "desired_world_z": [0.0, 0.0, 1.0],
         "live_takeover_requires_hot_switch": True,
+        "target_rate_limits_rad_s": list(config.target_rate_limits_rad_s),
+        "target_rate_limit_timestep_s": config.control_timestep,
+        "target_rate_limit_initialization": "last_executed_roll_ctrl",
+        "target_rate_limit_order": "joint_limits_then_rate_limit_once_per_policy_tick",
+        "requires_target_rate_limiter": bool(config.target_rate_limits_rad_s),
         "action_semantics": ("residual_over_150ms_linear_reference"
                              if config.handcrafted_reference_residual else "absolute_about_default"),
     }

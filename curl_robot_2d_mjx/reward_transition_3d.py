@@ -19,6 +19,7 @@ TRANSITION_REWARD_TERM_NAMES_3D = (
     "ready",
     "action_rate",
     "target_rate",
+    "reference_tracking",
     "target_acceleration",
     "hold_joint_motion",
     "deploy_instability",
@@ -68,6 +69,8 @@ class Transition3DRewardConfig:
     hold_target_rate: float = 0.0
     hold_joint_velocity: float = 0.0
     deploy_instability: float = 0.0
+    reference_tracking: float = 0.0
+    reference_tracking_sigma_rad: float = 0.30
 
 
 def smooth_stand_reward_config_3d():
@@ -153,7 +156,13 @@ def reward_terms_roll_to_stand_3d(xp, config, inputs):
         # Near upright, suppress residual body motion; preserve initial rolling momentum.
         terms["deploy_instability"] = -config.deploy_instability * window * upright * (
             1.0 - xp.exp(-xp.square(inputs["combined_speed"] / config.stabilize_speed_sigma)))
+    terms["reference_tracking"] = -config.reference_tracking * (
+        inputs.get("executed_reference_error_squared", 0.0) / config.reference_tracking_sigma_rad**2)
     return terms
+
+
+def guided_absolute_reward_config_3d():
+    return replace(smooth_deploy_v3_reward_config_3d(), reference_tracking=2.0)
 
 
 def reward_terms_transition_3d(
@@ -212,6 +221,7 @@ def reward_terms_transition_3d(
         "target_rate": -config.target_rate * (
             inputs.get("target_rate_squared", 0.0) / config.target_rate_sigma_rad_s**2),
         "target_acceleration": xp.asarray(0.0),
+        "reference_tracking": xp.asarray(0.0),
         "hold_joint_motion": xp.asarray(0.0),
         "deploy_instability": xp.asarray(0.0),
         "action_magnitude": (

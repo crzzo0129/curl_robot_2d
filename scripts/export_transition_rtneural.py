@@ -14,6 +14,10 @@ from scripts.export_rtneural import (
 
 
 def convert_transition(checkpoint, config):
+    if config.get("requires_target_rate_limiter"):
+        raise ValueError("This policy requires stateful motor-target rate limiting. "
+                         "The current static C++ controller/export path does not implement it; "
+                         "deploy with the matching limiter before exporting as a hardware policy.")
     if config.get("contract_version") != "transition_neural_controller_36x20_v3":
         raise ValueError("expected the current Transition deployment_config.json")
     if config.get("observation_history") != 20 or config.get("single_observation_size") != 36:

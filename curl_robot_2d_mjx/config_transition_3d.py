@@ -58,6 +58,7 @@ class Transition3DConfig:
     stand_abduction_zero: bool = False
     reference_deploy_duration_s: float = 0.15
     reference_residual_scale: float = 0.35
+    target_rate_limits_rad_s: tuple[float, ...] = ()
     stand_verification_s: float = 2.0
     physics_profile: str = "newton4"
     curriculum_stage: str = "walking_start"
@@ -298,6 +299,12 @@ def transition_physics_profile_3d(
 
 
 def validate_transition_config_3d(config: Transition3DConfig) -> None:
+    if config.target_rate_limits_rad_s:
+        if (len(config.target_rate_limits_rad_s) != 12 or
+                any(not math.isfinite(v) or v <= 0 for v in config.target_rate_limits_rad_s)):
+            raise ValueError("target rate limits must contain 12 finite positive values")
+        if not config.dynamic_roll_to_stand or config.handcrafted_reference_residual:
+            raise ValueError("target rate limiting requires absolute dynamic Roll to Stand")
     if not math.isfinite(config.stand_verification_s) or config.stand_verification_s < 0:
         raise ValueError("stand verification duration must be finite and nonnegative")
     if not math.isfinite(config.reference_deploy_duration_s) or config.reference_deploy_duration_s <= 0:

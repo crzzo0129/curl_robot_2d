@@ -27,6 +27,7 @@ from curl_robot_2d_mjx.reward_transition_3d import (
     Transition3DRewardConfig, smooth_stand_reward_config_3d,
     smooth_deploy_reward_config_3d,
     smooth_deploy_v3_reward_config_3d,
+    guided_absolute_reward_config_3d,
 )
 from curl_robot_2d_mjx.failure_transition_3d import (
     TRANSITION_FAILURE_CAUSE_NAMES_3D,
@@ -91,11 +92,13 @@ def parse_args(argv=None):
     parser.add_argument("--handcrafted-reference-residual", action="store_true",
                         help="zero action follows the 90-degree fast-deploy reference")
     parser.add_argument("--stand-abduction-zero", action="store_true")
-    parser.add_argument("--reward-profile", choices=("default", "smooth_stand", "smooth_deploy", "smooth_deploy_v3"),
+    parser.add_argument("--reward-profile", choices=("default", "smooth_stand", "smooth_deploy", "smooth_deploy_v3", "guided_absolute"),
                         default="default")
     parser.add_argument("--reference-deploy-duration", type=float, default=None,
                         help="deployment window in seconds (v3: 0.30; other profiles: 0.15)")
     parser.add_argument("--reference-residual-scale", type=float, default=0.35)
+    parser.add_argument("--target-rate-limits", type=float, nargs=3, metavar=("ABD", "HIP", "KNEE"),
+                        help="rad/s per joint type; guided_absolute defaults to 6 16 16")
     parser.add_argument("--roll-snapshots", type=Path)
     parser.add_argument("--eval-roll-snapshots", type=Path,
                         help="held-out reference trajectories, required for dynamic snapshot training")
@@ -139,7 +142,7 @@ def parse_args(argv=None):
 
 
 def build_task(args) -> Transition3DConfig:
-    if args.reward_profile in ("smooth_stand", "smooth_deploy", "smooth_deploy_v3") and (
+    if args.reward_profile in ("smooth_stand", "smooth_deploy", "smooth_deploy_v3", "guided_absolute") and (
         not args.dynamic_roll_to_stand or args.handcrafted_reference_residual
     ):
         raise ValueError("smoothing profiles require absolute dynamic Roll to Stand")
@@ -169,7 +172,10 @@ def build_task(args) -> Transition3DConfig:
             stand_abduction_zero=args.stand_abduction_zero,
             reference_deploy_duration_s=(args.reference_deploy_duration
                 if args.reference_deploy_duration is not None else
-                0.30 if args.reward_profile == "smooth_deploy_v3" else 0.15),
+                0.30 if args.reward_profile in ("smooth_deploy_v3", "guided_absolute") else 0.15),
+            target_rate_limits_rad_s=(tuple(args.target_rate_limits) * 4
+                if args.target_rate_limits is not None else
+                (6.0, 16.0, 16.0) * 4 if args.reward_profile == "guided_absolute" else ()),
             reference_residual_scale=args.reference_residual_scale,
             physics_timestep=0.001 if args.dynamic_roll_to_stand else Transition3DConfig().physics_timestep,
             ready_hold_s=1.0 if args.dynamic_roll_to_stand else 0.40,
@@ -363,6 +369,8 @@ def main(argv=None) -> None:
         reward = smooth_deploy_reward_config_3d()
     elif args.reward_profile == "smooth_deploy_v3":
         reward = smooth_deploy_v3_reward_config_3d()
+    elif args.reward_profile == "guided_absolute":
+        reward = guided_absolute_reward_config_3d()
     preset = PRESETS_TRANSITION_3D[args.preset]
     stage_out = args.out / args.stage
     payload = {
