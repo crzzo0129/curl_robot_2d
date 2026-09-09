@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Distill the privileged 3-D rolling teacher into the real Pupper ABI.
+"""Distill a CEM or privileged 3-D rolling teacher into the real Pupper ABI.
 
 The teacher keeps its 65-value simulator observation and eight residual
 channels.  Teacher-controlled rollouts supervise a student that receives the
@@ -11,7 +11,7 @@ residual action, never the residual alone.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import math
 from pathlib import Path
@@ -35,6 +35,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     rolling_deploy_frame_3d,
 )
 from curl_robot_2d_mjx.environment_3d import (
+    FORWARD_COMMAND_LOOKUP_SPEEDS_M_S,
     ROLLINGQUAD_GEOMETRIES_3D,
     cem_controller_path_3d,
 )
@@ -124,7 +125,25 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser(
         description="Distill the accepted rolling teacher to real observations"
     )
-    parser.add_argument("teacher", type=Path, help="teacher params_best")
+    parser.add_argument("teacher", type=Path, nargs="?", help="privileged teacher params_best; omitted for CEM-only teacher")
+    parser.add_argument("--teacher-source", choices=("cem", "privileged"), default=None,
+                        help="default: privileged when teacher path is given, otherwise CEM")
+    parser.add_argument("--command-conditioned", action="store_true",
+                        help="condition BC/DAgger on [vy, vx, yaw_rate] and enable CEM speed/turn commands")
+    parser.add_argument("--forward-command-min-m-s", type=float,
+                        default=FORWARD_COMMAND_LOOKUP_SPEEDS_M_S[0])
+    parser.add_argument("--forward-command-max-m-s", type=float,
+                        default=FORWARD_COMMAND_LOOKUP_SPEEDS_M_S[-1])
+    parser.add_argument("--turn-command-min-rad-s", type=float, default=0.02)
+    parser.add_argument("--turn-command-max-rad-s", type=float, default=0.08)
+    parser.add_argument("--turn-command-straight-fraction", type=float, default=0.40)
+    parser.add_argument("--command-interval-s", type=float, default=10.0,
+                        help="command hold duration; keep >= episode duration for fixed-command teacher trajectories")
+    parser.add_argument("--random-cem-snapshots", action="store_true",
+                        help="start BC and DAgger rollouts after a random CEM-teacher warmup")
+    parser.add_argument("--snapshot-warmup-min-steps", type=int, default=20)
+    parser.add_argument("--snapshot-warmup-max-steps", type=int, default=300)
+    parser.add_argument("--snapshot-segment-steps", type=int, default=100)
     parser.add_argument(
         "--geometry",
         choices=ROLLINGQUAD_GEOMETRIES_3D,
@@ -252,6 +271,8 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
+    if args.teacher_source is None:
+        args.teacher_source = "privileged" if args.teacher is not None else "cem"
     if args.controller is None:
         args.controller = cem_controller_path_3d(args.geometry)
     if args.eval_only:
@@ -323,8 +344,32 @@ def parse_args(argv=None):
         parser.error(
             "--minimum-closed-loop-turns must be finite and nonnegative"
         )
-    if not args.teacher.is_file():
-        parser.error(f"teacher checkpoint does not exist: {args.teacher}")
+    if args.teacher_source == "privileged" and (
+            args.teacher is None or not args.teacher.is_file()):
+        parser.error("--teacher-source privileged requires an existing teacher checkpoint")
+    if args.teacher_source == "cem" and args.teacher is not None:
+        parser.error("omit the positional teacher checkpoint when --teacher-source cem")
+    for name in ("forward_command_min_m_s", "forward_command_max_m_s",
+                 "turn_command_min_rad_s", "turn_command_max_rad_s", "command_interval_s"):
+        if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be finite and positive")
+    if args.forward_command_min_m_s > args.forward_command_max_m_s:
+        parser.error("forward command minimum must not exceed maximum")
+    if args.turn_command_min_rad_s > args.turn_command_max_rad_s:
+        parser.error("turn command minimum must not exceed maximum")
+    if not 0 <= args.turn_command_straight_fraction <= 1:
+        parser.error("--turn-command-straight-fraction must be in [0,1]")
+    if args.random_cem_snapshots:
+        if not args.command_conditioned:
+            parser.error("--random-cem-snapshots requires --command-conditioned")
+        if not (20 <= args.snapshot_warmup_min_steps <= args.snapshot_warmup_max_steps):
+            parser.error("snapshot warmup must satisfy 20 <= min <= max")
+        if args.snapshot_warmup_max_steps + args.snapshot_segment_steps > args.episode_length:
+            parser.error("snapshot max warmup + segment steps must not exceed episode length")
+        if args.command_interval_s < args.episode_length * 0.02:
+            parser.error("random snapshot training currently requires commands fixed for the full episode")
+        if args.deploy_dr or args.terrain_enabled or args.reset_pose != "compact":
+            parser.error("random CEM snapshots currently require nominal flat compact-reset training")
     if args.restore_student is not None and not args.restore_student.is_file():
         parser.error(
             f"student checkpoint does not exist: {args.restore_student}"
@@ -386,8 +431,9 @@ def _task(
     lateral_drift_diagnostic_only=False,
     terrain_enabled=False,
     terrain_slope_angle_deg=0.0,
+    args=None,
 ):
-    return physics_profile_3d(
+    task = physics_profile_3d(
         "cg20",
         Rolling3DConfig(
             geometry=geometry,
@@ -417,6 +463,23 @@ def _task(
             ),
         ),
     )
+    if args is not None and args.command_conditioned:
+        task = replace(
+            task,
+            lateral_command_enabled=False,
+            lateral_command_fixed=0.0,
+            forward_command_enabled=True,
+            forward_command_min_m_s=args.forward_command_min_m_s,
+            forward_command_max_m_s=args.forward_command_max_m_s,
+            turn_command_enabled=True,
+            turn_command_min_rad_s=args.turn_command_min_rad_s,
+            turn_command_max_rad_s=args.turn_command_max_rad_s,
+            turn_command_straight_fraction=args.turn_command_straight_fraction,
+            turn_command_left_fraction=(1.0 - args.turn_command_straight_fraction) / 2.0,
+            turn_command_right_fraction=(1.0 - args.turn_command_straight_fraction) / 2.0,
+            turn_command_interval_s=args.command_interval_s,
+        )
+    return task
 
 
 def main(argv=None):
@@ -464,6 +527,7 @@ def main(argv=None):
             ),
             terrain_enabled=args.terrain_enabled,
             terrain_slope_angle_deg=0.0,
+            args=args,
         ),
         args,
     )
@@ -481,24 +545,33 @@ def main(argv=None):
             f"obs={teacher_env.observation_size} action={teacher_env.action_size}"
         )
 
-    teacher_factory = _zero_centered_residual_network_factory(
-        TEACHER_HIDDEN_LAYERS,
-        "elu",
-        TEACHER_INITIAL_STD,
-        reflection_equivariant=False,
-    )
-    teacher_networks = teacher_factory(
-        teacher_env.observation_size,
-        teacher_env.action_size,
-        preprocess_observations_fn=running_statistics.normalize,
-    )
-    teacher_params = model_io.load_params(args.teacher)
-    teacher_policy = ppo_networks.make_inference_fn(teacher_networks)(
-        teacher_params, deterministic=True
-    )
-    teacher_policy_batch = jax.jit(
-        jax.vmap(lambda observation, key: teacher_policy(observation, key)[0])
-    )
+    if args.teacher_source == "privileged":
+        teacher_factory = _zero_centered_residual_network_factory(
+            TEACHER_HIDDEN_LAYERS,
+            "elu",
+            TEACHER_INITIAL_STD,
+            reflection_equivariant=False,
+        )
+        teacher_networks = teacher_factory(
+            teacher_env.observation_size,
+            teacher_env.action_size,
+            preprocess_observations_fn=running_statistics.normalize,
+        )
+        teacher_params = model_io.load_params(args.teacher)
+        teacher_policy = ppo_networks.make_inference_fn(teacher_networks)(
+            teacher_params, deterministic=True
+        )
+        teacher_policy_batch = jax.jit(
+            jax.vmap(lambda observation, key: teacher_policy(observation, key)[0])
+        )
+        teacher_description = str(args.teacher.resolve())
+    else:
+        # In residual mode, zero policy action leaves the validated CEM
+        # reference, speed lookup and steering prior fully in control.
+        teacher_policy_batch = jax.jit(
+            lambda observation, keys: jp.zeros((observation.shape[0], 8), dtype=observation.dtype)
+        )
+        teacher_description = "cem_reference_only"
     reset_batch = jax.jit(jax.vmap(teacher_env.reset))
     step_batch = jax.jit(jax.vmap(teacher_env.step))
 
@@ -518,6 +591,8 @@ def main(argv=None):
     config = student_controller_config(teacher_env.mj_model)
     config["training_reset_pose"] = teacher_task.reset_pose
     config["startup_actions_provided_by"] = "student_network"
+    config["command_order"] = ["vy_m_s", "vx_m_s", "yaw_rate_rad_s"]
+    config["command_conditioned"] = args.command_conditioned
     compact_position = jp.asarray(config["default_joint_pos"])
     frame_sigma = jp.concatenate(
         (
@@ -562,6 +637,12 @@ def main(argv=None):
             projected_gravity=projected_gravity,
             joint_position_offset=joint_offset,
             last_action=previous_controller_action,
+            command=jp.stack(
+                (state.info["lateral_velocity_command"],
+                 state.info["forward_velocity_command"],
+                 state.info["yaw_rate_command"]),
+                axis=-1,
+            ) if args.command_conditioned else None,
         )
         if noise_scale > 0.0:
             frame = frame + noise_scale * frame_sigma * jax.random.normal(
@@ -603,7 +684,9 @@ def main(argv=None):
         else None
     )
 
-    def reset_rollout(rng_key, batch_size):
+    snapshot_reset_cache = {}
+
+    def plain_reset_rollout(rng_key, batch_size):
         reset_keys = jax.random.split(rng_key, batch_size)
         state = reset_batch(reset_keys)
         history = jp.broadcast_to(
@@ -613,6 +696,60 @@ def main(argv=None):
             (batch_size, ROLLING_CONTROLLER_ACTION_SIZE_3D)
         )
         return state, history, previous_controller_action
+
+    def make_snapshot_reset(batch_size):
+        @jax.jit
+        def snapshot_reset(rng_key):
+            rng_key, reset_key, warmup_key = jax.random.split(rng_key, 3)
+            state, history, previous_action = plain_reset_rollout(reset_key, batch_size)
+            warmup_steps = jax.random.randint(
+                warmup_key, (batch_size,), args.snapshot_warmup_min_steps,
+                args.snapshot_warmup_max_steps + 1,
+            )
+
+            def choose(mask, new_value, old_value):
+                shaped = jp.reshape(mask, mask.shape + (1,) * (new_value.ndim - mask.ndim))
+                return jp.where(shaped, new_value, old_value)
+
+            def warmup(carry, index):
+                current, current_history, current_previous = carry
+                step_key = jax.random.fold_in(rng_key, index)
+                policy_key, noise_key = jax.random.split(step_key)
+                candidate_history = deployment_observation(
+                    current, current_history, current_previous,
+                    jp.zeros((batch_size, ROLLING_CONTROLLER_ACTION_SIZE_3D)),
+                    noise_key, 0.0,
+                )
+                residual = teacher_policy_batch(
+                    current.obs, jax.random.split(policy_key, batch_size)
+                )
+                candidate = step_batch(current, residual)
+                candidate_previous = effective_action_to_controller_action_3d(
+                    jp, candidate.info["last_action"]
+                )
+                take = (index < warmup_steps) & (candidate.done < 0.5)
+                current = jax.tree_util.tree_map(
+                    lambda new, old: choose(take, new, old), candidate, current
+                )
+                current_history = choose(take, candidate_history, current_history)
+                current_previous = choose(take, candidate_previous, current_previous)
+                return (current, current_history, current_previous), None
+
+            result, _ = jax.lax.scan(
+                warmup,
+                (state, history, previous_action),
+                jp.arange(args.snapshot_warmup_max_steps),
+            )
+            return result
+
+        return snapshot_reset
+
+    def reset_rollout(rng_key, batch_size):
+        if not args.random_cem_snapshots:
+            return plain_reset_rollout(rng_key, batch_size)
+        if batch_size not in snapshot_reset_cache:
+            snapshot_reset_cache[batch_size] = make_snapshot_reset(batch_size)
+        return snapshot_reset_cache[batch_size](rng_key)
 
     rng, reset_key = jax.random.split(rng)
     if restored_student_checkpoint is None:
@@ -625,13 +762,18 @@ def main(argv=None):
 
     print(
         "[distillation contract]\n"
-        f"  teacher={args.teacher.resolve()} obs=65 residual_action=8\n"
+        f"  teacher={teacher_description} obs=65 residual_action=8\n"
         f"  student_obs=36x20={ROLLING_DEPLOY_OBSERVATION_SIZE_3D} "
         "student_action=12 effective_motor_command\n"
         f"  simulation=50Hz hardware={HARDWARE_POLICY_FREQUENCY_HZ_3D:g}Hz\n"
         f"  stats_steps={args.stats_steps} bc_steps={args.train_steps} "
         f"dagger_steps={args.dagger_steps} "
-        f"envs={args.envs}",
+        f"envs={args.envs}\n"
+        f"  command=[vy,vx,yaw_rate] conditioned={args.command_conditioned} "
+        f"vx=[{args.forward_command_min_m_s:g},{args.forward_command_max_m_s:g}]m/s "
+        f"yaw=0/{args.turn_command_min_rad_s:g}..{args.turn_command_max_rad_s:g}rad/s\n"
+        f"  random_cem_snapshots={args.random_cem_snapshots} "
+        f"warmup={args.snapshot_warmup_min_steps}..{args.snapshot_warmup_max_steps} steps",
         flush=True,
     )
 
@@ -657,7 +799,8 @@ def main(argv=None):
         previous_controller_action = effective_action_to_controller_action_3d(
             jp, state.info["last_action"]
         )
-        if (step + 1) % args.episode_length == 0:
+        reset_interval = args.snapshot_segment_steps if args.random_cem_snapshots else args.episode_length
+        if (step + 1) % reset_interval == 0:
             rng, reset_key = jax.random.split(rng)
             state, history, previous_controller_action = reset_rollout(
                 reset_key, args.envs
@@ -828,7 +971,8 @@ def main(argv=None):
         )
         state = next_state
         previous_controller_action = target
-        if (step + 1) % args.episode_length == 0:
+        reset_interval = args.snapshot_segment_steps if args.random_cem_snapshots else args.episode_length
+        if (step + 1) % reset_interval == 0:
             rng, reset_key = jax.random.split(rng)
             state, history, previous_controller_action = reset_rollout(
                 reset_key, args.envs
@@ -864,6 +1008,7 @@ def main(argv=None):
         ),
         terrain_enabled=args.terrain_enabled,
         terrain_slope_angle_deg=0.0,
+        args=args,
     )
     direct_task = with_stand_startup(direct_task, args)
     direct_env = make_brax_env_3d(
@@ -1069,6 +1214,8 @@ def main(argv=None):
         reset_state,
         current_history,
         current_previous_action,
+        reset_history,
+        reset_previous_action,
     ):
         finished = current_state.done > 0.5
 
@@ -1087,12 +1234,12 @@ def main(argv=None):
         )
         next_history = jp.where(
             finished[:, None],
-            jp.broadcast_to(initial_history, current_history.shape),
+            reset_history,
             current_history,
         )
         next_previous_action = jp.where(
             finished[:, None],
-            jp.zeros_like(current_previous_action),
+            reset_previous_action,
             current_previous_action,
         )
         return (
@@ -1112,17 +1259,14 @@ def main(argv=None):
         dagger_optimizer_state = dagger_optimizer.init(student_params)
         dagger_train_step = make_train_step(dagger_optimizer)
         rng, dagger_reset_key, dagger_episode_key = jax.random.split(rng, 3)
-        dagger_reset_keys = jax.random.split(dagger_reset_key, args.envs)
+        dagger_reset_state, dagger_reset_history, dagger_reset_previous = reset_rollout(
+            dagger_reset_key, args.envs
+        )
         dagger_state = attach_train_episode_randomization(
-            direct_reset_batch(dagger_reset_keys), dagger_episode_key
+            dagger_reset_state, dagger_episode_key
         )
-        dagger_history = jp.broadcast_to(
-            initial_history,
-            (args.envs, ROLLING_DEPLOY_OBSERVATION_SIZE_3D),
-        )
-        dagger_previous_controller_action = jp.zeros(
-            (args.envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
-        )
+        dagger_history = dagger_reset_history
+        dagger_previous_controller_action = dagger_reset_previous
     dagger_loss_history = []
     if args.eval_only:
         print("[evaluation only] BC=0 DAgger=0; no checkpoint updates", flush=True)
@@ -1223,10 +1367,20 @@ def main(argv=None):
         )
         dagger_previous_controller_action = behavior_controller_action
 
-        reset_keys = jax.random.split(reset_key, args.envs)
-        reset_state = attach_train_episode_randomization(
-            direct_reset_batch(reset_keys), reset_episode_key
-        )
+        if args.random_cem_snapshots and bool(jp.any(dagger_state.done > 0.5)):
+            reset_state, reset_history, reset_previous = reset_rollout(
+                reset_key, args.envs
+            )
+        elif args.random_cem_snapshots:
+            reset_state, reset_history, reset_previous = (
+                dagger_state, dagger_history, dagger_previous_controller_action
+            )
+        else:
+            reset_keys = jax.random.split(reset_key, args.envs)
+            reset_state = direct_reset_batch(reset_keys)
+            reset_history = jp.broadcast_to(initial_history, dagger_history.shape)
+            reset_previous = jp.zeros_like(dagger_previous_controller_action)
+        reset_state = attach_train_episode_randomization(reset_state, reset_episode_key)
         (
             dagger_state,
             dagger_history,
@@ -1237,6 +1391,8 @@ def main(argv=None):
             reset_state,
             dagger_history,
             dagger_previous_controller_action,
+            reset_history,
+            reset_previous,
         )
 
         if step == 0 or (step + 1) % args.log_every == 0:
@@ -1291,15 +1447,21 @@ def main(argv=None):
         eval_reset_key = jax.random.PRNGKey(args.eval_seed)
     eval_reset_key, eval_episode_key = jax.random.split(eval_reset_key)
     eval_reset_keys = jax.random.split(eval_reset_key, args.eval_envs)
+    if args.random_cem_snapshots:
+        eval_base_state, eval_history, eval_previous_controller_action = reset_rollout(
+            eval_reset_key, args.eval_envs
+        )
+    else:
+        eval_base_state = direct_eval_reset_batch(eval_reset_keys)
+        eval_history = jp.broadcast_to(
+            initial_history,
+            (args.eval_envs, ROLLING_DEPLOY_OBSERVATION_SIZE_3D),
+        )
+        eval_previous_controller_action = jp.zeros(
+            (args.eval_envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
+        )
     eval_state = attach_eval_episode_randomization(
-        direct_eval_reset_batch(eval_reset_keys), eval_episode_key
-    )
-    eval_history = jp.broadcast_to(
-        initial_history,
-        (args.eval_envs, ROLLING_DEPLOY_OBSERVATION_SIZE_3D),
-    )
-    eval_previous_controller_action = jp.zeros(
-        (args.eval_envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
+        eval_base_state, eval_episode_key
     )
     eval_active = jp.ones((args.eval_envs,), dtype=jp.bool_)
     eval_failed = jp.zeros_like(eval_active)
@@ -1317,6 +1479,11 @@ def main(argv=None):
     eval_deadline_miss_sum = jp.asarray(0.0)
     velocity_error_square_sum = jp.asarray(0.0)
     velocity_error_sample_count = jp.asarray(0, dtype=jp.int32)
+    forward_tracking_abs_sum = jp.asarray(0.0)
+    yaw_tracking_abs_sum = jp.asarray(0.0)
+    tracking_sample_count = jp.asarray(0, dtype=jp.int32)
+    eval_forward_commands = jp.asarray(eval_state.info["forward_velocity_command"])
+    eval_yaw_commands = jp.asarray(eval_state.info["yaw_rate_command"])
     diagnostic_frames = []
     diagnostic_rng = jax.random.PRNGKey(args.seed + 200_000)
 
@@ -1426,6 +1593,13 @@ def main(argv=None):
             next_eval_state.metrics["roll_progress_rad"],
             0.0,
         )
+        forward_tracking_abs_sum += jp.sum(jp.where(
+            was_active, next_eval_state.metrics["forward_velocity_error_abs_m_s"], 0.0
+        ))
+        yaw_tracking_abs_sum += jp.sum(jp.where(
+            was_active, next_eval_state.metrics["yaw_rate_error_abs_rad_s"], 0.0
+        ))
+        tracking_sample_count += jp.sum(was_active.astype(jp.int32))
         if args.record_diagnostics:
             diagnostic_frames.append(jax.device_get(diagnostic_frame(
                 eval_state, next_eval_state, was_active, raw_effective_action,
@@ -1526,6 +1700,16 @@ def main(argv=None):
         "mean_episode_steps": float(
             np.mean(np.asarray(jax.device_get(eval_steps)))
         ),
+        "forward_command_min_m_s": float(jp.min(eval_forward_commands)),
+        "forward_command_max_m_s": float(jp.max(eval_forward_commands)),
+        "yaw_command_min_rad_s": float(jp.min(eval_yaw_commands)),
+        "yaw_command_max_rad_s": float(jp.max(eval_yaw_commands)),
+        "mean_forward_tracking_abs_error_m_s": float(
+            forward_tracking_abs_sum / jp.maximum(tracking_sample_count, 1)
+        ),
+        "mean_yaw_tracking_abs_error_rad_s": float(
+            yaw_tracking_abs_sum / jp.maximum(tracking_sample_count, 1)
+        ),
         "abduction_output_rms": float(
             jp.sqrt(
                 abduction_square_sum
@@ -1553,6 +1737,8 @@ def main(argv=None):
         f"turns_min={closed_loop_evaluation['minimum_turns']:.3f} "
         f"velocity_rmse="
         f"{closed_loop_evaluation['velocity_estimation_rmse']:.4f} m/s\n"
+        f"  vx_abs_error={closed_loop_evaluation['mean_forward_tracking_abs_error_m_s']:.4f}m/s "
+        f"yaw_abs_error={closed_loop_evaluation['mean_yaw_tracking_abs_error_rad_s']:.4f}rad/s\n"
         f"  abduction_rms="
         f"{closed_loop_evaluation['abduction_output_rms']:.6f} "
         f"abduction_max="
@@ -1579,7 +1765,7 @@ def main(argv=None):
     if args.eval_only:
         report = {
             "mode": "evaluation_only_no_training_or_checkpoint_export",
-            "teacher": str(args.teacher.resolve()),
+            "teacher": teacher_description,
             "student": str(args.restore_student.resolve()),
             "controller": str(args.controller.resolve()),
             "eval_seed": args.eval_seed,
@@ -1641,7 +1827,7 @@ def main(argv=None):
         output_file.write("\n")
 
     run_config = {
-        "teacher": str(args.teacher.resolve()),
+        "teacher": teacher_description,
         "controller": str(args.controller.resolve()),
         "runtime": describe_runtime(),
         "teacher_task": asdict(teacher_task),
