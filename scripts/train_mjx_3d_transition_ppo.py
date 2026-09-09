@@ -24,6 +24,7 @@ from curl_robot_2d_mjx.config_transition_3d import (
 )
 from curl_robot_2d_mjx.reward_transition_3d import (
     Transition3DRewardConfig, smooth_stand_reward_config_3d,
+    smooth_deploy_reward_config_3d,
 )
 from curl_robot_2d_mjx.failure_transition_3d import (
     TRANSITION_FAILURE_CAUSE_NAMES_3D,
@@ -88,7 +89,7 @@ def parse_args(argv=None):
     parser.add_argument("--handcrafted-reference-residual", action="store_true",
                         help="zero action follows the 90-degree fast-deploy reference")
     parser.add_argument("--stand-abduction-zero", action="store_true")
-    parser.add_argument("--reward-profile", choices=("default", "smooth_stand"),
+    parser.add_argument("--reward-profile", choices=("default", "smooth_stand", "smooth_deploy"),
                         default="default")
     parser.add_argument("--reference-deploy-duration", type=float, default=0.15)
     parser.add_argument("--reference-residual-scale", type=float, default=0.35)
@@ -135,10 +136,10 @@ def parse_args(argv=None):
 
 
 def build_task(args) -> Transition3DConfig:
-    if args.reward_profile == "smooth_stand" and (
+    if args.reward_profile in ("smooth_stand", "smooth_deploy") and (
         not args.dynamic_roll_to_stand or args.handcrafted_reference_residual
     ):
-        raise ValueError("smooth_stand requires absolute dynamic Roll to Stand")
+        raise ValueError("smoothing profiles require absolute dynamic Roll to Stand")
     allowed_training_geometry = (
         ("rollingquad_2_abd10_no_self_collision",)
         if args.handcrafted_reference_residual
@@ -353,6 +354,8 @@ def main(argv=None) -> None:
                          nonfoot_contact=0.0, impact=0.0)
     if args.reward_profile == "smooth_stand":
         reward = smooth_stand_reward_config_3d()
+    elif args.reward_profile == "smooth_deploy":
+        reward = smooth_deploy_reward_config_3d()
     preset = PRESETS_TRANSITION_3D[args.preset]
     stage_out = args.out / args.stage
     payload = {

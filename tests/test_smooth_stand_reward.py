@@ -5,6 +5,7 @@ import numpy as np
 from curl_robot_2d_mjx.reward_transition_3d import (
     Transition3DRewardConfig, reward_terms_roll_to_stand_3d,
     smooth_stand_reward_config_3d,
+    smooth_deploy_reward_config_3d, deploy_window_fraction_3d,
 )
 from scripts.train_mjx_3d_transition_ppo import parse_args, build_task
 
@@ -19,6 +20,7 @@ class SmoothStandRewardTests(unittest.TestCase):
             nonfoot_contact_count=0., newly_ready=0., action_rate_squared=0.,
             action_squared=0., joint_velocity_squared=0., target_rate_squared=0.,
             foot_slip_velocity_squared=0., contact_force_peak_n=0., failed=0.,
+            deploy_window_fraction=1.,
         )
         return reward_terms_roll_to_stand_3d(
             np, config or smooth_stand_reward_config_3d(), {**inputs, **changes})
@@ -51,6 +53,34 @@ class SmoothStandRewardTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             build_task(parse_args(args + ["--reward-profile", "smooth_stand",
                                          "--handcrafted-reference-residual"]))
+
+    def test_window_uses_elapsed_time_not_mode_or_pose(self):
+        fractions = [deploy_window_fraction_3d(np, i, .02, .15) for i in range(500)]
+        self.assertAlmostEqual(sum(fractions) * .02, .15)
+        self.assertAlmostEqual(fractions[7], .5)
+        self.assertEqual(fractions[8], 0.)
+        self.assertEqual(fractions[-1], 0.)
+
+    def test_v2_smoothing_stops_even_if_deploy_mode_never_ends(self):
+        config = smooth_deploy_reward_config_3d()
+        kwargs = dict(action_rate_squared=1., target_rate_squared=100.,
+                      joint_velocity_squared=64., foot_slip_velocity_squared=.1)
+        early = self.terms(config, **kwargs)
+        late = self.terms(config, deploy_window_fraction=0., **kwargs)
+        for name in ("action_rate", "target_rate", "joint_velocity", "foot_slip"):
+            self.assertLess(early[name], 0.)
+            self.assertEqual(late[name], 0.)
+        self.assertGreater(early["stabilize"], 0.)
+        self.assertEqual(late["stabilize"], 0.)
+
+    def test_v2_no_perpetual_near_stand_bonus(self):
+        config = smooth_deploy_reward_config_3d()
+        exact = sum(self.terms(config, deploy_window_fraction=0.).values())
+        offset = sum(self.terms(config, deploy_window_fraction=0.,
+                               reference_pose_error_rms=.23,
+                               previous_reference_pose_error_rms=.23).values())
+        self.assertAlmostEqual(exact, 0.)
+        self.assertLess(offset, exact)
 
 
 if __name__ == "__main__":

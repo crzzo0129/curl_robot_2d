@@ -37,6 +37,7 @@ from curl_robot_2d_mjx.reward_transition_3d import (
     Transition3DRewardConfig,
     reward_terms_transition_3d,
     reward_terms_roll_to_stand_3d,
+    deploy_window_fraction_3d,
 )
 from curl_robot_2d_mjx.transition_initialization_3d import (
     walking_start_state_3d,
@@ -886,6 +887,9 @@ def make_brax_transition_env_3d(
                 mode == int(TransitionMode3D.STABILIZE)
             ).astype(jp.float32)
             reward_inputs = {
+                "deploy_window_fraction": deploy_window_fraction_3d(
+                    jp, state.info["step_count"], task.control_timestep,
+                    task.reference_deploy_duration_s),
                 "mode_brake": mode_brake,
                 "mode_deploy": mode_deploy,
                 "mode_stabilize": mode_stabilize,

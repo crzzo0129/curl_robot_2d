@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 
 TRANSITION_REWARD_TERM_NAMES_3D = (
@@ -59,6 +59,7 @@ class Transition3DRewardConfig:
     target_rate: float = 0.0
     target_rate_sigma_rad_s: float = 10.0
     smooth_stand: bool = False
+    deploy_only_smoothing: bool = False
 
 
 def smooth_stand_reward_config_3d():
@@ -70,6 +71,19 @@ def smooth_stand_reward_config_3d():
         target_rate=0.10, joint_velocity=0.05, foot_slip=0.40,
         nonfoot_contact=0.30, impact=0.0,
     )
+
+
+def smooth_deploy_reward_config_3d():
+    """V2: finite smoothing window, then Stand tracking rather than idle bonus."""
+    return replace(smooth_stand_reward_config_3d(),
+                   deploy_only_smoothing=True, target_rate=1.0,
+                   action_rate=0.5, joint_velocity=0.20, foot_slip=0.8,
+                   stabilize_pose=4.0)
+
+
+def deploy_window_fraction_3d(xp, step_count, control_dt, duration):
+    """Overlap of this control interval with [handoff, handoff + duration)."""
+    return xp.clip((duration - step_count * control_dt) / control_dt, 0.0, 1.0)
 
 
 def reward_terms_roll_to_stand_3d(xp, config, inputs):
@@ -99,6 +113,19 @@ def reward_terms_roll_to_stand_3d(xp, config, inputs):
         terms["stabilize_pose"] = -config.stabilize_pose * hold_gate * xp.minimum(
             xp.square(inputs["reference_pose_error_rms"] / config.deploy_pose_sigma_rad), 4.0)
         terms["nonfoot_contact"] = -config.nonfoot_contact * hold_gate * inputs["nonfoot_contact_count"]
+    if config.deploy_only_smoothing:
+        window = inputs["deploy_window_fraction"]
+        for name in ("stabilize", "action_rate", "target_rate", "joint_velocity", "foot_slip"):
+            terms[name] *= window
+        # After deployment, these become non-positive tracking costs. A near-Stand
+        # timeout cannot collect a perpetual posture/support living bonus.
+        for name, maximum in (("deploy_pose", config.deploy_pose),
+                              ("upright", config.upright),
+                              ("height", config.height), ("support", config.support)):
+            terms[name] -= (1.0 - window) * maximum
+        # Track the requested pose even if the robot avoids the supported-upright gate.
+        terms["stabilize_pose"] = -(1.0 - window) * config.stabilize_pose * xp.minimum(
+            xp.square(inputs["reference_pose_error_rms"] / config.deploy_pose_sigma_rad), 4.0)
     return terms
 
 
