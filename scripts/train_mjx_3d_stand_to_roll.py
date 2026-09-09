@@ -100,7 +100,7 @@ def _print_eval(title, metrics, *, training=False):
     length_text = "--" if length is None else f"{length:.1f} steps"
     print("\n" + "-" * 68)
     print(title)
-    print(f"  Sustained {value('sustained_success', '.1%'):>7}   "
+    print(f"  Insurance {value('insurance_success', '.1%'):>7}   "
           f"Capture {value('captured', '.1%'):>7}   Failed {value('failed', '.1%'):>7}")
     print(f"  Roll      {value('roll_progress'):>7} rad   "
           f"Sustain {value('sustain_seconds', '.2f'):>7} s   Episode {length_text}")
@@ -136,6 +136,8 @@ def parse_args(argv=None):
     parser.add_argument("--restore-checkpoint", type=Path)
     parser.add_argument("--preset", choices=tuple(PRESETS), default="smoke")
     parser.add_argument("--steps", type=int, help="Override PPO total environment steps only")
+    parser.add_argument("--insurance-turns", type=int, choices=(1, 2), default=1,
+                        help="End successfully after this many net turns following capture")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hidden-layers", type=int, nargs="+",
                         default=STAND_TO_ROLL_HIDDEN_LAYERS)
@@ -400,9 +402,9 @@ def _train_ppo(args, stage_out):
         expected = STAND_TO_ROLL_CURRICULUM_STAGES[
             STAND_TO_ROLL_CURRICULUM_STAGES.index(args.stage) - 1]
         if (previous.get("pipeline") != "one_policy_bc_then_snapshot_reset_curriculum_v2"
-                or previous.get("stage") != expected
+                or previous.get("stage") not in (expected, args.stage)
                 or previous.get("bc_sha256") != hashlib.sha256(args.bc_params.read_bytes()).hexdigest()):
-            raise ValueError("Restore must use the preceding v2 stage and identical BC normalization/weights")
+            raise ValueError("Restore must use the same or preceding v2 stage and identical BC normalization/weights")
     if int(bc_normalizer.get("contract_version", 0)) != BC_CONTRACT_VERSION:
         raise ValueError("Legacy BC checkpoint: retrain --stage bc into a new output directory (contract v2)")
     mean = jp.asarray(bc_normalizer["mean"])
@@ -411,7 +413,7 @@ def _train_ppo(args, stage_out):
             or not bool(jp.all(jp.isfinite(mean))) or not bool(jp.all(jp.isfinite(std)))):
         raise ValueError("BC normalizer must contain positive 720-value mean/std")
     bc_params = jax.tree_util.tree_map(jp.asarray, bc_params)
-    task = stand_to_roll_curriculum_config(args.stage)
+    task = _capture_task(args)
     if args.static_eval:
         task = replace(task, reset_velocity_noise_rad_s=0.0, snapshot_reset_probability=0.0)
     if args.static_curriculum:
@@ -568,6 +570,30 @@ def _train_ppo(args, stage_out):
     clean_metrics = {name: float(value) for name, value in (final_metrics or {}).items()}
     capture_rate = clean_metrics.get("eval/episode_captured", 0.0)
     failure_rate = clean_metrics.get("eval/episode_failed", 1.0)
+    def selection_key(row):
+        capture = row.get("eval/episode_captured", 0.0)
+        capture_time = row.get("eval/episode_capture_time_s", 0.0) / max(capture, 1e-12)
+        return (capture, row.get("eval/episode_insurance_success", 0.0),
+                -capture_time if capture > 0 else -math.inf)
+
+    # Resolve only checkpoint directories that actually exist after training;
+    # never assume callback/save ordering or label final parameters as best.
+    checkpoint_root = stage_out / "ppo_checkpoint"
+    checkpoints = {int(path.name): str(path.resolve()) for path in checkpoint_root.iterdir()
+                   if path.is_dir() and path.name.isdigit()}
+    evaluated = [row for row in progress_history if "eval/episode_captured" in row]
+    saved = [row for row in evaluated if row["step"] in checkpoints]
+    best_saved = max(saved, key=selection_key) if saved else None
+    best_evaluation = max(evaluated, key=selection_key) if evaluated else None
+    best_report = {
+        "selection_order": ["capture_rate", "insurance_success_rate", "shorter_mean_capture_time"],
+        "best_evaluation": best_evaluation,
+        "best_saved_metrics": best_saved,
+        "checkpoint": checkpoints[best_saved["step"]] if best_saved else None,
+        "note": "Step zero may have no saved checkpoint. params_final always contains the final policy.",
+    }
+    (stage_out / "best_checkpoint.json").write_text(
+        json.dumps(best_report, indent=2) + "\n", encoding="utf-8")
     summary = {
         "stage": args.stage,
         "task": asdict(task),
@@ -575,8 +601,10 @@ def _train_ppo(args, stage_out):
         "final_metrics": clean_metrics,
         "capture_rate": capture_rate,
         "failure_rate": failure_rate,
+        "insurance_success_rate": clean_metrics.get("eval/episode_insurance_success", 0.0),
+        "best_checkpoint": best_report,
         "stage_passed": (capture_rate >= 0.80 and failure_rate <= 0.20
-                         and clean_metrics.get("eval/episode_sustained_success", 0.0) >= 0.80),
+                         and clean_metrics.get("eval/episode_insurance_success", 0.0) >= 0.80),
         "next_stage": (
             STAND_TO_ROLL_CURRICULUM_STAGES[
                 STAND_TO_ROLL_CURRICULUM_STAGES.index(args.stage) + 1
@@ -594,9 +622,19 @@ def _train_ppo(args, stage_out):
     return summary
 
 
+def _capture_task(args):
+    # Capture dominates bounded short-roll reward. Keep actor/normalizer ABI.
+    return replace(stand_to_roll_curriculum_config(args.stage),
+                   post_capture_turns=args.insurance_turns,
+                   reward_capture_bonus=10.0, reward_roll_progress=0.1,
+                   reward_cem_progress=0.25, reward_cem_orbit=0.0,
+                   reward_sustain=0.0, reward_wait_capture=0.1,
+                   reward_lateral=0.5, terminate_lateral_m=2.0)
+
+
 def main(argv=None):
     args = parse_args(argv)
-    task = None if args.stage == "bc" else stand_to_roll_curriculum_config(args.stage)
+    task = None if args.stage == "bc" else _capture_task(args)
     if args.static_eval:
         task = replace(task, reset_velocity_noise_rad_s=0.0, snapshot_reset_probability=0.0)
     if args.static_curriculum:
@@ -604,6 +642,7 @@ def main(argv=None):
                        snapshot_reset_probability=0.0, observation_noise_enabled=False)
     payload = {
         "pipeline": "one_policy_bc_then_snapshot_reset_curriculum_v2",
+        "objective": "capture_then_short_roll_v1",
         "arguments": {k: str(v) if isinstance(v, Path) else v for k, v in vars(args).items()},
         "stage": args.stage,
         "actor_observation": "train_ppo_deploy 36x20 newest-first",
@@ -660,7 +699,8 @@ def main(argv=None):
     else:
         status = "PASS" if result["stage_passed"] else "NOT PASSED"
         print(f"\nStage {args.stage}: {status} | elapsed {result['elapsed_s'] / 60:.1f} min")
-        print("  Required: sustained >=80%, capture >=80%, failed <=20%")
+        print(f"  Required: capture >=80%, insurance ({args.insurance_turns} turn(s)) >=80%, failed <=20%")
+        print(f"  Best saved checkpoint: {result['best_checkpoint']['checkpoint']}")
         if result["stage_passed"] and result["next_stage"]:
             print(f"  Next stage: {result['next_stage']}")
         report_name = "summary.json"

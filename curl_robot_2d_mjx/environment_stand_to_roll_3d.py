@@ -290,6 +290,8 @@ def make_stand_to_roll_env_3d(
                 "failure_axis_tilt": zero,
                 "snapshot_episode": zero,
                 "sustained_success": zero,
+                "insurance_success": zero,
+                "post_capture_turns": zero,
                 "action_saturation": zero,
             }
 
@@ -373,6 +375,8 @@ def make_stand_to_roll_env_3d(
                 "previous_compact_distance": compact_distance,
                 "capture_sustain_count": jp.zeros((), dtype=jp.int32),
                 "captured": jp.asarray(False),
+                "capture_rotation": jp.zeros(()),
+                "capture_root_x": data.qpos[0],
                 "capture_bonus_given": jp.asarray(False),
                 "step_count": jp.zeros((), dtype=jp.int32),
             }
@@ -427,14 +431,25 @@ def make_stand_to_roll_env_3d(
             roll_potential = jp.minimum(cumulative_rotation, translation)
             roll_progress = roll_potential - state.info["previous_roll_potential"]
             cem_progress = state.info["previous_cem_distance"] - distance
+            if config.post_capture_turns > 0:
+                # Bounded approach shaping cannot dwarf the capture milestone
+                # when an initial standing state is far from the CEM orbit.
+                cem_progress = (jp.exp(-distance)
+                                - jp.exp(-state.info["previous_cem_distance"]))
             compact_progress = (
                 state.info["previous_compact_distance"] - compact_distance
             )
 
+            axis_tilt = self._axis_tilt(data)
+            failed = ((~finite) | self._forbidden_contact(data)
+                      | (data.qpos[2] > config.terminate_root_z_max_m)
+                      | (jp.abs(data.qpos[1]) > config.terminate_lateral_m)
+                      | (axis_tilt > config.terminate_axis_tilt_rad))
+
             near = distance < config.capture_d_threshold
             forward = data.qvel[4] > config.capture_omega_min_rad_s
             sustain_count = jp.where(
-                near & forward,
+                near & forward & (~failed),
                 state.info["capture_sustain_count"] + 1,
                 jp.zeros((), dtype=jp.int32),
             )
@@ -443,6 +458,15 @@ def make_stand_to_roll_env_3d(
                 & (sustain_count >= self.capture_sustain_steps)
             )
             captured = state.info["captured"] | newly_captured
+            capture_rotation = jp.where(newly_captured, cumulative_rotation,
+                                        state.info["capture_rotation"])
+            capture_root_x = jp.where(newly_captured, data.qpos[0],
+                                      state.info["capture_root_x"])
+            post_capture_turns = jp.where(captured, jp.maximum(0.0, jp.minimum(
+                cumulative_rotation - capture_rotation,
+                (data.qpos[0] - capture_root_x) / self.rolling_radius)) / (2.0 * jp.pi), 0.0)
+            insurance_success = ((config.post_capture_turns > 0) & captured & (~failed)
+                                 & forward & (post_capture_turns >= config.post_capture_turns))
             capture_bonus = jp.where(
                 newly_captured & (~state.info["capture_bonus_given"]),
                 config.reward_capture_bonus,
@@ -473,17 +497,9 @@ def make_stand_to_roll_env_3d(
                 - config.reward_forbidden_collision * forbidden.astype(jp.float32)
             )
 
-            axis_tilt = self._axis_tilt(data)
-            failed = (
-                (~finite)
-                | forbidden
-                | (data.qpos[2] > config.terminate_root_z_max_m)
-                | (jp.abs(data.qpos[1]) > config.terminate_lateral_m)
-                | (axis_tilt > config.terminate_axis_tilt_rad)
-            )
             step_count = state.info["step_count"] + 1
-            timeout = step_count >= config.episode_length
-            done = (failed | timeout).astype(jp.float32)
+            timeout = (step_count >= config.episode_length) & (~insurance_success)
+            done = (failed | timeout | insurance_success).astype(jp.float32)
             lateral_cost = jp.square(data.qpos[1] / config.terminate_lateral_m)
             forward_speed = (data.qpos[0] - state.pipeline_state.qpos[0]) / config.control_timestep
             rolling_now = (captured & forward & (forward_speed > config.sustain_forward_speed_min_m_s)
@@ -495,6 +511,9 @@ def make_stand_to_roll_env_3d(
             lateral_penalty = config.reward_lateral * lateral_cost * config.control_timestep
             sustain_reward = config.reward_sustain * sustain_seconds
             reward = reward - lateral_penalty + sustain_reward
+            reward = (reward + config.reward_insurance_bonus * insurance_success.astype(jp.float32)
+                      - config.reward_wait_capture * (~state.info["captured"]).astype(jp.float32)
+                      * config.control_timestep)
             history = push_rolling_deploy_frame_3d(
                 jp, state.info["history"], self._frame(data, action, obs_key)
             )
@@ -509,6 +528,8 @@ def make_stand_to_roll_env_3d(
                 "previous_compact_distance": compact_distance,
                 "capture_sustain_count": sustain_count,
                 "captured": captured,
+                "capture_rotation": capture_rotation,
+                "capture_root_x": capture_root_x,
                 "capture_bonus_given": state.info["capture_bonus_given"]
                 | newly_captured,
                 "step_count": step_count,
@@ -543,8 +564,10 @@ def make_stand_to_roll_env_3d(
                 "failure_lateral": (jp.abs(data.qpos[1]) > config.terminate_lateral_m).astype(jp.float32),
                 "failure_axis_tilt": (axis_tilt > config.terminate_axis_tilt_rad).astype(jp.float32),
                 "snapshot_episode": (state.info["snapshot"] & (step_count == 1)).astype(jp.float32),
-                "sustained_success": (timeout & (~failed) & captured
-                                      & (roll_potential >= 2.0 * jp.pi)).astype(jp.float32),
+                "sustained_success": jp.where(config.post_capture_turns > 0, insurance_success,
+                    timeout & (~failed) & captured & (roll_potential >= 2.0 * jp.pi)).astype(jp.float32),
+                "insurance_success": insurance_success.astype(jp.float32),
+                "post_capture_turns": jp.where(done > 0, post_capture_turns, 0.0),
                 "action_saturation": jp.mean((jp.abs(action) > 0.98).astype(jp.float32)),
             }
             return State(data, history, reward, done, metrics=metrics, info=info)

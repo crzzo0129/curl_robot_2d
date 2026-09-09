@@ -61,6 +61,10 @@ class StandToRollConfig:
     capture_d_threshold: float = 1.20
     capture_omega_min_rad_s: float = 0.50
     capture_sustain_s: float = 0.08
+    # Zero retains the legacy full-episode task for teacher/data tools.
+    post_capture_turns: int = 0
+    reward_insurance_bonus: float = 2.0
+    reward_wait_capture: float = 0.0
 
     # Fixed shaping through full_stand; teacher annealing comes later.
     reward_roll_progress: float = 1.0
@@ -116,6 +120,8 @@ def stand_to_roll_curriculum_config(
 
 
 def validate_stand_to_roll_config(config: StandToRollConfig) -> None:
+    if config.post_capture_turns not in (0, 1, 2):
+        raise ValueError("post_capture_turns must be 0, 1 or 2")
     if config.episode_length < 1:
         raise ValueError("episode_length must be positive")
     if not 0.0 <= config.snapshot_reset_probability <= 1.0:
