@@ -312,6 +312,7 @@ def make_stand_to_roll_env_3d(
                 "reward_handoff_y": zero,
                 "reward_handoff_vy": zero,
                 "reward_handoff_axis": zero,
+                "reward_handoff_bonus": zero,
                 "cem_distance": distance,
                 "reset_alpha": alpha,
                 "root_z_m": root_z,
@@ -584,6 +585,12 @@ def make_stand_to_roll_env_3d(
             handoff_axis_penalty = handoff_dt * config.reward_handoff_axis * jp.square(
                 axis_tilt / config.handoff_axis_scale_rad)
             reward = reward - handoff_y_penalty - handoff_vy_penalty - handoff_axis_penalty
+            handoff_error = (jp.square(data.qpos[1] / config.handoff_y_scale_m)
+                             + jp.square(data.qvel[1] / config.handoff_vy_scale_m_s)
+                             + jp.square(axis_tilt / config.handoff_axis_scale_rad)) / 3.0
+            handoff_bonus = jp.where(newly_captured,
+                config.reward_handoff_bonus * jp.exp(-handoff_error), 0.0)
+            reward = reward + handoff_bonus
             reward = reward - lateral_penalty + sustain_reward
             reward = (reward + config.reward_insurance_bonus * insurance_success.astype(jp.float32)
                       - config.reward_wait_capture * (~state.info["captured"]).astype(jp.float32)
@@ -640,6 +647,7 @@ def make_stand_to_roll_env_3d(
                 "reward_handoff_y": -handoff_y_penalty,
                 "reward_handoff_vy": -handoff_vy_penalty,
                 "reward_handoff_axis": -handoff_axis_penalty,
+                "reward_handoff_bonus": handoff_bonus,
                 "reward_sustain": sustain_reward,
                 "reset_z_correction_m": jp.where(step_count == 1, state.info["reset_z_correction"], 0.0),
                 "reset_floor_gap_m": jp.where(step_count == 1, state.info["reset_floor_gap"], 0.0),

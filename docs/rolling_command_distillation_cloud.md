@@ -2,7 +2,7 @@
 
 这条路径只训练独立滚动策略，不训练 stand-to-roll。学生接口保持 720 维历史观测、
 12 维完整关节位置动作；每个 36 维帧中的 command 顺序固定为
-`[vy_m_s, vx_m_s, yaw_rate_rad_s]`，当前训练固定 `vy=0`。
+`[vx_m_s, vy_m_s, yaw_rate_rad_s]`，当前训练固定 `vy=0`。
 
 `--teacher-source cem` 使用零 residual，让环境中已验证的 CEM reference、
 前进速度查表和转向差分先验直接产生完整动作标签，不需要 privileged PPO checkpoint。

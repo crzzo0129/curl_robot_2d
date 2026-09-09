@@ -17,7 +17,7 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--load-eval", action="store_true", help="Evaluate loads without video or parameter updates")
     parser.add_argument("--episodes", type=int, default=32)
-    parser.add_argument("--limit-torque", action="store_true", help="Override checkpoint task with a 3 Nm cap and 2 Nm penalty")
+    parser.add_argument("--limit-torque", action="store_true", help="Override task with 3 Nm cap and bounded capture handoff reward")
     parser.add_argument("--mujoco-gl", default="egl", choices=("egl", "osmesa", "glfw"))
     args = parser.parse_args()
     if args.episodes < 1:
@@ -61,8 +61,9 @@ def main():
     task = replace(StandToRollConfig(**config["task"]), observation_noise_enabled=False)
     if args.limit_torque:
         task = replace(task, torque_hard_limit_nm=3.0, torque_soft_limit_nm=2.0,
-                       reward_torque_excess=0.1, reward_lateral_before_capture=0.0,
-                       reward_handoff_y=0.1, reward_handoff_vy=0.1, reward_handoff_axis=0.1)
+                       reward_torque_excess=0.0, reward_lateral_before_capture=0.0,
+                       reward_handoff_y=0.0, reward_handoff_vy=0.0, reward_handoff_axis=0.0,
+                       reward_handoff_bonus=2.0)
     if args.load_eval or args.limit_torque:
         task = replace(task, load_diagnostics=True)
     env = make_stand_to_roll_env_3d(task, matcher_npz=args.cem_data, seed=args.seed)
