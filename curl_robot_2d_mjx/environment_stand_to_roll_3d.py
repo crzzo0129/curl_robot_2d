@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 
 from curl_robot_2d_mjx.cem_matcher import build_reference_dict, cem_match_xp
+from curl_robot_2d_mjx.reset_grounding import make_floor_clearance
 from curl_robot_2d_mjx.config_3d import Rolling3DConfig, physics_profile_3d
 from curl_robot_2d_mjx.config_stand_to_roll import (
     StandToRollConfig,
@@ -107,6 +108,7 @@ def make_stand_to_roll_env_3d(
 
             self.torso_body_id = object_id(mujoco.mjtObj.mjOBJ_BODY, "torso")
             self.floor_geom_id = object_id(mujoco.mjtObj.mjOBJ_GEOM, "floor")
+            self.floor_clearance = make_floor_clearance(self.mj_model, self.floor_geom_id, jp)
             qpos_indices = []
             dof_indices = []
             joint_ids = []
@@ -262,6 +264,12 @@ def make_stand_to_roll_env_3d(
             zero = jp.zeros((), dtype=jp.float32)
             return {
                 "reward": zero,
+                "lateral_cost": zero,
+                "sustain_seconds": zero,
+                "reward_lateral": zero,
+                "reward_sustain": zero,
+                "reset_z_correction_m": zero,
+                "reset_floor_gap_m": zero,
                 "roll_progress": zero,
                 "cem_progress": zero,
                 "cem_orbit": jp.exp(-distance),
@@ -332,6 +340,10 @@ def make_stand_to_roll_env_3d(
                 self.action_center + self.action_scale * zero_action), ctrl)
             data = self.base_data.replace(qpos=qpos, qvel=qvel, ctrl=ctrl)
             data = mjx.forward(self.mjx_model, data)
+            z_correction = jp.where(snapshot, 0.0,
+                config.reset_ground_clearance_m - self.floor_clearance(data))
+            data = data.replace(qpos=data.qpos.at[2].add(z_correction))
+            data = mjx.forward(self.mjx_model, data)
             history = initial_rolling_deploy_history_3d(jp)
             history = push_rolling_deploy_frame_3d(
                 jp, history, self._frame(data, zero_action, obs_key)
@@ -348,6 +360,9 @@ def make_stand_to_roll_env_3d(
             info = {
                 "rng": next_rng,
                 "snapshot": snapshot,
+                "reset_z_correction": z_correction,
+                "reset_floor_gap": self.floor_clearance(data),
+                "rolling_sustain_count": jp.zeros((), dtype=jp.int32),
                 "alpha": alpha,
                 "history": history,
                 "last_action": zero_action,
@@ -469,6 +484,17 @@ def make_stand_to_roll_env_3d(
             step_count = state.info["step_count"] + 1
             timeout = step_count >= config.episode_length
             done = (failed | timeout).astype(jp.float32)
+            lateral_cost = jp.square(data.qpos[1] / config.terminate_lateral_m)
+            forward_speed = (data.qpos[0] - state.pipeline_state.qpos[0]) / config.control_timestep
+            rolling_now = (captured & forward & (forward_speed > config.sustain_forward_speed_min_m_s)
+                           & (~failed))
+            rolling_sustain_count = jp.where(rolling_now,
+                state.info["rolling_sustain_count"] + 1, 0)
+            sustain_seconds = jp.where(rolling_sustain_count >= self.capture_sustain_steps,
+                                       config.control_timestep, 0.0)
+            lateral_penalty = config.reward_lateral * lateral_cost * config.control_timestep
+            sustain_reward = config.reward_sustain * sustain_seconds
+            reward = reward - lateral_penalty + sustain_reward
             history = push_rolling_deploy_frame_3d(
                 jp, state.info["history"], self._frame(data, action, obs_key)
             )
@@ -486,9 +512,16 @@ def make_stand_to_roll_env_3d(
                 "capture_bonus_given": state.info["capture_bonus_given"]
                 | newly_captured,
                 "step_count": step_count,
+                "rolling_sustain_count": rolling_sustain_count,
             }
             metrics = {
                 "reward": reward,
+                "lateral_cost": lateral_cost,
+                "sustain_seconds": sustain_seconds,
+                "reward_lateral": -lateral_penalty,
+                "reward_sustain": sustain_reward,
+                "reset_z_correction_m": jp.where(step_count == 1, state.info["reset_z_correction"], 0.0),
+                "reset_floor_gap_m": jp.where(step_count == 1, state.info["reset_floor_gap"], 0.0),
                 "roll_progress": roll_progress,
                 "cem_progress": cem_progress,
                 "cem_orbit": cem_orbit,

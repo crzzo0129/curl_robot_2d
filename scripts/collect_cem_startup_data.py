@@ -38,6 +38,7 @@ def main():
         push_rolling_deploy_frame_3d, rolling_deploy_frame_3d,
     )
     from curl_robot_2d_mjx.stand_to_roll_training import action_center_and_scale
+    from curl_robot_2d_mjx.reset_grounding import make_floor_clearance
 
     task = StandToRollConfig(reset_velocity_noise_rad_s=0.0)
     model = mujoco.MjModel.from_xml_path(str(model_path_3d(task.geometry)))
@@ -59,6 +60,7 @@ def main():
     stand[qi[[0, 3, 6, 9]]] = 0.0
     torso = model.body("torso").id
     floor = model.geom("floor").id
+    floor_clearance = make_floor_clearance(model, floor, np)
     radius = geometry_parameters_3d(task.geometry).shell_contact_radius
     repeat = round(task.control_timestep / model.opt.timestep)
     rng = np.random.default_rng(args.seed)
@@ -71,6 +73,9 @@ def main():
         data.qpos[qi] = np.clip(data.qpos[qi] + rng.uniform(-0.01, 0.01, 12), lo, hi)
         data.qvel[:] = 0.0
         data.ctrl[ai] = data.qpos[qi]
+        mujoco.mj_forward(model, data)
+        z_correction = task.reset_ground_clearance_m - float(floor_clearance(data))
+        data.qpos[2] += z_correction
         mujoco.mj_forward(model, data)
         history = initial_rolling_deploy_history_3d(np)
         last_action = np.zeros(12)
@@ -113,6 +118,7 @@ def main():
         progress = min(rolling, (data.qpos[0] - x0) / radius)
         success = not failed and progress >= 2 * np.pi
         reports.append({"episode": episode, "alpha": alpha, "success": bool(success),
+                        "reset_z_correction_m": z_correction,
                         "steps": len(rows), "roll_progress": float(progress)})
         if success:
             samples.extend(rows)

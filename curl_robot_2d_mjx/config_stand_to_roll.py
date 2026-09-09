@@ -46,6 +46,7 @@ class StandToRollConfig:
     reset_joint_noise_rad: float = 0.01
     reset_velocity_noise_rad_s: float = 0.05
     snapshot_reset_probability: float = 0.0
+    reset_ground_clearance_m: float = 0.0005
 
     # Actor observation exactly follows train_ppo_deploy: a raw 36-value frame
     # stacked newest-first over 20 policy steps.
@@ -71,6 +72,10 @@ class StandToRollConfig:
     reward_torque: float = 0.002
     reward_joint_limit: float = 0.05
     reward_forbidden_collision: float = 1.0
+    # Per-second coefficients; step terms are multiplied by control_timestep.
+    reward_lateral: float = 4.0
+    reward_sustain: float = 1.0
+    sustain_forward_speed_min_m_s: float = 0.02
 
     # Falling and low torso height are valid rolling behavior.
     terminate_root_z_max_m: float = 0.50
@@ -134,6 +139,8 @@ def validate_stand_to_roll_config(config: StandToRollConfig) -> None:
             raise ValueError(f"{name} must be finite and positive")
     for value, name in (
         (config.reset_joint_noise_rad, "reset_joint_noise_rad"),
+        (config.reset_ground_clearance_m, "reset_ground_clearance_m"),
+        (config.sustain_forward_speed_min_m_s, "sustain_forward_speed_min_m_s"),
         (config.reset_velocity_noise_rad_s, "reset_velocity_noise_rad_s"),
         (config.capture_omega_min_rad_s, "capture_omega_min_rad_s"),
         (config.observation_noise_angular_velocity_rad_s, "observation noise"),
