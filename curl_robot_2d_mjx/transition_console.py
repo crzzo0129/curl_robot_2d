@@ -12,6 +12,24 @@ REWARD_GROUPS = (
 )
 
 
+def summarize_raw_evaluation(arrays):
+    """Raw env metrics are sums even when named _per_step (no Brax wrapper)."""
+    import numpy as np
+    lengths = np.asarray(arrays.get("recorded_steps", arrays["terminal_step"]), dtype=float)
+    if np.any(lengths <= 0):
+        raise ValueError("raw evaluation requires positive recorded episode lengths")
+    result = {}
+    for name, values in arrays.items():
+        if name in ("terminal_step", "recorded_steps"):
+            continue
+        values = np.asarray(values, dtype=float)
+        if name.endswith("_per_step"):
+            values = values / lengths
+        result["eval/episode_" + name] = float(values.mean())
+    result["eval/avg_episode_length"] = float(lengths.mean())
+    return result
+
+
 def format_transition_eval(step, metrics, *, stage, control_dt, source_report):
     def number(key):
         return float(metrics.get(key, math.nan))

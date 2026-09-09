@@ -11,7 +11,7 @@ from pathlib import Path
 import time
 
 import numpy as np
-from curl_robot_2d_mjx.transition_console import format_transition_eval
+from curl_robot_2d_mjx.transition_console import format_transition_eval, summarize_raw_evaluation
 
 from curl_robot_2d_mjx.config_transition_3d import (
     TRANSITION_ACTOR_OBSERVATION_SIZE_3D,
@@ -309,7 +309,10 @@ def evaluate_transition_policy(env, policy, *, count, seed, rollout_dir=None):
         ),
         "policy_updates": 0,
     }
-    arrays = {**totals, "terminal_step": terminal_step}
+    arrays = {**totals, "terminal_step": terminal_step,
+              "recorded_steps": np.where(terminal_step > 0, terminal_step, step_index + 1)}
+    report["metrics"] = summarize_raw_evaluation(arrays)
+    report["mean_episode_length"] = report["metrics"]["eval/avg_episode_length"]
     if rollout_dir is not None:
         rollout_dir = Path(rollout_dir)
         rollout_dir.mkdir(parents=True, exist_ok=True)
@@ -538,9 +541,7 @@ def main(argv=None) -> None:
             json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         np.savez_compressed(stage_out / "evaluation_arrays.npz", **arrays)
-        eval_metrics = {"eval/episode_" + name: float(values.mean())
-                        for name, values in arrays.items() if name != "terminal_step"}
-        eval_metrics["eval/avg_episode_length"] = report["mean_episode_length"]
+        eval_metrics = report["metrics"]
         print(format_transition_eval(0, eval_metrics, stage=args.stage,
               control_dt=task.control_timestep, source_report=report["source_breakdown"]), flush=True)
         print(f"[evaluation saved] {stage_out / 'evaluation.json'}", flush=True)

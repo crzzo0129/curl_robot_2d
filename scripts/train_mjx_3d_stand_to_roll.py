@@ -138,6 +138,7 @@ def parse_args(argv=None):
     parser.add_argument("--steps", type=int, help="Override PPO total environment steps only")
     parser.add_argument("--insurance-turns", type=int, choices=(1, 2), default=1,
                         help="End successfully after this many net turns following capture")
+    parser.add_argument("--limit-torque", action="store_true", help="5 Nm actuator cap, 3 Nm soft penalty")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hidden-layers", type=int, nargs="+",
                         default=STAND_TO_ROLL_HIDDEN_LAYERS)
@@ -573,6 +574,12 @@ def _train_ppo(args, stage_out):
     def selection_key(row):
         capture = row.get("eval/episode_captured", 0.0)
         capture_time = row.get("eval/episode_capture_time_s", 0.0) / max(capture, 1e-12)
+        if args.limit_torque:
+            duration = max(row.get("eval/episode_load_duration_s", 0.0), 1e-12)
+            over = sum(row.get(f"eval/episode_torque_{i}_over3_s", 0.0) for i in range(12)) / duration
+            squared = sum(row.get(f"eval/episode_torque_{i}_square_integral", 0.0) for i in range(12)) / duration
+            return (capture, row.get("eval/episode_insurance_success", 0.0), -over, -squared,
+                    -capture_time if capture > 0 else -math.inf)
         return (capture, row.get("eval/episode_insurance_success", 0.0),
                 -capture_time if capture > 0 else -math.inf)
 
@@ -586,7 +593,9 @@ def _train_ppo(args, stage_out):
     best_saved = max(saved, key=selection_key) if saved else None
     best_evaluation = max(evaluated, key=selection_key) if evaluated else None
     best_report = {
-        "selection_order": ["capture_rate", "insurance_success_rate", "shorter_mean_capture_time"],
+        "selection_order": (["capture_rate", "insurance_success_rate", "lower_torque_over3_fraction",
+                             "lower_mean_squared_torque", "shorter_mean_capture_time"] if args.limit_torque
+                            else ["capture_rate", "insurance_success_rate", "shorter_mean_capture_time"]),
         "best_evaluation": best_evaluation,
         "best_saved_metrics": best_saved,
         "checkpoint": checkpoints[best_saved["step"]] if best_saved else None,
@@ -625,6 +634,9 @@ def _train_ppo(args, stage_out):
 def _capture_task(args):
     # Capture dominates bounded short-roll reward. Keep actor/normalizer ABI.
     return replace(stand_to_roll_curriculum_config(args.stage),
+                   torque_hard_limit_nm=5.0 if args.limit_torque else 0.0,
+                   reward_torque_excess=1.0 if args.limit_torque else 0.0,
+                   load_diagnostics=args.limit_torque,
                    post_capture_turns=args.insurance_turns,
                    reward_capture_bonus=10.0, reward_roll_progress=0.1,
                    reward_cem_progress=0.25, reward_cem_orbit=0.0,

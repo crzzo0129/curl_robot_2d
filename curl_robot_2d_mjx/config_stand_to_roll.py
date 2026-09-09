@@ -65,6 +65,10 @@ class StandToRollConfig:
     post_capture_turns: int = 0
     reward_insurance_bonus: float = 2.0
     reward_wait_capture: float = 0.0
+    torque_hard_limit_nm: float = 0.0  # opt-in; zero preserves old checkpoints
+    torque_soft_limit_nm: float = 3.0
+    reward_torque_excess: float = 0.0  # per second, sum over joints
+    load_diagnostics: bool = False
 
     # Fixed shaping through full_stand; teacher annealing comes later.
     reward_roll_progress: float = 1.0
@@ -122,6 +126,12 @@ def stand_to_roll_curriculum_config(
 def validate_stand_to_roll_config(config: StandToRollConfig) -> None:
     if config.post_capture_turns not in (0, 1, 2):
         raise ValueError("post_capture_turns must be 0, 1 or 2")
+    if not math.isfinite(config.torque_hard_limit_nm) or config.torque_hard_limit_nm < 0:
+        raise ValueError("torque_hard_limit_nm must be finite and nonnegative")
+    if not math.isfinite(config.torque_soft_limit_nm) or config.torque_soft_limit_nm <= 0:
+        raise ValueError("torque_soft_limit_nm must be finite and positive")
+    if 0 < config.torque_hard_limit_nm < config.torque_soft_limit_nm:
+        raise ValueError("hard torque limit must be >= soft torque limit")
     if config.episode_length < 1:
         raise ValueError("episode_length must be positive")
     if not 0.0 <= config.snapshot_reset_probability <= 1.0:

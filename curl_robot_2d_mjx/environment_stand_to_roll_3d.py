@@ -96,6 +96,27 @@ def make_stand_to_roll_env_3d(
             apply_physics_options_3d(self.mj_model, physics)
             if not config.self_collision_enabled:
                 disable_rollingquad_self_collision_3d(self.mj_model)
+            if config.torque_hard_limit_nm > 0:
+                # Force ranges are actuator-side; account for transmission gear.
+                for name in CONTROLLER_JOINT_NAMES_3D:
+                    aid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_ACTUATOR, f"{name}_servo")
+                    jid = mujoco.mj_name2id(self.mj_model, mujoco.mjtObj.mjOBJ_JOINT, name)
+                    if (aid < 0 or jid < 0 or self.mj_model.actuator_trntype[aid] != mujoco.mjtTrn.mjTRN_JOINT
+                            or self.mj_model.actuator_trnid[aid, 0] != jid
+                            or np.count_nonzero(self.mj_model.actuator_trnid[:, 0] == jid) != 1):
+                        raise ValueError("Torque clamp requires one direct joint actuator per controlled joint")
+                    gear = abs(float(self.mj_model.actuator_gear[aid, 0]))
+                    if gear <= 0:
+                        raise ValueError("Joint actuator gear must be nonzero")
+                    limit = config.torque_hard_limit_nm / gear
+                    low, high = -limit, limit
+                    if self.mj_model.actuator_forcelimited[aid]:
+                        low = max(low, float(self.mj_model.actuator_forcerange[aid, 0]))
+                        high = min(high, float(self.mj_model.actuator_forcerange[aid, 1]))
+                    if low >= high:
+                        raise ValueError("Existing actuator limits conflict with torque clamp")
+                    self.mj_model.actuator_forcelimited[aid] = True
+                    self.mj_model.actuator_forcerange[aid] = (low, high)
             self.cpu_data = mujoco.MjData(self.mj_model)
             self.mjx_model = mjx.put_model(self.mj_model)
             self.base_data = mjx.put_data(self.mj_model, self.cpu_data)
@@ -264,6 +285,12 @@ def make_stand_to_roll_env_3d(
             zero = jp.zeros((), dtype=jp.float32)
             return {
                 "reward": zero,
+                "load_duration_s": zero,
+                "contact_peak_n": zero,
+                "contact_total_peak_n": zero,
+                "contact_normal_impulse_ns": zero,
+                **{f"torque_{i}_{suffix}": zero for i in range(12)
+                   for suffix in ("peak_nm", "square_integral", "over3_s", "at5_s")},
                 "lateral_cost": zero,
                 "sustain_seconds": zero,
                 "reward_lateral": zero,
@@ -376,6 +403,9 @@ def make_stand_to_roll_env_3d(
                 "capture_sustain_count": jp.zeros((), dtype=jp.int32),
                 "captured": jp.asarray(False),
                 "capture_rotation": jp.zeros(()),
+                "torque_peak": jp.zeros((12,)),
+                "contact_peak": jp.zeros(()),
+                "contact_total_peak": jp.zeros(()),
                 "capture_root_x": data.qpos[0],
                 "capture_bonus_given": jp.asarray(False),
                 "step_count": jp.zeros((), dtype=jp.int32),
@@ -403,9 +433,32 @@ def make_stand_to_roll_env_3d(
 
             def physics_step(data, _):
                 ctrl = data.ctrl.at[self.controller_actuator_indices].set(target)
-                return mjx.step(self.mjx_model, data.replace(ctrl=ctrl)), None
+                result = mjx.step(self.mjx_model, data.replace(ctrl=ctrl))
+                torque = result.qfrc_actuator[self.controller_dof_indices]
+                loads = {"torque": torque}
+                if config.load_diagnostics:
+                    impl = getattr(result, "_impl", result)
+                    contact = impl.contact
+                    address = jp.asarray(contact.efc_address)
+                    dim = jp.asarray(contact.dim)
+                    pyramidal = self.mj_model.opt.cone == mujoco.mjtCone.mjCONE_PYRAMIDAL
+                    width = jp.where(dim == 1, 1, 2 * (dim - 1)) if pyramidal else jp.ones_like(dim)
+                    offsets = jp.arange(10)
+                    indices = address[:, None] + offsets[None, :]
+                    if impl.efc_force.shape[0]:
+                        force = impl.efc_force[jp.clip(indices, 0, impl.efc_force.shape[0] - 1)]
+                        normal = jp.sum(jp.where((offsets[None, :] < width[:, None])
+                            & (indices >= 0) & (indices < impl.efc_force.shape[0]), force, 0.0), axis=1)
+                        ground = jp.any(contact.geom == self.floor_geom_id, axis=1) & (address >= 0)
+                        normal = jp.where(ground, jp.maximum(normal, 0.0), 0.0)
+                        loads["contact_peak"] = jp.max(normal, initial=0.0)
+                        loads["contact_total"] = jp.sum(normal)
+                    else:
+                        loads["contact_peak"] = jp.zeros(())
+                        loads["contact_total"] = jp.zeros(())
+                return result, loads
 
-            candidate, _ = jax.lax.scan(
+            candidate, loads = jax.lax.scan(
                 physics_step, state.pipeline_state, (), length=self.action_repeat
             )
             finite = (
@@ -514,6 +567,16 @@ def make_stand_to_roll_env_3d(
             reward = (reward + config.reward_insurance_bonus * insurance_success.astype(jp.float32)
                       - config.reward_wait_capture * (~state.info["captured"]).astype(jp.float32)
                       * config.control_timestep)
+            torque_abs = jp.abs(loads["torque"])
+            torque_peak = jp.maximum(state.info["torque_peak"], jp.max(torque_abs, axis=0))
+            contact_peak = state.info["contact_peak"]
+            contact_total_peak = state.info["contact_total_peak"]
+            if config.load_diagnostics:
+                contact_peak = jp.maximum(contact_peak, jp.max(loads["contact_peak"]))
+                contact_total_peak = jp.maximum(contact_total_peak, jp.max(loads["contact_total"]))
+            excess_cost = jp.mean(jp.sum(jp.square(jp.maximum(
+                torque_abs / config.torque_soft_limit_nm - 1.0, 0.0)), axis=1))
+            reward = reward - config.reward_torque_excess * excess_cost * config.control_timestep
             history = push_rolling_deploy_frame_3d(
                 jp, state.info["history"], self._frame(data, action, obs_key)
             )
@@ -529,6 +592,9 @@ def make_stand_to_roll_env_3d(
                 "capture_sustain_count": sustain_count,
                 "captured": captured,
                 "capture_rotation": capture_rotation,
+                "torque_peak": torque_peak,
+                "contact_peak": contact_peak,
+                "contact_total_peak": contact_total_peak,
                 "capture_root_x": capture_root_x,
                 "capture_bonus_given": state.info["capture_bonus_given"]
                 | newly_captured,
@@ -537,6 +603,16 @@ def make_stand_to_roll_env_3d(
             }
             metrics = {
                 "reward": reward,
+                "load_duration_s": jp.asarray(config.control_timestep),
+                # Peak increments sum to the episode maximum in Brax evaluation.
+                "contact_peak_n": contact_peak - state.info["contact_peak"],
+                "contact_total_peak_n": contact_total_peak - state.info["contact_total_peak"],
+                "contact_normal_impulse_ns": (jp.sum(loads["contact_total"]) * self.physics_timestep
+                                              if config.load_diagnostics else jp.zeros(())),
+                **{f"torque_{i}_peak_nm": torque_peak[i] - state.info["torque_peak"][i] for i in range(12)},
+                **{f"torque_{i}_square_integral": jp.sum(jp.square(loads["torque"][:, i])) * self.physics_timestep for i in range(12)},
+                **{f"torque_{i}_over3_s": jp.sum(torque_abs[:, i] > config.torque_soft_limit_nm) * self.physics_timestep for i in range(12)},
+                **{f"torque_{i}_at5_s": jp.sum(torque_abs[:, i] >= 4.99) * self.physics_timestep for i in range(12)},
                 "lateral_cost": lateral_cost,
                 "sustain_seconds": sustain_seconds,
                 "reward_lateral": -lateral_penalty,
