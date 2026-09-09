@@ -104,6 +104,7 @@ def parse_args(argv=None):
     parser.add_argument("--bc-params", type=Path)
     parser.add_argument("--restore-checkpoint", type=Path)
     parser.add_argument("--preset", choices=tuple(PRESETS), default="smoke")
+    parser.add_argument("--steps", type=int, help="Override PPO total environment steps only")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hidden-layers", type=int, nargs="+",
                         default=STAND_TO_ROLL_HIDDEN_LAYERS)
@@ -124,6 +125,8 @@ def parse_args(argv=None):
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.steps is not None and (args.steps < 1 or args.stage == "bc" or args.eval_only):
+        parser.error("--steps must be positive and applies only to PPO training")
     if args.static_curriculum and args.stage not in (
             "slightly_open", "crouch", "semi_stand", "full_stand"):
         parser.error("--static-curriculum applies to slightly_open through full_stand")
@@ -424,7 +427,9 @@ def _train_ppo(args, stage_out):
             )
         return networks
 
-    preset = PRESETS[args.preset]
+    preset = dict(PRESETS[args.preset])
+    if args.steps is not None:
+        preset["steps"] = args.steps
     if args.eval_only:
         networks = network_factory(720, 12, fixed_preprocess)
         actor = networks.policy_network.init(jax.random.PRNGKey(args.seed))
@@ -575,7 +580,7 @@ def main(argv=None):
         "cem_online_control": False,
         "teacher_shaping_annealed": False,
         "task": asdict(task) if task else None,
-        "preset": PRESETS[args.preset],
+        "preset": {**PRESETS[args.preset], **({"steps": args.steps} if args.steps is not None else {})},
     }
     if args.dry_run:
         print(json.dumps(payload, indent=2))
