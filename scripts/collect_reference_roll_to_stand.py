@@ -1,4 +1,4 @@
-"""Collect true +90 degree CEM handoff states for residual Roll-to-Stand."""
+"""Collect balanced, unmodified CEM handoffs at requested Roll-to-Stand phases."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from scripts.view_3d_cem_reference import _target_for_phase
 GEOMETRY = "rollingquad_2_abd10_no_self_collision"
 
 
-def _collect_handoff(model, reference, *, minimum_turns, max_time_s=30.0):
+def _collect_handoff(model, reference, *, minimum_turns, target_pitch_deg=90.0, max_time_s=30.0):
     data = mujoco.MjData(model)
     mujoco.mj_resetDataKeyframe(model, data, model.key("compact").id)
     joint_ids = np.asarray([model.joint(name).id for name in JOINT_NAMES_3D])
@@ -50,10 +50,14 @@ def _collect_handoff(model, reference, *, minimum_turns, max_time_s=30.0):
     rolled = 0.0
     previous_in_window = False
     while data.time < max_time_s:
-        rotation = data.xmat[torso].reshape(3, 3)
+        # mj_step's xmat can lag the integrated qpos by one physics step.
+        # The free torso quaternion is the state that will actually be restored.
+        rotation_flat = np.empty(9)
+        mujoco.mju_quat2Mat(rotation_flat, data.qpos[3:7])
+        rotation = rotation_flat.reshape(3, 3)
         pitch = math.atan2(rotation[2, 0], rotation[2, 2])
         pitch_rate = -float(data.qvel[4])
-        gate_target = math.radians(90.0 + np.sign(pitch_rate) * 15.0)
+        gate_target = math.radians(target_pitch_deg + np.sign(pitch_rate) * 15.0)
         in_window = near_target(
             pitch, pitch_rate, gate_target, math.radians(15.0)
         )
@@ -62,6 +66,9 @@ def _collect_handoff(model, reference, *, minimum_turns, max_time_s=30.0):
                 "qpos": data.qpos.copy(), "qvel": data.qvel.copy(),
                 "ctrl": data.ctrl.copy(), "time_s": float(data.time),
                 "pitch_deg": math.degrees(pitch),
+                "target_pitch_deg": target_pitch_deg,
+                "pitch_rate_rad_s": pitch_rate,
+                "minimum_turns": minimum_turns,
                 "turns": rolled / (2.0 * math.pi),
             }
         previous_in_window = in_window
@@ -82,11 +89,17 @@ def main(argv=None):
     parser.add_argument("--reference", type=Path, default=REFERENCE)
     parser.add_argument("--xml", type=Path, default=MODEL)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--samples", type=int, default=8)
+    parser.add_argument("--samples", type=int, default=8, help="cycles per target pitch")
+    parser.add_argument("--pitch-targets-deg", type=float, nargs="+", default=[90.0],
+                        help="balanced real handoffs at each requested pitch (80..100 degrees)")
     parser.add_argument("--first-turn", type=int, default=1)
     parser.add_argument("--seed", type=int, default=0,
                         help="provenance/split id; collection is deterministic")
     args = parser.parse_args(argv)
+    if (len(set(args.pitch_targets_deg)) != len(args.pitch_targets_deg)
+            or any(not math.isfinite(p) or not 80 <= p <= 100 for p in args.pitch_targets_deg)):
+        parser.error("pitch targets must be distinct finite angles in [80, 100]")
+    window_bank = args.pitch_targets_deg != [90.0]
     summary_path = args.out.with_suffix(".summary.json")
     if args.samples < 1 or args.first_turn < 1:
         parser.error("samples and first-turn must be positive")
@@ -104,7 +117,7 @@ def main(argv=None):
             "brake_full",
             Transition3DConfig(
                 geometry=GEOMETRY, dynamic_roll_to_stand=True,
-                handcrafted_reference_residual=True,
+                handcrafted_reference_residual=not window_bank,
                 stand_abduction_zero=True, physics_timestep=0.001,
                 ready_hold_s=1.0, episode_length=500,
                 observation_noise_velocity=0.20,
@@ -115,35 +128,45 @@ def main(argv=None):
     )
     rows = []
     for offset in range(args.samples):
-        minimum_turns = args.first_turn + offset
-        row = _collect_handoff(model, reference, minimum_turns=minimum_turns)
-        rows.append(row)
-        print(json.dumps({"sample": offset, **{k: row[k] for k in
-              ("time_s", "pitch_deg", "turns")}}), flush=True)
+        for target in sorted(args.pitch_targets_deg):
+            row = _collect_handoff(model, reference,
+                minimum_turns=args.first_turn + offset, target_pitch_deg=target)
+            if abs(row["pitch_deg"] - target) > 1.0:
+                raise RuntimeError("handoff missed requested phase by more than one degree")
+            rows.append(row)
+            print(json.dumps({"sample": len(rows)-1, **{k: row[k] for k in
+                  ("time_s", "pitch_deg", "target_pitch_deg", "turns")}}), flush=True)
 
     digest = hashlib.sha256(args.reference.read_bytes()).hexdigest()
     provenance = (
         f"cem_reference:{args.reference.resolve()}#sha256={digest};"
         "residual=0;trigger_pitch_deg=90;stand_abduction_deg=0"
     )
+    if window_bank:
+        provenance = (f"cem_reference:{args.reference.resolve()}#sha256={digest};"
+                      "residual=0;phase_window_deg=80:100;stand_abduction_deg=0")
     save_roll_snapshots_3d(
         args.out, model, task,
         qpos=[row["qpos"] for row in rows],
         qvel=[row["qvel"] for row in rows],
         ctrl=[row["ctrl"] for row in rows],
         time_s=[row["time_s"] for row in rows],
-        episode_id=np.arange(args.samples, dtype=np.int32),
+        episode_id=np.arange(len(rows), dtype=np.int32),
         source_policy=provenance,
     )
     report = {
-        "source_kind": "handcrafted_roll_to_stand_90_reference",
+        "source_kind": ("roll_to_stand_phase_window_reference" if window_bank else
+                        "handcrafted_roll_to_stand_90_reference"),
         "status": "ok", "reference_path": str(args.reference.resolve()),
         "reference_sha256": digest, "model": str(args.xml.resolve()),
-        "mesh_used": True, "trigger_pitch_deg": 90.0,
-        "deploy_duration_s": 0.15, "stand_abduction_deg": [0.0] * 4,
+        "mesh_used": True, "trigger_pitch_deg": None if window_bank else 90.0,
+        "deploy_duration_s": None if window_bank else 0.15, "stand_abduction_deg": [0.0] * 4,
         "seed": args.seed, "first_turn": args.first_turn,
-        "samples": args.samples, "task": asdict(task),
-        "handoffs": [{k: row[k] for k in ("time_s", "pitch_deg", "turns")}
+        "samples": len(rows), "cycles_per_pitch": args.samples,
+        "pitch_targets_deg": sorted(args.pitch_targets_deg),
+        "task": asdict(task),
+        "handoffs": [{k: row[k] for k in ("time_s", "pitch_deg", "turns",
+                     "target_pitch_deg", "pitch_rate_rad_s", "minimum_turns")}
                      for row in rows],
     }
     summary_path.parent.mkdir(parents=True, exist_ok=True)

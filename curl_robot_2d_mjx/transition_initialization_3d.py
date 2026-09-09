@@ -139,6 +139,7 @@ def load_roll_snapshots_3d(path, model, config, *, return_report=False,
     # marker rather than coupling it to the action semantics flag.
     handoff_states = config.handcrafted_reference_residual or (
         "trigger_pitch_deg=90" in str(arrays["source_policy"].item())
+        or "phase_window_deg=80:100" in str(arrays["source_policy"].item())
     )
     if handoff_states:
         count = len(arrays["qpos"])
@@ -146,10 +147,30 @@ def load_roll_snapshots_3d(path, model, config, *, return_report=False,
                 ("qpos", "qvel", "ctrl", "time_s", "episode_id")}
         bank["source_phase_bin"] = np.zeros(count, dtype=np.int32)
         bank["source_cycle"] = np.arange(count, dtype=np.int32)
+        window_bank = "phase_window_deg=80:100" in str(arrays["source_policy"].item())
+        if window_bank:
+            from curl_robot_2d_mjx.reference_bank_contract_3d import validate_reference_bank
+            summary = validate_reference_bank(path, config)
+            rows = summary["handoffs"]
+            if len(rows) != count:
+                raise ValueError("phase-window summary/sample count mismatch")
+            # Derive phase from the actual quaternion, never from a rewritten pose.
+            w, x, y, z = arrays["qpos"][:, 3:7].T
+            pitch = np.degrees(np.arctan2(2*(x*z-w*y), 1-2*(x*x+y*y)))
+            if not np.allclose(pitch, [r["pitch_deg"] for r in rows], atol=1e-3):
+                raise ValueError("phase-window measured pitch disagrees with qpos")
+            bank["source_phase_bin"] = np.clip(
+                ((pitch - 80) / 20 * config.snapshot_phase_bins).astype(np.int32),
+                0, config.snapshot_phase_bins-1)
+            bank["source_cycle"] = np.asarray([r["minimum_turns"] for r in rows], dtype=np.int32)
         bank["sampling_cdf"] = np.linspace(1 / count, 1, count, dtype=np.float32)
         report = {"selection": "measured_pitch_90_handoffs", "selected_samples": count,
                   "coverage_complete": True, "source_policy": str(arrays["source_policy"].item()),
                   "velocities_modified": False}
+        if window_bank:
+            report.update(selection="measured_pitch_80_100_handoffs",
+                          pitch_targets_deg=summary["pitch_targets_deg"],
+                          measured_pitch_range_deg=[float(pitch.min()), float(pitch.max())])
         return (bank, report) if return_report else bank
     if config.curriculum_stage.startswith("brake_"):
         bank, report = select_roll_cycle_snapshots(arrays, config,
