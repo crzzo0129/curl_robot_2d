@@ -653,6 +653,7 @@ def make_brax_transition_env_3d(
                 "stabilize_bad_steps": jp.asarray(0, dtype=jp.int32),
                 "last_action": previous_action,
                 "handoff_ctrl": data.ctrl,
+                "last_target_velocity": jp.zeros_like(data.ctrl),
                 "last_foot_position": data.site_xpos[self.foot_site_ids],
                 "previous_combined_speed": jp.sqrt(
                     jp.square(kinematics["linear_speed"])
@@ -910,6 +911,10 @@ def make_brax_transition_env_3d(
                 "target_rate_squared": jp.mean(jp.square(
                     (data.ctrl - state.pipeline_state.ctrl) / task.control_timestep
                 )),
+                "target_acceleration_squared": jp.where(state.info["step_count"] > 0,
+                    jp.mean(jp.square(((data.ctrl - state.pipeline_state.ctrl)
+                        / task.control_timestep - state.info["last_target_velocity"])
+                        / task.control_timestep)), 0.0),
                 "joint_velocity_squared": jp.mean(
                     jp.square(data.qvel[self.joint_dof_indices])
                 ),
@@ -941,6 +946,7 @@ def make_brax_transition_env_3d(
                 "ready_steps": next_ready_steps,
                 "stabilize_bad_steps": next_bad_steps,
                 "last_action": policy_action,
+                "last_target_velocity": (data.ctrl - state.pipeline_state.ctrl) / task.control_timestep,
                 "last_foot_position": foot_position,
                 "previous_combined_speed": combined_speed,
                 "previous_reference_error": next_reference_error,

@@ -6,6 +6,7 @@ from curl_robot_2d_mjx.reward_transition_3d import (
     Transition3DRewardConfig, reward_terms_roll_to_stand_3d,
     smooth_stand_reward_config_3d,
     smooth_deploy_reward_config_3d, deploy_window_fraction_3d,
+    smooth_deploy_v3_reward_config_3d,
 )
 from scripts.train_mjx_3d_transition_ppo import parse_args, build_task
 
@@ -81,6 +82,25 @@ class SmoothStandRewardTests(unittest.TestCase):
                                previous_reference_pose_error_rms=.23).values())
         self.assertAlmostEqual(exact, 0.)
         self.assertLess(offset, exact)
+
+    def test_v3_airborne_reversals_and_post_deploy_motion_cost(self):
+        config = smooth_deploy_v3_reward_config_3d()
+        airborne = self.terms(config, support_fraction=0.,
+                              target_acceleration_squared=250000.)
+        self.assertLess(airborne["target_acceleration"], 0.)
+        late = self.terms(config, deploy_window_fraction=0.,
+                          joint_velocity_squared=64., target_rate_squared=100.,
+                          combined_speed=.4)
+        self.assertLess(late["hold_joint_motion"], 0.)
+        self.assertEqual(late["stabilize"], 0.)
+        self.assertEqual(late["deploy_instability"], 0.)
+
+    def test_v3_default_window_is_300ms(self):
+        args = ["--geometry", "rollingquad_2_abd10_no_self_collision",
+                "--dynamic-roll-to-stand", "--reward-profile", "smooth_deploy_v3"]
+        self.assertEqual(build_task(parse_args(args)).reference_deploy_duration_s, .3)
+        self.assertAlmostEqual(sum(deploy_window_fraction_3d(np, i, .02, .3)
+                                   for i in range(500)) * .02, .3)
 
 
 if __name__ == "__main__":

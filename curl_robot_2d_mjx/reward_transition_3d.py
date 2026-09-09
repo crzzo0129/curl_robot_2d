@@ -19,6 +19,9 @@ TRANSITION_REWARD_TERM_NAMES_3D = (
     "ready",
     "action_rate",
     "target_rate",
+    "target_acceleration",
+    "hold_joint_motion",
+    "deploy_instability",
     "action_magnitude",
     "joint_velocity",
     "foot_slip",
@@ -60,6 +63,11 @@ class Transition3DRewardConfig:
     target_rate_sigma_rad_s: float = 10.0
     smooth_stand: bool = False
     deploy_only_smoothing: bool = False
+    target_acceleration: float = 0.0
+    target_acceleration_sigma_rad_s2: float = 500.0
+    hold_target_rate: float = 0.0
+    hold_joint_velocity: float = 0.0
+    deploy_instability: float = 0.0
 
 
 def smooth_stand_reward_config_3d():
@@ -84,6 +92,13 @@ def smooth_deploy_reward_config_3d():
 def deploy_window_fraction_3d(xp, step_count, control_dt, duration):
     """Overlap of this control interval with [handoff, handoff + duration)."""
     return xp.clip((duration - step_count * control_dt) / control_dt, 0.0, 1.0)
+
+
+def smooth_deploy_v3_reward_config_3d():
+    return replace(smooth_deploy_reward_config_3d(),
+                   target_rate=2.0, joint_velocity=0.40,
+                   target_acceleration=0.20, hold_target_rate=0.5,
+                   hold_joint_velocity=0.20, deploy_instability=1.0)
 
 
 def reward_terms_roll_to_stand_3d(xp, config, inputs):
@@ -126,6 +141,18 @@ def reward_terms_roll_to_stand_3d(xp, config, inputs):
         # Track the requested pose even if the robot avoids the supported-upright gate.
         terms["stabilize_pose"] = -(1.0 - window) * config.stabilize_pose * xp.minimum(
             xp.square(inputs["reference_pose_error_rms"] / config.deploy_pose_sigma_rad), 4.0)
+        # Penalize target reversals even in flight; no foot-contact gate.
+        terms["target_acceleration"] = -config.target_acceleration * (
+            inputs.get("target_acceleration_squared", 0.0)
+            / config.target_acceleration_sigma_rad_s2**2)
+        terms["hold_joint_motion"] = -(1.0 - window) * (
+            config.hold_target_rate * inputs.get("target_rate_squared", 0.0)
+            / config.target_rate_sigma_rad_s**2
+            + config.hold_joint_velocity * inputs["joint_velocity_squared"]
+            / config.joint_velocity_sigma_rad_s**2)
+        # Near upright, suppress residual body motion; preserve initial rolling momentum.
+        terms["deploy_instability"] = -config.deploy_instability * window * upright * (
+            1.0 - xp.exp(-xp.square(inputs["combined_speed"] / config.stabilize_speed_sigma)))
     return terms
 
 
@@ -184,6 +211,9 @@ def reward_terms_transition_3d(
         "action_rate": -config.action_rate * inputs["action_rate_squared"],
         "target_rate": -config.target_rate * (
             inputs.get("target_rate_squared", 0.0) / config.target_rate_sigma_rad_s**2),
+        "target_acceleration": xp.asarray(0.0),
+        "hold_joint_motion": xp.asarray(0.0),
+        "deploy_instability": xp.asarray(0.0),
         "action_magnitude": (
             -config.action_magnitude * inputs["action_squared"]
         ),

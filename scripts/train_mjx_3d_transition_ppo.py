@@ -11,6 +11,7 @@ from pathlib import Path
 import time
 
 import numpy as np
+from curl_robot_2d_mjx.transition_console import format_transition_eval
 
 from curl_robot_2d_mjx.config_transition_3d import (
     TRANSITION_ACTOR_OBSERVATION_SIZE_3D,
@@ -25,6 +26,7 @@ from curl_robot_2d_mjx.config_transition_3d import (
 from curl_robot_2d_mjx.reward_transition_3d import (
     Transition3DRewardConfig, smooth_stand_reward_config_3d,
     smooth_deploy_reward_config_3d,
+    smooth_deploy_v3_reward_config_3d,
 )
 from curl_robot_2d_mjx.failure_transition_3d import (
     TRANSITION_FAILURE_CAUSE_NAMES_3D,
@@ -89,9 +91,10 @@ def parse_args(argv=None):
     parser.add_argument("--handcrafted-reference-residual", action="store_true",
                         help="zero action follows the 90-degree fast-deploy reference")
     parser.add_argument("--stand-abduction-zero", action="store_true")
-    parser.add_argument("--reward-profile", choices=("default", "smooth_stand", "smooth_deploy"),
+    parser.add_argument("--reward-profile", choices=("default", "smooth_stand", "smooth_deploy", "smooth_deploy_v3"),
                         default="default")
-    parser.add_argument("--reference-deploy-duration", type=float, default=0.15)
+    parser.add_argument("--reference-deploy-duration", type=float, default=None,
+                        help="deployment window in seconds (v3: 0.30; other profiles: 0.15)")
     parser.add_argument("--reference-residual-scale", type=float, default=0.35)
     parser.add_argument("--roll-snapshots", type=Path)
     parser.add_argument("--eval-roll-snapshots", type=Path,
@@ -136,7 +139,7 @@ def parse_args(argv=None):
 
 
 def build_task(args) -> Transition3DConfig:
-    if args.reward_profile in ("smooth_stand", "smooth_deploy") and (
+    if args.reward_profile in ("smooth_stand", "smooth_deploy", "smooth_deploy_v3") and (
         not args.dynamic_roll_to_stand or args.handcrafted_reference_residual
     ):
         raise ValueError("smoothing profiles require absolute dynamic Roll to Stand")
@@ -164,7 +167,9 @@ def build_task(args) -> Transition3DConfig:
             dynamic_roll_to_stand=args.dynamic_roll_to_stand,
             handcrafted_reference_residual=args.handcrafted_reference_residual,
             stand_abduction_zero=args.stand_abduction_zero,
-            reference_deploy_duration_s=args.reference_deploy_duration,
+            reference_deploy_duration_s=(args.reference_deploy_duration
+                if args.reference_deploy_duration is not None else
+                0.30 if args.reward_profile == "smooth_deploy_v3" else 0.15),
             reference_residual_scale=args.reference_residual_scale,
             physics_timestep=0.001 if args.dynamic_roll_to_stand else Transition3DConfig().physics_timestep,
             ready_hold_s=1.0 if args.dynamic_roll_to_stand else 0.40,
@@ -356,6 +361,8 @@ def main(argv=None) -> None:
         reward = smooth_stand_reward_config_3d()
     elif args.reward_profile == "smooth_deploy":
         reward = smooth_deploy_reward_config_3d()
+    elif args.reward_profile == "smooth_deploy_v3":
+        reward = smooth_deploy_v3_reward_config_3d()
     preset = PRESETS_TRANSITION_3D[args.preset]
     stage_out = args.out / args.stage
     payload = {
@@ -439,8 +446,11 @@ def main(argv=None) -> None:
         payload["snapshot_selection"] = inspect_bank(args.roll_snapshots, task)
         if args.eval_roll_snapshots:
             payload["eval_snapshot_selection"] = inspect_bank(args.eval_roll_snapshots, task)
-        print("[ROLL snapshot selection] " + json.dumps(payload["snapshot_selection"],
-                                                       sort_keys=True), flush=True)
+        selection = payload["snapshot_selection"]
+        print(f"[ROLL snapshots] samples={selection.get('selected_samples')} "
+              f"selection={selection.get('selection')} "
+              f"coverage={selection.get('coverage_complete')} "
+              f"velocities_modified={selection.get('velocities_modified')}", flush=True)
 
     configure_cloud_runtime(
         memory_fraction=args.memory_fraction,
@@ -517,7 +527,14 @@ def main(argv=None) -> None:
             json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
         np.savez_compressed(stage_out / "evaluation_arrays.npz", **arrays)
-        print(json.dumps(report, indent=2, sort_keys=True))
+        eval_metrics = {"eval/episode_" + name: float(values.mean())
+                        for name, values in arrays.items() if name != "terminal_step"}
+        eval_metrics["eval/avg_episode_length"] = report["mean_episode_length"]
+        print(format_transition_eval(0, eval_metrics, stage=args.stage,
+              control_dt=task.control_timestep, source_report=report["source_breakdown"]), flush=True)
+        print(f"[evaluation saved] {stage_out / 'evaluation.json'}", flush=True)
+        if args.save_rollouts:
+            print(f"[rollouts saved] {stage_out / 'rollouts'}", flush=True)
         return report
 
     history = []
@@ -525,42 +542,12 @@ def main(argv=None) -> None:
     def progress(step, metrics):
         clean = {name: _float(value) for name, value in metrics.items()}
         history.append({"step": int(step), **clean})
-        success = clean.get("eval/episode_transition_success", 0.0)
-        failed = clean.get("eval/episode_failed", 0.0)
-        timeout = clean.get("eval/episode_timeout", 0.0)
-        causes = sorted(((name, clean.get(f"eval/episode_failure_{name}", 0.0))
-                         for name in TRANSITION_FAILURE_CAUSE_NAMES_3D),
-                        key=lambda item: item[1], reverse=True)
-        cause_text = ",".join(f"{name}={value:.3f}" for name, value in causes if value > 0)
-        mode_report = transition_failure_mode_breakdown_3d(clean)
-        mode_text = ",".join(
-            f"{mode}={row['rates']['root_height_low']:.3f}"
-            for mode, row in mode_report["by_mode"].items()
-            if row["rates"]["root_height_low"] > 0
-        )
         source_report = transition_source_breakdown_3d(
             clean, phase_bins=eval_env.source_phase_bins,
             cycles=eval_env.source_cycles, episode_count=preset["eval_envs"],
         )
-        phase_rows = [
-            (label, row["failed_rate"])
-            for label, row in source_report["by_phase_bin"].items()
-            if row["failed_rate"] is not None
-        ]
-        worst_phase = (
-            max(phase_rows, key=lambda item: item[1]) if phase_rows else None
-        )
-        worst_phase_text = (
-            "none" if worst_phase is None
-            else f"{worst_phase[0]}:{worst_phase[1]:.3f}"
-        )
-        print(
-            f"[transition eval] stage={args.stage} step={int(step)} "
-            f"success={success:.3f} failure={failed:.3f} timeout={timeout:.3f} "
-            f"causes=[{cause_text}] root_low_modes=[{mode_text}] "
-            f"worst_phase_failure={worst_phase_text}",
-            flush=True,
-        )
+        print(format_transition_eval(step, clean, stage=args.stage,
+              control_dt=task.control_timestep, source_report=source_report), flush=True)
 
     checkpoint_kwargs = {}
     train_parameters = inspect.signature(ppo.train).parameters
@@ -577,7 +564,8 @@ def main(argv=None) -> None:
 
     print(
         f"[transition PPO] stage={args.stage} preset={args.preset} "
-        f"steps={preset['steps']:,} envs={preset['envs']}",
+        f"steps={preset['steps']:,} envs={preset['envs']} "
+        f"eval_envs={preset['eval_envs']} reward={args.reward_profile}",
         flush=True,
     )
     started = time.perf_counter()
@@ -637,7 +625,14 @@ def main(argv=None) -> None:
     (stage_out / "summary.json").write_text(
         json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
-    print(json.dumps(summary, indent=2, sort_keys=True))
+    status = "PASS" if acceptance["passed"] else "NOT PASSED"
+    print(f"\n[result] {status} | elapsed {summary['elapsed_s'] / 60:.1f} min"
+          f" | checked steps {acceptance['evaluated_steps']}", flush=True)
+    if acceptance["reasons"]:
+        print("  reasons: " + ", ".join(acceptance["reasons"]), flush=True)
+    print(f"  weights: {stage_out / 'params_final'}\n"
+          f"  summary: {stage_out / 'summary.json'}\n"
+          f"  history: {stage_out / 'metrics_history.json'}", flush=True)
 
 
 if __name__ == "__main__":
