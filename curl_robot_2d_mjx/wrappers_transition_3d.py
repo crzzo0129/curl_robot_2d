@@ -68,5 +68,15 @@ def wrap_transition_3d(env, episode_length, action_repeat=1, randomization_fn=No
             result = jax.lax.cond(jp.any(done), reset_ended, lambda current: current, terminal)
             return result.replace(info={**result.info, "transition_needs_reset": done})
 
+    class FixedSnapshotVmapWrapper(training.VmapWrapper):
+        def reset(self, rng):
+            count = int(env.roll_snapshots["qpos"].shape[0])
+            if rng.shape[0] != count:
+                raise ValueError("fixed snapshot evaluation requires one lane per bank sample")
+            return jax.vmap(env.reset_from_snapshot_index)(rng, jp.arange(count))
+
+    vector_env = (FixedSnapshotVmapWrapper(env)
+                  if getattr(env, "fixed_snapshot_evaluation", False)
+                  else training.VmapWrapper(env))
     return FullResetWrapper(training.EpisodeWrapper(
-        training.VmapWrapper(env), episode_length, action_repeat=1))
+        vector_env, episode_length, action_repeat=1))

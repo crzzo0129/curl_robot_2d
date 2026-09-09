@@ -604,6 +604,19 @@ def make_brax_transition_env_3d(
                 source_cycle=source_cycle,
             )
 
+        def reset_from_snapshot_index(self, rng, index):
+            """Deterministic evaluation lane, using the same real-state reset contract."""
+            bank = self.roll_snapshots
+            data = self.base_data.replace(qpos=bank["qpos"][index],
+                qvel=bank["qvel"][index], ctrl=bank["ctrl"][index],
+                time=bank["time_s"][index])
+            data = mjx.forward(self.sys, data)
+            return self._initial_state(data, rng,
+                jp.asarray(int(TransitionMode3D.DEPLOY if task.dynamic_roll_to_stand
+                               else TransitionMode3D.BRAKE), dtype=jp.int32),
+                source_phase_bin=bank["source_phase_bin"][index],
+                source_cycle=bank["source_cycle"][index])
+
         def reset_from_roll_state(self, data, rng, actor_history=None, last_action=None):
             """Live ROLL -> Transition handoff on the SAME MJX model.
 

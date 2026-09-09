@@ -49,6 +49,10 @@ from curl_robot_2d_mjx.transition_snapshot_cli_3d import (
 
 
 PRESETS_TRANSITION_3D = {
+    "finetune_1m": {
+        "steps": 1_048_576, "envs": 64, "eval_envs": 44, "num_evals": 11,
+        "batch_size": 64, "num_minibatches": 4,
+    },
     "cpu_smoke": {
         "steps": 1536, "envs": 2, "eval_envs": 2, "num_evals": 2,
         "batch_size": 8, "num_minibatches": 2,
@@ -237,8 +241,14 @@ def evaluate_transition_policy(env, policy, *, count, seed, rollout_dir=None):
     """
     import jax
 
+    if getattr(env, "fixed_snapshot_evaluation", False):
+        count = int(env.roll_snapshots["qpos"].shape[0])
     keys = jax.random.split(jax.random.PRNGKey(seed), count)
-    state = jax.jit(jax.vmap(env.reset))(keys)
+    if getattr(env, "fixed_snapshot_evaluation", False):
+        import jax.numpy as jp
+        state = jax.jit(jax.vmap(env.reset_from_snapshot_index))(keys, jp.arange(count))
+    else:
+        state = jax.jit(jax.vmap(env.reset))(keys)
     recorded = []
     if rollout_dir is not None:
         recorded.append(jax.device_get((state.pipeline_state.qpos,
@@ -381,7 +391,12 @@ def main(argv=None) -> None:
         reward = guided_landing_reward_config_3d()
     elif args.reward_profile == "guided_hold":
         reward = guided_hold_reward_config_3d()
-    preset = PRESETS_TRANSITION_3D[args.preset]
+    preset = dict(PRESETS_TRANSITION_3D[args.preset])
+    if args.preset == "finetune_1m":
+        if args.eval_roll_snapshots is None:
+            raise SystemExit("finetune_1m requires --eval-roll-snapshots for exhaustive evaluation")
+        with np.load(args.eval_roll_snapshots, allow_pickle=False) as bank:
+            preset["eval_envs"] = len(bank["qpos"])
     stage_out = args.out / args.stage
     payload = {
         "training_revision": TRANSITION_TRAINING_REVISION,
@@ -400,6 +415,7 @@ def main(argv=None) -> None:
         "eval_roll_snapshots": str(args.eval_roll_snapshots.resolve()) if args.eval_roll_snapshots else None,
         "reward": asdict(reward),
         "reward_profile": args.reward_profile,
+        "evaluation_sampling": "fixed_all_snapshots" if args.preset == "finetune_1m" else "random",
         "training": {
             **preset,
             "learning_rate": args.learning_rate,
@@ -503,6 +519,9 @@ def main(argv=None) -> None:
     train_env = None if args.eval_only else make_brax_transition_env_3d(
         task, reward_config=reward, seed=args.seed
     )
+    eval_env.fixed_snapshot_evaluation = args.preset == "finetune_1m"
+    if eval_env.fixed_snapshot_evaluation:
+        preset["eval_envs"] = int(eval_env.roll_snapshots["qpos"].shape[0])
     from curl_robot_2d_mjx.deployment_transition_3d import transition_controller_metadata_3d
     (stage_out / "deployment_config.json").write_text(
         json.dumps(transition_controller_metadata_3d(eval_env.mj_model, task),
