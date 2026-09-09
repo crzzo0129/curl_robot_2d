@@ -82,6 +82,7 @@ class StandToRollConfig:
     reward_forbidden_collision: float = 1.0
     # Per-second coefficients; step terms are multiplied by control_timestep.
     reward_lateral: float = 4.0
+    reward_lateral_before_capture: float = 0.0  # additional per-second coefficient
     reward_sustain: float = 1.0
     sustain_forward_speed_min_m_s: float = 0.02
 

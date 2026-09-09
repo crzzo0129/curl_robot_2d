@@ -26,7 +26,7 @@ python -m scripts.render_stand_to_roll_checkpoint \
 --limit-torque 对一关节一执行器的直接关节传动设置执行器 force range，
 按 gear 换算至关节输出端 3Nm，保留模型原先更严格的限制。
 统计使用 qfrc_actuator；不含接触/关节约束等外载造成的结构应力。
-微调新增每秒惩罚：sum_j(max(abs(tau_j)/2-1,0)^2)，系数 1.0，物理子步平均后乘控制周期。
+微调新增每秒惩罚：sum_j(max(abs(tau_j)/2-1,0)^2)，系数 0.1，物理子步平均后乘控制周期。
 原有较小整体力矩惩罚保留。2Nm 是软目标，不能保证从不超出。
 
 接触统计按实际 friction cone 解码约束法向力，每个物理子步取地面接触：
@@ -42,8 +42,8 @@ python -m scripts.train_mjx_3d_stand_to_roll \
   --preset smoke --steps 1000000 --insurance-turns 1 \
   --bc-params results/stand_to_roll_startup/bc/bc_params \
   --restore-checkpoint results/stand_to_roll_capture_1m/full_stand/ppo_checkpoint/000000675840 \
-  --learning-rate 5e-6 --max-kl 0.2 \
-  --out results/stand_to_roll_torque_1m
+  --learning-rate 1e-6 --max-kl 0.2 --num-evals 11 --max-success-drop 0.10 \
+  --out results/stand_to_roll_torque_guarded_1m
 ```
 
 力矩微调时 best_checkpoint 优先 capture、保险成功率，再比较超 2Nm 占比、

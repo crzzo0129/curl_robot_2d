@@ -304,6 +304,11 @@ def make_stand_to_roll_env_3d(
                 "capture_bonus": zero,
                 "captured": zero,
                 "capture_time_s": zero,
+                "capture_abs_y_m": zero,
+                "capture_abs_vy_m_s": zero,
+                "capture_axis_error_rad": zero,
+                "reward_torque_base": zero,
+                "reward_torque_excess": zero,
                 "cem_distance": distance,
                 "reset_alpha": alpha,
                 "root_z_m": root_z,
@@ -562,6 +567,9 @@ def make_stand_to_roll_env_3d(
             sustain_seconds = jp.where(rolling_sustain_count >= self.capture_sustain_steps,
                                        config.control_timestep, 0.0)
             lateral_penalty = config.reward_lateral * lateral_cost * config.control_timestep
+            lateral_penalty = lateral_penalty + (config.reward_lateral_before_capture
+                * (~state.info["captured"]).astype(jp.float32)
+                * lateral_cost * config.control_timestep)
             sustain_reward = config.reward_sustain * sustain_seconds
             reward = reward - lateral_penalty + sustain_reward
             reward = (reward + config.reward_insurance_bonus * insurance_success.astype(jp.float32)
@@ -624,6 +632,11 @@ def make_stand_to_roll_env_3d(
                 "cem_orbit": cem_orbit,
                 "compact_progress": compact_progress,
                 "capture_bonus": capture_bonus,
+                "capture_abs_y_m": jp.where(newly_captured, jp.abs(data.qpos[1]), 0.0),
+                "capture_abs_vy_m_s": jp.where(newly_captured, jp.abs(data.qvel[1]), 0.0),
+                "capture_axis_error_rad": jp.where(newly_captured, axis_tilt, 0.0),
+                "reward_torque_base": -config.reward_torque * torque_cost,
+                "reward_torque_excess": -config.reward_torque_excess * excess_cost * config.control_timestep,
                 "captured": newly_captured.astype(jp.float32),
                 "capture_time_s": newly_captured.astype(jp.float32)
                 * step_count.astype(jp.float32)

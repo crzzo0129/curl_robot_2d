@@ -110,6 +110,15 @@ def _print_eval(title, metrics, *, training=False):
           f"contact {value('forbidden_contact', '.3f')} (episode sum)")
     print(f"  Reward    total {value('reward')} | lateral {value('reward_lateral')} | "
           f"sustain {value('reward_sustain')}")
+    print(f"  Torque    base {value('reward_torque_base')} | excess {value('reward_torque_excess')}")
+    prefix = "eval/episode_" if training else ""
+    captured = metrics.get(prefix + "captured", 0.0)
+    def at_capture(name):
+        number = metrics.get(prefix + name)
+        return "--" if number is None or captured <= 0 else f"{number / captured:.3f}"
+    print(f"  Handoff   |y| {at_capture('capture_abs_y_m')} m | "
+          f"|vy| {at_capture('capture_abs_vy_m_s')} m/s | "
+          f"axis {at_capture('capture_axis_error_rad')} rad (captured episodes)")
     if training:
         def stat(key, fmt):
             number = metrics.get(key)
@@ -143,7 +152,10 @@ def parse_args(argv=None):
     parser.add_argument("--hidden-layers", type=int, nargs="+",
                         default=STAND_TO_ROLL_HIDDEN_LAYERS)
     parser.add_argument("--initial-policy-std", type=float, default=0.02)
-    parser.add_argument("--learning-rate", type=float, default=2.0e-5)
+    parser.add_argument("--learning-rate", type=float, default=None)
+    parser.add_argument("--num-evals", type=int, default=None, help="Evaluations including step zero; torque fine-tuning defaults to 11")
+    parser.add_argument("--max-success-drop", type=float, default=0.10,
+                        help="Torque fine-tuning stops at eval if capture/insurance drops by more than this absolute fraction from step zero")
     parser.add_argument("--entropy-cost", type=float, default=0.0)
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--unroll-length", type=int, default=20)
@@ -159,6 +171,14 @@ def parse_args(argv=None):
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if args.learning_rate is None:
+        args.learning_rate = 1e-6 if args.limit_torque else 2e-5
+    if args.num_evals is None and args.limit_torque:
+        args.num_evals = 11
+    if args.num_evals is not None and args.num_evals < 2:
+        parser.error("--num-evals must be >=2")
+    if not math.isfinite(args.max_success_drop) or not 0 <= args.max_success_drop <= 1:
+        parser.error("--max-success-drop must be in [0, 1]")
     if args.steps is not None and (args.steps < 1 or args.stage == "bc" or args.eval_only):
         parser.error("--steps must be positive and applies only to PPO training")
     if args.static_curriculum and args.stage not in (
@@ -465,6 +485,8 @@ def _train_ppo(args, stage_out):
         return networks
 
     preset = dict(PRESETS[args.preset])
+    if args.num_evals is not None:
+        preset["num_evals"] = args.num_evals
     if args.steps is not None:
         preset["steps"] = args.steps
     if args.eval_only:
@@ -528,6 +550,20 @@ def _train_ppo(args, stage_out):
         _print_eval(
             f"PPO {args.stage} | {int(step):,}/{preset['steps']:,} ({percent:.1f}%)"
             f" | {elapsed / 60:.1f} min", row, training=True)
+        if args.limit_torque:
+            baseline = progress_history[0]
+            keys = ("eval/episode_captured", "eval/episode_insurance_success")
+            if baseline["step"] != 0 or any(key not in baseline or key not in row for key in keys):
+                raise RuntimeError("Success guard requires a step-zero capture/insurance evaluation")
+            if any(row[key] < baseline[key] - args.max_success_drop for key in keys):
+                report = {"reason": "capture or insurance regression from initial policy",
+                          "baseline": baseline, "metrics": row,
+                          "max_success_drop": args.max_success_drop,
+                          "original_checkpoint": str(args.restore_checkpoint),
+                          "note": "Training stopped; no automatic rollback. Keep the original checkpoint; intermediate policies require independent evaluation."}
+                (stage_out / "training_aborted.json").write_text(
+                    json.dumps(report, indent=2) + "\n", encoding="utf-8")
+                raise RuntimeError("Success regression: stopped fine-tuning; see training_aborted.json. Keep original checkpoint.")
 
     train_parameters = inspect.signature(ppo.train).parameters
     kwargs = {}
@@ -635,7 +671,8 @@ def _capture_task(args):
     # Capture dominates bounded short-roll reward. Keep actor/normalizer ABI.
     return replace(stand_to_roll_curriculum_config(args.stage),
                    torque_hard_limit_nm=3.0 if args.limit_torque else 0.0,
-                   reward_torque_excess=1.0 if args.limit_torque else 0.0,
+                   reward_torque_excess=0.1 if args.limit_torque else 0.0,
+                   reward_lateral_before_capture=1.5 if args.limit_torque else 0.0,
                    load_diagnostics=args.limit_torque,
                    post_capture_turns=args.insurance_turns,
                    reward_capture_bonus=10.0, reward_roll_progress=0.1,
@@ -663,7 +700,8 @@ def main(argv=None):
         "cem_online_control": False,
         "teacher_shaping_annealed": False,
         "task": asdict(task) if task else None,
-        "preset": {**PRESETS[args.preset], **({"steps": args.steps} if args.steps is not None else {})},
+        "preset": {**PRESETS[args.preset], **({"steps": args.steps} if args.steps is not None else {}),
+                   **({"num_evals": args.num_evals} if args.num_evals is not None else {})},
     }
     if args.dry_run:
         print(json.dumps(payload, indent=2))

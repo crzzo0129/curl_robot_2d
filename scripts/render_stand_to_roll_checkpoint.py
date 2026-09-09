@@ -61,7 +61,7 @@ def main():
     task = replace(StandToRollConfig(**config["task"]), observation_noise_enabled=False)
     if args.limit_torque:
         task = replace(task, torque_hard_limit_nm=3.0, torque_soft_limit_nm=2.0,
-                       reward_torque_excess=1.0)
+                       reward_torque_excess=0.1, reward_lateral_before_capture=1.5)
     if args.load_eval or args.limit_torque:
         task = replace(task, load_diagnostics=True)
     env = make_stand_to_roll_env_3d(task, matcher_npz=args.cem_data, seed=args.seed)
