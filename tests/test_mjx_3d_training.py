@@ -669,6 +669,18 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.turn_command_interval_s, 1.5)
         self.assertEqual(args.turn_command_k_turn, 5.0)
 
+    def test_evaluator_can_disable_lateral_drift_failure(self) -> None:
+        args = evaluate_mjx_3d_policy.parse_args(
+            [
+                "params_best",
+                "--out",
+                "eval_turn",
+                "--no-lateral-drift-termination",
+            ]
+        )
+
+        self.assertFalse(args.lateral_drift_termination)
+
     def test_phase_locked_meanzero_v10_uses_mean_zero_regularizer(
         self,
     ) -> None:
@@ -781,6 +793,7 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(args.minimum_residual_gain, 0.15)
         self.assertTrue(args.explicit_phase_observation)
         self.assertTrue(args.no_self_collision)
+        self.assertFalse(args.lateral_drift_termination)
 
         reward = train_mjx_3d_residual_ppo._reward_config_from_args(args)
         self.assertEqual(reward.forward_velocity, 1.0)
@@ -790,6 +803,8 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         self.assertEqual(reward.yaw_rate_command_sigma_rad_s, 0.05)
         self.assertEqual(reward.roll_mismatch, 0.5)
         self.assertEqual(reward.axis_tilt, 0.3)
+        self.assertEqual(reward.yaw, 0.0)
+        self.assertEqual(reward.yaw_cost, 0.0)
         # The primary speed reward is the command Gaussian, not raw progress.
         self.assertLess(reward.roll_progress, reward.forward_velocity)
 
@@ -799,6 +814,20 @@ class MJX3DTrainingEntrypointTest(unittest.TestCase):
         )
 
         self.assertFalse(args.no_self_collision)
+
+    def test_command_tracking_can_restore_lateral_drift_termination(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "command_tracking_v1", "--lateral-drift-termination"]
+        )
+
+        self.assertTrue(args.lateral_drift_termination)
+
+    def test_legacy_recipe_keeps_lateral_drift_termination(self) -> None:
+        args = train_mjx_3d_residual_ppo.parse_args(
+            ["--recipe", "phase_locked_coupled_v8"]
+        )
+
+        self.assertTrue(args.lateral_drift_termination)
 
     def test_lateral_reflex_defaults_to_disabled(self) -> None:
         args = train_mjx_3d_residual_ppo.parse_args(

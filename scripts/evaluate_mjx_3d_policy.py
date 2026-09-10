@@ -374,6 +374,16 @@ def parse_args(argv=None):
     parser.add_argument(
         "--reset-axis-tilt-noise-rad", type=float, default=0.0
     )
+    parser.add_argument(
+        "--lateral-drift-termination",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Allow lateral-envelope violations to terminate evaluation. "
+            "Disable it for command-tracking evaluation while retaining "
+            "lateral-drift measurements."
+        ),
+    )
     parser.add_argument("--reference-weight", type=float, default=1.0)
     parser.add_argument("--minimum-residual-gain", type=float, default=0.15)
     parser.add_argument("--phase-rate-scale", type=float, default=1.0)
@@ -606,6 +616,7 @@ def main(argv=None) -> None:
                 args.reset_pair_differential_scale
             ),
             reset_axis_tilt_noise_rad=args.reset_axis_tilt_noise_rad,
+            lateral_drift_termination=args.lateral_drift_termination,
             reference_phase_rate_scale=args.phase_rate_scale,
             reference_action_scale=args.reference_action_scale,
             reference_ramp_start_scale=args.reference_ramp_start_scale,

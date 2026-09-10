@@ -760,6 +760,7 @@ RECIPES_3D = {
         ),
         "args": {
             "no_self_collision": True,
+            "lateral_drift_termination": False,
             "reference_weight": 1.0,
             "minimum_residual_gain": 0.15,
             "phase_rate_scale": 1.0,
@@ -1758,6 +1759,15 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--terminate-root-z-max", type=float, default=0.80)
     parser.add_argument("--terminate-lateral-drift", type=float, default=0.20)
+    parser.add_argument(
+        "--lateral-drift-termination",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Allow lateral-envelope violations to terminate an episode. "
+            "The measurements remain available when disabled."
+        ),
+    )
     parser.add_argument("--terminate-axis-tilt", type=float, default=0.50)
     parser.add_argument(
         "--terminate-axis-tilt-duration", type=float, default=0.10
@@ -2067,6 +2077,8 @@ def parse_args(argv=None):
     _apply_recipe_defaults(args)
     if args.no_self_collision is None:
         args.no_self_collision = False
+    if args.lateral_drift_termination is None:
+        args.lateral_drift_termination = True
     if args.reflection_equivariant_policy is None:
         args.reflection_equivariant_policy = False
     if args.differential_mean_zero_weight is None:
@@ -2385,6 +2397,7 @@ def main(argv=None) -> None:
             ),
             terminate_root_z_max=args.terminate_root_z_max,
             terminate_lateral_drift_m=args.terminate_lateral_drift,
+            lateral_drift_termination=args.lateral_drift_termination,
             terminate_axis_tilt_rad=args.terminate_axis_tilt,
             terminate_axis_tilt_duration_s=(
                 args.terminate_axis_tilt_duration

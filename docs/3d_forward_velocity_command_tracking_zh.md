@@ -110,6 +110,10 @@ python -m scripts.train_mjx_3d_residual_ppo \
 指向主高速 reference。保留 PPO checkpoints 是为了在 `params_best` 出现碰撞时，能用
 低 batch 的完整碰撞评估重新挑选，而不必重训。
 
+这一 command recipe 中，lateral drift 越界和累计 yaw/heading 偏移均不判定为失败、
+不提前结束 episode。两者继续记录为诊断指标；转向跟踪仍使用 yaw-rate command 的
+软奖励。跌倒（高度/滚动轴倾斜）、数值异常以及启用碰撞模型后的非法接触仍属于失败。
+
 训练后评估（固定 v_cmd，输出速度误差/自碰撞）：
 
 ```bash
@@ -120,6 +124,7 @@ python -m scripts.evaluate_mjx_3d_policy \
   --physics-profile cg20 \
   --controller results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json \
   --batch-size 16 --chunk-size 4 \
+  --no-lateral-drift-termination \
   --forward-command-fixed-m-s 0.60 \
   --zero-residual-policy-init
 ```
@@ -158,6 +163,7 @@ python -m scripts.evaluate_mjx_3d_policy \
   --physics-profile cg20 \
   --controller results/rollingquad_abd10_high_speed_zero_contact_refine_smoke/01_zero_contact_speed_refine/best_phase_controller.json \
   --batch-size 16 --chunk-size 4 \
+  --no-lateral-drift-termination \
   --forward-command-fixed-m-s 0.60 \
   --turn-command-fixed-rad-s 0.08 \
   --zero-residual-policy-init

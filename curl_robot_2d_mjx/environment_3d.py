@@ -2142,6 +2142,9 @@ def make_brax_env_3d(
                 )
                 & (turning < 0.5)
             )
+            terminal_lateral_drift = (
+                failure_lateral_drift & task.lateral_drift_termination
+            )
             failure_forbidden_depth = (
                 contacts["forbidden_depth"]
                 > task.terminate_forbidden_depth_m
@@ -2154,15 +2157,13 @@ def make_brax_env_3d(
                 | failure_forbidden_depth
                 | failure_forbidden_contact
             )
-            failed_bool = failed_non_lateral | (
-                failure_lateral_drift & task.lateral_drift_termination
-            )
+            failed_bool = failed_non_lateral | terminal_lateral_drift
             failure_severe = (
                 failure_root_low
                 | failure_axis_tilt
                 | failure_forbidden_depth
                 | failure_forbidden_contact
-                | (failure_lateral_drift & task.lateral_drift_termination)
+                | terminal_lateral_drift
             )
             timeout_bool = step_count >= task.episode_length
             done = (failed_bool | timeout_bool).astype(jp.float32)
@@ -2387,15 +2388,15 @@ def make_brax_env_3d(
                 "failure_root_low": failure_root_low.astype(jp.float32),
                 "failure_root_high": failure_root_high.astype(jp.float32),
                 "failure_lateral_drift": (
-                    failure_lateral_drift.astype(jp.float32)
+                    terminal_lateral_drift.astype(jp.float32)
                 ),
                 "failure_lateral_positive": (
-                    (failure_lateral_drift & (lateral_drift > 0.0)).astype(
+                    (terminal_lateral_drift & (lateral_drift > 0.0)).astype(
                         jp.float32
                     )
                 ),
                 "failure_lateral_negative": (
-                    (failure_lateral_drift & (lateral_drift < 0.0)).astype(
+                    (terminal_lateral_drift & (lateral_drift < 0.0)).astype(
                         jp.float32
                     )
                 ),
