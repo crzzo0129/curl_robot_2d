@@ -27,7 +27,7 @@ BC 在 CEM 控制的真实轨迹上学习完整动作。DAgger 由学生访问�
 ```bash
 python -m scripts.train_mjx_3d_roll_distillation \
   --teacher-source cem \
-  --geometry rollingquad_2_abd10 \
+  --geometry rollingquad_2_abd10_no_self_collision \
   --command-conditioned --random-cem-snapshots \
   --preset smoke \
   --out results/rolling_command_distill_smoke
@@ -38,7 +38,7 @@ python -m scripts.train_mjx_3d_roll_distillation \
 ```bash
 python -m scripts.train_mjx_3d_roll_distillation \
   --teacher-source cem \
-  --geometry rollingquad_2_abd10 \
+  --geometry rollingquad_2_abd10_no_self_collision \
   --command-conditioned --random-cem-snapshots \
   --preset h200 \
   --out results/rolling_command_distill_h200

@@ -147,7 +147,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--geometry",
         choices=ROLLINGQUAD_GEOMETRIES_3D,
-        default="rollingquad_2",
+        default="rollingquad_2_abd10_no_self_collision",
         help="collision geometry used by both the teacher and Student rollout",
     )
     parser.add_argument(
