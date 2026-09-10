@@ -112,6 +112,12 @@ def _print_eval(title, metrics, *, training=False):
           f"sustain {value('reward_sustain')}")
     print(f"  Torque    base {value('reward_torque_base')} | excess {value('reward_torque_excess')}")
     print(f"  Handoff reward {value('reward_handoff_bonus')} (episode mean; max 2)")
+    symmetry_prefix = "eval/episode_" if training else ""
+    symmetry_duration = metrics.get(symmetry_prefix + "pre_capture_duration_s", 0.0)
+    symmetry_integral = metrics.get(symmetry_prefix + "action_asymmetry_square_integral")
+    symmetry_rms = (f"{math.sqrt(max(0.0, symmetry_integral / symmetry_duration)):.4f} rad"
+                    if symmetry_integral is not None and symmetry_duration > 0 else "--")
+    print(f"  Symmetry  reward {value('reward_action_symmetry')} | target L/R RMS {symmetry_rms} (pre-capture)")
     prefix = "eval/episode_" if training else ""
     captured = metrics.get(prefix + "captured", 0.0)
     def at_capture(name):
@@ -149,6 +155,10 @@ def parse_args(argv=None):
     parser.add_argument("--insurance-turns", type=int, choices=(1, 2), default=1,
                         help="End successfully after this many net turns following capture")
     parser.add_argument("--limit-torque", action="store_true", help="3 Nm cap with guarded handoff-quality fine-tuning; no excess torque penalty")
+    parser.add_argument("--symmetry-reward", type=float, default=0.0,
+                        help="Maximum per-second reward for matching left/right target angles before capture; try 0.05")
+    parser.add_argument("--symmetry-scale-rad", type=float, default=0.01,
+                        help="Tolerance scale for the largest left/right target-angle difference; independent of reward weight")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--hidden-layers", type=int, nargs="+",
                         default=STAND_TO_ROLL_HIDDEN_LAYERS)
@@ -172,6 +182,12 @@ def parse_args(argv=None):
     parser.add_argument("--mujoco-gl", default="disable")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
+    if not math.isfinite(args.symmetry_reward) or args.symmetry_reward < 0:
+        parser.error("--symmetry-reward must be finite and nonnegative")
+    if not math.isfinite(args.symmetry_scale_rad) or args.symmetry_scale_rad <= 0:
+        parser.error("--symmetry-scale-rad must be finite and positive")
+    if args.symmetry_reward > 0 and args.stage == "bc":
+        parser.error("--symmetry-reward applies to PPO stages only")
     if args.learning_rate is None:
         args.learning_rate = 1e-6 if args.limit_torque else 2e-5
     if args.num_evals is None and args.limit_torque:
@@ -676,6 +692,8 @@ def _capture_task(args):
                    reward_handoff_vy=0.0,
                    reward_handoff_axis=0.0,
                    reward_handoff_bonus=2.0 if args.limit_torque else 0.0,
+                   reward_action_symmetry=args.symmetry_reward,
+                   action_symmetry_scale_rad=args.symmetry_scale_rad,
                    load_diagnostics=args.limit_torque,
                    post_capture_turns=args.insurance_turns,
                    reward_capture_bonus=10.0, reward_roll_progress=0.1,

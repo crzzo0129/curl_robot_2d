@@ -313,6 +313,9 @@ def make_stand_to_roll_env_3d(
                 "reward_handoff_vy": zero,
                 "reward_handoff_axis": zero,
                 "reward_handoff_bonus": zero,
+                "reward_action_symmetry": zero,
+                "pre_capture_duration_s": zero,
+                "action_asymmetry_square_integral": zero,
                 "cem_distance": distance,
                 "reset_alpha": alpha,
                 "root_z_m": root_z,
@@ -591,6 +594,18 @@ def make_stand_to_roll_env_3d(
             handoff_bonus = jp.where(newly_captured,
                 config.reward_handoff_bonus * jp.exp(-handoff_error), 0.0)
             reward = reward + handoff_bonus
+            # Reward actual target-angle agreement; do not project or tie actions.
+            # The model's corresponding left/right joint coordinates have equal signs.
+            left = jp.asarray([0, 1, 2, 6, 7, 8])
+            right = jp.asarray([3, 4, 5, 9, 10, 11])
+            asymmetry_squared = jp.mean(jp.square(target[left] - target[right]))
+            # Every pair must align for a near-full reward; keep the mean
+            # squared difference separately for the existing RMS diagnostic.
+            worst_asymmetry_squared = jp.max(jp.square(target[left] - target[right]))
+            symmetry_dt = jp.where((~state.info["captured"]) & (~failed), config.control_timestep, 0.0)
+            symmetry_reward = (config.reward_action_symmetry * symmetry_dt
+                * jp.exp(-worst_asymmetry_squared / config.action_symmetry_scale_rad**2))
+            reward = reward + symmetry_reward
             reward = reward - lateral_penalty + sustain_reward
             reward = (reward + config.reward_insurance_bonus * insurance_success.astype(jp.float32)
                       - config.reward_wait_capture * (~state.info["captured"]).astype(jp.float32)
@@ -648,6 +663,9 @@ def make_stand_to_roll_env_3d(
                 "reward_handoff_vy": -handoff_vy_penalty,
                 "reward_handoff_axis": -handoff_axis_penalty,
                 "reward_handoff_bonus": handoff_bonus,
+                "reward_action_symmetry": symmetry_reward,
+                "pre_capture_duration_s": symmetry_dt,
+                "action_asymmetry_square_integral": asymmetry_squared * symmetry_dt,
                 "reward_sustain": sustain_reward,
                 "reset_z_correction_m": jp.where(step_count == 1, state.info["reset_z_correction"], 0.0),
                 "reset_floor_gap_m": jp.where(step_count == 1, state.info["reset_floor_gap"], 0.0),

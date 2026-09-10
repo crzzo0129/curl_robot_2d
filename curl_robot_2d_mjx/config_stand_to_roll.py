@@ -87,6 +87,8 @@ class StandToRollConfig:
     reward_handoff_vy: float = 0.0
     reward_handoff_axis: float = 0.0
     reward_handoff_bonus: float = 0.0  # one-shot bounded reward at capture
+    reward_action_symmetry: float = 0.0  # maximum per-second reward, before capture only
+    action_symmetry_scale_rad: float = 0.01
     handoff_y_scale_m: float = 0.10
     handoff_vy_scale_m_s: float = 0.05
     handoff_axis_scale_rad: float = 0.05
@@ -132,6 +134,8 @@ def stand_to_roll_curriculum_config(
 
 
 def validate_stand_to_roll_config(config: StandToRollConfig) -> None:
+    if config.reward_action_symmetry > 0 and config.geometry != "rollingquad_2_abd10":
+        raise ValueError("Action symmetry mapping is defined only for rollingquad_2_abd10")
     if config.post_capture_turns not in (0, 1, 2):
         raise ValueError("post_capture_turns must be 0, 1 or 2")
     if not math.isfinite(config.torque_hard_limit_nm) or config.torque_hard_limit_nm < 0:
@@ -157,6 +161,7 @@ def validate_stand_to_roll_config(config: StandToRollConfig) -> None:
         (config.handoff_y_scale_m, "handoff_y_scale_m"),
         (config.handoff_vy_scale_m_s, "handoff_vy_scale_m_s"),
         (config.handoff_axis_scale_rad, "handoff_axis_scale_rad"),
+        (config.action_symmetry_scale_rad, "action_symmetry_scale_rad"),
         (config.observation_limit, "observation_limit"),
         (config.terminate_root_z_max_m, "terminate_root_z_max_m"),
         (config.terminate_lateral_m, "terminate_lateral_m"),
