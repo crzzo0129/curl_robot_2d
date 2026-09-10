@@ -55,3 +55,51 @@ def timed_stage(label, heartbeat_seconds=30):
         stopped.set()
         thread.join()
         print(f"[{label}] finished after {time.perf_counter() - started:.1f}s", flush=True)
+
+
+def make_reset_finished_rollouts():
+    import jax
+    import jax.numpy as jp
+
+    @jax.jit
+    def reset_finished_rollouts(
+        current_state,
+        reset_state,
+        current_history,
+        current_previous_action,
+        reset_history,
+        reset_previous_action,
+    ):
+        finished = current_state.done > 0.5
+
+        def choose_reset(reset_value, current_value):
+            mask_shape = finished.shape + (1,) * (
+                current_value.ndim - finished.ndim
+            )
+            return jp.where(
+                jp.reshape(finished, mask_shape),
+                reset_value,
+                current_value,
+            )
+
+        next_state = jax.tree_util.tree_map(
+            choose_reset, reset_state, current_state
+        )
+        next_history = jp.where(
+            finished[:, None],
+            reset_history,
+            current_history,
+        )
+        next_previous_action = jp.where(
+            finished[:, None],
+            reset_previous_action,
+            current_previous_action,
+        )
+        return (
+            next_state,
+            next_history,
+            next_previous_action,
+            jp.mean(finished.astype(jp.float32)),
+        )
+
+    return reset_finished_rollouts

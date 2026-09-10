@@ -1268,46 +1268,16 @@ def main(argv=None):
         make_episode_randomization(args.envs)
     )
 
-    @jax.jit
-    def reset_finished_rollouts(
-        current_state,
-        reset_state,
-        current_history,
-        current_previous_action,
-        reset_history,
-        reset_previous_action,
-    ):
-        finished = current_state.done > 0.5
+    from curl_robot_2d_mjx.distillation_execution import make_reset_finished_rollouts
+    reset_finished_rollouts = make_reset_finished_rollouts()
 
-        def choose_reset(reset_value, current_value):
-            mask_shape = finished.shape + (1,) * (
-                current_value.ndim - finished.ndim
-            )
-            return jp.where(
-                jp.reshape(finished, mask_shape),
-                reset_value,
-                current_value,
-            )
-
-        next_state = jax.tree_util.tree_map(
-            choose_reset, reset_state, current_state
-        )
-        next_history = jp.where(
-            finished[:, None],
-            reset_history,
-            current_history,
-        )
-        next_previous_action = jp.where(
-            finished[:, None],
-            reset_previous_action,
-            current_previous_action,
-        )
-        return (
-            next_state,
-            next_history,
-            next_previous_action,
-            jp.mean(finished.astype(jp.float32)),
-        )
+    if not args.eval_only:
+        # Preserve the expensive BC result even if DAgger is interrupted.
+        model_io.save_params(args.out / "student_params_before_dagger", (
+            {"mean": np.asarray(observation_mean), "std": np.asarray(observation_std)},
+            jax.tree_util.tree_map(np.asarray, student_params), {},
+        ))
+        print(f"[saved before DAgger] {args.out / 'student_params_before_dagger'}", flush=True)
 
     # Online DAgger: visit states under the current student (with a decaying
     # amount of expert intervention), ask the privileged teacher for the
@@ -1466,62 +1436,63 @@ def main(argv=None):
     dagger_started = time.perf_counter()
     last_log_time = dagger_started
     last_log_step = 0
-    for step in range(0 if args.eval_only else args.dagger_steps):
-        if (args.random_cem_snapshots and step > 0
-                and step % args.snapshot_pool_refresh_steps == 0):
-            rng, pool_key = jax.random.split(rng)
-            reset_pool = reset_rollout(pool_key, args.envs)
-        with timed_stage("DAgger first update / JIT") if step == 0 else nullcontext():
-            (student_params, dagger_optimizer_state, dagger_state,
-             dagger_history, dagger_previous_controller_action, rng,
-             loss, diagnostics, teacher_fraction, deadline_miss_rate,
-             reset_rate) = dagger_update(
-                student_params, dagger_optimizer_state, dagger_state,
-                dagger_history, dagger_previous_controller_action, rng,
-                jp.asarray(step, dtype=jp.int32), reset_pool,
+    with timed_stage("DAgger training") if not args.eval_only else nullcontext():
+        for step in range(0 if args.eval_only else args.dagger_steps):
+            if (args.random_cem_snapshots and step > 0
+                    and step % args.snapshot_pool_refresh_steps == 0):
+                rng, pool_key = jax.random.split(rng)
+                reset_pool = reset_rollout(pool_key, args.envs)
+            with timed_stage("DAgger first update / JIT") if step == 0 else nullcontext():
+                (student_params, dagger_optimizer_state, dagger_state,
+                 dagger_history, dagger_previous_controller_action, rng,
+                 loss, diagnostics, teacher_fraction, deadline_miss_rate,
+                 reset_rate) = dagger_update(
+                    student_params, dagger_optimizer_state, dagger_state,
+                    dagger_history, dagger_previous_controller_action, rng,
+                    jp.asarray(step, dtype=jp.int32), reset_pool,
+                )
+                if step == 0:
+                    jax.block_until_ready((student_params, dagger_state))
+            teacher_probability = dagger_teacher_probability(
+                step, args.dagger_steps, args.dagger_teacher_start_probability,
+                args.dagger_teacher_end_probability,
             )
-            if step == 0:
-                jax.block_until_ready((student_params, dagger_state))
-        teacher_probability = dagger_teacher_probability(
-            step, args.dagger_steps, args.dagger_teacher_start_probability,
-            args.dagger_teacher_end_probability,
-        )
 
-        if step == 0 or (step + 1) % args.log_every == 0 or step + 1 == args.dagger_steps:
-            jax.block_until_ready((student_params, dagger_state))
-            now = time.perf_counter()
-            updates_per_second = (step + 1 - last_log_step) / max(now - last_log_time, 1e-9)
-            last_log_time, last_log_step = now, step + 1
-            record = {
-                "elapsed_s": now - dagger_started,
-                "updates_per_second": updates_per_second,
-                "env_steps_per_second": args.envs * updates_per_second,
-                "stage": "dagger",
-                "step": step + 1,
-                "loss": float(loss),
-                "action_rmse": float(diagnostics[0]),
-                "action_max_abs": float(diagnostics[1]),
-                "velocity_rmse": float(diagnostics[2]),
-                "teacher_probability": float(teacher_probability),
-                "teacher_fraction": float(teacher_fraction),
-                "deadline_miss_rate": float(deadline_miss_rate),
-                "reset_rate": float(reset_rate),
-            }
-            dagger_loss_history.append(record)
-            loss_history.append(record)
-            print(
-                f"[dagger {step + 1:>6}/{args.dagger_steps}] "
-                f"loss={record['loss']:.6g} "
-                f"rmse={record['action_rmse']:.5f} "
-                f"max={record['action_max_abs']:.5f} "
-                f"vel_rmse={record['velocity_rmse']:.4f} "
-                f"expert={record['teacher_fraction']:.1%} "
-                f"miss={record['deadline_miss_rate']:.1%} "
-                f"reset={record['reset_rate']:.1%} "
-                f"updates/s={updates_per_second:.2f} "
-                f"env_steps/s={record['env_steps_per_second']:.0f}",
-                flush=True,
-            )
+            if step == 0 or (step + 1) % args.log_every == 0 or step + 1 == args.dagger_steps:
+                jax.block_until_ready((student_params, dagger_state))
+                now = time.perf_counter()
+                updates_per_second = (step + 1 - last_log_step) / max(now - last_log_time, 1e-9)
+                last_log_time, last_log_step = now, step + 1
+                record = {
+                    "elapsed_s": now - dagger_started,
+                    "updates_per_second": updates_per_second,
+                    "env_steps_per_second": args.envs * updates_per_second,
+                    "stage": "dagger",
+                    "step": step + 1,
+                    "loss": float(loss),
+                    "action_rmse": float(diagnostics[0]),
+                    "action_max_abs": float(diagnostics[1]),
+                    "velocity_rmse": float(diagnostics[2]),
+                    "teacher_probability": float(teacher_probability),
+                    "teacher_fraction": float(teacher_fraction),
+                    "deadline_miss_rate": float(deadline_miss_rate),
+                    "reset_rate": float(reset_rate),
+                }
+                dagger_loss_history.append(record)
+                loss_history.append(record)
+                print(
+                    f"[dagger {step + 1:>6}/{args.dagger_steps}] "
+                    f"loss={record['loss']:.6g} "
+                    f"rmse={record['action_rmse']:.5f} "
+                    f"max={record['action_max_abs']:.5f} "
+                    f"vel_rmse={record['velocity_rmse']:.4f} "
+                    f"expert={record['teacher_fraction']:.1%} "
+                    f"miss={record['deadline_miss_rate']:.1%} "
+                    f"reset={record['reset_rate']:.1%} "
+                    f"updates/s={updates_per_second:.2f} "
+                    f"env_steps/s={record['env_steps_per_second']:.0f}",
+                    flush=True,
+                )
 
     direct_eval_env = make_brax_env_3d(
         direct_task,
