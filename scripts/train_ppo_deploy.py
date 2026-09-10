@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PPO for rollingquad_2 — trained to be DEPLOYABLE on the Pupper Pi stack.
 
-Same robot, same physics and the same reward stack as train_ppo_walk3d.py.
+Same robot and physics as train_ppo_walk3d.py, with deploy gait shaping.
 What changes is everything the real controller constrains, and nothing else:
 
   OBSERVATION.  neural_controller.hpp hardcodes kSingleObservationSize = 36 and
@@ -70,6 +70,7 @@ from brax.training.acme import running_statistics
 # imported: importing it sets w3.SHELL_CONTACT = True as a side effect, and
 # a walking policy must not be trained against colliding shells.
 import train_ppo_walk3d as w3
+from deploy_gait import init_hip_rom, sample_command, update_hip_rom
 from train_ppo_walk3d import (
     DEFAULT_POSE, CTRL_LO, CTRL_HI, ACTION_SCALE, LEGS,
     CMD_VX, CMD_VY, CMD_WZ, CMD_RESAMPLE, ZERO_CMD_PROB,
@@ -131,11 +132,28 @@ FOOT_LIFT_SPEED = 0.20        # full reward above this horizontal speed (m/s)
 
 # Straight-line trot symmetry.  The gate below disables these terms for
 # lateral motion and turning so they do not remove steering authority.
-# Fine-tuning weights: diagonal action differences are smooth and receive the
-# stronger signal; contact mismatch is binary, so keep it below the tracking
-# rewards to avoid converging to a four-feet-down solution.
-DIAG_ACTION_W = 0.06
+# Front and rear hip axes oppose each other. Equal raw diagonal actions can
+# suppress useful swing, so disable that cost for the first ablation.
+DIAG_ACTION_W = 0.0
 DIAG_CONTACT_W = 0.10
+
+# Explicit command buckets: 30% forward, 30% backward, 30% mixed, 10% stand.
+# The two straight buckets use the same speed-magnitude distribution.
+STRAIGHT_CMD_PROB = 0.60
+STRAIGHT_CMD_MIN_SPEED = 0.10
+
+# Actual hip peak-to-peak excursion, shared by all four legs and both signs
+# of vx. These are conservative starting targets, NOT measured backward-gait
+# statistics; calibrate them from stable rollouts at matching speeds.
+HIP_ROM_W = 0.08
+HIP_ROM_TARGET_RAD = 0.35      # 20 degrees peak-to-peak at reference speed
+HIP_ROM_MIN_RAD = 0.10
+HIP_ROM_REFERENCE_SPEED = 0.45
+HIP_ROM_WARMUP_S = 0.50
+HIP_ROM_MIN_CYCLE_S = 0.20
+HIP_ROM_MAX_CYCLE_S = 1.20
+HIP_ROM_MIN_SWING_S = 0.06
+HIP_ROM_MIN_CLEARANCE = 0.008
 
 # ============================================================ PPO config
 NUM_TIMESTEPS = 300_000_000  # more than walk3d: no velocity input, so the
@@ -297,14 +315,9 @@ class DeployEnv(PipelineEnv):
 
     # ------------------------------------------------------------ helpers
     def _sample_command(self, rng):
-        k1, k2, k3, k4 = jax.random.split(rng, 4)
-        cmd = jp.array([
-            jax.random.uniform(k1, (), minval=CMD_VX[0], maxval=CMD_VX[1]),
-            jax.random.uniform(k2, (), minval=CMD_VY[0], maxval=CMD_VY[1]),
-            jax.random.uniform(k3, (), minval=CMD_WZ[0], maxval=CMD_WZ[1]),
-        ])
-        stand = jax.random.uniform(k4) < ZERO_CMD_PROB
-        return jp.where(stand, jp.zeros(3), cmd)
+        return sample_command(
+            rng, CMD_VX, CMD_VY, CMD_WZ, STRAIGHT_CMD_PROB,
+            ZERO_CMD_PROB, STRAIGHT_CMD_MIN_SPEED)
 
     def _feet(self, ps):
         from brax import base
@@ -386,10 +399,14 @@ class DeployEnv(PipelineEnv):
             "step": jp.int32(0),
             "hist": hist,
         }
+        info.update(init_hip_rom(
+            ps.q[self._joint_qpos].reshape((4, 3))[:, 1], info["command"]))
         info["hist"] = self._push(hist, self._frame(ps, info))
         metrics = {k: jp.zeros(()) for k in
                    ("track_lin", "track_ang", "air", "slip", "scuff",
                     "clearance", "lift", "diag_action", "diag_contact",
+                    "hip_rom_penalty", "hip_rom_target", "hip_rom_front",
+                    "hip_rom_rear", "hip_rom_valid_fraction", "hip_rom_cycles",
                     "height_error", "height_penalty",
                     "vx", "vy", "wz", "height", "cmd_vx", "cmd_wz")}
         return State(ps, self._noise(info["hist"], k_obs), jp.zeros(()),
@@ -486,6 +503,16 @@ class DeployEnv(PipelineEnv):
         p_diag_contact = DIAG_CONTACT_W * straight * (
             jp.square(contact_f[0] - contact_f[3])
             + jp.square(contact_f[1] - contact_f[2]))
+        hip = ps.q[self._joint_qpos].reshape((4, 3))[:, 1]
+        hip_state, hip_metrics = update_hip_rom(
+            info, hip, cmd, contact_filt, foot_clearance, self.dt,
+            weight=HIP_ROM_W, target_rad=HIP_ROM_TARGET_RAD,
+            target_min_rad=HIP_ROM_MIN_RAD,
+            reference_speed=HIP_ROM_REFERENCE_SPEED,
+            warmup_s=HIP_ROM_WARMUP_S, min_cycle_s=HIP_ROM_MIN_CYCLE_S,
+            max_cycle_s=HIP_ROM_MAX_CYCLE_S,
+            min_swing_s=HIP_ROM_MIN_SWING_S,
+            min_clearance=HIP_ROM_MIN_CLEARANCE)
         p_stand = STAND_W * (1.0 - moving) * jp.sum(
             jp.abs(ps.q[self._joint_qpos] - DEFAULT_POSE))
 
@@ -497,12 +524,19 @@ class DeployEnv(PipelineEnv):
                   - p_torque - p_jvel - p_rate
                   - p_slip - p_scuff - p_clearance
                   - p_diag_action - p_diag_contact - p_stand
+                  - hip_metrics["hip_rom_penalty"]
                   - TERM_W * done)
         reward = jp.clip(reward, -5.0, 10.0)
 
         step_i = info["step"] + 1
         resample = (step_i % self._cmd_steps) == 0
         info["command"] = jp.where(resample, self._sample_command(k_cmd), cmd)
+        # Reset at command boundaries as well as termination. The helper also
+        # detects externally supplied command changes (e.g. video/evaluation).
+        hip_reset = init_hip_rom(hip, info["command"])
+        reset_hip = (done > 0.0) | jp.any(info["command"] != cmd)
+        info.update({k: jp.where(reset_hip, hip_reset[k], v)
+                     for k, v in hip_state.items()})
         info["rng"] = rng
         info["last_act"] = action
         info["action_queue"] = action_queue
@@ -513,6 +547,7 @@ class DeployEnv(PipelineEnv):
         info["hist"] = self._push(info["hist"], self._frame(ps, info))
 
         metrics = dict(state.metrics)
+        metrics.update(hip_metrics)
         metrics.update({
             "track_lin": r_lin, "track_ang": r_ang, "air": r_air,
             "slip": p_slip, "scuff": p_scuff,
@@ -721,11 +756,20 @@ def main(resume_path=None):
           f"solver {w3.SOLVER_ITER}/{w3.SOLVER_LS_ITER}, "
           f"walking proxies {'ON' if w3.WALK_COLLISION_PROXIES else 'off'}")
     print(f"  hidden {POLICY_HIDDEN}")
+    print(f"  commands: forward/backward {STRAIGHT_CMD_PROB/2:.0%} each, "
+          f"mixed {1-STRAIGHT_CMD_PROB-ZERO_CMD_PROB:.0%}, "
+          f"stand {ZERO_CMD_PROB:.0%}; straight |vx| >= "
+          f"{STRAIGHT_CMD_MIN_SPEED:.2f} m/s")
     print(f"  gait shaping height={HEIGHT_W} slip={SLIP_W} scuff={SCUFF_W} "
           f"clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
           f"lift={FOOT_LIFT_W}@{CLEARANCE_TARGET:.3f}m "
           f"diag_action={DIAG_ACTION_W} "
           f"diag_contact={DIAG_CONTACT_W}")
+    print(f"  hip ROM: weight={HIP_ROM_W}, target="
+          f"clip({HIP_ROM_TARGET_RAD:.2f}*|vx|/{HIP_ROM_REFERENCE_SPEED:.2f}, "
+          f"{HIP_ROM_MIN_RAD:.2f}, {HIP_ROM_TARGET_RAD:.2f}) rad; "
+          f"cycle={HIP_ROM_MIN_CYCLE_S:.2f}..{HIP_ROM_MAX_CYCLE_S:.2f}s, "
+          f"warmup={HIP_ROM_WARMUP_S:.2f}s")
     if DEPLOY_DR:
         print("  deploy DR: latency=0/20/40ms@60/30/10%, "
               f"deadline_miss={CONTROL_DEADLINE_MISS_PROB:.0%}, no shove")
@@ -767,6 +811,12 @@ def main(resume_path=None):
               f"diag_contact {g('diag_contact')}", flush=True)
         print(f"    height_error {g('height_error')}  "
               f"height_penalty {g('height_penalty')}", flush=True)
+        print(f"    hip_rom_penalty {g('hip_rom_penalty')}  "
+              f"hip_rom_front {g('hip_rom_front')}  "
+              f"hip_rom_rear {g('hip_rom_rear')}  "
+              f"hip_rom_target {g('hip_rom_target')}  "
+              f"hip_rom_valid_fraction {g('hip_rom_valid_fraction')}  "
+              f"hip_rom_cycles {g('hip_rom_cycles')}", flush=True)
         print(f"    took {_hms(took)}  |  elapsed "
               f"{_hms(time.time() - ticker.run_t0)}  |  ETA {ticker.eta()}",
               flush=True)
