@@ -437,6 +437,9 @@ def _task(
         "cg20",
         Rolling3DConfig(
             geometry=geometry,
+            self_collision_enabled=(
+                geometry != "rollingquad_2_abd10_no_self_collision"
+            ),
             episode_length=episode_length,
             reset_joint_noise_rad=0.005,
             reset_velocity_noise=0.005,

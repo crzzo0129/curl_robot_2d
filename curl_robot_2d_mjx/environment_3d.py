@@ -557,6 +557,42 @@ def validate_rollingquad_self_collision_contract_3d(model, geometry=None) -> Non
         raise ValueError(f"{geometry} floor collision mask must be (1, 0)")
 
 
+def validate_rollingquad_no_self_collision_contract_3d(model, geometry) -> None:
+    """Require robot-floor contact while rejecting every robot self-contact."""
+
+    floor_id = model.geom("floor").id
+    if (
+        int(model.geom_contype[floor_id]),
+        int(model.geom_conaffinity[floor_id]),
+    ) != (1, 0):
+        raise ValueError(f"{geometry} floor collision mask must be (1, 0)")
+
+    for geom_id in range(model.ngeom):
+        if int(model.geom_bodyid[geom_id]) == 0:
+            continue
+        actual = (
+            int(model.geom_contype[geom_id]),
+            int(model.geom_conaffinity[geom_id]),
+        )
+        if actual != (0, 1):
+            name = model.geom(geom_id).name
+            raise ValueError(
+                f"{geometry} no-self-collision mask mismatch for {name}: "
+                f"expected (0, 1), got {actual}"
+            )
+
+    for pair_id in range(model.npair):
+        geom1 = int(model.pair_geom1[pair_id])
+        geom2 = int(model.pair_geom2[pair_id])
+        if (
+            int(model.geom_bodyid[geom1]) != 0
+            and int(model.geom_bodyid[geom2]) != 0
+        ):
+            raise ValueError(
+                f"{geometry} contains an explicit robot self-collision pair"
+            )
+
+
 def configure_floor_contact_friction_3d(
     model,
     *,
@@ -675,7 +711,9 @@ def validate_rolling_morphology_3d(model, geometry: str) -> None:
 
     import mujoco
 
-    if geometry in ROLLINGQUAD_GEOMETRIES_3D:
+    if geometry == "rollingquad_2_abd10_no_self_collision":
+        validate_rollingquad_no_self_collision_contract_3d(model, geometry)
+    elif geometry in ROLLINGQUAD_GEOMETRIES_3D:
         validate_rollingquad_self_collision_contract_3d(model, geometry)
     expected_names = (
         PUPPER_JOINT_NAMES_3D
