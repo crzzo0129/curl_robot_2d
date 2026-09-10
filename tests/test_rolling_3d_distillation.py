@@ -41,6 +41,20 @@ MODEL_PATH = (
 
 
 class Rolling3DDistillationContractTest(unittest.TestCase):
+    def test_multi_device_cli_keeps_global_batch_and_validates_settings(self):
+        base = ["--teacher-source", "cem", "--controller", str(MODEL_PATH),
+                "--out", str(MODEL_PATH.parent / "unused_execution_cli_output")]
+        args = train_mjx_3d_roll_distillation.parse_args(
+            base + ["--preset", "h200", "--num-devices", "4", "--eval-envs", "64"]
+        )
+        self.assertEqual(args.envs, 2048)
+        self.assertEqual(args.snapshot_pool_refresh_steps, 100)
+        for invalid in (["--num-devices", "0"], ["--num-devices", "3"],
+                        ["--snapshot-pool-refresh-steps", "0"],
+                        ["--num-devices", "4", "--terrain-enabled"]):
+            with self.subTest(invalid=invalid), self.assertRaises(SystemExit):
+                train_mjx_3d_roll_distillation.parse_args(base + invalid)
+
     def test_deploy_dr_curriculum_contracts_toward_nominal(self):
         full = RollingStudentDeployDomainRandomization()
         quarter = full.scaled(0.25)
