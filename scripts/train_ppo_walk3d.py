@@ -84,7 +84,15 @@ JOINT_NAMES = tuple(
 
 # The values match the rollingquad_2 `stand` keyframe in canonical policy
 # order.  Limits are the common safe intersection of the four URDF legs.
-DEFAULT_POSE = jp.array([0.0, 0.90, 1.15] * 4)
+# Walking uses zero abduction on all four legs.
+# Deploy imports this array for reset, observation offsets, servo targets,
+# and exported default_joint_pos; keep all four uses on the same reference.
+DEFAULT_POSE = jp.array([
+    0.0, 0.90, 1.15,  # FL: abduction, hip, knee
+    0.0, 0.90, 1.15,  # FR
+    0.0, 0.90, 1.15,  # RL
+    0.0, 0.90, 1.15,  # RR
+])
 CTRL_LO = jp.array([-0.5236, -1.745329252, 0.1745329252] * 4)
 CTRL_HI = jp.array([3.66519, 1.902408885, 2.094395102] * 4)
 
@@ -378,8 +386,20 @@ def validate_model_contract(mj):
             "policy control limits exceed the MJCF actuator limits: " + details
         )
     stand = stand_key_qpos(mj)
-    if not np.allclose(stand[qpos_indices], np.asarray(DEFAULT_POSE), atol=1e-6):
-        raise RuntimeError("stand keyframe does not match DEFAULT_POSE")
+    stand_joints = stand[qpos_indices]
+    default_joints = np.asarray(DEFAULT_POSE)
+    pose_matches = np.isclose(stand_joints, default_joints, atol=1e-6, rtol=0.0)
+    if not np.all(pose_matches):
+        details = ", ".join(
+            f"{JOINT_NAMES[index]} stand={stand_joints[index]:.9g} "
+            f"DEFAULT_POSE={default_joints[index]:.9g} rad"
+            for index in np.flatnonzero(~pose_matches)
+        )
+        raise RuntimeError(
+            "stand keyframe does not match DEFAULT_POSE: " + details
+            + f"; source MJCF: {SRC_XML}. Sync the model and training script "
+              "so reset, action offsets, and exported defaults agree."
+        )
     for leg in LEGS:
         for obj_type, name in (
             (mujoco.mjtObj.mjOBJ_BODY, f"{leg}_shank"),
