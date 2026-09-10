@@ -38,6 +38,7 @@ from curl_robot_2d_mjx.failure_transition_3d import (
     transition_source_breakdown_3d,
 )
 from curl_robot_2d_mjx.runtime import configure_cloud_runtime, describe_runtime
+from curl_robot_2d_mjx.transition_domain_randomization_3d import DR_RANGES
 from curl_robot_2d_mjx.training_transition_3d import (
     TRANSITION_INITIAL_POLICY_STD, TRANSITION_TRAINING_REVISION,
     initialize_transition_actor, transition_scale_logit, transition_curriculum_acceptance,
@@ -105,8 +106,8 @@ def parse_args(argv=None):
     parser.add_argument("--reference-residual-scale", type=float, default=0.35)
     parser.add_argument("--target-rate-limits", type=float, nargs=3, metavar=("ABD", "HIP", "KNEE"),
                         help="rad/s per joint type; guided_absolute defaults to 6 16 16")
-    parser.add_argument("--robustness", choices=("none", "mild"), default="none",
-                        help="mild: horizontal force pulse plus increased observation noise")
+    parser.add_argument("--robustness", choices=("none", "mild", "deploy_dr"), default="none",
+                        help="deploy_dr: mild physical model DR, no pushes; mild: legacy push experiment")
     parser.add_argument("--eval-perturbations", action="store_true",
                         help="eval-only stress test with selected robustness and sensor noise")
     parser.add_argument("--roll-snapshots", type=Path)
@@ -204,6 +205,8 @@ def build_task(args) -> Transition3DConfig:
             snapshot_tail_fraction=args.snapshot_tail_fraction,
         )
     )
+    if args.robustness == "deploy_dr":
+        task = replace(task, domain_randomization=True, push_acceleration_m_s2=0.0)
     if args.robustness == "mild":
         task = replace(task, push_acceleration_m_s2=0.4,
                        observation_noise_velocity=0.075, observation_noise_gravity=0.025,
@@ -430,6 +433,7 @@ def main(argv=None) -> None:
         "reward": asdict(reward),
         "reward_profile": args.reward_profile,
         "robustness": args.robustness,
+        "domain_randomization_ranges": (DR_RANGES if task.domain_randomization else None),
         "eval_perturbations": args.eval_perturbations,
         "evaluation_sampling": "fixed_all_snapshots" if args.preset == "finetune_1m" else "random",
         "training": {
@@ -519,7 +523,10 @@ def main(argv=None) -> None:
             raise SystemExit("Installed Brax must support wrap_env_fn for full Transition resets")
 
     payload["runtime"] = describe_runtime()
-    if args.robustness != "none":
+    if args.robustness == "deploy_dr":
+        print(f"[DR] deploy_dr | no pushes | eval={'DR' if args.eval_perturbations else 'nominal'}", flush=True)
+        print(f"  model ranges: {DR_RANGES}", flush=True)
+    elif args.robustness != "none":
         print(f"[robustness] {args.robustness} | push <= {task.push_acceleration_m_s2:g}m/s2 "
               f"for {task.push_duration_s:g}s | probability={task.push_probability:.0%} "
               f"onset={task.push_start_range_s}s | "
@@ -534,6 +541,7 @@ def main(argv=None) -> None:
             json.dumps(payload["snapshot_selection"], indent=2) + "\n", encoding="utf-8")
     eval_env = make_brax_transition_env_3d(
         replace(task, observation_noise_enabled=args.eval_perturbations,
+                domain_randomization=task.domain_randomization and args.eval_perturbations,
                 push_acceleration_m_s2=task.push_acceleration_m_s2 if args.eval_perturbations else 0.0,
                 roll_snapshots_path=str(args.eval_roll_snapshots.resolve())
                 if args.eval_roll_snapshots else task.roll_snapshots_path),

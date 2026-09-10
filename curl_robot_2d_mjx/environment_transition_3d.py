@@ -638,6 +638,10 @@ def make_brax_transition_env_3d(
             self, data, rng, mode, actor_history=None, last_action=None,
             source_phase_bin=None, source_cycle=None,
         ):
+            if task.domain_randomization:
+                from curl_robot_2d_mjx.transition_domain_randomization_3d import randomize_transition_model
+                model = randomize_transition_model(self.sys, rng, self.torso_body_id)
+                data = mjx.forward(model, data)
             mode_steps = jp.asarray(0, dtype=jp.int32)
             reference = self._reference(mode, mode_steps, data.ctrl)
             contacts = self._contacts(data)
@@ -712,6 +716,10 @@ def make_brax_transition_env_3d(
             )
 
         def step(self, state, action):
+            model = self.sys
+            if task.domain_randomization:
+                from curl_robot_2d_mjx.transition_domain_randomization_3d import randomize_transition_model
+                model = randomize_transition_model(self.sys, state.info["rng"], self.torso_body_id)
             pipeline_state = state.pipeline_state
             if task.push_acceleration_m_s2 > 0:
                 from curl_robot_2d_mjx.transition_robustness_3d import horizontal_push_force
@@ -749,7 +757,7 @@ def make_brax_transition_env_3d(
 
                 def physics_step(carry, unused):
                     del unused
-                    return mjx.step(self.sys, carry), None
+                    return mjx.step(model, carry), None
 
                 data, _ = jax.lax.scan(
                     physics_step, data, None, length=task.action_repeat
@@ -773,7 +781,7 @@ def make_brax_transition_env_3d(
                         substep_reference + residual,
                         self.joint_low, self.joint_high,
                     )
-                    return mjx.step(self.sys, carry.replace(ctrl=target)), None
+                    return mjx.step(model, carry.replace(ctrl=target)), None
 
                 data, _ = jax.lax.scan(
                     physics_step,

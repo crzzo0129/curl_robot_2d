@@ -138,6 +138,7 @@ class Transition3DConfig:
     observation_noise_joint_position: float = 0.01
     observation_limit: float = 100.0
     # One finite horizontal force pulse per episode; snapshots stay unmodified.
+    domain_randomization: bool = False
     push_acceleration_m_s2: float = 0.0
     push_probability: float = 0.8
     push_start_range_s: tuple[float, float] = (0.8, 2.4)
