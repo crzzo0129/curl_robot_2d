@@ -687,10 +687,10 @@ def _run(args):
                 else jp.asarray(fixed_command, dtype=jp.float32)
             )
             self._training = bool(training)
-            super().__init__(
-                deploy_dr=deploy_dr,
-                observation_noise=observation_noise,
-            )
+            base.DEPLOY_DR = bool(deploy_dr)
+            base.w3.DOMAIN_RANDOMIZE = bool(deploy_dr)
+            base.w3.OBS_NOISE = float(observation_noise)
+            super().__init__()
             hip_body = np.asarray(
                 [
                     base.mujoco.mj_name2id(

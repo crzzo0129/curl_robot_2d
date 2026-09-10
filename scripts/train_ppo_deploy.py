@@ -798,6 +798,10 @@ def main(resume_path=None):
     def progress(step, metrics):
         took = ticker.stop()
         g = lambda k: metrics.get(f"eval/episode_{k}", float("nan"))
+        # Brax accumulates custom metrics over each episode. Divide angle and
+        # validity sums by episode length to print radians/fractions, not sums.
+        eval_length = max(float(metrics.get("eval/avg_episode_length", 1.0)), 1.0)
+        avg = lambda k: g(k) / eval_length
         print(f"[{ticker.done}/{NUM_EVALS}] step {step:>13,} "
               f"({100.0*step/max(NUM_TIMESTEPS,1):4.1f}%)  "
               f"reward {metrics.get('eval/episode_reward', float('nan'))}  "
@@ -812,10 +816,10 @@ def main(resume_path=None):
         print(f"    height_error {g('height_error')}  "
               f"height_penalty {g('height_penalty')}", flush=True)
         print(f"    hip_rom_penalty {g('hip_rom_penalty')}  "
-              f"hip_rom_front {g('hip_rom_front')}  "
-              f"hip_rom_rear {g('hip_rom_rear')}  "
-              f"hip_rom_target {g('hip_rom_target')}  "
-              f"hip_rom_valid_fraction {g('hip_rom_valid_fraction')}  "
+              f"hip_rom_front_mean_rad {avg('hip_rom_front')}  "
+              f"hip_rom_rear_mean_rad {avg('hip_rom_rear')}  "
+              f"hip_rom_target_mean_rad {avg('hip_rom_target')}  "
+              f"hip_rom_valid_fraction {avg('hip_rom_valid_fraction')}  "
               f"hip_rom_cycles {g('hip_rom_cycles')}", flush=True)
         print(f"    took {_hms(took)}  |  elapsed "
               f"{_hms(time.time() - ticker.run_t0)}  |  ETA {ticker.eta()}",
