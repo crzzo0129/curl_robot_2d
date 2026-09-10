@@ -17,6 +17,9 @@ def main():
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--symmetric-actions", action="store_true",
                         help="Average left/right target actions throughout the episode (rollingquad_2_abd10 only)")
+    parser.add_argument("--distill-symmetry", action="store_true", help="Train an unprojected student from the averaged teacher")
+    parser.add_argument("--distill-updates", type=int, default=1000, help="Supervised minibatch updates per round (3 rounds)")
+    parser.add_argument("--student-params", type=Path, help="Evaluate exported student_params using the original checkpoint configuration")
     parser.add_argument("--load-eval", action="store_true", help="Evaluate loads without video or parameter updates")
     parser.add_argument("--episodes", type=int, default=32)
     parser.add_argument("--limit-torque", action="store_true", help="Override task with 3 Nm cap and bounded capture handoff reward")
@@ -24,6 +27,10 @@ def main():
     args = parser.parse_args()
     if args.episodes < 1:
         parser.error("--episodes must be positive")
+    if args.distill_updates < 1:
+        parser.error("--distill-updates must be positive")
+    if args.distill_symmetry and (args.symmetric_actions or args.load_eval or args.student_params):
+        parser.error("--distill-symmetry cannot be combined with projection, load evaluation or student parameters")
     checkpoint = args.checkpoint.resolve()
     config_path = next((p / "training_config.json" for p in (checkpoint, *checkpoint.parents)
                         if (p / "training_config.json").is_file()), None)
@@ -59,6 +66,12 @@ def main():
         policy_hidden_layer_sizes=hidden, value_hidden_layer_sizes=hidden,
         activation=jax.nn.elu, distribution_type="tanh_normal")
     params = ppo_checkpoint.load(str(checkpoint))
+    if args.student_params:
+        metadata = json.loads((args.student_params.parent / "student_source.json").read_text(encoding="utf-8"))
+        if (metadata["training_config_sha256"] != hashlib.sha256(config_path.read_bytes()).hexdigest()
+                or metadata["checkpoint_step"] != checkpoint.name):
+            parser.error("Student parameters require their original checkpoint configuration and step")
+        params = model_io.load_params(args.student_params)
     raw_policy = ppo_networks.make_inference_fn(networks)(params, deterministic=True)
     def projected_policy(obs, key):
         action, extras = raw_policy(obs, key)
@@ -72,7 +85,9 @@ def main():
         return action, extras
     policy = jax.jit(projected_policy)
     task = replace(StandToRollConfig(**config["task"]), observation_noise_enabled=False)
-    if args.symmetric_actions and task.geometry != "rollingquad_2_abd10":
+    if args.student_params:
+        task = replace(StandToRollConfig(**metadata["task"]), observation_noise_enabled=False)
+    if (args.symmetric_actions or args.distill_symmetry) and task.geometry != "rollingquad_2_abd10":
         parser.error("Symmetry mapping has only been defined for rollingquad_2_abd10")
     print(f"Action mode: {'left/right averaged' if args.symmetric_actions else 'original policy'}", flush=True)
     if args.limit_torque:
@@ -83,6 +98,17 @@ def main():
     if args.load_eval or args.limit_torque:
         task = replace(task, load_diagnostics=True)
     env = make_stand_to_roll_env_3d(task, matcher_npz=args.cem_data, seed=args.seed)
+    if args.distill_symmetry:
+        from scripts.distill_stand_to_roll_symmetry import distill
+        args.out.mkdir(parents=True, exist_ok=True)
+        (args.out / "student_source.json").write_text(json.dumps({
+            "checkpoint": str(checkpoint), "checkpoint_step": checkpoint.name,
+            "training_config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+            "bc_sha256": config["bc_sha256"], "task": vars(task),
+        }, indent=2) + "\n", encoding="utf-8")
+        distill(env, networks, params, out=args.out, count=args.episodes,
+                updates=args.distill_updates, seed=args.seed)
+        return
     if args.load_eval:
         from dataclasses import asdict
         from curl_robot_2d_mjx.deployment_rolling_3d import CONTROLLER_JOINT_NAMES_3D
@@ -113,6 +139,7 @@ def main():
             }
         report = {
             "symmetric_actions": args.symmetric_actions,
+            "student_params": str(args.student_params) if args.student_params else None,
             "checkpoint": str(checkpoint), "seed": args.seed, "episodes": args.episodes,
             "task": asdict(task), "capture_rate": float(values["captured"].mean()),
             "insurance_rate": float(values["insurance_success"].mean()),
@@ -171,7 +198,8 @@ def main():
     np.savez_compressed(rollout, **arrays)
     report = {name: float(np.sum(values[1:])) for name, values in metrics.items()}
     report.update(checkpoint=str(checkpoint), seed=args.seed, duration_s=(len(rows)-1)*task.control_timestep,
-                  symmetric_actions=args.symmetric_actions)
+                  symmetric_actions=args.symmetric_actions,
+                  student_params=str(args.student_params) if args.student_params else None)
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print("Rendering rollout.gif...", flush=True)
     from scripts.render_mjx_3d_policy import render_rollout
