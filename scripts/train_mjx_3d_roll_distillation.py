@@ -15,7 +15,9 @@ import argparse
 from dataclasses import asdict, replace
 import json
 import math
+from contextlib import nullcontext
 from pathlib import Path
+import time
 
 import numpy as np
 
@@ -156,6 +158,10 @@ def parse_args(argv=None):
     parser.add_argument("--snapshot-warmup-min-steps", type=int, default=20)
     parser.add_argument("--snapshot-warmup-max-steps", type=int, default=300)
     parser.add_argument("--snapshot-segment-steps", type=int, default=100)
+    parser.add_argument("--snapshot-pool-refresh-steps", type=int, default=100,
+                        help="refresh DAgger per-environment reset snapshots every N updates; reuse between refreshes")
+    parser.add_argument("--num-devices", type=int, default=1,
+                        help="local JAX devices for synchronous data parallelism; --envs is the GLOBAL batch")
     parser.add_argument(
         "--geometry",
         choices=ROLLINGQUAD_GEOMETRIES_3D,
@@ -306,6 +312,12 @@ def parse_args(argv=None):
             parser.error(f"--{name.replace('_', '-')} must be positive")
     if args.episode_length < 1 or args.log_every < 1:
         parser.error("--episode-length and --log-every must be positive")
+    if args.snapshot_pool_refresh_steps < 1 or args.snapshot_segment_steps < 1:
+        parser.error("snapshot refresh and segment steps must be positive")
+    if args.num_devices < 1 or args.envs % args.num_devices or args.eval_envs % args.num_devices:
+        parser.error("--num-devices must be positive and divide --envs and --eval-envs")
+    if args.num_devices > 1 and (args.deploy_dr or args.terrain_enabled):
+        parser.error("multi-device distillation currently supports nominal flat physics only")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         parser.error("--learning-rate must be finite and positive")
     if (
@@ -515,6 +527,11 @@ def main(argv=None):
     import flax.linen as linen
     import optax
 
+    from curl_robot_2d_mjx.distillation_execution import BatchExecution, timed_stage
+    execution = BatchExecution(args.num_devices)
+    print(f"[devices] {execution.description}; global_envs={args.envs} "
+          f"envs/device={args.envs // args.num_devices}", flush=True)
+
     from curl_robot_2d_mjx.environment_3d import make_brax_env_3d
     from curl_robot_2d_mjx.randomization_3d import (
         make_student_deploy_domain_randomization_fn_3d,
@@ -608,8 +625,8 @@ def main(argv=None):
             lambda observation, keys: jp.zeros((observation.shape[0], 8), dtype=observation.dtype)
         )
         teacher_description = "cem_reference_only"
-    reset_batch = jax.jit(jax.vmap(teacher_env.reset))
-    step_batch = jax.jit(jax.vmap(teacher_env.step))
+    reset_batch = execution.batch_jit(jax.vmap(teacher_env.reset))
+    step_batch = execution.batch_jit(jax.vmap(teacher_env.step))
 
     controller_qpos_indices = []
     import mujoco
@@ -734,7 +751,7 @@ def main(argv=None):
         return state, history, previous_controller_action
 
     def make_snapshot_reset(batch_size):
-        @jax.jit
+        @execution.batch_jit
         def snapshot_reset(rng_key):
             rng_key, reset_key, warmup_key = jax.random.split(rng_key, 3)
             state, history, previous_action = plain_reset_rollout(reset_key, batch_size)
@@ -785,7 +802,10 @@ def main(argv=None):
             return plain_reset_rollout(rng_key, batch_size)
         if batch_size not in snapshot_reset_cache:
             snapshot_reset_cache[batch_size] = make_snapshot_reset(batch_size)
-        return snapshot_reset_cache[batch_size](rng_key)
+        with timed_stage(f"CEM snapshots batch={batch_size}"):
+            result = snapshot_reset_cache[batch_size](rng_key)
+            jax.block_until_ready(result)
+        return result
 
     rng, reset_key = jax.random.split(rng)
     if restored_student_checkpoint is None:
@@ -928,9 +948,12 @@ def main(argv=None):
             flush=True,
         )
     velocity_loss_weight = float(args.velocity_loss_weight)
+    student_params = jax.device_put(student_params, execution.replicated)
+    observation_mean = jax.device_put(observation_mean, execution.replicated)
+    observation_std = jax.device_put(observation_std, execution.replicated)
 
     def make_train_step(current_optimizer):
-        @jax.jit
+        @execution.train_jit
         def train_step(params, opt_state, observation, target, velocity_target):
             normalized = (observation - observation_mean) / observation_std
 
@@ -1106,8 +1129,8 @@ def main(argv=None):
         if deploy_dr_settings is None:
             return (
                 None,
-                jax.jit(jax.vmap(env.reset)),
-                jax.jit(jax.vmap(env.step)),
+                execution.batch_jit(jax.vmap(env.reset)),
+                execution.batch_jit(jax.vmap(env.step)),
             )
         randomization_fn = make_student_deploy_domain_randomization_fn_3d(
             deploy_dr_settings,
@@ -1318,7 +1341,10 @@ def main(argv=None):
             f"strength={args.deploy_dr_strength:g}", flush=True,
         )
 
-    for step in range(0 if args.eval_only else args.dagger_steps):
+    @jax.jit
+    def dagger_update(student_params, dagger_optimizer_state, dagger_state,
+                      dagger_history, dagger_previous_controller_action, rng,
+                      step, reset_pool):
         (
             rng,
             policy_key,
@@ -1404,14 +1430,8 @@ def main(argv=None):
         )
         dagger_previous_controller_action = behavior_controller_action
 
-        if args.random_cem_snapshots and bool(jp.any(dagger_state.done > 0.5)):
-            reset_state, reset_history, reset_previous = reset_rollout(
-                reset_key, args.envs
-            )
-        elif args.random_cem_snapshots:
-            reset_state, reset_history, reset_previous = (
-                dagger_state, dagger_history, dagger_previous_controller_action
-            )
+        if args.random_cem_snapshots:
+            reset_state, reset_history, reset_previous = reset_pool
         else:
             reset_keys = jax.random.split(reset_key, args.envs)
             reset_state = direct_reset_batch(reset_keys)
@@ -1432,8 +1452,50 @@ def main(argv=None):
             reset_previous,
         )
 
-        if step == 0 or (step + 1) % args.log_every == 0:
+        return (student_params, dagger_optimizer_state, dagger_state,
+                dagger_history, dagger_previous_controller_action, rng,
+                loss, diagnostics, jp.mean(use_teacher), deadline_miss_rate,
+                reset_rate)
+
+    # A complete update is compiled together: teacher-label dead physics can
+    # be eliminated and all reset decisions stay on device. Snapshots remain
+    # paired with their observation history and previous controller action.
+    reset_pool = None
+    if not args.eval_only and args.random_cem_snapshots:
+        reset_pool = (dagger_reset_state, dagger_reset_history, dagger_reset_previous)
+    dagger_started = time.perf_counter()
+    last_log_time = dagger_started
+    last_log_step = 0
+    for step in range(0 if args.eval_only else args.dagger_steps):
+        if (args.random_cem_snapshots and step > 0
+                and step % args.snapshot_pool_refresh_steps == 0):
+            rng, pool_key = jax.random.split(rng)
+            reset_pool = reset_rollout(pool_key, args.envs)
+        with timed_stage("DAgger first update / JIT") if step == 0 else nullcontext():
+            (student_params, dagger_optimizer_state, dagger_state,
+             dagger_history, dagger_previous_controller_action, rng,
+             loss, diagnostics, teacher_fraction, deadline_miss_rate,
+             reset_rate) = dagger_update(
+                student_params, dagger_optimizer_state, dagger_state,
+                dagger_history, dagger_previous_controller_action, rng,
+                jp.asarray(step, dtype=jp.int32), reset_pool,
+            )
+            if step == 0:
+                jax.block_until_ready((student_params, dagger_state))
+        teacher_probability = dagger_teacher_probability(
+            step, args.dagger_steps, args.dagger_teacher_start_probability,
+            args.dagger_teacher_end_probability,
+        )
+
+        if step == 0 or (step + 1) % args.log_every == 0 or step + 1 == args.dagger_steps:
+            jax.block_until_ready((student_params, dagger_state))
+            now = time.perf_counter()
+            updates_per_second = (step + 1 - last_log_step) / max(now - last_log_time, 1e-9)
+            last_log_time, last_log_step = now, step + 1
             record = {
+                "elapsed_s": now - dagger_started,
+                "updates_per_second": updates_per_second,
+                "env_steps_per_second": args.envs * updates_per_second,
                 "stage": "dagger",
                 "step": step + 1,
                 "loss": float(loss),
@@ -1441,7 +1503,7 @@ def main(argv=None):
                 "action_max_abs": float(diagnostics[1]),
                 "velocity_rmse": float(diagnostics[2]),
                 "teacher_probability": float(teacher_probability),
-                "teacher_fraction": float(jp.mean(use_teacher)),
+                "teacher_fraction": float(teacher_fraction),
                 "deadline_miss_rate": float(deadline_miss_rate),
                 "reset_rate": float(reset_rate),
             }
@@ -1455,7 +1517,9 @@ def main(argv=None):
                 f"vel_rmse={record['velocity_rmse']:.4f} "
                 f"expert={record['teacher_fraction']:.1%} "
                 f"miss={record['deadline_miss_rate']:.1%} "
-                f"reset={record['reset_rate']:.1%}",
+                f"reset={record['reset_rate']:.1%} "
+                f"updates/s={updates_per_second:.2f} "
+                f"env_steps/s={record['env_steps_per_second']:.0f}",
                 flush=True,
             )
 
