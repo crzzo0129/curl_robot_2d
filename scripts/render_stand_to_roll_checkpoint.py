@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--cem-data", type=Path, default=Path("results/cem_cycle_data/cem_cycles.npz"))
     parser.add_argument("--out", type=Path, default=Path("results/full_stand_video"))
     parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--symmetric-actions", action="store_true",
+                        help="Average left/right target actions throughout the episode (rollingquad_2_abd10 only)")
     parser.add_argument("--load-eval", action="store_true", help="Evaluate loads without video or parameter updates")
     parser.add_argument("--episodes", type=int, default=32)
     parser.add_argument("--limit-torque", action="store_true", help="Override task with 3 Nm cap and bounded capture handoff reward")
@@ -57,8 +59,22 @@ def main():
         policy_hidden_layer_sizes=hidden, value_hidden_layer_sizes=hidden,
         activation=jax.nn.elu, distribution_type="tanh_normal")
     params = ppo_checkpoint.load(str(checkpoint))
-    policy = jax.jit(ppo_networks.make_inference_fn(networks)(params, deterministic=True))
+    raw_policy = ppo_networks.make_inference_fn(networks)(params, deterministic=True)
+    def projected_policy(obs, key):
+        action, extras = raw_policy(obs, key)
+        if args.symmetric_actions:
+            # FL/FR/RL/RR, each ABD/hip/knee. This MJCF already mirrors
+            # joint axes: all corresponding target coordinates have equal sign.
+            # Identical centers/scales make action averaging equivalent to
+            # averaging target angles. env.step records the applied action.
+            partner = jp.asarray([3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8])
+            action = 0.5 * (action + jp.take(action, partner, axis=-1))
+        return action, extras
+    policy = jax.jit(projected_policy)
     task = replace(StandToRollConfig(**config["task"]), observation_noise_enabled=False)
+    if args.symmetric_actions and task.geometry != "rollingquad_2_abd10":
+        parser.error("Symmetry mapping has only been defined for rollingquad_2_abd10")
+    print(f"Action mode: {'left/right averaged' if args.symmetric_actions else 'original policy'}", flush=True)
     if args.limit_torque:
         task = replace(task, torque_hard_limit_nm=3.0, torque_soft_limit_nm=2.0,
                        reward_torque_excess=0.0, reward_lateral_before_capture=0.0,
@@ -96,6 +112,7 @@ def main():
                 "at_3nm_fraction": float(values[f"torque_{i}_at3_s"].sum() / duration),
             }
         report = {
+            "symmetric_actions": args.symmetric_actions,
             "checkpoint": str(checkpoint), "seed": args.seed, "episodes": args.episodes,
             "task": asdict(task), "capture_rate": float(values["captured"].mean()),
             "insurance_rate": float(values["insurance_success"].mean()),
@@ -107,6 +124,18 @@ def main():
             "contact_note": "Solver normal forces sampled each physics step; impulse includes body support, not just impacts. No contact-force safety threshold applied.",
         }
         args.out.mkdir(parents=True, exist_ok=True)
+        captured_mask = values["captured"] > 0.5
+        handoff = {}
+        for name, scale in (("capture_abs_y_m", 1.0), ("capture_abs_vy_m_s", 1.0),
+                            ("capture_axis_error_rad", 180.0 / np.pi)):
+            samples = values[name][captured_mask] * scale
+            label = name.replace("_rad", "_deg")
+            handoff[label] = {"mean": float(samples.mean()) if samples.size else None,
+                              "p95": float(np.percentile(samples, 95)) if samples.size else None}
+        angles = values["capture_axis_error_rad"][captured_mask]
+        handoff["axis_under_5deg_fraction_of_captured"] = (
+            float(np.mean(angles < np.deg2rad(5))) if angles.size else None)
+        report["handoff_captured_episodes"] = handoff
         np.savez_compressed(args.out / "episodes.npz", **values)
         (args.out / "load_report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(f"Capture {report['capture_rate']:.1%} | Insurance {report['insurance_rate']:.1%} "
@@ -117,6 +146,7 @@ def main():
                   f"{row['over_2nm_fraction']:8.1%} {row['at_3nm_fraction']:8.1%}")
         print(f"Ground peak: single contact {report['single_contact_peak_n']:.1f} N | "
               f"total {report['total_ground_normal_peak_n']:.1f} N")
+        print("Handoff (captured episodes): " + json.dumps(handoff), flush=True)
         print(f"Report: {args.out / 'load_report.json'}", flush=True)
         return
     print("Replaying checkpoint in MJX (first compilation may take several minutes)...", flush=True)
@@ -140,7 +170,8 @@ def main():
     arrays.update(qpos=np.asarray(rows), reward=np.asarray(rewards))
     np.savez_compressed(rollout, **arrays)
     report = {name: float(np.sum(values[1:])) for name, values in metrics.items()}
-    report.update(checkpoint=str(checkpoint), seed=args.seed, duration_s=(len(rows)-1)*task.control_timestep)
+    report.update(checkpoint=str(checkpoint), seed=args.seed, duration_s=(len(rows)-1)*task.control_timestep,
+                  symmetric_actions=args.symmetric_actions)
     (args.out / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print("Rendering rollout.gif...", flush=True)
     from scripts.render_mjx_3d_policy import render_rollout

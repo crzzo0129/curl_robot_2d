@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Distill a CEM or privileged 3-D rolling teacher into the real Pupper ABI.
 
-The teacher keeps its 65-value simulator observation and eight residual
-channels.  Teacher-controlled rollouts supervise a student that receives the
+The teacher keeps its privileged simulator observation (69 values with phase
+feedback, or 65 for legacy checkpoints) and eight residual channels.
+Teacher-controlled rollouts supervise a student that receives the
 real controller's newest-first 36 x 20 observation history and predicts the
 complete 12-motor normalized command.  The target is the *effective* CEM plus
 residual action, never the residual alone.
@@ -36,6 +37,8 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
 )
 from curl_robot_2d_mjx.environment_3d import (
     FORWARD_COMMAND_LOOKUP_SPEEDS_M_S,
+    OBSERVATION_SIZE_3D,
+    PHASE_FEEDBACK_SIZE_3D,
     ROLLINGQUAD_GEOMETRIES_3D,
     cem_controller_path_3d,
 )
@@ -128,6 +131,15 @@ def parse_args(argv=None):
     parser.add_argument("teacher", type=Path, nargs="?", help="privileged teacher params_best; omitted for CEM-only teacher")
     parser.add_argument("--teacher-source", choices=("cem", "privileged"), default=None,
                         help="default: privileged when teacher path is given, otherwise CEM")
+    parser.add_argument(
+        "--teacher-explicit-phase-observation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "use the current 69-D privileged teacher observation; disable "
+            "only for a legacy 65-D checkpoint"
+        ),
+    )
     parser.add_argument("--command-conditioned", action="store_true",
                         help="condition BC/DAgger on [vx, vy, yaw_rate] and enable CEM speed/turn commands")
     parser.add_argument("--forward-command-min-m-s", type=float,
@@ -431,6 +443,7 @@ def _task(
     lateral_drift_diagnostic_only=False,
     terrain_enabled=False,
     terrain_slope_angle_deg=0.0,
+    explicit_phase_observation=True,
     args=None,
 ):
     task = physics_profile_3d(
@@ -455,10 +468,9 @@ def _task(
             ),
             terrain_enabled=terrain_enabled,
             terrain_slope_angle_deg=terrain_slope_angle_deg,
-            # The CEM teacher reads simulator state and commands directly.
-            # The deployable student has its own 720-D history contract, so do
-            # not append privileged phase feedback to the environment state.
-            explicit_phase_observation=False,
+            # Phase feedback belongs only to the privileged teacher. The
+            # deployable student still receives its independent 720-D history.
+            explicit_phase_observation=explicit_phase_observation,
             direct_effective_action=direct_effective_action,
             lateral_drift_termination=(
                 not lateral_drift_diagnostic_only
@@ -529,6 +541,9 @@ def main(argv=None):
             ),
             terrain_enabled=args.terrain_enabled,
             terrain_slope_angle_deg=0.0,
+            explicit_phase_observation=(
+                args.teacher_explicit_phase_observation
+            ),
             args=args,
         ),
         args,
@@ -551,9 +566,18 @@ def main(argv=None):
         cem_reference=reference,
         seed=args.seed,
     )
-    if teacher_env.observation_size != 65 or teacher_env.action_size != 8:
+    expected_teacher_observation_size = OBSERVATION_SIZE_3D + (
+        PHASE_FEEDBACK_SIZE_3D
+        if args.teacher_explicit_phase_observation
+        else 0
+    )
+    if (
+        teacher_env.observation_size != expected_teacher_observation_size
+        or teacher_env.action_size != 8
+    ):
         raise RuntimeError(
-            "teacher contract mismatch: expected obs=65 action=8, got "
+            "teacher contract mismatch: expected "
+            f"obs={expected_teacher_observation_size} action=8, got "
             f"obs={teacher_env.observation_size} action={teacher_env.action_size}"
         )
 
@@ -774,7 +798,8 @@ def main(argv=None):
 
     print(
         "[distillation contract]\n"
-        f"  teacher={teacher_description} obs=65 residual_action=8\n"
+        f"  teacher={teacher_description} "
+        f"obs={teacher_env.observation_size} residual_action=8\n"
         f"  student_obs=36x20={ROLLING_DEPLOY_OBSERVATION_SIZE_3D} "
         "student_action=12 effective_motor_command\n"
         f"  simulation=50Hz hardware={HARDWARE_POLICY_FREQUENCY_HZ_3D:g}Hz\n"

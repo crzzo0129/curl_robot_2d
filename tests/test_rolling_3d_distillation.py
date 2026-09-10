@@ -226,6 +226,32 @@ class Rolling3DDistillationContractTest(unittest.TestCase):
         self.assertTrue(direct_task.direct_effective_action)
         self.assertIsNone(direct_task.residual_pair_differential_scale)
 
+    def test_legacy_teacher_can_disable_explicit_phase_observation(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            teacher = root / "params_best"
+            teacher.write_bytes(b"placeholder")
+            controller = root / "controller.json"
+            controller.write_text("{}", encoding="utf-8")
+            args = train_mjx_3d_roll_distillation.parse_args(
+                [
+                    str(teacher),
+                    "--controller",
+                    str(controller),
+                    "--out",
+                    str(root / "output"),
+                    "--no-teacher-explicit-phase-observation",
+                ]
+            )
+            task = train_mjx_3d_roll_distillation._task(
+                episode_length=args.episode_length,
+                explicit_phase_observation=(
+                    args.teacher_explicit_phase_observation
+                ),
+            )
+
+        self.assertFalse(task.explicit_phase_observation)
+
     def test_primitive_geometry_selects_matching_reference_and_lateral_mode(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
