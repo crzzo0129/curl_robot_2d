@@ -88,8 +88,8 @@ class StandToRollConfig:
     reward_handoff_axis: float = 0.0
     reward_handoff_bonus: float = 0.0  # one-shot bounded reward at capture
     handoff_y_scale_m: float = 0.10
-    handoff_vy_scale_m_s: float = 0.10
-    handoff_axis_scale_rad: float = 0.20
+    handoff_vy_scale_m_s: float = 0.05
+    handoff_axis_scale_rad: float = 0.05
     reward_sustain: float = 1.0
     sustain_forward_speed_min_m_s: float = 0.02
 
