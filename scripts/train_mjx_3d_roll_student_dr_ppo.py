@@ -19,6 +19,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     controller_action_to_effective_action_3d,
 )
 from curl_robot_2d_mjx.environment_3d import (
+    FORWARD_COMMAND_LOOKUP_SPEEDS_M_S,
     ROLLINGQUAD_GEOMETRIES_3D,
     cem_controller_path_3d,
 )
@@ -108,6 +109,14 @@ def parse_args(argv=None):
     parser.add_argument("--num-minibatches", type=int)
     parser.add_argument("--episode-length", type=int, default=500)
     parser.add_argument("--minimum-success-turns", type=float, default=5.0)
+    parser.add_argument("--command-conditioned", action="store_true",
+                        help="fine-tune a command-conditioned student with speed/turn tracking rewards")
+    parser.add_argument("--forward-command-min-m-s", type=float, default=FORWARD_COMMAND_LOOKUP_SPEEDS_M_S[0])
+    parser.add_argument("--forward-command-max-m-s", type=float, default=FORWARD_COMMAND_LOOKUP_SPEEDS_M_S[-1])
+    parser.add_argument("--turn-command-min-rad-s", type=float, default=0.02)
+    parser.add_argument("--turn-command-max-rad-s", type=float, default=0.08)
+    parser.add_argument("--turn-command-straight-fraction", type=float, default=0.40)
+    parser.add_argument("--command-interval-s", type=float, default=10.0)
     add_stand_startup_arguments(parser)
     parser.add_argument("--dr-strength", type=float, default=0.25)
     parser.add_argument("--student-anchor-weight", type=float, default=0.02)
@@ -164,6 +173,14 @@ def parse_args(argv=None):
             parser.error(f"{name} must be finite and nonnegative")
     if args.dr_strength > 1.0:
         parser.error("--dr-strength must not exceed one")
+    for name in ("forward_command_min_m_s", "forward_command_max_m_s",
+                 "turn_command_min_rad_s", "turn_command_max_rad_s", "command_interval_s"):
+        if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be finite and positive")
+    if args.forward_command_min_m_s > args.forward_command_max_m_s or args.turn_command_min_rad_s > args.turn_command_max_rad_s:
+        parser.error("command minima must not exceed maxima")
+    if not 0 <= args.turn_command_straight_fraction <= 1:
+        parser.error("--turn-command-straight-fraction must be in [0,1]")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         parser.error("--learning-rate must be finite and positive")
     if not math.isfinite(args.initial_policy_std) or args.initial_policy_std <= 0.001:
@@ -263,6 +280,8 @@ def main(argv=None):
             episode_length=args.episode_length,
             direct_effective_action=True,
             geometry=args.geometry,
+            explicit_phase_observation=False,
+            args=args,
             lateral_drift_diagnostic_only=(
                 args.lateral_drift_diagnostic_only
             ),
@@ -272,9 +291,25 @@ def main(argv=None):
     deploy_settings = RollingStudentDeployDomainRandomization().scaled(
         args.dr_strength
     )
+    from curl_robot_2d_mjx.reward_3d import Rolling3DRewardConfig
+    reward_config = Rolling3DRewardConfig()
+    if args.command_conditioned:
+        # Tracking peaks at the requested speed. Keep rolling/stability terms
+        # as support, with no pressure to reproduce the teacher's actions.
+        reward_config = replace(
+            reward_config,
+            forward_velocity=4.0, forward_velocity_sigma_m_s=0.15,
+            turning_forward_velocity_scale=1.0,
+            yaw_rate_command=2.0, yaw_rate_command_sigma_rad_s=0.05,
+            roll_progress=0.5, residual_action=0.0,
+            # Existing exponential straight-line rewards are masked during
+            # commanded turns; world-y penalties must not oppose turning.
+            lateral_velocity=1.0, lateral_drift=1.5,
+        )
+    critic_observation_size = ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D + (3 if args.command_conditioned else 0)
 
     def make_env(seed, noise_scale):
-        base = make_brax_env_3d(task, cem_reference=reference, seed=seed)
+        base = make_brax_env_3d(task, reward_config=reward_config, cem_reference=reference, seed=seed)
         return make_rolling_student_dr_env_3d(
             base,
             deploy_settings,
@@ -282,13 +317,14 @@ def main(argv=None):
             student_anchor_weight=args.student_anchor_weight,
             observation_noise_scale=noise_scale,
             minimum_success_turns=args.minimum_success_turns,
+            command_conditioned=args.command_conditioned,
         )
 
     train_env = make_env(args.seed, args.observation_noise_scale)
     eval_env = make_env(args.seed + 10_000, args.observation_noise_scale)
     if train_env.observation_size != {
         "state": ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
-        "privileged_state": ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D,
+        "privileged_state": critic_observation_size,
     }:
         raise RuntimeError("asymmetric rolling observation contract mismatch")
 
@@ -343,7 +379,7 @@ def main(argv=None):
             {
                 "state": jp.zeros((ROLLING_DEPLOY_OBSERVATION_SIZE_3D,)),
                 "privileged_state": jp.zeros(
-                    (ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D,)
+                    (critic_observation_size,)
                 ),
             },
             **({"mode": "ema"} if running_statistics_supports_mode else {}),
@@ -358,7 +394,7 @@ def main(argv=None):
         restore_params = model_io.load_params(args.restore_ppo)
         restore_source = str(args.restore_ppo.resolve())
 
-    randomization_fn = make_student_deploy_domain_randomization_fn_3d(
+    randomization_fn = None if args.dr_strength == 0.0 else make_student_deploy_domain_randomization_fn_3d(
         deploy_settings,
         torso_body_id=train_env.torso_body_id,
     )
@@ -384,15 +420,21 @@ def main(argv=None):
         lateral = clean.get("eval/episode_failure_lateral_drift", 0.0)
         anchor = clean.get("eval/episode_student_anchor_action_rmse", 0.0)
         length = max(clean.get("eval/avg_episode_length", 1.0), 1.0)
+        vx_mae = clean.get("eval/episode_forward_velocity_error_abs_m_s", 0.0) / length
+        yaw_mae = clean.get("eval/episode_yaw_rate_error_abs_rad_s", 0.0) / length
         print(
             f"[Student DR PPO eval] step={int(step):,} "
             f"turns={turns:.3f} success={success:.1%} "
             f"non_lateral_success={non_lateral_success:.1%} "
             f"failed={failed:.1%} "
             f"non_lateral_failed={non_lateral_failed:.1%} "
-            f"lateral={lateral:.1%} anchor_rmse/step={anchor / length:.5f}",
+            f"lateral={lateral:.1%} anchor_rmse/step={anchor / length:.5f} "
+            f"vx_mae={vx_mae:.4f}m/s yaw_mae={yaw_mae:.4f}rad/s",
             flush=True,
         )
+        with (args.out / "metrics_history.json").open("w", encoding="utf-8") as handle:
+            json.dump(history, handle, indent=2)
+            handle.write("\n")
 
     optional_train_kwargs = {}
     if "save_checkpoint_path" in signature:
@@ -420,8 +462,9 @@ def main(argv=None):
         "deploy_domain_randomization": asdict(deploy_settings),
         "actor_observation": "real_controller_36x20",
         "actor_observation_size": ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
-        "critic_observation": "privileged_65d",
-        "critic_observation_size": ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D,
+        "critic_observation": "privileged_65d_plus_command" if args.command_conditioned else "privileged_65d",
+        "critic_observation_size": critic_observation_size,
+        "reward_config": asdict(reward_config),
         "policy_action_size": ROLLING_STUDENT_PPO_ACTION_SIZE_3D,
         "controller_action_size": 12,
         "student_anchor_weight": args.student_anchor_weight,
@@ -442,7 +485,9 @@ def main(argv=None):
         "[rolling Student DR PPO]\n"
         f"  student={args.student.resolve()}\n"
         f"  restore={restore_source}\n"
-        f"  actor=720D-real -> 8D-effective critic=65D-privileged\n"
+        f"  actor=720D-real -> 8D-effective critic={critic_observation_size}D-privileged\n"
+        f"  command_conditioned={args.command_conditioned} "
+        f"vx={args.forward_command_min_m_s:g}..{args.forward_command_max_m_s:g}m/s\n"
         f"  DR strength={args.dr_strength:g} anchor={args.student_anchor_weight:g} "
         f"noise={args.observation_noise_scale:g}\n"
         f"  geometry={args.geometry} lateral_termination="
@@ -492,6 +537,9 @@ def main(argv=None):
         controller_actor,
         {},
     )
+    # Keep the action-only deterministic checkpoint compatible with the same
+    # standalone distillation evaluator and RTNeural deployment exporter.
+    model_io.save_params(args.out / "student_params", export_checkpoint)
     rtneural = convert_rtneural(
         export_checkpoint,
         controller_config,
@@ -523,6 +571,7 @@ def main(argv=None):
     print(
         "[saved]\n"
         f"  PPO={params_path}\n"
+        f"  student={args.out / 'student_params'}\n"
         f"  deploy={args.out / 'student_rtneural.json'}",
         flush=True,
     )

@@ -924,6 +924,9 @@ def main(argv=None):
         if params_were_frozen
         else mutable_student_params
     )
+    velocity_estimator_available = (
+        not args.eval_only or "velocity_estimator" in student_params["params"]
+    )
     if "velocity_estimator" not in student_params["params"]:
         # Backward compatibility: student checkpoints saved before the
         # auxiliary velocity head was introduced have no "velocity_estimator"
@@ -1825,14 +1828,19 @@ def main(argv=None):
             )
         ),
         "abduction_output_max_abs": float(abduction_max_abs),
+        "velocity_estimator_available": velocity_estimator_available,
         "velocity_estimation_rmse": float(
             jp.sqrt(
                 velocity_error_square_sum
                 / jp.maximum(velocity_error_sample_count, 1)
             )
-        ),
+        ) if velocity_estimator_available else None,
         "failure_rates": failure_rates,
     }
+    velocity_rmse_text = (
+        f"{closed_loop_evaluation['velocity_estimation_rmse']:.4f} m/s"
+        if velocity_estimator_available else "unavailable (action-only checkpoint)"
+    )
     print(
         "[student closed loop]\n"
         f"  student_horizon={closed_loop_evaluation['duration_s']:.2f}s "
@@ -1846,8 +1854,7 @@ def main(argv=None):
         f"failure_free={closed_loop_evaluation['failure_free_rate']:.1%} "
         f"turns_mean={closed_loop_evaluation['mean_turns']:.3f} "
         f"turns_min={closed_loop_evaluation['minimum_turns']:.3f} "
-        f"velocity_rmse="
-        f"{closed_loop_evaluation['velocity_estimation_rmse']:.4f} m/s\n"
+        f"velocity_rmse={velocity_rmse_text}\n"
         f"  vx_abs_error={closed_loop_evaluation['mean_forward_tracking_abs_error_m_s']:.4f}m/s "
         f"yaw_abs_error={closed_loop_evaluation['mean_yaw_tracking_abs_error_rad_s']:.4f}rad/s\n"
         f"  abduction_rms="

@@ -25,6 +25,7 @@ def make_rolling_student_dr_env_3d(
     student_anchor_weight: float,
     observation_noise_scale: float,
     minimum_success_turns: float = 5.0,
+    command_conditioned: bool = False,
 ):
     """Wrap the direct rolling task with real observations and deploy effects."""
 
@@ -93,7 +94,7 @@ def make_rolling_student_dr_env_3d(
             return {
                 "state": ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
                 "privileged_state": (
-                    ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D
+                    ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D + (3 if command_conditioned else 0)
                 ),
             }
 
@@ -104,6 +105,15 @@ def make_rolling_student_dr_env_3d(
         @property
         def backend(self):
             return "mjx"
+
+        def _command(self, state):
+            return jp.stack((state.info["forward_velocity_command"],
+                             state.info["lateral_velocity_command"],
+                             state.info["yaw_rate_command"]))
+
+        def _critic_observation(self, state):
+            return (jp.concatenate((state.obs, self._command(state)))
+                    if command_conditioned else state.obs)
 
         def _actor_observation(
             self,
@@ -131,6 +141,7 @@ def make_rolling_student_dr_env_3d(
                 projected_gravity=projected_gravity,
                 joint_position_offset=joint_offset,
                 last_action=previous_controller_action,
+                command=self._command(state) if command_conditioned else None,
             )
             if observation_noise_scale > 0.0:
                 frame = frame + (
@@ -204,7 +215,7 @@ def make_rolling_student_dr_env_3d(
             return base_state.replace(
                 obs={
                     "state": actor_history,
-                    "privileged_state": base_state.obs,
+                    "privileged_state": self._critic_observation(base_state),
                 },
                 metrics=metrics,
                 info=info,
@@ -234,8 +245,10 @@ def make_rolling_student_dr_env_3d(
                 state.info["deploy_applied_action"],
                 delayed_action,
             )
-            anchor_action = student_anchor_policy(state.obs["state"])
-            anchor_mse = jp.mean(jp.square(raw_action - anchor_action))
+            anchor_mse = jp.asarray(0.0)
+            if student_anchor_weight > 0.0:
+                anchor_action = student_anchor_policy(state.obs["state"])
+                anchor_mse = jp.mean(jp.square(raw_action - anchor_action))
             anchor_reward = -student_anchor_weight * anchor_mse
             base_input = state.replace(
                 info={
@@ -297,7 +310,7 @@ def make_rolling_student_dr_env_3d(
             return base_state.replace(
                 obs={
                     "state": actor_history,
-                    "privileged_state": base_state.obs,
+                    "privileged_state": self._critic_observation(base_state),
                 },
                 reward=reward,
                 metrics=metrics,
