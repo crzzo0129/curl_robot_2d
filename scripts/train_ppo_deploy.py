@@ -134,7 +134,7 @@ SERVO_KD = 0.1
 # ======================================================= gait shaping
 # Deploy-specific weights: stronger motion and contact regularization.
 JVEL_W = 0.0004
-RATE_W = 0.02
+RATE_W = 0.08
 # Contact slip alone misses a swing foot skimming just above the contact
 # threshold, so use both contact slip and a smooth near-ground scuff cost.
 SLIP_W = 0.50
