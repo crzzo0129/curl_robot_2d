@@ -84,7 +84,7 @@ from train_ppo_walk3d import (
     CMD_VX, CMD_VY, CMD_WZ, CMD_RESAMPLE, ZERO_CMD_PROB,
     TRACK_LIN_W, TRACK_ANG_W, TRACK_SIGMA, ALIVE_W,
     AIR_TIME_W, AIR_TIME_TARGET, LIN_Z_W, ANG_XY_W, ORIENT_W, HEIGHT_W,
-    TORQUE_W, JVEL_W, RATE_W, SLIP_W, TERM_W,
+    TORQUE_W, TERM_W,
     Z_MIN, UP_MIN, FOOT_R, Ticker, _hms, _INT,
 )
 
@@ -132,10 +132,13 @@ SERVO_KP = 5.0
 SERVO_KD = 0.1
 
 # ======================================================= gait shaping
+# Deploy-specific weights: stronger motion and contact regularization.
+JVEL_W = 0.0004
+RATE_W = 0.02
 # Contact slip alone misses a swing foot skimming just above the contact
 # threshold, so use both contact slip and a smooth near-ground scuff cost.
-SLIP_W = 0.25
-SCUFF_W = 0.15
+SLIP_W = 0.50
+SCUFF_W = 0.30
 SCUFF_HEIGHT = 0.008          # only suppress motion very close to floor (m)
 CLEARANCE_W = 0.04
 CLEARANCE_TARGET = 0.040      # full height reward at 4 cm foot-bottom clearance
@@ -969,7 +972,8 @@ def main(resume_path=None, fresh=False):
           f"mixed {1-STRAIGHT_CMD_PROB-ZERO_CMD_PROB:.0%}, "
           f"stand {ZERO_CMD_PROB:.0%}; straight |vx| >= "
           f"{STRAIGHT_CMD_MIN_SPEED:.2f} m/s")
-    print(f"  gait shaping height={HEIGHT_W} slip={SLIP_W} scuff={SCUFF_W} "
+    print(f"  gait shaping jvel={JVEL_W} action_rate={RATE_W} "
+          f"height={HEIGHT_W} slip={SLIP_W} scuff={SCUFF_W} "
           f"clearance={CLEARANCE_W}@{CLEARANCE_TARGET:.3f}m "
           f"lift={FOOT_LIFT_W}@{CLEARANCE_TARGET:.3f}m "
           f"diag_action={DIAG_ACTION_W} "
