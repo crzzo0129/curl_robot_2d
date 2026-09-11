@@ -3,6 +3,12 @@
 入口：`scripts/train_ppo_deploy.py`。同步到训练机器时，也要同步新增的
 `scripts/deploy_gait.py`。
 
+Deploy 使用四条腿 abd 均为 0 的 `rollingquad.xml` 站姿，并通过
+`train_ppo_walk3d.py` 的模型生成逻辑关闭机器人自碰撞，保留地面接触。
+生成文件为 `~/robot/rollingquad_2_deploy_no_self_collision.xml`。
+该逻辑会覆盖机器人部件各自的碰撞位掩码；训练日志显示
+`self-collision off`。同步更新时也需要同步 `train_ppo_walk3d.py`。
+
 ## 第一轮修改
 
 - `DIAG_ACTION_W = 0.0`：关闭原始对角 action 差值惩罚。前后 hip 的转轴

@@ -24,6 +24,7 @@ import threading
 import time
 import functools
 import re
+import xml.etree.ElementTree as ET
 from math import sin
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
@@ -204,6 +205,36 @@ OBS_SIZE = 48
 
 
 # ========================================================== model set-up
+def disable_robot_self_collision(xml):
+    """Set torso-tree geoms to ground-only contact, preserving visual geoms.
+
+    Per-geom CAD whitelist masks override the default geom, so changing only
+    the default is insufficient. Floor category is bit 1 in this model.
+    """
+    root = ET.fromstring(xml)
+    torso = root.find("./worldbody/body[@name='torso']")
+    if torso is None:
+        raise RuntimeError("cannot disable self-collision: torso body not found")
+    default_geom = root.find("./default/geom")
+    default_type = default_geom.get("contype", "1") if default_geom is not None else "1"
+    default_affinity = default_geom.get("conaffinity", "1") if default_geom is not None else "1"
+    robot_names = set()
+    for geom in torso.iter("geom"):
+        active = (int(geom.get("contype", default_type)) != 0
+                  or int(geom.get("conaffinity", default_affinity)) != 0)
+        geom.set("contype", "0")
+        geom.set("conaffinity", "1" if active else "0")
+        if geom.get("name"):
+            robot_names.add(geom.get("name"))
+    # Explicit contact pairs bypass bit masks; remove only robot-robot pairs.
+    for contact in root.findall("./contact"):
+        for pair in list(contact.findall("pair")):
+            if (pair.get("geom1") in robot_names
+                    and pair.get("geom2") in robot_names):
+                contact.remove(pair)
+    return ET.tostring(root, encoding="unicode")
+
+
 def patch_xml():
     """Rewrite the source XML into the one MJX actually runs.
 
@@ -213,7 +244,7 @@ def patch_xml():
          patched XML is written under ~/robot;
       2. solver settings -> the finer walking-contact profile below;
       3. collision geometry -> preserve full CAD by default, with optional
-         walking-only proxies retained as an explicit diagnostic switch;
+         walking-only proxies and a robot self-collision switch;
       4. a com-tracking camera, so the training videos follow the robot.
     The <sensor> block is stripped because nothing here reads it.
     """
@@ -310,6 +341,9 @@ def patch_xml():
     cam = ('<camera name="track" mode="trackcom" pos="0 -1.1 0.45" '
            'xyaxes="1 0 0 0 0.38 0.92"/>')
     xml = xml.replace("<worldbody>", "<worldbody>\n    " + cam, 1)
+
+    if not SELF_COLLISION:
+        xml = disable_robot_self_collision(xml)
 
     os.makedirs(os.path.dirname(RUN_XML), exist_ok=True)
     with open(RUN_XML, "w") as f:

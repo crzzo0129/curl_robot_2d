@@ -80,7 +80,9 @@ from train_ppo_walk3d import (
     Z_MIN, UP_MIN, FOOT_R, Ticker, _hms, _INT,
 )
 
-w3.RUN_XML = os.path.expanduser("~/robot/rollingquad_2_deploy.xml")
+w3.SELF_COLLISION = False
+w3.RUN_XML = os.path.expanduser(
+    "~/robot/rollingquad_2_deploy_no_self_collision.xml")
 
 SAVE = "rollingquad_2_deploy_fine_lift_policy.bin"
 VID_DIR = "rollingquad_2_deploy_fine_lift_videos"
@@ -127,7 +129,7 @@ SCUFF_HEIGHT = 0.008          # only suppress motion very close to floor (m)
 CLEARANCE_W = 0.04
 CLEARANCE_TARGET = 0.020      # swing-foot bottom clearance target (m)
 FOOT_LIFT_W = 0.08
-FOOT_LIFT_SIGMA = 0.0075      # reward band around target height (m)
+FOOT_LIFT_SIGMA = 0.015      # reward band around target height (m)
 FOOT_LIFT_SPEED = 0.20        # full reward above this horizontal speed (m/s)
 
 # Straight-line trot symmetry.  The gate below disables these terms for
@@ -754,6 +756,7 @@ def main(resume_path=None):
     print(f"  activation {ACTIVATION_NAME}, no action filter")
     print(f"  physics {w3.PHYS_TIMESTEP * 1000:.0f} ms x {w3.N_FRAMES}, "
           f"solver {w3.SOLVER_ITER}/{w3.SOLVER_LS_ITER}, "
+          f"self-collision {'ON' if w3.SELF_COLLISION else 'off'}, "
           f"walking proxies {'ON' if w3.WALK_COLLISION_PROXIES else 'off'}")
     print(f"  hidden {POLICY_HIDDEN}")
     print(f"  commands: forward/backward {STRAIGHT_CMD_PROB/2:.0%} each, "
