@@ -33,12 +33,16 @@ Subcommands
     video    render from an existing policy
     export   train-free: policy .bin -> RTNeural .json
     dr       (composable) domain randomisation
+    terrain  (composable) 40% flat / 60% mild 2-D rough terrain
+             --terrain-max-height METERS sets the next terrain difficulty
     <none>   train
 """
 import os
 import sys as _sys
 import time
 import functools
+from dataclasses import asdict, replace
+from pathlib import Path
 
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 os.environ.setdefault("NCCL_NVLS_ENABLE", "0")
@@ -71,6 +75,10 @@ from brax.training.acme import running_statistics
 # a walking policy must not be trained against colliding shells.
 import train_ppo_walk3d as w3
 from deploy_gait import init_hip_rom, sample_command, update_hip_rom
+from deploy_terrain import (
+    RoughTerrainConfig, inject_heightfield, reference_terrain_data,
+    surface_height, terrain_data,
+)
 from train_ppo_walk3d import (
     DEFAULT_POSE, CTRL_LO, CTRL_HI, ACTION_SCALE, LEGS,
     CMD_VX, CMD_VY, CMD_WZ, CMD_RESAMPLE, ZERO_CMD_PROB,
@@ -88,6 +96,9 @@ SAVE = "rollingquad_2_deploy_fine_lift_policy.bin"
 VID_DIR = "rollingquad_2_deploy_fine_lift_videos"
 CKPT_DIR = "rollingquad_2_deploy_fine_lift_checkpoints"
 JSON_OUT = "rollingquad_2_deploy_fine_lift_policy.json"
+
+TERRAIN = False
+TERRAIN_CONFIG = RoughTerrainConfig()
 
 # ==================================================== controller contract
 # neural_controller.hpp:67-76.  Do not reorder; the C++ writes these indices
@@ -288,12 +299,67 @@ def enable_deploy_dr():
     JSON_OUT = "rollingquad_2_deploy_robust_dr_policy.json"
 
 
+def enable_deploy_terrain(max_height=None):
+    """Run after enable_deploy_dr so terrain outputs cannot overwrite flat runs."""
+    global TERRAIN, TERRAIN_CONFIG, SAVE, VID_DIR, CKPT_DIR, JSON_OUT
+    TERRAIN = True
+    if max_height is not None:
+        TERRAIN_CONFIG = replace(TERRAIN_CONFIG, max_height_m=max_height)
+    TERRAIN_CONFIG.validate()
+    prefix = "rollingquad_2_deploy_terrain" + ("_dr" if DEPLOY_DR else "")
+    SAVE = prefix + "_policy.bin"
+    VID_DIR = prefix + "_videos"
+    CKPT_DIR = prefix + "_checkpoints"
+    JSON_OUT = prefix + "_policy.json"
+
+
+def randomize_deploy_system(sys, rng):
+    """Compose optional motor/body DR with per-environment terrain sampling."""
+    if DEPLOY_DR:
+        randomized, in_axes = deploy_domain_randomize(sys, rng)
+    else:
+        randomized = sys
+        in_axes = jax.tree_util.tree_map(lambda _: None, sys)
+    if TERRAIN and sys.nhfield:
+        if sys.nhfield != 1:
+            raise ValueError("deploy terrain expects exactly one heightfield")
+
+        @jax.vmap
+        def sample_field(key):
+            key = jax.random.fold_in(key, TERRAIN_CONFIG.seed)
+            kn, kh, kf = jax.random.split(key, 3)
+            noise = jax.random.uniform(
+                kn, (TERRAIN_CONFIG.grid_size, TERRAIN_CONFIG.grid_size))
+            height = jax.random.uniform(
+                kh, (), minval=TERRAIN_CONFIG.min_height_m,
+                maxval=TERRAIN_CONFIG.max_height_m)
+            flat = jax.random.uniform(kf) < TERRAIN_CONFIG.flat_probability
+            return terrain_data(jp, noise, jp.where(flat, 0.0, height),
+                                TERRAIN_CONFIG)
+
+        randomized = randomized.tree_replace({"hfield_data": sample_field(rng)})
+        in_axes = in_axes.tree_replace({"hfield_data": 0})
+    return randomized, in_axes
+
+
 # ================================================================== env
 class DeployEnv(PipelineEnv):
     """Walking, observed exactly the way the real controller observes."""
 
-    def __init__(self):
-        mj = w3.load_mj()
+    def __init__(self, terrain=None):
+        self._terrain = TERRAIN if terrain is None else terrain
+        if self._terrain:
+            TERRAIN_CONFIG.validate()
+            base_path = Path(w3.patch_xml())
+            terrain_path = base_path.with_name(base_path.stem + "_terrain.xml")
+            terrain_path.write_text(inject_heightfield(
+                base_path.read_text(encoding="utf-8"), TERRAIN_CONFIG),
+                encoding="utf-8")
+            mj = mujoco.MjModel.from_xml_path(str(terrain_path))
+            mj.hfield_data[:] = reference_terrain_data(TERRAIN_CONFIG)
+            w3.validate_model_contract(mj)
+        else:
+            mj = w3.load_mj()
         self._mj = mj
         self._nom_h = w3.NOMINAL_H
         self._init_z = w3.NOMINAL_H + 0.0005
@@ -316,6 +382,13 @@ class DeployEnv(PipelineEnv):
         self._cmd_steps = max(int(round(CMD_RESAMPLE / float(self.dt))), 1)
 
     # ------------------------------------------------------------ helpers
+    def _ground_height(self, xy):
+        if not self._terrain:
+            return jp.zeros(xy.shape[:-1])
+        # The DR wrapper replaces self.sys per environment. Looking up the
+        # native preview model here would silently use the wrong terrain.
+        return surface_height(jp, xy, self.sys.hfield_data, TERRAIN_CONFIG)
+
     def _sample_command(self, rng):
         return sample_command(
             rng, CMD_VX, CMD_VY, CMD_WZ, STRAIGHT_CMD_PROB,
@@ -358,7 +431,7 @@ class DeployEnv(PipelineEnv):
         # A deterministic, contact-consistent reset avoids teaching the policy
         # to compensate for a 5--25 mm drop and independently perturbed legs.
         quat = jp.array([1.0, 0.0, 0.0, 0.0])
-        z = self._init_z
+        z = self._init_z + self._ground_height(jp.zeros(2))
         joints = DEFAULT_POSE
         qpos = (self._stand_qpos
                 .at[:3].set(jp.array([0.0, 0.0, z]))
@@ -400,6 +473,9 @@ class DeployEnv(PipelineEnv):
             "last_contact": jp.zeros(4, dtype=bool),
             "step": jp.int32(0),
             "hist": hist,
+            "terrain_span": (jp.max(self.sys.hfield_data)
+                             * TERRAIN_CONFIG.max_height_m
+                             if self._terrain else jp.zeros(())),
         }
         info.update(init_hip_rom(
             ps.q[self._joint_qpos].reshape((4, 3))[:, 1], info["command"]))
@@ -410,6 +486,9 @@ class DeployEnv(PipelineEnv):
                     "hip_rom_penalty", "hip_rom_target", "hip_rom_front",
                     "hip_rom_rear", "hip_rom_valid_fraction", "hip_rom_cycles",
                     "height_error", "height_penalty",
+                    "base_clearance", "ground_height", "terrain_span",
+                    "terrain_rough", "terrain_boundary",
+                    "hip_fl", "hip_fr", "hip_rl", "hip_rr",
                     "vx", "vy", "wz", "height", "cmd_vx", "cmd_wz")}
         return State(ps, self._noise(info["hist"], k_obs), jp.zeros(()),
                      jp.zeros(()), metrics, info)
@@ -445,9 +524,13 @@ class DeployEnv(PipelineEnv):
         moving = jp.linalg.norm(cmd) > 0.05
 
         foot_pos, foot_vel = self._feet(ps)
-        contact = (foot_pos[:, 2] - FOOT_R) < 1e-3
+        foot_ground = self._ground_height(foot_pos[:, :2])
+        signed_clearance = foot_pos[:, 2] - FOOT_R - foot_ground
+        contact = signed_clearance < 1e-3
         contact_filt = contact | info["last_contact"]
-        foot_clearance = jp.maximum(foot_pos[:, 2] - FOOT_R, 0.0)
+        foot_clearance = jp.maximum(signed_clearance, 0.0)
+        ground_height = self._ground_height(ps.q[:2])
+        base_clearance = ps.q[2] - ground_height
         foot_vxy2 = jp.sum(jp.square(foot_vel[:, :2]), axis=1)
         swing = (~contact_filt).astype(jp.float32)
         first_contact = (info["air_time"] > 0.0) & contact_filt
@@ -466,7 +549,7 @@ class DeployEnv(PipelineEnv):
         p_orient = ORIENT_W * jp.sum(jp.square(up[:2]))
         p_linz = LIN_Z_W * jp.square(lin_b[2])
         p_angxy = ANG_XY_W * jp.sum(jp.square(ang_b[:2]))
-        p_height = HEIGHT_W * jp.square(ps.q[2] - self._nom_h)
+        p_height = HEIGHT_W * jp.square(base_clearance - self._nom_h)
         p_torque = TORQUE_W * jp.sum(jp.square(ps.qfrc_actuator[6:]))
         p_jvel = JVEL_W * jp.sum(jp.square(ps.qd[self._joint_dof]))
         p_rate = RATE_W * jp.sum(jp.square(action - info["last_act"]))
@@ -523,7 +606,11 @@ class DeployEnv(PipelineEnv):
             jp.abs(ps.q[self._joint_qpos] - DEFAULT_POSE))
 
         bad = jp.isnan(ps.q).any() | jp.isnan(ps.qd).any()
-        done = ((ps.q[2] < Z_MIN) | (up[2] < UP_MIN) | bad).astype(jp.float32)
+        terrain_boundary = (jp.any(jp.abs(ps.q[:2]) > (
+            TERRAIN_CONFIG.half_size_m - TERRAIN_CONFIG.edge_margin_m))
+                            if self._terrain else jp.array(False))
+        done = ((base_clearance < Z_MIN) | (up[2] < UP_MIN)
+                | bad | terrain_boundary).astype(jp.float32)
 
         reward = (ALIVE_W + r_lin + r_ang + r_air + r_lift
                   - p_orient - p_linz - p_angxy - p_height
@@ -560,8 +647,14 @@ class DeployEnv(PipelineEnv):
             "clearance": p_clearance, "lift": r_lift,
             "diag_action": p_diag_action,
             "diag_contact": p_diag_contact,
-            "height_error": jp.abs(ps.q[2] - self._nom_h),
+            "height_error": jp.abs(base_clearance - self._nom_h),
             "height_penalty": p_height,
+            "base_clearance": base_clearance, "ground_height": ground_height,
+            "terrain_span": info["terrain_span"],
+            "terrain_rough": (info["terrain_span"] > 1e-6).astype(jp.float32),
+            "terrain_boundary": terrain_boundary.astype(jp.float32),
+            "hip_fl": hip[0], "hip_fr": hip[1],
+            "hip_rl": hip[2], "hip_rr": hip[3],
             "vx": lin_b[0], "vy": lin_b[1], "wz": ang_b[2],
             "height": ps.q[2], "cmd_vx": cmd[0], "cmd_wz": cmd[2],
         })
@@ -753,6 +846,7 @@ def main(resume_path=None):
     os.makedirs(VID_DIR, exist_ok=True)
     os.makedirs(CKPT_DIR, exist_ok=True)
     env, eval_env = DeployEnv(), DeployEnv()
+    flat_video_env = DeployEnv(terrain=False) if TERRAIN else None
 
     print("=" * 72)
     print("deployment-compatible walking")
@@ -763,6 +857,19 @@ def main(resume_path=None):
           f"self-collision {'ON' if w3.SELF_COLLISION else 'off'}, "
           f"walking proxies {'ON' if w3.WALK_COLLISION_PROXIES else 'off'}")
     print(f"  hidden {POLICY_HIDDEN}")
+    if TERRAIN:
+        import json
+        terrain_metadata = Path(CKPT_DIR) / (
+            f"terrain_{TERRAIN_CONFIG.max_height_m * 1000:g}mm_config.json")
+        terrain_metadata.write_text(
+            json.dumps(asdict(TERRAIN_CONFIG), indent=2), encoding="utf-8")
+        print(f"  terrain: flat={TERRAIN_CONFIG.flat_probability:.0%}, "
+              f"rough={1-TERRAIN_CONFIG.flat_probability:.0%}, "
+              f"height={TERRAIN_CONFIG.min_height_m*1000:g}.."
+              f"{TERRAIN_CONFIG.max_height_m*1000:g} mm valley-to-peak, "
+              f"grid={TERRAIN_CONFIG.grid_size}x{TERRAIN_CONFIG.grid_size}")
+        print("           contact/lift/base height relative to local ground; "
+              "checkpoint videos: flat + fixed rough field")
     print(f"  commands: forward/backward {STRAIGHT_CMD_PROB/2:.0%} each, "
           f"mixed {1-STRAIGHT_CMD_PROB-ZERO_CMD_PROB:.0%}, "
           f"stand {ZERO_CMD_PROB:.0%}; straight |vx| >= "
@@ -828,6 +935,14 @@ def main(resume_path=None):
               f"hip_rom_target_mean_rad {avg('hip_rom_target')}  "
               f"hip_rom_valid_fraction {avg('hip_rom_valid_fraction')}  "
               f"hip_rom_cycles {g('hip_rom_cycles')}", flush=True)
+        print("    hip_mean_rad FL/FR/RL/RR " + " / ".join(
+            f"{avg('hip_' + leg):.3f}" for leg in ("fl", "fr", "rl", "rr")),
+              flush=True)
+        if TERRAIN:
+            print(f"    terrain_rough_time_fraction {avg('terrain_rough'):.3f}  "
+                  f"terrain_span_mean_m {avg('terrain_span'):.4f}  "
+                  f"base_clearance_mean_m {avg('base_clearance'):.4f}  "
+                  f"terrain_boundary {g('terrain_boundary')}", flush=True)
         print(f"    took {_hms(took)}  |  elapsed "
               f"{_hms(time.time() - ticker.run_t0)}  |  ETA {ticker.eta()}",
               flush=True)
@@ -846,15 +961,23 @@ def main(resume_path=None):
                     lambda p, o, k: make_policy(p, deterministic=True)(o, k)[0])
                 jit_cache["step"] = jax.jit(eval_env.step)
                 jit_cache["reset"] = jax.jit(eval_env.reset)
-            roll, report = _scripted_rollout(
-                eval_env, lambda o, k: jit_cache["act"](params, o, k),
-                VIDEO_SECONDS * 2, step_fn=jit_cache["step"],
-                reset_fn=jit_cache["reset"])
-            v = os.path.join(VID_DIR, f"deploy_{step:012d}.mp4")
-            media.write_video(v, render_follow(eval_env, roll),
-                              fps=1.0 / float(eval_env.dt))
-            print("\n".join(report), flush=True)
-            print(f"    checkpoint + video: {v}", flush=True)
+                if flat_video_env is not None:
+                    jit_cache["flat_step"] = jax.jit(flat_video_env.step)
+                    jit_cache["flat_reset"] = jax.jit(flat_video_env.reset)
+            video_cases = [(eval_env, "terrain" if TERRAIN else "", "")]
+            if flat_video_env is not None:
+                video_cases.append((flat_video_env, "flat", "flat_"))
+            for video_env, label, cache_prefix in video_cases:
+                roll, report = _scripted_rollout(
+                    video_env, lambda o, k: jit_cache["act"](params, o, k),
+                    VIDEO_SECONDS * 2, step_fn=jit_cache[cache_prefix + "step"],
+                    reset_fn=jit_cache[cache_prefix + "reset"])
+                suffix = "_" + label if label else ""
+                v = os.path.join(VID_DIR, f"deploy_{step:012d}{suffix}.mp4")
+                media.write_video(v, render_follow(video_env, roll),
+                                  fps=1.0 / float(video_env.dt))
+                print("\n".join(report), flush=True)
+                print(f"    checkpoint + video: {v}", flush=True)
         except KeyboardInterrupt:
             raise
         except Exception as e:
@@ -874,7 +997,7 @@ def main(resume_path=None):
             policy_hidden_layer_sizes=POLICY_HIDDEN,
             value_hidden_layer_sizes=VALUE_HIDDEN,
             activation=ACTIVATION),
-        randomization_fn=deploy_domain_randomize if DEPLOY_DR else None,
+        randomization_fn=randomize_deploy_system if (DEPLOY_DR or TERRAIN) else None,
         policy_params_fn=policy_params_fn, seed=SEED, **resume,
     )
 
@@ -906,6 +1029,18 @@ if __name__ == "__main__":
         if "dr" in argv:
             enable_deploy_dr()
             argv.remove("dr")
+        terrain_max_height = None
+        if "--terrain-max-height" in argv:
+            i = argv.index("--terrain-max-height")
+            if i + 1 >= len(argv):
+                raise ValueError("--terrain-max-height requires a height in meters")
+            terrain_max_height = float(argv[i + 1])
+            del argv[i:i + 2]
+            if "terrain" not in argv:
+                raise ValueError("--terrain-max-height requires terrain mode")
+        if "terrain" in argv:
+            enable_deploy_terrain(terrain_max_height)
+            argv.remove("terrain")
         cmd = argv[0] if argv else "train"
         if cmd == "probe":
             probe()
