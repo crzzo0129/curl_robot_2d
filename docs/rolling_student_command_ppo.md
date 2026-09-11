@@ -1,5 +1,11 @@
 # Fine-tune the command-conditioned rolling student with PPO
 
+For the reported collapse after PPO updates, follow
+[the cloud diagnostics and staged recovery procedure](rolling_ppo_recovery.md)
+before another long run. The long-run command below is the original recipe,
+not a verified remedy. The new fixed evaluator also requires
+`curl_robot_2d_mjx/rolling_ppo_diagnostics.py` when syncing this entry point.
+
 Run on the Linux training server, from `curl_robot_2d`. This path copies the
 distilled actor and freezes its observation normalizer, initializes a fresh
 privileged critic, and optimizes reward. The actor remains a 720-input MLP with

@@ -84,7 +84,7 @@ from train_ppo_walk3d import (
     CMD_VX, CMD_VY, CMD_WZ, CMD_RESAMPLE, ZERO_CMD_PROB,
     TRACK_LIN_W, TRACK_ANG_W, TRACK_SIGMA, ALIVE_W,
     AIR_TIME_W, AIR_TIME_TARGET, LIN_Z_W, ANG_XY_W, ORIENT_W, HEIGHT_W,
-    TORQUE_W, JVEL_W, RATE_W, SLIP_W, STAND_W, TERM_W,
+    TORQUE_W, JVEL_W, RATE_W, SLIP_W, TERM_W,
     Z_MIN, UP_MIN, FOOT_R, Ticker, _hms, _INT,
 )
 
@@ -142,6 +142,15 @@ CLEARANCE_TARGET = 0.040      # full height reward at 4 cm foot-bottom clearance
 FOOT_LIFT_W = 0.08
 FOOT_LIFT_SIGMA = 0.0075      # decay width ABOVE the target height (m)
 FOOT_LIFT_SPEED = 0.20        # full reward above this horizontal speed (m/s)
+
+# Per-joint exponential cost around DEFAULT_POSE, active in every command.
+# Scales are curvature scales (radians), not hard limits or dead zones.
+# Walking allows normal hip/knee excursion; standing restores the pose sooner.
+POSE_STAND_W = 0.10
+POSE_WALK_W = 0.025
+POSE_STAND_SCALE = jp.array([0.10, 0.20, 0.20] * 4)  # abd, hip, knee
+POSE_WALK_SCALE = jp.array([0.20, 0.50, 0.50] * 4)
+POSE_MAX_JOINT_PENALTY = 0.50  # bound extreme errors before exponentiation
 
 # Straight-line trot symmetry.  The gate below disables these terms for
 # lateral motion and turning so they do not remove steering authority.
@@ -315,6 +324,34 @@ def enable_deploy_terrain(max_height=None):
     JSON_OUT = prefix + "_policy.json"
 
 
+def set_run_name(name):
+    """Use independent outputs and generated XML for a named experiment."""
+    global SAVE, VID_DIR, CKPT_DIR, JSON_OUT
+    if not name or any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-"
+                       for c in name):
+        raise ValueError("--run-name must contain only letters, digits, '_' or '-'")
+    prefix = "rollingquad_2_deploy_" + name
+    SAVE = prefix + "_policy.bin"
+    VID_DIR = prefix + "_videos"
+    CKPT_DIR = prefix + "_checkpoints"
+    JSON_OUT = prefix + "_policy.json"
+    w3.RUN_XML = str(Path(w3.RUN_XML).with_name(prefix + "_no_self_collision.xml"))
+
+
+def resolve_training_resume(resume_path=None, fresh=False):
+    """Fresh runs never load a policy or overwrite an existing experiment."""
+    if fresh:
+        if resume_path is not None:
+            raise ValueError("--fresh cannot be combined with --resume")
+        existing = [p for p in (SAVE, VID_DIR, CKPT_DIR, JSON_OUT) if Path(p).exists()]
+        if existing:
+            raise FileExistsError(
+                "--fresh requires unused outputs; choose a new --run-name. Existing: "
+                + ", ".join(existing))
+        return None
+    return resume_path or (SAVE if os.path.exists(SAVE) else None)
+
+
 def randomize_deploy_system(sys, rng):
     """Compose optional motor/body DR with per-environment terrain sampling."""
     if DEPLOY_DR:
@@ -345,6 +382,22 @@ def randomize_deploy_system(sys, rng):
 
 
 # ================================================================== env
+def pose_deviation_penalty(joint_error, moving):
+    """Sum exponential costs of actual joint errors, without cancellation.
+
+    Equivalent to sum(min(w * expm1((error / scale)**2), cap)).
+    Clamp the normalized error before squaring/exponentiation so large finite
+    joint errors cannot overflow. The moving flag follows the command gate.
+    """
+    weight = jp.where(moving, POSE_WALK_W, POSE_STAND_W)
+    scale = jp.where(moving, POSE_WALK_SCALE, POSE_STAND_SCALE)
+    max_normalized = jp.sqrt(jp.log1p(POSE_MAX_JOINT_PENALTY / weight))
+    normalized = jp.minimum(jp.abs(joint_error) / scale, max_normalized)
+    per_joint = jp.minimum(weight * jp.expm1(jp.square(normalized)),
+                           POSE_MAX_JOINT_PENALTY)
+    return jp.sum(per_joint)
+
+
 class DeployEnv(PipelineEnv):
     """Walking, observed exactly the way the real controller observes."""
 
@@ -497,6 +550,7 @@ class DeployEnv(PipelineEnv):
                     "hip_rom_penalty", "hip_rom_target", "hip_rom_front",
                     "hip_rom_rear", "hip_rom_valid_fraction", "hip_rom_cycles",
                     "height_error", "height_penalty",
+                    "pose_penalty", "pose_stand_penalty", "pose_walk_penalty",
                     "base_clearance", "ground_height", "terrain_span",
                     "terrain_rough", "terrain_boundary",
                     "hip_fl", "hip_fr", "hip_rl", "hip_rr",
@@ -613,8 +667,8 @@ class DeployEnv(PipelineEnv):
             max_cycle_s=HIP_ROM_MAX_CYCLE_S,
             min_swing_s=HIP_ROM_MIN_SWING_S,
             min_clearance=HIP_ROM_MIN_CLEARANCE)
-        p_stand = STAND_W * (1.0 - moving) * jp.sum(
-            jp.abs(ps.q[self._joint_qpos] - DEFAULT_POSE))
+        p_pose = pose_deviation_penalty(
+            ps.q[self._joint_qpos] - DEFAULT_POSE, moving)
 
         bad = jp.isnan(ps.q).any() | jp.isnan(ps.qd).any()
         terrain_boundary = (jp.any(jp.abs(ps.q[:2]) > (
@@ -627,7 +681,7 @@ class DeployEnv(PipelineEnv):
                   - p_orient - p_linz - p_angxy - p_height
                   - p_torque - p_jvel - p_rate
                   - p_slip - p_scuff - p_clearance
-                  - p_diag_action - p_diag_contact - p_stand
+                  - p_diag_action - p_diag_contact - p_pose
                   - hip_metrics["hip_rom_penalty"]
                   - TERM_W * done)
         reward = jp.clip(reward, -5.0, 10.0)
@@ -660,6 +714,9 @@ class DeployEnv(PipelineEnv):
             "diag_contact": p_diag_contact,
             "height_error": jp.abs(base_clearance - self._nom_h),
             "height_penalty": p_height,
+            "pose_penalty": p_pose,
+            "pose_stand_penalty": jp.where(moving, 0.0, p_pose),
+            "pose_walk_penalty": jp.where(moving, p_pose, 0.0),
             "base_clearance": base_clearance, "ground_height": ground_height,
             "terrain_span": info["terrain_span"],
             "terrain_rough": (info["terrain_span"] > 1e-6).astype(jp.float32),
@@ -876,7 +933,8 @@ def probe():
 
 
 # ================================================================ train
-def main(resume_path=None):
+def main(resume_path=None, fresh=False):
+    restore_from = resolve_training_resume(resume_path, fresh)
     os.makedirs(VID_DIR, exist_ok=True)
     os.makedirs(CKPT_DIR, exist_ok=True)
     env, eval_env = DeployEnv(), DeployEnv()
@@ -921,6 +979,10 @@ def main(resume_path=None):
           f"{HIP_ROM_MIN_RAD:.2f}, {HIP_ROM_TARGET_RAD:.2f}) rad; "
           f"cycle={HIP_ROM_MIN_CYCLE_S:.2f}..{HIP_ROM_MAX_CYCLE_S:.2f}s, "
           f"warmup={HIP_ROM_WARMUP_S:.2f}s")
+    print(f"  pose exponential cost: stand w={POSE_STAND_W}, "
+          f"scales={np.asarray(POSE_STAND_SCALE[:3])}; "
+          f"walk w={POSE_WALK_W}, scales={np.asarray(POSE_WALK_SCALE[:3])}; "
+          f"per-joint cap={POSE_MAX_JOINT_PENALTY}")
     if DEPLOY_DR:
         print("  deploy DR: latency=0/20/40ms@60/30/10%, "
               f"deadline_miss={CONTROL_DEADLINE_MISS_PROB:.0%}, no shove")
@@ -938,12 +1000,13 @@ def main(resume_path=None):
     print("=" * 72, flush=True)
 
     resume = {}
-    restore_from = resume_path or (SAVE if os.path.exists(SAVE) else None)
     if restore_from is not None:
         if not os.path.isfile(restore_from):
             raise FileNotFoundError(f"resume checkpoint not found: {restore_from}")
         resume["restore_params"] = model.load_params(restore_from)
         print(f"RESUMING from {restore_from}\n", flush=True)
+    else:
+        print("STARTING FROM SCRATCH (no checkpoint loaded)\n", flush=True)
 
     ticker = Ticker(NUM_EVALS)
 
@@ -967,6 +1030,9 @@ def main(resume_path=None):
               f"diag_contact {g('diag_contact')}", flush=True)
         print(f"    height_error {g('height_error')}  "
               f"height_penalty {g('height_penalty')}", flush=True)
+        print(f"    pose_penalty_mean {avg('pose_penalty'):.4f}  "
+              f"pose_stand_contribution {avg('pose_stand_penalty'):.4f}  "
+              f"pose_walk_contribution {avg('pose_walk_penalty'):.4f}", flush=True)
         print(f"    hip_rom_penalty {g('hip_rom_penalty')}  "
               f"hip_rom_front_mean_rad {avg('hip_rom_front')}  "
               f"hip_rom_rear_mean_rad {avg('hip_rom_rear')}  "
@@ -1057,6 +1123,9 @@ if __name__ == "__main__":
     code = 0
     try:
         argv = _sys.argv[1:]
+        fresh = "--fresh" in argv
+        if fresh:
+            argv.remove("--fresh")
         resume_path = None
         if "--resume" in argv:
             i = argv.index("--resume")
@@ -1079,6 +1148,12 @@ if __name__ == "__main__":
         if "terrain" in argv:
             enable_deploy_terrain(terrain_max_height)
             argv.remove("terrain")
+        if "--run-name" in argv:
+            i = argv.index("--run-name")
+            if i + 1 >= len(argv):
+                raise ValueError("--run-name requires an experiment name")
+            set_run_name(argv[i + 1])
+            del argv[i:i + 2]
         for flag, setting in (("--num-envs", "NUM_ENVS"), ("--batch-size", "BATCH_SIZE")):
             if flag in argv:
                 i = argv.index(flag)
@@ -1092,6 +1167,8 @@ if __name__ == "__main__":
         if BATCH_SIZE * NUM_MINIBATCHES % NUM_ENVS:
             raise ValueError("batch_size * num_minibatches must be divisible by num_envs")
         cmd = argv[0] if argv else "train"
+        if fresh and cmd != "train":
+            raise ValueError("--fresh is only valid for training")
         if cmd == "probe":
             probe()
         elif cmd == "config":
@@ -1102,7 +1179,7 @@ if __name__ == "__main__":
             do_export(argv[1] if len(argv) > 1 else None,
                       argv[2] if len(argv) > 2 else None)
         else:
-            main(resume_path=resume_path)
+            main(resume_path=resume_path, fresh=fresh)
     except BaseException:
         traceback.print_exc()
         code = 1

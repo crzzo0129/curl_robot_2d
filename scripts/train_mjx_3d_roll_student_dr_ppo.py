@@ -83,7 +83,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--restore-ppo",
         type=Path,
-        help="previous DR PPO params_final; restores actor, critic and normalizer",
+        help="PPO params file or exact native Brax checkpoint step directory; restores actor, critic and normalizer",
     )
     parser.add_argument(
         "--controller",
@@ -133,6 +133,20 @@ def parse_args(argv=None):
     parser.add_argument("--discounting", type=float, default=0.99)
     parser.add_argument("--unroll-length", type=int, default=20)
     parser.add_argument("--updates-per-batch", type=int, default=4)
+    parser.add_argument("--critic-only", action="store_true",
+                        help="freeze all actor parameters (including exploration std), train only the critic")
+    parser.add_argument("--eval-only", action="store_true",
+                        help="run fixed evaluation of the student or --restore-ppo, without PPO updates")
+    parser.add_argument("--clipping-epsilon", type=float, default=0.3)
+    parser.add_argument("--max-grad-norm", type=float)
+    parser.add_argument("--reward-scaling", type=float, default=1.0)
+    parser.add_argument("--bootstrap-on-timeout", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--fixed-eval-envs", type=int, default=None,
+                        help="paired deterministic episodes at every checkpoint; default 64 for DR=0, otherwise disabled")
+    parser.add_argument("--fixed-eval-seed", type=int, default=123456)
+    parser.add_argument("--stop-success-drop", type=float,
+                        help="stop after saving a checkpoint if fixed success drops this fraction below step zero")
+    parser.add_argument("--training-metrics-steps", type=int, default=40960)
     parser.add_argument(
         "--hidden-layers", type=int, nargs="+", default=(512, 256, 128)
     )
@@ -148,6 +162,8 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
+    if args.fixed_eval_envs is None:
+        args.fixed_eval_envs = 64 if args.dr_strength == 0 else 0
     if args.rolling_snapshots is None:
         args.rolling_snapshots = args.command_conditioned
     if args.controller is None:
@@ -166,8 +182,11 @@ def parse_args(argv=None):
     ):
         if not path.is_file():
             parser.error(f"{name} file does not exist: {path}")
-    if args.restore_ppo is not None and not args.restore_ppo.is_file():
-        parser.error(f"PPO params do not exist: {args.restore_ppo}")
+    if args.restore_ppo is not None:
+        if not args.restore_ppo.exists():
+            parser.error(f"PPO params do not exist: {args.restore_ppo}")
+        if args.restore_ppo.is_dir() and not args.restore_ppo.name.isdecimal():
+            parser.error("--restore-ppo directory must name an exact numeric Brax checkpoint step, not its parent")
     if args.out.exists() and any(args.out.iterdir()) and not args.allow_existing_output:
         parser.error(f"output directory is not empty: {args.out}")
     for value, name in (
@@ -206,6 +225,20 @@ def parse_args(argv=None):
         parser.error("--discounting must be in (0, 1]")
     if args.episode_length < 1 or args.unroll_length < 1 or args.updates_per_batch < 1:
         parser.error("episode and rollout lengths must be positive")
+    if args.fixed_eval_envs < 0 or args.training_metrics_steps < 1:
+        parser.error("fixed-eval-envs must be nonnegative and training-metrics-steps positive")
+    if args.eval_only and args.fixed_eval_envs < 1:
+        parser.error("--eval-only requires --fixed-eval-envs > 0")
+    if args.fixed_eval_envs and args.dr_strength != 0:
+        parser.error("fixed evaluation currently requires --dr-strength 0; use --fixed-eval-envs 0 for deploy-DR runs")
+    if not math.isfinite(args.clipping_epsilon) or not 0 < args.clipping_epsilon < 1:
+        parser.error("--clipping-epsilon must be in (0,1)")
+    if not math.isfinite(args.reward_scaling) or args.reward_scaling <= 0:
+        parser.error("--reward-scaling must be finite and positive")
+    if args.max_grad_norm is not None and (not math.isfinite(args.max_grad_norm) or args.max_grad_norm <= 0):
+        parser.error("--max-grad-norm must be finite and positive")
+    if args.stop_success_drop is not None and (args.fixed_eval_envs < 1 or not 0 < args.stop_success_drop <= 1):
+        parser.error("--stop-success-drop requires fixed evaluation and a value in (0,1]")
     if args.batch_size * args.num_minibatches % args.envs:
         parser.error("batch-size * num-minibatches must be divisible by envs")
     if args.max_devices is not None:
@@ -258,6 +291,9 @@ def main(argv=None):
     for required in ("restore_params", "randomization_fn", "wrap_env_fn"):
         if required not in signature:
             raise SystemExit(f"Installed Brax PPO lacks required {required}")
+    if not args.eval_only and "policy_params_fn" not in signature:
+        raise SystemExit("Installed Brax PPO lacks policy_params_fn; cannot save/evaluate each policy")
+    args.out.mkdir(parents=True, exist_ok=True)
 
     student_checkpoint = model_io.load_params(args.student)
     student_normalizer = student_checkpoint[0]
@@ -350,8 +386,10 @@ def main(argv=None):
         observation_env = make_env(args.seed, 0.0)
         pool_kwargs = dict(min_steps=args.snapshot_warmup_min_steps,
                            max_steps=args.snapshot_warmup_max_steps, num_devices=pool_devices)
-        train_pool, train_pool_summary = build_cem_snapshot_pool(
-            teacher_env, observation_env, count=args.snapshot_pool_size, seed=args.seed + 30000, **pool_kwargs)
+        train_pool_summary = None
+        if not args.eval_only:
+            train_pool, train_pool_summary = build_cem_snapshot_pool(
+                teacher_env, observation_env, count=args.snapshot_pool_size, seed=args.seed + 30000, **pool_kwargs)
         eval_pool, eval_pool_summary = build_cem_snapshot_pool(
             teacher_env, observation_env, count=args.eval_snapshot_pool_size, seed=args.seed + 40000, **pool_kwargs)
         snapshot_summary = {"training": train_pool_summary, "evaluation": eval_pool_summary}
@@ -392,9 +430,14 @@ def main(argv=None):
                 initial_std=args.initial_policy_std,
             )
 
+        def apply_policy(normalizer, params, observation):
+            if args.critic_only:
+                params = jax.tree_util.tree_map(jax.lax.stop_gradient, params)
+            return networks.policy_network.apply(normalizer, params, observation)
+
         policy_network = training_networks.FeedForwardNetwork(
             init=initialize_policy,
-            apply=networks.policy_network.apply,
+            apply=apply_policy,
         )
         return replace(networks, policy_network=policy_network)
 
@@ -426,7 +469,11 @@ def main(argv=None):
         )
         restore_source = "existing_student_actor_plus_fresh_privileged_critic"
     else:
-        restore_params = model_io.load_params(args.restore_ppo)
+        if args.restore_ppo.is_dir():
+            from brax.training.agents.ppo import checkpoint as ppo_checkpoint
+            restore_params = ppo_checkpoint.load(str(args.restore_ppo.resolve()))
+        else:
+            restore_params = model_io.load_params(args.restore_ppo)
         restore_source = str(args.restore_ppo.resolve())
 
     randomization_fn = None if args.dr_strength == 0.0 else make_student_deploy_domain_randomization_fn_3d(
@@ -441,6 +488,14 @@ def main(argv=None):
         clean = {name: _float(value) for name, value in metrics.items()}
         record = {"step": int(step), **clean}
         history.append(record)
+        with (args.out / "metrics_history.json").open("w", encoding="utf-8") as handle:
+            json.dump(history, handle, indent=2)
+            handle.write("\n")
+        if "eval/episode_movement_success" not in clean:
+            selected = {name: value for name, value in clean.items()
+                        if any(word in name for word in ("loss", "kl", "entropy", "policy_dist", "learning_rate"))}
+            print(f"[PPO training] step={int(step):,} {selected}", flush=True)
+            return
         turns = clean.get("eval/episode_roll_progress_rad", 0.0) / (
             2.0 * math.pi
         )
@@ -467,11 +522,26 @@ def main(argv=None):
             f"vx_mae={vx_mae:.4f}m/s yaw_mae={yaw_mae:.4f}rad/s",
             flush=True,
         )
+        reasons = {name.removeprefix("eval/episode_"): value for name, value in clean.items()
+                   if name.startswith("eval/episode_failure_") and not name.endswith("_std")}
+        learning = {name: value for name, value in clean.items()
+                    if name.startswith("training/") and any(word in name for word in ("loss", "kl", "entropy", "policy_dist"))}
+        print(f"  failures={reasons}\n  PPO={learning}", flush=True)
         with (args.out / "metrics_history.json").open("w", encoding="utf-8") as handle:
             json.dump(history, handle, indent=2)
             handle.write("\n")
 
     optional_train_kwargs = {}
+    for name, value in (("clipping_epsilon", args.clipping_epsilon),
+                        ("max_grad_norm", args.max_grad_norm)):
+        if value is not None:
+            if name not in signature:
+                raise SystemExit(f"Installed Brax PPO lacks {name}; upgrade or choose compatible options")
+            optional_train_kwargs[name] = value
+    if "log_training_metrics" in signature:
+        optional_train_kwargs["log_training_metrics"] = True
+    if "training_metrics_steps" in signature:
+        optional_train_kwargs["training_metrics_steps"] = args.training_metrics_steps
     if "save_checkpoint_path" in signature:
         optional_train_kwargs["save_checkpoint_path"] = str(
             (args.out / "ppo_checkpoint").resolve()
@@ -482,14 +552,16 @@ def main(argv=None):
     ):
         optional_train_kwargs["normalize_observations_mode"] = "ema"
     if "bootstrap_on_timeout" in signature:
-        optional_train_kwargs["bootstrap_on_timeout"] = True
+        optional_train_kwargs["bootstrap_on_timeout"] = args.bootstrap_on_timeout
+    if "restore_value_fn" in signature:
+        optional_train_kwargs["restore_value_fn"] = True
     if args.max_devices is not None:
         if "max_devices_per_host" not in signature:
             raise SystemExit("Installed Brax cannot limit devices per host")
         optional_train_kwargs["max_devices_per_host"] = args.max_devices
 
     run_config = {
-        "mode": "reward_dr_ppo_not_imitation_learning",
+        "mode": "evaluation_only" if args.eval_only else ("critic_only_warmup" if args.critic_only else "reward_dr_ppo_not_imitation_learning"),
         "student": str(args.student.resolve()),
         "restore_source": restore_source,
         "controller": str(args.controller.resolve()),
@@ -505,6 +577,7 @@ def main(argv=None):
         "controller_action_size": 12,
         "student_anchor_weight": args.student_anchor_weight,
         "runtime": describe_runtime(),
+        "brax_ppo_train_parameters": sorted(signature),
         "args": {
             name: str(value) if isinstance(value, Path) else value
             for name, value in vars(args).items()
@@ -517,6 +590,84 @@ def main(argv=None):
         json.dump(controller_config, handle, indent=2)
         handle.write("\n")
 
+    from curl_robot_2d_mjx.rolling_ppo_diagnostics import make_fixed_evaluator, write_json
+    fixed_evaluate = None
+    fixed_history = []
+    if args.fixed_eval_envs:
+        fixed_env = make_env(args.seed + 10000, 0.0, eval_pool)
+        fixed_evaluate, fixed_manifest = make_fixed_evaluator(
+            fixed_env, initialized_networks, student_anchor_policy,
+            count=args.fixed_eval_envs, seed=args.fixed_eval_seed,
+            episode_length=args.episode_length, minimum_turns=args.minimum_success_turns,
+        )
+        write_json(args.out / "fixed_eval_manifest.json", fixed_manifest)
+    initial_actor = None
+
+    def capture_policy(step, make_policy, params):
+        del make_policy
+        nonlocal initial_actor
+        step = int(step)
+        host_params = jax.tree_util.tree_map(np.asarray, params)
+        checkpoint_dir = args.out / "checkpoints" / f"{step:012d}"
+        checkpoint_dir.mkdir(parents=True, exist_ok=True)
+        # Save before diagnostics or a stop condition so a failing policy is
+        # available for comparison. These files do not contain optimizer state.
+        model_io.save_params(checkpoint_dir / "params", host_params)
+        actor = expand_ppo_actor_to_controller_3d(np, host_params[1])
+        model_io.save_params(checkpoint_dir / "student_params", (
+            {"mean": frozen_mean_np, "std": frozen_std_np}, actor, {},
+        ))
+        if initial_actor is None:
+            initial_actor = jax.tree_util.tree_map(lambda x: np.array(x, copy=True), host_params[1])
+        parameters_finite = all(np.all(np.isfinite(leaf))
+                                for leaf in jax.tree_util.tree_leaves(host_params))
+        if not parameters_finite:
+            write_json(args.out / "stopped.json", {
+                "reason": "nonfinite PPO parameters or normalizer", "checkpoint": str(checkpoint_dir),
+            })
+            raise SystemExit(f"Stopped after saving {checkpoint_dir}: nonfinite PPO parameters")
+        parameter_delta = float(np.max([
+            np.max(np.abs(new - old))
+            for new, old in zip(jax.tree_util.tree_leaves(host_params[1]),
+                                jax.tree_util.tree_leaves(initial_actor))
+        ]))
+        if fixed_evaluate is not None:
+            record = {"step": step, "checkpoint": str(checkpoint_dir),
+                      "actor_max_parameter_delta_from_start": parameter_delta,
+                      **fixed_evaluate(params)}
+            fixed_history.append(record)
+            write_json(checkpoint_dir / "fixed_eval.json", record)
+            write_json(args.out / "fixed_eval_history.json", fixed_history)
+            if not record["diagnostics_finite"]:
+                write_json(args.out / "stopped.json", {
+                    "reason": "nonfinite fixed evaluation diagnostics", "checkpoint": str(checkpoint_dir),
+                })
+                raise SystemExit(f"Stopped after saving {checkpoint_dir}: nonfinite fixed evaluation")
+            print(
+                f"[fixed PPO eval] step={step:,} success={record['success_rate']:.1%} "
+                f"failed={record['failure_rate']:.1%} vx_mae={record['forward_mae_m_s']:.4f} "
+                f"vx_bias={record['forward_bias_m_s']:+.4f} yaw_mae={record['yaw_mae_rad_s']:.4f} "
+                f"action_delta={record['same_state_student_action_rmse']:.5f} "
+                f"std={record['mean_pre_tanh_policy_std']:.5f} "
+                f"actor_param_delta={parameter_delta:.6g}\n  failures={record['failure_counts']}", flush=True,
+            )
+            if (not args.eval_only and args.stop_success_drop is not None and step > 0
+                    and record["success_rate"] < fixed_history[0]["success_rate"] - args.stop_success_drop):
+                write_json(args.out / "stopped.json", {
+                    "reason": "fixed evaluation success dropped below baseline tolerance",
+                    "baseline_success": fixed_history[0]["success_rate"],
+                    "current_success": record["success_rate"], "checkpoint": str(checkpoint_dir),
+                })
+                raise SystemExit(f"Stopped after saving {checkpoint_dir}: fixed success regression")
+        if args.critic_only and parameter_delta != 0:
+            raise RuntimeError(f"critic-only actor unexpectedly changed; saved {checkpoint_dir}")
+
+    if args.eval_only:
+        capture_policy(0, None, restore_params)
+        print(f"[evaluation only] saved {args.out / 'fixed_eval_history.json'}; no PPO updates", flush=True)
+        return
+    optional_train_kwargs["policy_params_fn"] = capture_policy
+
     print(
         "[rolling Student DR PPO]\n"
         f"  student={args.student.resolve()}\n"
@@ -528,6 +679,8 @@ def main(argv=None):
         f"student_horizon={args.episode_length * task.control_timestep:.2f}s; warmup excluded\n"
         f"  DR strength={args.dr_strength:g} anchor={args.student_anchor_weight:g} "
         f"noise={args.observation_noise_scale:g}\n"
+        f"  critic_only={args.critic_only} clip={args.clipping_epsilon:g} "
+        f"max_grad_norm={args.max_grad_norm} updates/batch={args.updates_per_batch}\n"
         f"  geometry={args.geometry} lateral_termination="
         f"{task.lateral_drift_termination}\n"
         f"  steps={args.steps:,} envs={args.envs} eval_envs={args.eval_envs}",
@@ -549,7 +702,7 @@ def main(argv=None):
         learning_rate=args.learning_rate,
         entropy_cost=args.entropy_cost,
         discounting=args.discounting,
-        reward_scaling=1.0,
+        reward_scaling=args.reward_scaling,
         unroll_length=args.unroll_length,
         batch_size=args.batch_size,
         num_minibatches=args.num_minibatches,
