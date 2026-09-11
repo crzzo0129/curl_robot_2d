@@ -35,7 +35,7 @@ Subcommands
     dr       (composable) domain randomisation
     terrain  (composable) 40% flat / 60% mild 2-D rough terrain
              --terrain-max-height METERS sets the next terrain difficulty
-    --fb-symmetry-weight FLOAT   actor front/back consistency (default 0.10; 0 disables)
+    --fb-symmetry-weight FLOAT   actor front/back consistency (default 0.01; 0 disables)
     <none>   train
 """
 import os
@@ -136,7 +136,7 @@ SERVO_KD = 0.1
 # ======================================================= gait shaping
 # Deploy-specific weights: stronger motion and contact regularization.
 JVEL_W = 0.0004
-RATE_W = 0.08
+RATE_W = 0.10
 # Contact slip alone misses a swing foot skimming just above the contact
 # threshold, so use both contact slip and a smooth near-ground scuff cost.
 SLIP_W = 0.50
@@ -158,7 +158,7 @@ POSE_WALK_SCALE = jp.array([0.20, 0.50, 0.50] * 4)
 POSE_MAX_JOINT_PENALTY = 0.50  # bound extreme errors before exponentiation
 
 # Actor loss regularization, not a reward term. Applies to straight commands.
-FB_SYMMETRY_W = 0.10
+FB_SYMMETRY_W = 0.01
 
 # Straight-line trot symmetry.  The gate below disables these terms for
 # lateral motion and turning so they do not remove steering authority.

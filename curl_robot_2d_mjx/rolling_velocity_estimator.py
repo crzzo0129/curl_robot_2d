@@ -199,6 +199,7 @@ class RollingVelocityEstimator:
             if int(archive["schema_version"]) != 1:
                 raise ValueError("unsupported estimator schema")
             self.config = EstimatorConfig(**json.loads(str(archive["config_json"])))
+            self.provenance = json.loads(str(archive["provenance_json"]))
             if not np.array_equal(archive["feature_indices"], FEATURE_INDICES):
                 raise ValueError("incompatible estimator features")
             self.layers = [(archive[f"weight_{i}"], archive[f"bias_{i}"])

@@ -27,12 +27,12 @@ Deploy 使用四条腿 abd 均为 0 的 `rollingquad.xml` 站姿，并通过
 | 项目 | 原权重 | 当前权重 |
 | --- | ---: | ---: |
 | 实际关节速度平方和 `JVEL_W` | 0.0002 | 0.0004 |
-| 相邻步 action 差值平方和 `RATE_W` | 0.01 | 0.08 |
+| 相邻步 action 差值平方和 `RATE_W` | 0.01 | 0.10 |
 | 摆动脚擦地 `SCUFF_W` | 0.15 | 0.30 |
 | 支撑脚打滑 `SLIP_W` | 0.25 | 0.50 |
 
-针对策略 action 仍然剧烈变化的问题，`RATE_W` 从上一版的 0.04 再提高
-到 0.08，相同相邻步 action 变化量的罚分翻倍。它约束的是裁剪到
+针对策略 action 仍然震荡的问题，`RATE_W` 从上一版的 0.08 提高
+到 0.10，相同相邻步 action 变化量的罚分增加 25%。它约束的是裁剪到
 [-1, 1] 后的 action 时间差，不是 action 幅值，也不引入输出滤波。
 
 这些权重在 `train_ppo_deploy.py` 本地定义，适用于该入口的平地、DR 和
@@ -99,13 +99,13 @@ terrain 模式，不修改 `train_ppo_walk3d.py` 的独立训练参数。启动�
 ## 前后镜像策略一致性
 
 当前版本默认在 PPO 更新中加入前后镜像一致性损失，初始权重
-`FB_SYMMETRY_W = 0.10`。它是 actor 的训练损失，不是环境 reward；
+`FB_SYMMETRY_W = 0.01`（从 0.10 降低）。它是 actor 的训练损失，不是环境 reward；
 episode reward 不会直接减去该项。
 
 设 `T_obs` 和 `T_action` 为下表的镜像变换，`mu` 为经过动作分布
 变换（当前为 tanh）后的确定性策略输出：
 
-`L_total = L_PPO + 0.10 * mean_straight(mean_joints((mu(T_obs(obs)) - T_action(mu(obs)))^2))`
+`L_total = L_PPO + 0.01 * mean_straight(mean_joints((mu(T_obs(obs)) - T_action(mu(obs)))^2))`
 
 两次 actor 计算都参与求导。原 PPO 仍用真实采样的数据、行为策略
 log probability、advantage 和 critic 目标，不伪造镜像轨迹的回报。
@@ -147,10 +147,11 @@ log probability、advantage 和 critic 目标，不伪造镜像轨迹的回报�
 建议从已有纯 DR 策略继续训练到独立实验名，保留基线便于比较：
 
 ```bash
-python -m scripts.train_ppo_deploy dr --run-name pose_exp_dr_fb --resume rollingquad_2_deploy_pose_exp_dr_v2_policy.bin --num-envs 1024 --batch-size 64 --fb-symmetry-weight 0.10
+python -m scripts.train_ppo_deploy dr --run-name pose_exp_dr_fb_v2 --resume rollingquad_2_deploy_pose_exp_dr_v2_policy.bin --num-envs 1024 --batch-size 64 --fb-symmetry-weight 0.01
 ```
 
-新结果使用 `rollingquad_2_deploy_pose_exp_dr_fb_*` 前缀。检查点目录会写入
+新结果使用 `rollingquad_2_deploy_pose_exp_dr_fb_v2_*` 前缀，从镜像约束加入前
+仍能行走的参数重新训练，保留旧实验。检查点目录会写入
 `front_back_symmetry_config.json`。可通过 `--fb-symmetry-weight 0` 禁用，
 或用较小权重作消融比较；不需要修改 720 维观测、12 维 action 或部署
 导出接口。该适配器只在当前训练函数的局部命名空间接入 PPO 损失，
