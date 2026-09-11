@@ -104,8 +104,7 @@ The student receives 500 control steps (10 seconds) regardless of warmup length;
 failure still ends the trajectory early. Warmup progress is not counted toward
 the student's five-turn threshold. Training/DAgger reset behavior is unaffected.
 
-The five-turn threshold is unchanged; a command-speed-dependent success
-criterion is deferred. `evaluation.json` records `duration_basis`, teacher
+The five-turn threshold is unchanged. `evaluation.json` records `duration_basis`, teacher
 warmup steps, student steps and actual durations per episode, and
 `full_horizon_rate`. Full horizon means all 500 steps were executed, not
 necessarily success (failure on the last step is still failure).
@@ -118,3 +117,48 @@ ranges, warmup settings and hidden layers consistent with the original training
 configuration. The fixed eval seed makes subsequent re-evaluations reproducible
 under the same software/device configuration; it does not reproduce an earlier
 training run's implicitly generated evaluation seed.
+
+## Command-conditioned performance breakdown
+
+Evaluation also writes `command_evaluation.json` and
+`command_evaluation_episodes.csv`; the JSON is included in
+`evaluation.json` under `closed_loop_evaluation.command_evaluation`.
+Sync both `scripts/train_mjx_3d_roll_distillation.py` and
+`curl_robot_2d_mjx/distillation_evaluation.py` to the server.
+
+The report includes overall results, three equal-width target-speed bins,
+straight/left/right groups, and all nine speed-by-turn combinations. For the
+default speed range the boundaries are 0.4111, 0.5444, 0.6777 and 0.8110 m/s.
+Positive yaw commands are labeled left, negative right; absolute yaw command
+at most 0.001 rad/s is straight, consistent with the environment. Groups are
+formed from commanded, not achieved, speed. Episodes whose command changes
+are excluded from fixed-command groups and counted separately. MAE is weighted
+by active transitions, including failure transitions. Empty groups report null
+metrics rather than zero success. Failure counts may overlap.
+
+Each populated group reports episode count, legacy success rate, strict success,
+failure-free and full-horizon rates, mean effective turns and duration,
+forward/yaw tracking MAE, and failure counts. Per-episode commands, errors,
+durations, effective turns and failure flags are retained for later analysis.
+
+A separate `minimum_speed_success_rate` implements a minimum-speed progress
+criterion without changing legacy success:
+
+```
+required_effective_turns = configured_minimum_speed * student_horizon_seconds / (2*pi*rolling_radius)
+success = full student horizon AND no strict failure AND effective_turns >= required_effective_turns
+```
+
+It uses the configured minimum (default 0.4111 m/s), not the smallest randomly
+sampled command, and the environment's actual rolling radius. No arbitrary
+tolerance is introduced. This is a progress criterion, not a speed-tracking
+accuracy criterion: forward/yaw MAE must still be inspected. Effective progress
+uses world-x displacement and rotation, so turns do not measure curved path
+length. Keep this limitation in mind when comparing straight and turning runs.
+
+Re-run the command above with `--eval-envs 256` and a fresh output directory
+such as `results/rolling_command_distill_medium_eval_grouped_10s` for more
+samples per subgroup. Keep `--eval-seed 100000`; repeated runs with the same
+batch size/configuration use the same reset sampling. Changing batch size does
+not preserve a prefix of old reset samples. Previous summary-only reports lack
+the per-episode command/error association and cannot be retroactively grouped.

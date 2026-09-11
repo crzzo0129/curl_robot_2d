@@ -1572,6 +1572,9 @@ def main(argv=None):
     tracking_sample_count = jp.asarray(0, dtype=jp.int32)
     eval_forward_commands = jp.asarray(eval_state.info["forward_velocity_command"])
     eval_yaw_commands = jp.asarray(eval_state.info["yaw_rate_command"])
+    eval_forward_error_per_episode = jp.zeros((args.eval_envs,))
+    eval_yaw_error_per_episode = jp.zeros((args.eval_envs,))
+    eval_command_changed = jp.zeros((args.eval_envs,), dtype=jp.bool_)
     diagnostic_frames = []
     diagnostic_rng = jax.random.PRNGKey(args.seed + 200_000)
 
@@ -1688,6 +1691,16 @@ def main(argv=None):
             was_active, next_eval_state.metrics["yaw_rate_error_abs_rad_s"], 0.0
         ))
         tracking_sample_count += jp.sum(was_active.astype(jp.int32))
+        eval_forward_error_per_episode += jp.where(
+            was_active, next_eval_state.metrics["forward_velocity_error_abs_m_s"], 0.0
+        )
+        eval_yaw_error_per_episode += jp.where(
+            was_active, next_eval_state.metrics["yaw_rate_error_abs_rad_s"], 0.0
+        )
+        eval_command_changed |= was_active & (
+            (jp.abs(next_eval_state.info["forward_velocity_command"] - eval_forward_commands) > 1e-6)
+            | (jp.abs(next_eval_state.info["yaw_rate_command"] - eval_yaw_commands) > 1e-6)
+        )
         if args.record_diagnostics:
             diagnostic_frames.append(jax.device_get(diagnostic_frame(
                 eval_state, next_eval_state, was_active, raw_effective_action,
@@ -1843,6 +1856,29 @@ def main(argv=None):
         f"{closed_loop_evaluation['abduction_output_max_abs']:.6f}",
         flush=True,
     )
+
+    from curl_robot_2d_mjx.distillation_evaluation import save_command_evaluation
+    command_evaluation = save_command_evaluation(
+        args.out,
+        forward_commands=np.asarray(jax.device_get(eval_forward_commands)),
+        yaw_commands=np.asarray(jax.device_get(eval_yaw_commands)),
+        command_changed=np.asarray(jax.device_get(eval_command_changed)),
+        steps=np.asarray(jax.device_get(eval_steps)),
+        warmup_steps=np.asarray(jax.device_get(eval_warmup_steps)),
+        turns=eval_turns,
+        forward_error_sum=np.asarray(jax.device_get(eval_forward_error_per_episode)),
+        yaw_error_sum=np.asarray(jax.device_get(eval_yaw_error_per_episode)),
+        failed=eval_failed_np,
+        failure_flags={name: np.asarray(jax.device_get(value))
+                       for name, value in eval_failure_flags.items()},
+        episode_length=args.episode_length,
+        control_timestep=direct_task.control_timestep,
+        speed_min=args.forward_command_min_m_s,
+        speed_max=args.forward_command_max_m_s,
+        minimum_turns=args.minimum_closed_loop_turns,
+        rolling_radius=float(direct_eval_env.rolling_radius),
+    )
+    closed_loop_evaluation["command_evaluation"] = command_evaluation
 
     lateral_diagnostics = None
     if args.record_diagnostics:
