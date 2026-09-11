@@ -77,7 +77,7 @@ import train_ppo_walk3d as w3
 from deploy_gait import init_hip_rom, sample_command, update_hip_rom
 from deploy_terrain import (
     RoughTerrainConfig, inject_heightfield, reference_terrain_data,
-    surface_height, terrain_data,
+    surface_height, terrain_data, write_height_preview,
 )
 from train_ppo_walk3d import (
     DEFAULT_POSE, CTRL_LO, CTRL_HI, ACTION_SCALE, LEGS,
@@ -710,26 +710,35 @@ def _scripted_rollout(env, act_fn, seconds, step_fn=None, reset_fn=None):
     st = reset_fn(jax.random.PRNGKey(0))
     rng = jax.random.PRNGKey(1)
     per_seg = max(int(seconds / len(CMD_SCRIPT) / float(env.dt)), 1)
-    roll, report, fell = [st.pipeline_state], [], False
+    roll, report, terminated = [st.pipeline_state], [], False
     for name, cmd in CMD_SCRIPT:
         st = st.replace(info={**st.info, "command": cmd})
         p0 = np.array(st.pipeline_state.q[:3])
         yaw0 = _yaw(st.pipeline_state.q)
+        completed_steps = 0
         for _ in range(per_seg):
             rng, k = jax.random.split(rng)
             st = step_fn(st, act_fn(st.obs, k))
             st = st.replace(info={**st.info, "command": cmd})
             roll.append(st.pipeline_state)
+            completed_steps += 1
             if bool(st.done):
-                fell = True
+                terminated = True
                 break
         p1 = np.array(st.pipeline_state.q[:3])
-        dt_seg = per_seg * float(env.dt)
+        dt_seg = completed_steps * float(env.dt)
         dyaw = (_yaw(st.pipeline_state.q) - yaw0 + np.pi) % (2 * np.pi) - np.pi
         report.append(
             f"    {name:<11} {np.linalg.norm(p1[:2] - p0[:2]) / dt_seg:5.2f} m/s"
-            f"   yaw {dyaw / dt_seg:+5.2f} rad/s" + ("   [FELL]" if fell else ""))
-        if fell:
+            f"   yaw {dyaw / dt_seg:+5.2f} rad/s   elapsed {dt_seg:.2f}s"
+            + ("   [TERMINATED]" if terminated else ""))
+        if terminated:
+            report.append(
+                f"    stopped at {(len(roll)-1)*float(env.dt):.2f}s; "
+                f"distance from origin={np.linalg.norm(p1[:2]):.3f}m; "
+                f"base clearance={float(st.metrics['base_clearance']):.3f}m "
+                f"(minimum {Z_MIN:.3f}m); "
+                f"terrain boundary={bool(st.metrics['terrain_boundary'])}")
             break
     return roll, report
 
@@ -744,16 +753,30 @@ def _nets(obs_size, act_size):
 
 
 def make_video(policy_path=None, seconds=None, out=None):
-    os.makedirs(VID_DIR, exist_ok=True)
+    out = Path(out or os.path.join(VID_DIR, "showcase.mp4"))
+    out.parent.mkdir(parents=True, exist_ok=True)
     env = DeployEnv()
+    print(f"video terrain={env._terrain}; native heightfields={env._mj.nhfield}",
+          flush=True)
+    if env._terrain:
+        samples = np.asarray(env._mj.hfield_data)
+        heights = samples * float(env._mj.hfield_size[0, 2])
+        print(f"actual terrain heights={heights.min()*1000:.2f} .. "
+              f"{heights.max()*1000:.2f} mm; "
+              f"flat spawn radius={TERRAIN_CONFIG.spawn_radius_m:.2f} m; "
+              f"full roughness after radius="
+              f"{TERRAIN_CONFIG.spawn_radius_m + TERRAIN_CONFIG.transition_m:.2f} m",
+              flush=True)
+        height_path = write_height_preview(
+            samples, TERRAIN_CONFIG, out.with_name(out.stem + "_terrain_height.png"))
+        print(f"actual terrain height map: {height_path}", flush=True)
     inf = jax.jit(ppo_networks.make_inference_fn(
         _nets(env.observation_size, env.action_size))(
             model.load_params(policy_path or SAVE), deterministic=True))
     roll, report = _scripted_rollout(
         env, lambda o, k: inf(o, k)[0], seconds or VIDEO_SECONDS * 2)
     print("\n".join(report))
-    out = out or os.path.join(VID_DIR, "showcase.mp4")
-    media.write_video(out, render_follow(env, roll), fps=1.0 / float(env.dt))
+    media.write_video(str(out), render_follow(env, roll), fps=1.0 / float(env.dt))
     print(f"video: {out}")
 
 

@@ -72,6 +72,40 @@ reward 查的是当前环境 `self.sys.hfield_data`，与该环境的物理碰�
 
 ## 怎样判断是否改善
 
+### 先确认地形是否显示
+
+在 `curl_robot_2d` 目录执行，不需要策略文件，也不会运行 JAX 或训练：
+
+```bash
+python -m scripts.deploy_terrain --max-height 0.015 --out terrain_preview
+```
+
+生成 `terrain_preview_surface.png`（真实比例的地表渲染）和
+`terrain_preview_height.png`（出生区附近的高度彩图，单位 mm）。
+高度彩图白圈标记半径 45 cm 的平坦出生区；45～80 cm 为过渡区。
+最大起伏仅 1.5 cm，跟随机器人时可能仍像平地，高度彩图更容易辨认。
+独立预览使用与视频相同的固定参考地图；它不代表某个随机训练环境。
+
+录制策略在地形上的表现时，必须带 `terrain`，仅使用 terrain 策略文件名
+不会自动启用地形。把文件名替换成实际策略路径：
+
+```bash
+python -m scripts.train_ppo_deploy terrain dr video rollingquad_2_deploy_terrain_dr_policy.bin
+```
+
+默认输出 `rollingquad_2_deploy_terrain_dr_videos/showcase.mp4`，以及从
+实际渲染模型样本生成的 `showcase_terrain_height.png`。终端会打印
+`video terrain=True; native heightfields=1` 和实际高度范围，默认应为
+`0.00 .. 15.00 mm`。若训练使用 2.5 cm 地形，录制命令也加
+`--terrain-max-height 0.025`，独立预览则使用 `--max-height 0.025`。
+
+地形材质改为无棋盘的哑光表面，增加侧光帮助观察浅起伏。视频提前结束时
+会打印 `TERMINATED`、实际时长、离原点距离、机身离地高度和边界标志。
+提前结束不一定是摔倒；若机器人仍在出生区附近，视频也不足以展示
+策略在完整崎岖地形上的行走效果。速度统计使用实际完成时间。
+
+### 训练与策略表现
+
 每个检查点分别生成固定崎岖地形和纯平地视频，后缀为 `_terrain.mp4`
 和 `_flat.mp4`，使用相同的初始随机种子和指令脚本。崎岖视频使用固定种子、
 当前最大难度的一张参考地图；它不代表全部随机地形的通过率。
@@ -90,4 +124,5 @@ reward 查的是当前环境 `self.sys.hfield_data`，与该环境的物理碰�
 同时观察速度跟踪、episode 长度、擦地、滑动、hip 有效周期数量，以及
 平地视频是否退化。目标是可靠落脚和通行，不要求各腿每一帧角度一致。
 
-本次按要求只做语法和静态几何检查，没有执行 JAX 编译、训练或 rollout。
+地形预览更新经过语法、静态几何检查及原生 MuJoCo 静态渲染验证；
+没有执行 JAX 测试、训练或策略 rollout。
