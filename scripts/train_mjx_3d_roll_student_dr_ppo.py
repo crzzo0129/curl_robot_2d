@@ -121,11 +121,17 @@ def parse_args(argv=None):
                         help="start PPO and its evaluation from cached rolling states; default on for command-conditioned training")
     parser.add_argument("--snapshot-pool-size", type=int, default=512)
     parser.add_argument("--eval-snapshot-pool-size", type=int, default=256)
+    parser.add_argument("--snapshot-sampling", choices=("uniform", "tracking_focus"), default="uniform",
+                        help="training reset sampling; tracking_focus uses speed masses 40/20/40 and 60 percent straight")
     parser.add_argument("--snapshot-warmup-min-steps", type=int, default=100)
     parser.add_argument("--snapshot-warmup-max-steps", type=int, default=300)
     add_stand_startup_arguments(parser)
     parser.add_argument("--dr-strength", type=float, default=0.25)
     parser.add_argument("--student-anchor-weight", type=float, default=0.02)
+    parser.add_argument("--forward-tracking-weight", type=float,
+                        help="override command-conditioned forward tracking reward weight")
+    parser.add_argument("--yaw-tracking-weight", type=float,
+                        help="override command-conditioned yaw tracking reward weight")
     parser.add_argument("--observation-noise-scale", type=float, default=1.0)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
     parser.add_argument("--learning-rate-schedule", choices=("none", "adaptive_kl"), default="none",
@@ -157,6 +163,8 @@ def parse_args(argv=None):
     parser.add_argument("--stop-success-drop", type=float,
                         help="stop after saving a checkpoint if fixed success drops this fraction below step zero")
     parser.add_argument("--training-metrics-steps", type=int, default=40960)
+    parser.add_argument("--log-training-episodes", action="store_true",
+                        help="enable per-device episode callbacks; PPO interval metrics are always reported at evaluations")
     parser.add_argument(
         "--hidden-layers", type=int, nargs="+", default=(512, 256, 128)
     )
@@ -217,6 +225,12 @@ def parse_args(argv=None):
             parser.error(f"{name} must be finite and nonnegative")
     if args.dr_strength > 1.0:
         parser.error("--dr-strength must not exceed one")
+    if args.snapshot_sampling != "uniform" and not (args.command_conditioned and args.rolling_snapshots):
+        parser.error("tracking-focused sampling requires command-conditioned rolling snapshots")
+    for name in ("forward_tracking_weight", "yaw_tracking_weight"):
+        value = getattr(args, name)
+        if value is not None and (not args.command_conditioned or not math.isfinite(value) or value < 0):
+            parser.error(f"--{name.replace('_', '-')} requires command-conditioned mode and a finite nonnegative value")
     for name in ("forward_command_min_m_s", "forward_command_max_m_s",
                  "turn_command_min_rad_s", "turn_command_max_rad_s", "command_interval_s"):
         if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
@@ -397,9 +411,13 @@ def main(argv=None):
             # commanded turns; world-y penalties must not oppose turning.
             lateral_velocity=1.0, lateral_drift=1.5,
         )
+        overrides = {name: value for name, value in (
+            ("forward_velocity", args.forward_tracking_weight),
+            ("yaw_rate_command", args.yaw_tracking_weight)) if value is not None}
+        reward_config = replace(reward_config, **overrides)
     critic_observation_size = ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D + (3 if args.command_conditioned else 0)
 
-    def make_env(seed, noise_scale, snapshot_pool=None):
+    def make_env(seed, noise_scale, snapshot_pool=None, snapshot_sampling_cdf=None):
         base = make_brax_env_3d(task, reward_config=reward_config, cem_reference=reference, seed=seed)
         return make_rolling_student_dr_env_3d(
             base,
@@ -410,6 +428,7 @@ def main(argv=None):
             minimum_success_turns=args.minimum_success_turns,
             command_conditioned=args.command_conditioned,
             snapshot_pool=snapshot_pool,
+            snapshot_sampling_cdf=snapshot_sampling_cdf,
         )
 
     train_pool = eval_pool = None
@@ -431,7 +450,14 @@ def main(argv=None):
         eval_pool, eval_pool_summary = build_cem_snapshot_pool(
             teacher_env, observation_env, count=args.eval_snapshot_pool_size, seed=args.seed + 40000, **pool_kwargs)
         snapshot_summary = {"training": train_pool_summary, "evaluation": eval_pool_summary}
-    train_env = make_env(args.seed, args.observation_noise_scale, train_pool)
+    train_sampling_cdf = None
+    sampling_summary = {"mode": "uniform"}
+    if train_pool is not None and args.snapshot_sampling == "tracking_focus":
+        from curl_robot_2d_mjx.rolling_student_snapshot_pool import tracking_focus_snapshot_cdf
+        train_sampling_cdf, sampling_summary = tracking_focus_snapshot_cdf(
+            train_pool, speed_min=args.forward_command_min_m_s, speed_max=args.forward_command_max_m_s)
+        print(f"[training snapshot sampling] {sampling_summary}", flush=True)
+    train_env = make_env(args.seed, args.observation_noise_scale, train_pool, train_sampling_cdf)
     eval_env = make_env(args.seed + 10_000, args.observation_noise_scale, eval_pool)
     if train_env.observation_size != {
         "state": ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
@@ -577,7 +603,7 @@ def main(argv=None):
                 raise SystemExit(f"Installed Brax PPO lacks {name}; upgrade or choose compatible options")
             optional_train_kwargs[name] = value
     if "log_training_metrics" in signature:
-        optional_train_kwargs["log_training_metrics"] = True
+        optional_train_kwargs["log_training_metrics"] = args.log_training_episodes
     if "training_metrics_steps" in signature:
         optional_train_kwargs["training_metrics_steps"] = args.training_metrics_steps
     if "save_checkpoint_path" in signature:
@@ -611,6 +637,7 @@ def main(argv=None):
         "critic_observation_size": critic_observation_size,
         "reward_config": asdict(reward_config),
         "snapshot_pools": snapshot_summary,
+        "training_snapshot_sampling": sampling_summary,
         "policy_action_size": ROLLING_STUDENT_PPO_ACTION_SIZE_3D,
         "controller_action_size": 12,
         "student_anchor_weight": args.student_anchor_weight,
@@ -686,6 +713,14 @@ def main(argv=None):
                     "reason": "nonfinite fixed evaluation diagnostics", "checkpoint": str(checkpoint_dir),
                 })
                 raise SystemExit(f"Stopped after saving {checkpoint_dir}: nonfinite fixed evaluation")
+            best = max(fixed_history, key=lambda item: (
+                item["success_rate"], -item["forward_mae_m_s"], -item["yaw_mae_rad_s"]))
+            write_json(args.out / "best_fixed_checkpoint.json", {
+                "step": best["step"], "checkpoint": best["checkpoint"],
+                "success_rate": best["success_rate"], "forward_mae_m_s": best["forward_mae_m_s"],
+                "yaw_mae_rad_s": best["yaw_mae_rad_s"],
+                "selection": "Highest fixed-panel success, then lowest vx MAE, then lowest yaw MAE; requires independent validation.",
+            })
             print(
                 f"[fixed PPO eval] step={step:,} success={record['success_rate']:.1%} "
                 f"failed={record['failure_rate']:.1%} vx_mae={record['forward_mae_m_s']:.4f} "

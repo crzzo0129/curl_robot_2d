@@ -3,6 +3,34 @@
 import numpy as np
 
 
+def tracking_focus_snapshot_cdf(pool, *, speed_min, speed_max):
+    """Reweight training resets by command group without changing evaluation."""
+    if not speed_min < speed_max:
+        raise ValueError("tracking-focused sampling requires a nonzero speed range")
+    forward = np.asarray(pool[0].info["forward_velocity_command"])
+    yaw = np.asarray(pool[0].info["yaw_rate_command"])
+    edges = np.linspace(speed_min, speed_max, 4)
+    bins = np.searchsorted(edges[1:-1], forward, side="right")
+    probabilities = np.zeros(len(forward), dtype=np.float64)
+    groups = {}
+    directions = {"straight": np.abs(yaw) <= 1e-3,
+                  "left": yaw > 1e-3, "right": yaw < -1e-3}
+    for index, (speed, mass) in enumerate(zip(("low", "medium", "high"), (0.4, 0.2, 0.4))):
+        for direction, turn_mask in directions.items():
+            mask = (bins == index) & turn_mask
+            count = int(np.sum(mask))
+            if not count:
+                raise ValueError(f"No snapshots for {speed}/{direction}; increase the training pool or revise command ranges")
+            group_mass = mass * (0.6 if direction == "straight" else 0.2)
+            probabilities[mask] = group_mass / count
+            groups[f"{speed}/{direction}"] = {"snapshots": count, "reset_probability": group_mass}
+    probabilities /= probabilities.sum()
+    cdf = np.cumsum(probabilities).astype(np.float32)
+    cdf[-1] = 1.0
+    return cdf, {"mode": "tracking_focus", "speed_bin_edges_m_s": edges.tolist(),
+                 "groups": groups, "note": "Training reset probabilities only; evaluation samples uniformly."}
+
+
 def build_cem_snapshot_pool(teacher_env, observation_env, *, count, seed,
                             min_steps, max_steps, num_devices=1):
     import jax

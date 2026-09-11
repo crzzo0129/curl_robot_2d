@@ -31,7 +31,8 @@ def main():
             versions[package] = None
     files = []
     for name in ("training_config.json", "metrics_history.json", "summary.json",
-                 "fixed_eval_manifest.json", "fixed_eval_history.json", "stopped.json"):
+                 "fixed_eval_manifest.json", "fixed_eval_history.json", "stopped.json",
+                 "best_fixed_checkpoint.json"):
         path = args.run / name
         if path.is_file():
             files.append((path, f"run/{name}"))

@@ -27,6 +27,7 @@ def make_rolling_student_dr_env_3d(
     minimum_success_turns: float = 5.0,
     command_conditioned: bool = False,
     snapshot_pool=None,
+    snapshot_sampling_cdf=None,
 ):
     """Wrap the direct rolling task with real observations and deploy effects."""
 
@@ -41,6 +42,10 @@ def make_rolling_student_dr_env_3d(
         raise ValueError("observation_noise_scale must be nonnegative")
     if minimum_success_turns < 0.0:
         raise ValueError("minimum_success_turns must be nonnegative")
+    if snapshot_sampling_cdf is not None:
+        if snapshot_pool is None or snapshot_sampling_cdf.shape != (snapshot_pool[1].shape[0],):
+            raise ValueError("snapshot sampling CDF must match the reset pool")
+        snapshot_sampling_cdf = jp.asarray(snapshot_sampling_cdf)
 
     controller_qpos_indices = []
     for name in CONTROLLER_JOINT_NAMES_3D:
@@ -169,7 +174,13 @@ def make_rolling_student_dr_env_3d(
                 previous_controller_action = jp.zeros((ROLLING_CONTROLLER_ACTION_SIZE_3D,))
                 reset_applied_action = jp.zeros((ROLLING_STUDENT_PPO_ACTION_SIZE_3D,))
             else:
-                index = jax.random.randint(base_key, (), 0, snapshot_pool[1].shape[0])
+                if snapshot_sampling_cdf is None:
+                    index = jax.random.randint(base_key, (), 0, snapshot_pool[1].shape[0])
+                else:
+                    # Binary search avoids materializing pool-size categorical
+                    # logits for every lane at every automatic reset.
+                    index = jp.searchsorted(snapshot_sampling_cdf, jax.random.uniform(base_key), side="right")
+                    index = jp.minimum(index, snapshot_pool[1].shape[0] - 1)
                 base_state, reset_history, previous_controller_action = jax.tree_util.tree_map(
                     lambda value: jp.take(value, index, axis=0), snapshot_pool
                 )
