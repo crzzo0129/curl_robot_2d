@@ -129,7 +129,7 @@ SCUFF_HEIGHT = 0.008          # only suppress motion very close to floor (m)
 CLEARANCE_W = 0.04
 CLEARANCE_TARGET = 0.020      # swing-foot bottom clearance target (m)
 FOOT_LIFT_W = 0.08
-FOOT_LIFT_SIGMA = 0.015      # reward band around target height (m)
+FOOT_LIFT_SIGMA = 0.03      # reward band around target height (m)
 FOOT_LIFT_SPEED = 0.20        # full reward above this horizontal speed (m/s)
 
 # Straight-line trot symmetry.  The gate below disables these terms for
