@@ -170,7 +170,7 @@ def parse_args(argv=None):
     )
     parser.add_argument(
         "--eval-only", action="store_true",
-        help="load --restore-student, skip all training, save lateral diagnostics only",
+        help="load --restore-student, skip all training and save evaluation.json; diagnostics are optional",
     )
     parser.add_argument(
         "--record-diagnostics", action="store_true",
@@ -296,7 +296,6 @@ def parse_args(argv=None):
     if args.eval_only:
         if args.restore_student is None:
             parser.error("--eval-only requires --restore-student")
-        args.record_diagnostics = True
         if args.eval_seed is None:
             args.eval_seed = args.seed + 100_000
     for name in (
@@ -1532,6 +1531,23 @@ def main(argv=None):
         eval_previous_controller_action = jp.zeros(
             (args.eval_envs, ROLLING_CONTROLLER_ACTION_SIZE_3D)
         )
+    eval_warmup_steps = eval_base_state.info["step_count"]
+    if args.random_cem_snapshots:
+        # Start the student's timeout budget at takeover, not at the beginning
+        # of teacher warmup. Keep physics time, oscillator phase, histories and
+        # progress potentials intact: rewinding those would change the state
+        # being evaluated. Snapshot mode requires commands fixed for an entire
+        # episode, so restarting this counter cannot change the command segment.
+        eval_base_state = eval_base_state.replace(info={
+            **eval_base_state.info,
+            "step_count": jp.zeros_like(eval_warmup_steps),
+        })
+    print(
+        f"[evaluation] student horizon={args.episode_length} steps "
+        f"({args.episode_length * direct_task.control_timestep:.2f}s) after takeover; "
+        "teacher warmup excluded; failures terminate early",
+        flush=True,
+    )
     eval_state = attach_eval_episode_randomization(
         eval_base_state, eval_episode_key
     )
@@ -1699,13 +1715,13 @@ def main(argv=None):
             controller_action,
             eval_previous_controller_action,
         )
-        if args.record_diagnostics and (
-            (eval_step + 1) % args.log_every == 0
+        if (
+            eval_step == 0 or (eval_step + 1) % args.log_every == 0
             or eval_step + 1 == args.episode_length
         ):
             print(
-                f"[diagnostic {eval_step + 1}/{args.episode_length}] "
-                f"active_before_step={int(jp.sum(was_active))}/{args.eval_envs}",
+                f"[evaluation {eval_step + 1}/{args.episode_length}] "
+                f"active_after_step={int(jp.sum(eval_active))}/{args.eval_envs}",
                 flush=True,
             )
 
@@ -1744,6 +1760,13 @@ def main(argv=None):
         "episodes": args.eval_envs,
         "episode_length": args.episode_length,
         "duration_s": args.episode_length * direct_task.control_timestep,
+        "duration_basis": "student_control_after_takeover_excluding_teacher_warmup",
+        "teacher_warmup_steps_per_episode": np.asarray(jax.device_get(eval_warmup_steps)).tolist(),
+        "student_steps_per_episode": np.asarray(jax.device_get(eval_steps)).tolist(),
+        "student_duration_s_per_episode": (
+            np.asarray(jax.device_get(eval_steps)) * direct_task.control_timestep
+        ).tolist(),
+        "full_horizon_rate": float(jp.mean((eval_steps == args.episode_length).astype(jp.float32))),
         "deploy_dr": args.deploy_dr,
         "deploy_dr_strength": args.deploy_dr_strength if args.deploy_dr else 0.0,
         "observation_noise_scale": (
@@ -1799,6 +1822,9 @@ def main(argv=None):
     }
     print(
         "[student closed loop]\n"
+        f"  student_horizon={closed_loop_evaluation['duration_s']:.2f}s "
+        f"full_horizon={closed_loop_evaluation['full_horizon_rate']:.1%} "
+        f"mean_student_duration={float(jp.mean(eval_steps)) * direct_task.control_timestep:.2f}s\n"
         f"  success={closed_loop_evaluation['success_rate']:.1%} "
         "strict_success="
         f"{closed_loop_evaluation['strict_success_rate']:.1%} "

@@ -45,8 +45,8 @@ by default), while active environments keep their current state. Refresh uses
 fresh random keys and the original 20–300 step warmup range. It is independent
 of the failure rate. For 1000 updates, the DAgger pool needs 10 generations
 including initialization, rather than up to one generation per update.
-BC/statistics snapshot behavior and the independently seeded evaluation reset
-remain unchanged.
+BC/statistics snapshot behavior remains unchanged. Evaluation generates its
+own snapshots and starts a fresh student timeout budget at takeover.
 
 Reusing snapshots introduces correlation between repeated resets within each
 refresh interval. Compare final closed-loop evaluation as well as throughput;
@@ -72,3 +72,49 @@ python -m unittest discover -s tests -p 'test_rolling_3d_distillation.py' -v
 CPU correctness checks do not establish H200 throughput or scaling. Compare
 one and four devices at the same global batch size on the training server;
 communication and MJX compilation can limit scaling.
+
+## Re-evaluate an existing student for a full 10 seconds
+
+Use the final `student_params` checkpoint (not the RTNeural JSON). Replace its
+directory below with the actual training output directory. No retraining is
+needed. Run on the training server from `curl_robot_2d`:
+
+```bash
+CUDA_VISIBLE_DEVICES=0,1,2,3 python -u -m scripts.train_mjx_3d_roll_distillation \
+  --eval-only \
+  --restore-student results/rolling_command_distill_medium_fast/student_params \
+  --teacher-source cem \
+  --geometry rollingquad_2_abd10_no_self_collision \
+  --command-conditioned \
+  --random-cem-snapshots \
+  --num-devices 4 \
+  --eval-envs 64 \
+  --episode-length 500 \
+  --minimum-closed-loop-turns 5 \
+  --eval-seed 100000 \
+  --log-every 50 \
+  --out results/rolling_command_distill_medium_eval_10s
+```
+
+Snapshot warmup still lasts 20–300 teacher control steps. At takeover, only
+`info["step_count"]` is reset to zero. Physics time, oscillator state, observation
+history, previous action, failure persistence counters, and progress baselines
+are preserved. Snapshot mode already requires a fixed command for the episode.
+The student receives 500 control steps (10 seconds) regardless of warmup length;
+failure still ends the trajectory early. Warmup progress is not counted toward
+the student's five-turn threshold. Training/DAgger reset behavior is unaffected.
+
+The five-turn threshold is unchanged; a command-speed-dependent success
+criterion is deferred. `evaluation.json` records `duration_basis`, teacher
+warmup steps, student steps and actual durations per episode, and
+`full_horizon_rate`. Full horizon means all 500 steps were executed, not
+necessarily success (failure on the last step is still failure).
+
+`--eval-only` skips BC, statistics and DAgger, and does not overwrite the student
+checkpoint. It writes metrics to the new output directory. Detailed teacher
+action comparisons and lateral traces now require `--record-diagnostics`;
+ordinary evaluation avoids that extra teacher rollout. Keep geometry, command
+ranges, warmup settings and hidden layers consistent with the original training
+configuration. The fixed eval seed makes subsequent re-evaluations reproducible
+under the same software/device configuration; it does not reproduce an earlier
+training run's implicitly generated evaluation seed.
