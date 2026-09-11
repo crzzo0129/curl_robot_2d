@@ -128,6 +128,12 @@ def parse_args(argv=None):
     parser.add_argument("--student-anchor-weight", type=float, default=0.02)
     parser.add_argument("--observation-noise-scale", type=float, default=1.0)
     parser.add_argument("--learning-rate", type=float, default=1.0e-4)
+    parser.add_argument("--learning-rate-schedule", choices=("none", "adaptive_kl"), default="none",
+                        help="use Brax's per-minibatch KL-based learning rate adaptation")
+    parser.add_argument("--desired-kl", type=float, default=0.01)
+    parser.add_argument("--min-learning-rate", type=float, default=1.0e-7)
+    parser.add_argument("--max-learning-rate", type=float,
+                        help="adaptive learning rate ceiling; defaults to --learning-rate")
     parser.add_argument("--entropy-cost", type=float, default=1.0e-4)
     parser.add_argument("--initial-policy-std", type=float, default=0.05)
     parser.add_argument("--discounting", type=float, default=0.99)
@@ -219,6 +225,16 @@ def parse_args(argv=None):
             parser.error("snapshot PPO currently requires a fixed command for the whole student episode")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         parser.error("--learning-rate must be finite and positive")
+    if args.max_learning_rate is None:
+        args.max_learning_rate = args.learning_rate
+    for name in ("desired_kl", "min_learning_rate", "max_learning_rate"):
+        if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
+            parser.error(f"--{name.replace('_', '-')} must be finite and positive")
+    if args.learning_rate_schedule == "adaptive_kl":
+        if not args.min_learning_rate <= args.learning_rate <= args.max_learning_rate:
+            parser.error("adaptive learning rate requires min <= initial <= max")
+        if args.critic_only:
+            parser.error("use a constant learning rate for --critic-only; actor KL is zero when frozen")
     if not math.isfinite(args.initial_policy_std) or args.initial_policy_std <= 0.001:
         parser.error("--initial-policy-std must be greater than 0.001")
     if not 0.0 < args.discounting <= 1.0:
@@ -293,6 +309,17 @@ def main(argv=None):
             raise SystemExit(f"Installed Brax PPO lacks required {required}")
     if not args.eval_only and "policy_params_fn" not in signature:
         raise SystemExit("Installed Brax PPO lacks policy_params_fn; cannot save/evaluate each policy")
+    adaptive_kwargs = {}
+    if args.learning_rate_schedule == "adaptive_kl":
+        adaptive_kwargs = {
+            "learning_rate_schedule": "ADAPTIVE_KL",
+            "desired_kl": args.desired_kl,
+            "learning_rate_schedule_min_lr": args.min_learning_rate,
+            "learning_rate_schedule_max_lr": args.max_learning_rate,
+        }
+        missing = sorted(set(adaptive_kwargs) - set(signature))
+        if missing:
+            raise SystemExit(f"Installed Brax PPO lacks adaptive KL options: {missing}")
     args.out.mkdir(parents=True, exist_ok=True)
 
     student_checkpoint = model_io.load_params(args.student)
@@ -531,7 +558,7 @@ def main(argv=None):
             json.dump(history, handle, indent=2)
             handle.write("\n")
 
-    optional_train_kwargs = {}
+    optional_train_kwargs = dict(adaptive_kwargs)
     for name, value in (("clipping_epsilon", args.clipping_epsilon),
                         ("max_grad_norm", args.max_grad_norm)):
         if value is not None:
@@ -578,6 +605,7 @@ def main(argv=None):
         "student_anchor_weight": args.student_anchor_weight,
         "runtime": describe_runtime(),
         "brax_ppo_train_parameters": sorted(signature),
+        "brax_optional_train_kwargs": optional_train_kwargs.copy(),
         "args": {
             name: str(value) if isinstance(value, Path) else value
             for name, value in vars(args).items()
@@ -681,6 +709,9 @@ def main(argv=None):
         f"noise={args.observation_noise_scale:g}\n"
         f"  critic_only={args.critic_only} clip={args.clipping_epsilon:g} "
         f"max_grad_norm={args.max_grad_norm} updates/batch={args.updates_per_batch}\n"
+        f"  learning_rate={args.learning_rate:g} schedule={args.learning_rate_schedule} "
+        f"desired_kl={args.desired_kl:g} adaptive_lr_bounds="
+        f"{args.min_learning_rate:g}..{args.max_learning_rate:g}\n"
         f"  geometry={args.geometry} lateral_termination="
         f"{task.lateral_drift_termination}\n"
         f"  steps={args.steps:,} envs={args.envs} eval_envs={args.eval_envs}",

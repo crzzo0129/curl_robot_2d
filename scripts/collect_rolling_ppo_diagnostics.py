@@ -51,6 +51,7 @@ def main():
     try:
         brax = importlib.metadata.distribution("brax")
         for name in ("training/agents/ppo/train.py", "training/agents/ppo/losses.py",
+                     "training/agents/ppo/optimizer.py", "training/agents/ppo/networks.py",
                      "training/acting.py", "training/distribution.py", "envs/wrappers/training.py"):
             path = Path(brax.locate_file(f"brax/{name}"))
             if path.is_file():
