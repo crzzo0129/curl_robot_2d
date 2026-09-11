@@ -27,6 +27,7 @@ results/**
 !results/RESULTS_INDEX.md
 # Cloud recovery bundle is transferred through Git.
 !results/rolling_ppo_recovery_cloud_v2.zip
+!results/rolling_ppo_candidate_eval_v3.zip
 !results/collision_constrained_cem/
 !results/collision_constrained_cem/best_phase_controller.json
 !results/collision_constrained_cem_foot_gap_2mm_short_contact/

@@ -6,8 +6,65 @@ import json
 import numpy as np
 
 
+def summarize_command_groups(totals, forward_commands, yaw_commands, *,
+                             speed_min, speed_max, episode_length, minimum_turns):
+    """Describe tracking and survival separately, without extra simulator work."""
+    steps = np.asarray(totals["steps"])
+    failed = np.asarray(totals["failed"]) > 0.5
+    success = (~failed) & (np.asarray(totals["turns"]) >= minimum_turns)
+    fixed = np.asarray(totals["command_changed"]) < 0.5
+    full = steps == episode_length
+    edges = np.linspace(speed_min, speed_max, 4)
+    speed_bin = (np.zeros(len(steps), dtype=int) if speed_min == speed_max else
+                 np.searchsorted(edges[1:-1], forward_commands, side="right"))
+    speeds = {name: fixed & (speed_bin == i)
+              for i, name in enumerate(("low", "medium", "high"))}
+    turns = {"straight": fixed & (np.abs(yaw_commands) <= 1e-3),
+             "left_positive_yaw": fixed & (yaw_commands > 1e-3),
+             "right_negative_yaw": fixed & (yaw_commands < -1e-3)}
+
+    def summarize(mask):
+        count = int(np.sum(mask))
+        if not count:
+            return {"episodes": 0, "success_rate": None,
+                    "forward_mae_m_s": None, "yaw_mae_rad_s": None}
+        samples = max(float(np.sum(steps[mask])), 1.0)
+        survivors = mask & full & ~failed
+        survivor_samples = float(np.sum(steps[survivors]))
+        return {
+            "episodes": count, "success_count": int(np.sum(success & mask)),
+            "success_rate": float(np.mean(success[mask])),
+            "failure_rate": float(np.mean(failed[mask])),
+            "full_horizon_rate": float(np.mean(full[mask])),
+            "mean_steps": float(np.mean(steps[mask])),
+            "insufficient_turns_without_failure": int(np.sum(mask & ~failed & ~success)),
+            "forward_mae_m_s": float(np.sum(totals["vx_abs"][mask]) / samples),
+            "forward_bias_m_s": float(np.sum(totals["vx_signed"][mask]) / samples),
+            "yaw_mae_rad_s": float(np.sum(totals["yaw_abs"][mask]) / samples),
+            "yaw_bias_rad_s": float(np.sum(totals["yaw_signed"][mask]) / samples),
+            "full_horizon_failure_free_episodes": int(np.sum(survivors)),
+            "full_horizon_failure_free_forward_mae_m_s": (
+                float(np.sum(totals["vx_abs"][survivors]) / survivor_samples)
+                if survivor_samples else None),
+            "failure_counts": {name: int(np.sum(np.asarray(value)[mask] > 0.5))
+                               for name, value in totals.items() if name.startswith("failure_")},
+        }
+
+    return {
+        "speed_bin_edges_m_s": edges.tolist(),
+        "aggregation": "Rates by episode, errors by active transition; survivor metrics have selection bias.",
+        "overall": summarize(np.ones(len(steps), dtype=bool)),
+        "by_speed": {name: summarize(mask) for name, mask in speeds.items()},
+        "by_turn": {name: summarize(mask) for name, mask in turns.items()},
+        "by_speed_and_turn": {f"{speed}/{turn}": summarize(sm & tm)
+                              for speed, sm in speeds.items() for turn, tm in turns.items()},
+        "variable_command_episodes": summarize(~fixed),
+    }
+
+
 def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
-                         episode_length, minimum_turns):
+                         episode_length, minimum_turns, speed_bounds=None,
+                         observation_noise_scale=0.0):
     import jax
     import jax.numpy as jp
     from curl_robot_2d_mjx.distillation_execution import timed_stage
@@ -31,7 +88,7 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
         "reset_keys": np.asarray(jax.device_get(reset_keys)).tolist(),
         "forward_commands_m_s": np.asarray(jax.device_get(initial.info["forward_velocity_command"])).tolist(),
         "yaw_commands_rad_s": np.asarray(jax.device_get(initial.info["yaw_rate_command"])).tolist(),
-        "observation_noise_scale": 0.0,
+        "observation_noise_scale": observation_noise_scale,
         "description": "Identical initial state, history, commands and RNG for every policy; failed episodes freeze.",
     }
 
@@ -44,7 +101,7 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             "action_error_sq": z, "std_sum": z, "saturation": z,
             **{name: z for name in failures},
             **{name: z for name in rewards},
-            "failed": z, "non_lateral_failed": z,
+            "failed": z, "non_lateral_failed": z, "command_changed": z,
         }
 
         def advance(carry, _):
@@ -74,6 +131,10 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
                 next_totals[name] = jp.maximum(totals[name], jp.where(active, candidate.metrics[name], 0.0))
             next_totals["non_lateral_failed"] = jp.maximum(
                 totals["non_lateral_failed"], jp.where(active, candidate.metrics["failed_non_lateral"], 0.0))
+            changed = ((jp.abs(candidate.info["forward_velocity_command"] - initial.info["forward_velocity_command"]) > 1e-6)
+                       | (jp.abs(candidate.info["yaw_rate_command"] - initial.info["yaw_rate_command"]) > 1e-6))
+            next_totals["command_changed"] = jp.maximum(
+                totals["command_changed"], (active & changed).astype(jp.float32))
 
             def keep(new, old):
                 mask = active.reshape(active.shape + (1,) * (new.ndim - active.ndim))
@@ -116,6 +177,11 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             "action_saturation_fraction": float(np.sum(totals["saturation"]) / samples),
             "failure_counts": {name: int(np.sum(totals[name] > 0.5)) for name in failures},
             "reward_mean_per_active_step": {name: float(np.sum(totals[name]) / samples) for name in rewards},
+            "command_evaluation": (summarize_command_groups(
+                totals, np.asarray(manifest["forward_commands_m_s"]),
+                np.asarray(manifest["yaw_commands_rad_s"]), speed_min=speed_bounds[0],
+                speed_max=speed_bounds[1], episode_length=episode_length,
+                minimum_turns=minimum_turns) if speed_bounds is not None else None),
             "per_episode": {name: np.asarray(value).tolist() for name, value in totals.items()},
         }
 

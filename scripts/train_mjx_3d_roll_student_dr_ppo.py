@@ -143,6 +143,10 @@ def parse_args(argv=None):
                         help="freeze all actor parameters (including exploration std), train only the critic")
     parser.add_argument("--eval-only", action="store_true",
                         help="run fixed evaluation of the student or --restore-ppo, without PPO updates")
+    parser.add_argument("--compare-ppo", type=Path, nargs="+",
+                        help="with --eval-only, compare additional PPO files on the same cached initial states")
+    parser.add_argument("--fixed-eval-observation-noise-scale", type=float, default=0.0,
+                        help="fixed evaluator observation noise; identical random keys are reused across policies")
     parser.add_argument("--clipping-epsilon", type=float, default=0.3)
     parser.add_argument("--max-grad-norm", type=float)
     parser.add_argument("--reward-scaling", type=float, default=1.0)
@@ -193,12 +197,19 @@ def parse_args(argv=None):
             parser.error(f"PPO params do not exist: {args.restore_ppo}")
         if args.restore_ppo.is_dir() and not args.restore_ppo.name.isdecimal():
             parser.error("--restore-ppo directory must name an exact numeric Brax checkpoint step, not its parent")
+    if args.compare_ppo:
+        if not args.eval_only:
+            parser.error("--compare-ppo requires --eval-only")
+        for path in args.compare_ppo:
+            if not path.is_file():
+                parser.error(f"comparison expects a PPO params file: {path}")
     if args.out.exists() and any(args.out.iterdir()) and not args.allow_existing_output:
         parser.error(f"output directory is not empty: {args.out}")
     for value, name in (
         (args.dr_strength, "--dr-strength"),
         (args.student_anchor_weight, "--student-anchor-weight"),
         (args.observation_noise_scale, "--observation-noise-scale"),
+        (args.fixed_eval_observation_noise_scale, "--fixed-eval-observation-noise-scale"),
         (args.entropy_cost, "--entropy-cost"),
         (args.minimum_success_turns, "--minimum-success-turns"),
     ):
@@ -607,7 +618,8 @@ def main(argv=None):
         "brax_ppo_train_parameters": sorted(signature),
         "brax_optional_train_kwargs": optional_train_kwargs.copy(),
         "args": {
-            name: str(value) if isinstance(value, Path) else value
+            name: ([str(item) for item in value] if name == "compare_ppo" and value is not None
+                   else str(value) if isinstance(value, Path) else value)
             for name, value in vars(args).items()
         },
     }
@@ -622,11 +634,14 @@ def main(argv=None):
     fixed_evaluate = None
     fixed_history = []
     if args.fixed_eval_envs:
-        fixed_env = make_env(args.seed + 10000, 0.0, eval_pool)
+        fixed_env = make_env(args.seed + 10000, args.fixed_eval_observation_noise_scale, eval_pool)
         fixed_evaluate, fixed_manifest = make_fixed_evaluator(
             fixed_env, initialized_networks, student_anchor_policy,
             count=args.fixed_eval_envs, seed=args.fixed_eval_seed,
             episode_length=args.episode_length, minimum_turns=args.minimum_success_turns,
+            speed_bounds=(args.forward_command_min_m_s, args.forward_command_max_m_s)
+            if args.command_conditioned else None,
+            observation_noise_scale=args.fixed_eval_observation_noise_scale,
         )
         write_json(args.out / "fixed_eval_manifest.json", fixed_manifest)
     initial_actor = None
@@ -691,6 +706,27 @@ def main(argv=None):
             raise RuntimeError(f"critic-only actor unexpectedly changed; saved {checkpoint_dir}")
 
     if args.eval_only:
+        if args.compare_ppo:
+            # One evaluator, one set of initial states; no repeated CEM bank
+            # generation for the additional policies. No PPO optimization.
+            sources = [restore_source, *[str(path.resolve()) for path in args.compare_ppo]]
+            for index, source in enumerate(sources):
+                params = restore_params if index == 0 else model_io.load_params(args.compare_ppo[index - 1])
+                record = {"policy_index": index, "policy_source": source, **fixed_evaluate(params)}
+                fixed_history.append(record)
+                write_json(args.out / "fixed_eval_history.json", fixed_history)
+                if not record["diagnostics_finite"]:
+                    raise SystemExit(f"Nonfinite comparison diagnostics for {source}; report saved")
+                groups = record["command_evaluation"]
+                summaries = {"overall": record} if groups is None else {
+                    "overall": groups["overall"], **groups["by_speed"], **groups["by_turn"]}
+                print(f"[paired comparison] policy={index} source={source}", flush=True)
+                for name, summary in summaries.items():
+                    if summary["episodes"]:
+                        print(f"  {name}: n={summary['episodes']} success={summary['success_rate']:.1%} "
+                              f"vx_mae={summary['forward_mae_m_s']:.4f} yaw_mae={summary['yaw_mae_rad_s']:.4f}", flush=True)
+            print(f"[comparison saved] {args.out / 'fixed_eval_history.json'}", flush=True)
+            return
         capture_policy(0, None, restore_params)
         print(f"[evaluation only] saved {args.out / 'fixed_eval_history.json'}; no PPO updates", flush=True)
         return
