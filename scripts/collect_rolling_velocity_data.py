@@ -26,12 +26,52 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     CONTROLLER_JOINT_NAMES_3D, ROLLING_EFFECTIVE_ACTION_INDICES_3D,
     rolling_deploy_frame_3d,
 )
-from curl_robot_2d_mjx.environment_3d import steering_prior_3d
+from curl_robot_2d_mjx.environment_3d import (
+    FORWARD_COMMAND_LOOKUP_SPEEDS_M_S, forward_command_to_target_scale_3d,
+    steering_prior_3d,
+)
 from scripts import evaluate_3d_symmetric_cem_reference as bridge
 from scripts.collect_cem_cycle_data import DEFAULT_CONTROLLER, DEFAULT_XML
 
 ACTION_SCALES = np.tile([0., .8, 1.2], 4)
 ACTIVE = np.asarray(ROLLING_EFFECTIVE_ACTION_INDICES_3D)
+
+
+def make_command_schedule(settings, rng):
+    """Use the documented speed lookup and gain-scaled steering prior.
+
+    Segment boundaries are observation-step indices, avoiding floating-point
+    boundary drift. Neither oscillator nor observation history resets there.
+    """
+    mode = settings["command_mode"]
+    steps = int(round(settings["duration"] * settings["control_hz"]))
+    interval = max(1, int(round(settings["command_interval"] * settings["control_hz"])))
+    if mode == "fixed":
+        return [dict(start_step=0, speed_command=0., turn_command=0.,
+                     target_scale=float(rng.uniform(*settings["target_scale_range"])),
+                     steering_amplitude=0.)], steps
+    count = (steps + interval - 1) // interval
+    lo, hi = settings["speed_range"]
+    turn_lo, turn_hi = settings["turn_range"]
+    if mode == "random":
+        speeds = rng.uniform(lo, hi, count)
+        categories = rng.choice([0., 1., -1.], count, p=[.4, .3, .3])
+        turns = categories * rng.uniform(turn_lo, turn_hi, count)
+        speeds[0], turns[0] = np.clip(.6, lo, hi), 0.
+    else:
+        mid = .5 * (lo + hi)
+        pattern = [(mid, 0.), (lo, 0.), (hi, 0.), (mid, turn_hi),
+                   (mid, -turn_hi), (hi, turn_lo), (lo, -turn_lo), (mid, 0.)]
+        speeds, turns = np.array([pattern[i % len(pattern)] for i in range(count)]).T
+    scales = forward_command_to_target_scale_3d(np, speeds)
+    steering = steering_prior_3d(
+        np, turns, settings["turn_k"], settings["turn_prior_clip"],
+        residual_gain=settings["turn_residual_gain"],
+        differential_scale=settings["turn_differential_scale"],
+    )[:, 0]
+    return [dict(start_step=i * interval, speed_command=float(speeds[i]),
+                 turn_command=float(turns[i]), target_scale=float(scales[i]),
+                 steering_amplitude=float(steering[i])) for i in range(count)], interval
 
 
 def cem_motor_target(phase, reference, compact, lower, upper, amplitude, steering):
@@ -122,7 +162,8 @@ def collect_episode(job):
     data.qpos[root_qpos + 3:root_qpos + 7] = rotated
     data.ctrl[actuators] = compact
     data.qvel[:] = 0
-    target_scale = float(rng.uniform(*settings["target_scale_range"]))
+    schedule, interval_steps = make_command_schedule(settings, rng)
+    target_scale = schedule[0]["target_scale"]
     phase = rolling_phase = 0.
     previous_action = np.zeros(12, np.float32)
     bias = np.zeros(36, np.float32)
@@ -132,14 +173,23 @@ def collect_episode(job):
     sigma = np.zeros(36, np.float32)
     sigma[:3], sigma[3:6], sigma[12:24] = .03 * noise, .01 * noise, .002 * noise
     records = {key: [] for key in ("frames", "velocity_world", "body_y_world", "time_s",
-                                   "position_world", "motor_target", "cem_phase", "rolling_phase")}
+                                   "position_world", "motor_target", "cem_phase", "rolling_phase",
+                                   "command", "command_age_s", "command_segment", "speed_command_delta",
+                                   "turn_command_delta", "target_scale", "steering_amplitude")}
     # Both signs and nominal runs; offsets are in normalized action space.
     steering_sign = (0, 1, -1)[episode % 3]
     steering = steering_sign * settings["steering_bias"]
+    if settings["command_mode"] == "fixed":
+        schedule[0]["steering_amplitude"] = steering
     steps = int(round(settings["duration"] / dt))
     self_contact_steps = 0
     start = time.perf_counter()
     for step in range(steps):
+        segment = min(step // interval_steps, len(schedule) - 1)
+        current = schedule[segment]
+        previous = schedule[max(0, segment - 1)]
+        target_scale, steering = current["target_scale"], current["steering_amplitude"]
+        command = np.array([current["speed_command"], 0., current["turn_command"]])
         # mj_step's derived kinematics can lag its integrated qpos: refresh before
         # recording observations and root velocity from the SAME simulation time.
         mujoco.mj_forward(model, data)
@@ -153,6 +203,7 @@ def collect_episode(job):
             projected_gravity=rotation.T @ np.array([0., 0., -1.]),
             joint_position_offset=data.qpos[joint_qpos] - compact,
             last_action=previous_action,
+            command=command,
         )
         frame = (frame + bias + rng.normal(size=36) * sigma).astype(np.float32)
         frame[3:6] /= max(np.linalg.norm(frame[3:6]), 1e-8)
@@ -166,6 +217,13 @@ def collect_episode(job):
         records["motor_target"].append(data.ctrl[actuators].copy())
         records["cem_phase"].append(phase)
         records["rolling_phase"].append(rolling_phase)
+        records["command"].append(command)
+        records["command_segment"].append(segment)
+        records["command_age_s"].append((step - current["start_step"]) * dt)
+        records["speed_command_delta"].append(current["speed_command"] - previous["speed_command"])
+        records["turn_command_delta"].append(current["turn_command"] - previous["turn_command"])
+        records["target_scale"].append(target_scale)
+        records["steering_amplitude"].append(steering)
         for _ in range(substeps):
             phase = float(bridge.advance_oscillator(np, rolling_phase, phase, physics_dt,
                                                     reference, rate_scale=settings["phase_rate_scale"]))
@@ -173,7 +231,11 @@ def collect_episode(job):
                 float(data.time), target_scale=target_scale, startup_scale=0.,
                 ramp_duration_s=.25, startup_boost=0., startup_boost_duration_s=.25,
             )
-            steering_ramp = np.clip((data.time - 1.) / 1., 0., 1.)
+            steering_ramp = (np.clip((data.time - 1.) / 1., 0., 1.)
+                             if settings["command_mode"] == "fixed" else
+                             bridge.startup_target_scale(float(data.time), target_scale=1.,
+                                 startup_scale=0., ramp_duration_s=.25, startup_boost=0.,
+                                 startup_boost_duration_s=.25))
             target = cem_motor_target(phase, reference, compact, low, high,
                                       amplitude, steering * steering_ramp)
             data.ctrl[actuators] = target
@@ -187,6 +249,8 @@ def collect_episode(job):
     return records, dict(episode=episode, controller=controller_path, source="cem", yaw=yaw,
                          friction_scale=friction_scale, steering_bias=steering,
                          target_scale=target_scale, motor_kp_scale=gain_scale.tolist(),
+                         command_mode=settings["command_mode"], command_schedule=schedule,
+                         command_interval_steps=interval_steps,
                          compact_joint_position=compact.tolist(),
                          rolling_turns=rolling_phase / (2 * np.pi),
                          self_contact_fraction=self_contact_steps / (steps * substeps),
@@ -210,6 +274,15 @@ def parse_args(argv=None):
     parser.add_argument("--observation-noise", type=float, default=1.)
     parser.add_argument("--steering-bias", type=float, default=.03)
     parser.add_argument("--target-scale-range", type=float, nargs=2, default=[.45, 1.])
+    parser.add_argument("--command-mode", choices=("fixed", "random", "scripted"), default="fixed",
+                        help="fixed reproduces v1; random/scripted switch speed and turn within each episode")
+    parser.add_argument("--command-interval", type=float, default=1.5)
+    parser.add_argument("--speed-range", type=float, nargs=2, default=[.45, .80])
+    parser.add_argument("--turn-range", type=float, nargs=2, default=[.02, .08], help="nonzero turn command magnitudes")
+    parser.add_argument("--turn-k", type=float, default=5.)
+    parser.add_argument("--turn-prior-clip", type=float, default=.5)
+    parser.add_argument("--turn-residual-gain", type=float, default=.15)
+    parser.add_argument("--turn-differential-scale", type=float, default=.25)
     parser.add_argument("--phase-rate-scale", type=float, default=1.)
     parser.add_argument("--physics-profile", choices=bridge.PHYSICS_PROFILE_NAMES_3D, default="cg20")
     parser.add_argument("--kp", type=float, default=5.)
@@ -217,7 +290,8 @@ def parse_args(argv=None):
     parser.add_argument("--torque-limit", type=float, default=3.)
     args = parser.parse_args(argv)
     args.controller = args.controller or [DEFAULT_CONTROLLER]
-    for name in ("episodes", "duration", "control_hz", "substeps", "workers", "kp", "torque_limit", "phase_rate_scale"):
+    for name in ("episodes", "duration", "control_hz", "substeps", "workers", "kp", "torque_limit", "phase_rate_scale",
+                 "command_interval", "turn_k", "turn_prior_clip", "turn_residual_gain", "turn_differential_scale"):
         if not np.isfinite(getattr(args, name)) or getattr(args, name) <= 0:
             parser.error(f"{name} must be finite and positive")
     for name in ("observation_noise", "steering_bias", "dr_strength", "kd"):
@@ -227,6 +301,14 @@ def parse_args(argv=None):
         parser.error("dr-strength must be <= 1 and target scales must be finite")
     if not 0 < args.target_scale_range[0] <= args.target_scale_range[1] <= 1:
         parser.error("require 0 < minimum target scale <= maximum <= 1")
+    if not np.all(np.isfinite([*args.speed_range, *args.turn_range])):
+        parser.error("command ranges must be finite")
+    if not FORWARD_COMMAND_LOOKUP_SPEEDS_M_S[0] <= args.speed_range[0] <= args.speed_range[1] <= FORWARD_COMMAND_LOOKUP_SPEEDS_M_S[-1]:
+        parser.error("speed-range must stay inside the validated lookup range 0.4111-0.8110 m/s")
+    if not 0 < args.turn_range[0] <= args.turn_range[1] <= .08:
+        parser.error("turn-range must satisfy 0 < min <= max <= 0.08 rad/s")
+    if args.command_mode != "fixed" and round(args.command_interval * args.control_hz) < 1:
+        parser.error("command interval must allow at least one observation step")
     if round(args.duration * args.control_hz) < 2:
         parser.error("duration must allow at least two control steps")
     if args.seed < 0 or args.out.suffix != ".npz":
