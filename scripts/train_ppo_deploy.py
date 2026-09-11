@@ -127,9 +127,9 @@ SLIP_W = 0.25
 SCUFF_W = 0.15
 SCUFF_HEIGHT = 0.008          # only suppress motion very close to floor (m)
 CLEARANCE_W = 0.04
-CLEARANCE_TARGET = 0.020      # swing-foot bottom clearance target (m)
+CLEARANCE_TARGET = 0.040      # full height reward at 4 cm foot-bottom clearance
 FOOT_LIFT_W = 0.08
-FOOT_LIFT_SIGMA = 0.03      # reward band around target height (m)
+FOOT_LIFT_SIGMA = 0.0075      # decay width ABOVE the target height (m)
 FOOT_LIFT_SPEED = 0.20        # full reward above this horizontal speed (m/s)
 
 # Straight-line trot symmetry.  The gate below disables these terms for
@@ -482,11 +482,15 @@ class DeployEnv(PipelineEnv):
         p_clearance = CLEARANCE_W * jp.sum(
             jp.square(clearance_error) * swing) * moving
 
-        # Reward a moving swing foot near the target height.  The bell-shaped
-        # target discourages both dragging and excessive high-stepping.  Cap
-        # the sum at two feet so a four-leg jump cannot earn extra lift reward.
-        lift_quality = jp.exp(-jp.square(
-            (foot_clearance - CLEARANCE_TARGET) / FOOT_LIFT_SIGMA))
+        # Below 4 cm, height quality is (clearance / target)^2: 2 cm earns
+        # 1/4, 3 cm earns 9/16, and only 4 cm reaches full height credit.
+        # Above target, decay smoothly to discourage excessive high-stepping.
+        # Cap the sum at two feet so jumping cannot earn extra lift reward.
+        lift_height_fraction = jp.clip(
+            foot_clearance / CLEARANCE_TARGET, 0.0, 1.0)
+        excess_height = jp.maximum(foot_clearance - CLEARANCE_TARGET, 0.0)
+        lift_quality = jp.square(lift_height_fraction) * jp.exp(
+            -jp.square(excess_height / FOOT_LIFT_SIGMA))
         swing_motion = jp.clip(
             jp.sqrt(foot_vxy2) / FOOT_LIFT_SPEED, 0.0, 1.0)
         r_lift = FOOT_LIFT_W * jp.minimum(
