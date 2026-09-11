@@ -56,13 +56,14 @@ class SineWalkingController:
     All arrays exposed by targets() use model actuator order.
     """
 
-    def __init__(self, model, parameters=None, *, hold_s=0.5, ramp_s=1.0):
+    def __init__(self, model, parameters=None, *, hold_s=0.5, ramp_s=1.0, heading_feedback=False):
         self.model = model
         self.parameters = parameters or GaitParameters()
         GaitParameters.from_vector(self.parameters.vector())
         if not math.isfinite(hold_s) or hold_s < 0 or not math.isfinite(ramp_s) or ramp_s <= 0:
             raise ValueError("hold_s must be nonnegative and ramp_s positive")
         self.hold_s, self.ramp_s = hold_s, ramp_s
+        self.heading_feedback = heading_feedback
         self.key = model.key("stand").id
         self.torso = model.body("torso").id
         self.nominal = model.key_ctrl[self.key].copy()
@@ -109,6 +110,8 @@ class SineWalkingController:
             yaw = math.atan2(rotation[1, 0], rotation[0, 0])
             # Differential stride closes the heading/lateral loop about +world X.
             heading_error = np.clip(yaw + math.atan2(float(data.qpos[1]), 0.75), -0.6, 0.6)
+            if not self.heading_feedback:
+                heading_error = 0.0
             displacement[:, 0] -= 0.03 * heading_error * np.cos(phase) * np.array([1, -1, 1, -1])
             displacement[:, 1] += 0.02 * heading_error * np.array([1, 1, -1, -1])
             pitch_correction = np.clip(p.pitch_gain * pitch + p.pitch_rate_gain * data.qvel[4], -0.025, 0.025)

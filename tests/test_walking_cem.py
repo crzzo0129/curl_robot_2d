@@ -7,7 +7,7 @@ import mujoco
 import numpy as np
 
 from curl_robot_2d.walking_cem import MODEL_PATH, GaitParameters, SineWalkingController, rollout
-from scripts.walk_cem import load_policy, save_json
+from scripts.walk_cem import DEFAULT_POLICY, load_policy, save_json
 
 
 class WalkingCemTests(unittest.TestCase):
@@ -53,6 +53,19 @@ class WalkingCemTests(unittest.TestCase):
             SineWalkingController(self.model, ramp_s=0)
         with self.assertRaises(ValueError):
             rollout(self.model, SineWalkingController(self.model), duration_s=0.1)
+
+    def test_saved_cem_controller_long_rollout(self):
+        parameters, metadata = load_policy(DEFAULT_POLICY)
+        controller = SineWalkingController(self.model, parameters,
+            hold_s=metadata["hold_s"], ramp_s=metadata["ramp_s"],
+            heading_feedback=metadata["heading_feedback"])
+        summary, _ = rollout(self.model, controller, duration_s=30)
+        self.assertTrue(summary["completed"], summary)
+        self.assertGreater(summary["distance_x_m"], 6)
+        self.assertLess(abs(summary["drift_y_m"]), 0.2)
+        self.assertLess(summary["max_tilt_deg"], 12)
+        self.assertEqual(summary["nonfoot_contact_fraction"], 0)
+        self.assertTrue(all(v > 0 for v in summary["foot_swing_samples"].values()))
 
     def test_json_roundtrip(self):
         from dataclasses import asdict

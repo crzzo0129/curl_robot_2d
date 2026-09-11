@@ -149,8 +149,8 @@ FOOT_LIFT_SPEED = 0.20        # full reward above this horizontal speed (m/s)
 # Per-joint exponential cost around DEFAULT_POSE, active in every command.
 # Scales are curvature scales (radians), not hard limits or dead zones.
 # Walking allows normal hip/knee excursion; standing restores the pose sooner.
-POSE_STAND_W = 0.10
-POSE_WALK_W = 0.025
+POSE_STAND_W = 0.08
+POSE_WALK_W = 0.02
 POSE_STAND_SCALE = jp.array([0.10, 0.20, 0.20] * 4)  # abd, hip, knee
 POSE_WALK_SCALE = jp.array([0.20, 0.50, 0.50] * 4)
 POSE_MAX_JOINT_PENALTY = 0.50  # bound extreme errors before exponentiation

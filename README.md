@@ -1,5 +1,9 @@
 # Curl Robot 2D
 
+RollingQuad 2 从 stand 起步的 CEM / 正弦行走：`python -m scripts.walk_cem --view`。
+默认加载已保存的 CEM 参数；使用 `--controller sine` 切换到正弦基线。
+搜索、评估和 API 说明见 [walk_cem_zh.md](docs/walk_cem_zh.md)。
+
 > 项目导航：先阅读 [`PROJECT_INDEX.md`](PROJECT_INDEX.md)。当前 Pupper 几何、正式
 > reference、3D paired evaluation 与结果清理规则统一记录在那里；结果文件入口见
 > [`results/RESULTS_INDEX.md`](results/RESULTS_INDEX.md)。本 README 保留项目的完整历史说明。

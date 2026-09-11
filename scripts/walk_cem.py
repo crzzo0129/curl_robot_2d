@@ -26,7 +26,8 @@ def initialize_worker(path):
 
 def evaluate_worker(task):
     vector, duration, speed, hold, ramp = task
-    controller = SineWalkingController(_model, GaitParameters.from_vector(vector), hold_s=hold, ramp_s=ramp)
+    controller = SineWalkingController(_model, GaitParameters.from_vector(vector), hold_s=hold, ramp_s=ramp,
+                                      heading_feedback=True)
     return rollout(_model, controller, duration_s=duration, target_speed=speed)[0]
 
 
@@ -95,6 +96,7 @@ def optimize(args, parameters):
             save_json(args.out / "best_controller.json", dict(
                 format="rollingquad-sine-cem-v1", parameters=asdict(GaitParameters.from_vector(best)),
                 hold_s=args.hold, ramp_s=args.ramp, target_speed_m_s=args.speed,
+                heading_feedback=True,
                 model=str(args.model.resolve()), model_sha256=hashlib.sha256(args.model.read_bytes()).hexdigest(),
                 seed=args.seed, population=args.population, iterations=iteration + 1,
                 training=best_summary))
@@ -141,7 +143,8 @@ def main(argv=None):
     if args.mode == "optimize":
         parameters = optimize(args, parameters)
     model = mujoco.MjModel.from_xml_path(str(args.model))
-    controller = SineWalkingController(model, parameters, hold_s=args.hold, ramp_s=args.ramp)
+    controller = SineWalkingController(model, parameters, hold_s=args.hold, ramp_s=args.ramp,
+        heading_feedback=args.mode == "optimize" or metadata.get("heading_feedback", False))
     kwargs = dict(duration_s=args.duration, target_speed=args.speed, record=True)
     if args.view:
         from mujoco import viewer as mj_viewer
