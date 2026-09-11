@@ -157,7 +157,7 @@
               rgba="0.749 0.749 0.749 1" mesh="Upperleg_with_motor_mirror_1_2"/>
         <body name="rear_right_shank" pos="0.0139503 -0.0766699 0.00975">
           <inertial pos="-0.00457242 -0.0602669 -0.0272819" quat="0.540139 0.48053 -0.532687 0.439984" mass="0.046425" diaginertia="6.03771e-05 5.63949e-05 8.99449e-06"/>
-          <joint name="rear_right_knee" range="0.17453 2.0944" actuatorfrcrange="-3 3" axis="0 0 1"/>
+          <joint name="rear_right_knee" range="0.17453 2.0944" actuatorfrcrange="-3 3" axis="0 0 1"1/>
           <geom name="rear_right_foot_proxy" type="mesh"
                 contype="8" conaffinity="15"
                 rgba="0.749 0.749 0.749 1" mesh="Lower_leg_with_foot_mirror_1_2"/>

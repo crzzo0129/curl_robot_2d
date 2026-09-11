@@ -1,0 +1,5 @@
+# CPU collection and NumPy deployment; JAX automatically uses an installed GPU backend.
+numpy>=1.26
+mujoco>=3.9,<4
+jax>=0.6,<0.7
+optax>=0.2,<0.3

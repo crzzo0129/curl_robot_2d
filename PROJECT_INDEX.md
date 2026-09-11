@@ -56,6 +56,11 @@
 
 ## 推荐工作流
 
+独立滚动线速度 / 轨迹转向速度估计（不接入 policy）：见
+[`docs/rolling_velocity_estimator_zh.md`](docs/rolling_velocity_estimator_zh.md)，
+包含数据采集、监督训练、留出评估和 NumPy 在线推理。当前轨迹来源待指定，
+此前使用未认可 policy 生成的模型和评估结果已作废。
+
 ```powershell
 # 当前 RollingQuad 2 行走训练主入口
 python -m scripts.train_ppo_walk3d probe
