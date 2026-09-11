@@ -142,6 +142,8 @@ python -m scripts.train_ppo_deploy terrain dr video rollingquad_2_deploy_terrain
 和 `_flat.mp4`，使用相同的初始随机种子和指令脚本。崎岖视频使用固定种子、
 当前最大难度的一张参考地图；它不代表全部随机地形的通过率。
 常规 Brax eval 使用与训练同样的平地/崎岖随机分布及启用的 DR。
+视频内四个方向各自从相同种子重置，左右转均为原地转；方向报告直接
+统计带符号的机身速度和角速度，不再使用整段首尾 yaw 的最短角度差。
 
 新增日志包含：
 

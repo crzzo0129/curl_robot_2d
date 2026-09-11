@@ -1,7 +1,7 @@
 # Deploy 步态对称性与 hip 摆幅调整
 
-入口：`scripts/train_ppo_deploy.py`。同步到训练机器时，也要同步新增的
-`scripts/deploy_gait.py`。
+入口：`scripts/train_ppo_deploy.py`。同步到训练机器时，也要同步
+`scripts/deploy_gait.py` 和新增的 `scripts/deploy_symmetry.py`。
 
 Deploy 使用四条腿 abd 均为 0 的 `rollingquad.xml` 站姿，并通过
 `train_ppo_walk3d.py` 的模型生成逻辑关闭机器人自碰撞，保留地面接触。
@@ -96,6 +96,71 @@ terrain 模式，不修改 `train_ppo_walk3d.py` 的独立训练参数。启动�
 速度指令变化、站立、侧移或转弯会清除/禁用统计；终止时也清零。
 新增状态仅供环境 reward 使用，不改变策略的 720 维观测或部署接口。
 
+## 前后镜像策略一致性
+
+当前版本默认在 PPO 更新中加入前后镜像一致性损失，初始权重
+`FB_SYMMETRY_W = 0.10`。它是 actor 的训练损失，不是环境 reward；
+episode reward 不会直接减去该项。
+
+设 `T_obs` 和 `T_action` 为下表的镜像变换，`mu` 为经过动作分布
+变换（当前为 tanh）后的确定性策略输出：
+
+`L_total = L_PPO + 0.10 * mean_straight(mean_joints((mu(T_obs(obs)) - T_action(mu(obs)))^2))`
+
+两次 actor 计算都参与求导。原 PPO 仍用真实采样的数据、行为策略
+log probability、advantage 和 critic 目标，不伪造镜像轨迹的回报。
+损失仅选择最新指令满足 `|vx|>0.05, |vy|<0.05, |wz|<0.15` 的样本；
+无符合条件样本时为零。原前进/后退各 30%、混合 30%、站立 10% 的
+采样分布保持不变。
+
+镜像采用机身坐标系 `x -> -x`，不是绕 z 轴旋转 180°：
+
+| 内容 | 变换 |
+| --- | --- |
+| 腿顺序 | FL ↔ RL，FR ↔ RR |
+| 关节偏移、上一帧 action | 按上述顺序交换；当前模型各关节符号均为 +1 |
+| 陀螺仪 `[wx, wy, wz]` | `[wx, -wy, -wz]` |
+| 投影重力、期望竖直方向 `[x, y, z]` | `[-x, y, z]` |
+| 指令 `[vx, vy, wz]` | `[-vx, vy, -wz]` |
+
+全部 20 帧历史都进行同样变换，时间顺序保持一致。镜像先作用于原始
+物理观测，然后两支策略各自经过现有的同一个 observation normalizer；
+不能把归一化后的输入直接交换、取反来代替。
+
+启动时使用原生 MuJoCo 静态运动学检查关节轴符号、默认姿态、action
+尺度、控制限位和足端对应关系。当前 CAD 模型的 32 组静态姿态配对中，
+镜像足端最大差异约 1.07 mm。该检查验证坐标约定，不证明质量、接触或
+任意 DR 实例具有精确的动力学对称性，所以采用软损失。若关节轴方向
+不匹配或启动抽样足端误差超过 3 mm，会明确报错，避免错误映射参与训练。
+
+训练日志新增：
+
+- `fb_symmetry_loss`：乘权重后的优化损失。
+- `action_rmse`：镜像确定性 action 的均方根误差，使用归一化 action 单位。
+- `sample_fraction`：minibatch 中满足直行条件的样本比例。
+
+这些来自 PPO minibatch 的训练统计，不是 episode 累计指标。最初尚未
+执行更新的 eval 不一定含有它们。较低的镜像误差本身不能证明步态更好；
+应同时比较 ±0.45 m/s 下的速度跟踪、抬脚、打滑及后退是否退化。
+镜像约束会同时调整两个方向，不会把后退策略冻结为教师。
+
+建议从已有纯 DR 策略继续训练到独立实验名，保留基线便于比较：
+
+```bash
+python -m scripts.train_ppo_deploy dr --run-name pose_exp_dr_fb --resume rollingquad_2_deploy_pose_exp_dr_v2_policy.bin --num-envs 1024 --batch-size 64 --fb-symmetry-weight 0.10
+```
+
+新结果使用 `rollingquad_2_deploy_pose_exp_dr_fb_*` 前缀。检查点目录会写入
+`front_back_symmetry_config.json`。可通过 `--fb-symmetry-weight 0` 禁用，
+或用较小权重作消融比较；不需要修改 720 维观测、12 维 action 或部署
+导出接口。该适配器只在当前训练函数的局部命名空间接入 PPO 损失，
+不修改安装目录中的 Brax 文件或全局模块；不兼容的 Brax 绑定会报错。
+
+`tests/test_deploy_symmetry.py` 提供 8 项纯 NumPy 测试，检查坐标符号、
+历史帧、双次镜像恢复、直行筛选、非对称动作识别、normalizer 顺序和
+PPO 损失接入。语法、这些测试和原生 MuJoCo 静态映射检查已通过；
+按要求未运行 JAX 编译/梯度测试或 PPO 训练，云端兼容性与效果仍需验证。
+
 ## 持续生效的指数姿态惩罚
 
 现在 deploy 的站立和行走都会惩罚实际关节角度偏离 `DEFAULT_POSE`。
@@ -167,6 +232,17 @@ python -m scripts.train_ppo_deploy dr --fresh --run-name pose_exp_dr_v2 --num-en
 
 ## 日志与验证
 
+视频现在分别从相同初态、相同随机种子运行前进、后退、原地左转和原地
+右转，再拼接四段。直行速度指令为 ±0.45 m/s，转向指令为 ±1 rad/s，
+左右转均不带前进速度。每段开始前将目标指令写入最新观测，保留其余
+历史帧；某段提前终止后仍会继续评估其他方向。它是方向对照，不是
+连续切换能力测试，也不是多随机种子的鲁棒性结论。
+
+方向报告中的 `vx/vy` 是机身坐标系实际速度的时间平均，保留正负号；
+`body wz` 是机身坐标系实际角速度的时间平均。旧版整段首尾 yaw 差
+被折回 [-pi, pi]，转过半圈后可能报告反号；现已改为直接统计角速度。
+各方向另打印平均打滑、擦地、姿态罚分和四腿 hip 角度，方便定位差异。
+
 日志新增 `hip_rom_penalty`、前后腿平均有效摆幅、目标、有效统计比例及
 有效周期数。无效/过期统计按零计入摆幅；Brax 的 episode 累计角度指标在
 控制台除以 episode 长度后显示，所以它们是整个 episode 的时间平均，
@@ -174,8 +250,8 @@ python -m scripts.train_ppo_deploy dr --fresh --run-name pose_exp_dr_v2 --num-en
 
 从相同初态分别运行 ±0.20、±0.35、±0.45 m/s，去掉起步过渡后记录每条腿
 的 hip 最小值、最大值、峰峰值、步频、触地占空比，同时比较跟踪误差、
-打滑和跌倒率。当前修改没有增加跨方向策略一致性损失，不能据此保证
-训练出的两个方向完全对称。
+打滑和跌倒率。当前已有跨方向策略一致性软损失，仍需验证步态质量和
+方向间差异，不能据此保证训练出的两个方向完全对称。
 
 继续训练可使用原来的命令，例如：
 

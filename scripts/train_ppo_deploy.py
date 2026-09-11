@@ -35,6 +35,7 @@ Subcommands
     dr       (composable) domain randomisation
     terrain  (composable) 40% flat / 60% mild 2-D rough terrain
              --terrain-max-height METERS sets the next terrain difficulty
+    --fb-symmetry-weight FLOAT   actor front/back consistency (default 0.10; 0 disables)
     <none>   train
 """
 import os
@@ -75,6 +76,7 @@ from brax.training.acme import running_statistics
 # a walking policy must not be trained against colliding shells.
 import train_ppo_walk3d as w3
 from deploy_gait import init_hip_rom, sample_command, update_hip_rom
+from deploy_symmetry import audit_front_back_mapping, with_front_back_symmetry
 from deploy_terrain import (
     RoughTerrainConfig, inject_heightfield, limit_collision_hulls, reference_terrain_data,
     surface_height, terrain_data, write_height_preview,
@@ -154,6 +156,9 @@ POSE_WALK_W = 0.02
 POSE_STAND_SCALE = jp.array([0.10, 0.20, 0.20] * 4)  # abd, hip, knee
 POSE_WALK_SCALE = jp.array([0.20, 0.50, 0.50] * 4)
 POSE_MAX_JOINT_PENALTY = 0.50  # bound extreme errors before exponentiation
+
+# Actor loss regularization, not a reward term. Applies to straight commands.
+FB_SYMMETRY_W = 0.10
 
 # Straight-line trot symmetry.  The gate below disables these terms for
 # lateral motion and turning so they do not remove steering authority.
@@ -766,51 +771,65 @@ CMD_SCRIPT = (
     ("forward", jp.array([0.45, 0.0, 0.0])),
     ("backward", jp.array([-0.45, 0.0, 0.0])),
     ("turn left", jp.array([0.0, 0.0, 1.0])),
-    ("turn right", jp.array([0.20, 0.0, -1.0])),
+    ("turn right", jp.array([0.0, 0.0, -1.0])),
 )
 
 
-def _yaw(q):
-    w, x, y, z = (float(v) for v in q[3:7])
-    return float(np.arctan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z)))
+def _set_eval_command(state, command):
+    """Expose an external command to the actor before its next action.
+
+    Replace only the newest command in history; retain past observations as
+    the deployed controller does. This also repairs a command resampled by
+    env.step at a command boundary during a fixed-command evaluation.
+    """
+    hist = state.info["hist"]
+    hist = jp.concatenate([hist[:6], command, hist[9:]])
+    obs = jp.concatenate([state.obs[:6], command, state.obs[9:]])
+    return state.replace(info={**state.info, "command": command, "hist": hist}, obs=obs)
 
 
 def _scripted_rollout(env, act_fn, seconds, step_fn=None, reset_fn=None):
+    """Concatenate independent direction trials with identical reset/RNG seeds."""
     step_fn = step_fn or jax.jit(env.step)
     reset_fn = reset_fn or jax.jit(env.reset)
-    st = reset_fn(jax.random.PRNGKey(0))
-    rng = jax.random.PRNGKey(1)
     per_seg = max(int(seconds / len(CMD_SCRIPT) / float(env.dt)), 1)
-    roll, report, terminated = [st.pipeline_state], [], False
+    roll, report = [], ["    independent direction trials (same reset seed):"]
     for name, cmd in CMD_SCRIPT:
-        st = st.replace(info={**st.info, "command": cmd})
-        p0 = np.array(st.pipeline_state.q[:3])
-        yaw0 = _yaw(st.pipeline_state.q)
+        st = _set_eval_command(reset_fn(jax.random.PRNGKey(0)), cmd)
+        rng = jax.random.PRNGKey(1)
+        roll.append(st.pipeline_state)
+        terminated = False
+        totals = np.zeros(10)
         completed_steps = 0
         for _ in range(per_seg):
             rng, k = jax.random.split(rng)
             st = step_fn(st, act_fn(st.obs, k))
-            st = st.replace(info={**st.info, "command": cmd})
+            st = _set_eval_command(st, cmd)
             roll.append(st.pipeline_state)
+            totals += np.asarray([st.metrics[k] for k in (
+                "vx", "vy", "wz", "slip", "scuff", "pose_penalty",
+                "hip_fl", "hip_fr", "hip_rl", "hip_rr")], dtype=float)
             completed_steps += 1
             if bool(st.done):
                 terminated = True
                 break
         p1 = np.array(st.pipeline_state.q[:3])
         dt_seg = completed_steps * float(env.dt)
-        dyaw = (_yaw(st.pipeline_state.q) - yaw0 + np.pi) % (2 * np.pi) - np.pi
+        mean = totals / completed_steps
         report.append(
-            f"    {name:<11} {np.linalg.norm(p1[:2] - p0[:2]) / dt_seg:5.2f} m/s"
-            f"   yaw {dyaw / dt_seg:+5.2f} rad/s   elapsed {dt_seg:.2f}s"
+            f"    {name:<11} vx {mean[0]:+5.2f} vy {mean[1]:+5.2f} m/s"
+            f"   body wz {mean[2]:+5.2f} rad/s   elapsed {dt_seg:.2f}s"
             + ("   [TERMINATED]" if terminated else ""))
+        report.append(
+            f"        mean slip={mean[3]:.4f} scuff={mean[4]:.4f} pose={mean[5]:.4f}; "
+            "hip FL/FR/RL/RR=" + "/".join(f"{v:.3f}" for v in mean[6:]))
         if terminated:
             report.append(
-                f"    stopped at {(len(roll)-1)*float(env.dt):.2f}s; "
+                f"    trial stopped at {dt_seg:.2f}s; "
                 f"distance from origin={np.linalg.norm(p1[:2]):.3f}m; "
                 f"base clearance={float(st.metrics['base_clearance']):.3f}m "
                 f"(minimum {Z_MIN:.3f}m); "
                 f"terrain boundary={bool(st.metrics['terrain_boundary'])}")
-            break
     return roll, report
 
 
@@ -938,10 +957,23 @@ def probe():
 # ================================================================ train
 def main(resume_path=None, fresh=False):
     restore_from = resolve_training_resume(resume_path, fresh)
+    ppo_train = with_front_back_symmetry(ppo.train, FB_SYMMETRY_W)
     os.makedirs(VID_DIR, exist_ok=True)
     os.makedirs(CKPT_DIR, exist_ok=True)
     env, eval_env = DeployEnv(), DeployEnv()
     flat_video_env = DeployEnv(terrain=False) if TERRAIN else None
+    symmetry_audit = None
+    if FB_SYMMETRY_W > 0:
+        symmetry_audit = audit_front_back_mapping(
+            env._mj, DEFAULT_POSE, ACTION_SCALE, CTRL_LO, CTRL_HI)
+    import json
+    (Path(CKPT_DIR) / "front_back_symmetry_config.json").write_text(json.dumps({
+        "weight": FB_SYMMETRY_W,
+        "reflection": "torso x -> -x; FL <-> RL, FR <-> RR; joint signs +1",
+        "gate": "abs(vx)>0.05, abs(vy)<0.05, abs(wz)<0.15",
+        "loss": "mean squared deterministic action consistency; both branches differentiated",
+        "mapping_audit": symmetry_audit,
+    }, indent=2), encoding="utf-8")
 
     print("=" * 72)
     print("deployment-compatible walking")
@@ -952,8 +984,12 @@ def main(resume_path=None, fresh=False):
           f"self-collision {'ON' if w3.SELF_COLLISION else 'off'}, "
           f"walking proxies {'ON' if w3.WALK_COLLISION_PROXIES else 'off'}")
     print(f"  hidden {POLICY_HIDDEN}")
+    print(f"  front/back actor symmetry weight={FB_SYMMETRY_W} (straight commands)")
+    if symmetry_audit is not None:
+        print(f"    mapping check: sampled foot discrepancy "
+              f"{symmetry_audit['sampled_foot_error_m']*1000:.3f} mm; "
+              "720 observations / 12 actions / export unchanged")
     if TERRAIN:
-        import json
         terrain_metadata = Path(CKPT_DIR) / (
             f"terrain_{TERRAIN_CONFIG.max_height_m * 1000:g}mm_config.json")
         terrain_metadata.write_text(
@@ -1037,6 +1073,10 @@ def main(resume_path=None, fresh=False):
         print(f"    pose_penalty_mean {avg('pose_penalty'):.4f}  "
               f"pose_stand_contribution {avg('pose_stand_penalty'):.4f}  "
               f"pose_walk_contribution {avg('pose_walk_penalty'):.4f}", flush=True)
+        if "training/fb_symmetry_loss" in metrics:
+            print(f"    fb_symmetry_loss {metrics['training/fb_symmetry_loss']:.6f}  "
+                  f"action_rmse {metrics['training/fb_symmetry_action_rmse']:.4f}  "
+                  f"sample_fraction {metrics['training/fb_symmetry_fraction']:.3f}", flush=True)
         print(f"    hip_rom_penalty {g('hip_rom_penalty')}  "
               f"hip_rom_front_mean_rad {avg('hip_rom_front')}  "
               f"hip_rom_rear_mean_rad {avg('hip_rom_rear')}  "
@@ -1092,7 +1132,7 @@ def main(resume_path=None, fresh=False):
             print(f"    video failed ({e}); checkpoint still saved", flush=True)
 
     train_fn = functools.partial(
-        ppo.train,
+        ppo_train,
         num_timesteps=NUM_TIMESTEPS, num_evals=NUM_EVALS,
         episode_length=EPISODE_LENGTH, num_envs=NUM_ENVS,
         batch_size=BATCH_SIZE, num_minibatches=NUM_MINIBATCHES,
@@ -1157,6 +1197,14 @@ if __name__ == "__main__":
             if i + 1 >= len(argv):
                 raise ValueError("--run-name requires an experiment name")
             set_run_name(argv[i + 1])
+            del argv[i:i + 2]
+        if "--fb-symmetry-weight" in argv:
+            i = argv.index("--fb-symmetry-weight")
+            if i + 1 >= len(argv):
+                raise ValueError("--fb-symmetry-weight requires a nonnegative number")
+            FB_SYMMETRY_W = float(argv[i + 1])
+            if not np.isfinite(FB_SYMMETRY_W) or FB_SYMMETRY_W < 0:
+                raise ValueError("--fb-symmetry-weight must be finite and nonnegative")
             del argv[i:i + 2]
         for flag, setting in (("--num-envs", "NUM_ENVS"), ("--batch-size", "BATCH_SIZE")):
             if flag in argv:
