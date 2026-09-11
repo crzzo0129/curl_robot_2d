@@ -52,9 +52,39 @@ python -m scripts.train_ppo_deploy terrain dr --terrain-max-height 0.025 --resum
 `terrain_15mm_config.json` 或对应高度的配置文件中。配置类的其他参数位于
 `scripts/deploy_terrain.py`。
 
+## 首次 reset 显存不足
+
+若报错发生在 Brax `env_state = reset_fn_(key_envs)`，并且单个 GPU
+申请约 284 GiB，失败发生在 PPO 更新前，不能归因于 PPO 数据批量。
+日志中的碎片化提示是通用提示，换 allocator 不能消除巨大的计算数组。
+当前 CAD 脚部原始凸包约 1800 个顶点、3600 个三角面；MJX 将局部
+heightfield 拆成三角棱柱，与 CAD 凸包逐一检测，可能产生很大的批量
+临时数组。关闭机器人自碰撞并不会关闭这些地形碰撞。
+
+terrain 默认使用 `NUM_ENVS=1024`、`BATCH_SIZE=64`，以及 256 顶点
+凸包上限。先用更小配置在服务器重跑，可沿用平地策略：
+
+```bash
+python -m scripts.train_ppo_deploy terrain dr --num-envs 256 --batch-size 32 --resume rollingquad_2_deploy_robust_dr_policy.bin
+```
+
+`--num-envs` 是总并行环境数，多 GPU 时还会分摊；
+`batch_size * num_minibatches` 必须能被 `num_envs` 整除，当前
+`num_minibatches=32`。仅减少 batch_size 不会解决首次 reset 的碰撞开销。
+运行后核对日志中的凸包上限、`robot-robot pairs=0` 和并行环境数。
+这次只做语法和原生 MuJoCo 静态检查，没有运行 JAX reset、训练或
+测量 GPU 峰值；是否完全解决显存不足仍需服务器重跑确认。
+
 ## 物理地面和 reward 一致
 
-地面平面被单个 MuJoCo heightfield 替换，机器人保留原 CAD 碰撞几何。
+地面平面被单个 MuJoCo heightfield 替换。terrain 模式保留 CAD 显示网格，
+但将每个 mesh 的碰撞凸包限制到最多 256 个顶点（`maxhullvert`），以控制
+CAD 与地形三角棱柱碰撞检测的临时数组规模。该设置也用于同一次运行的
+平地对照视频；不带 terrain 的平地训练保持原配置。
+碰撞轮廓是近似的，不等同于完整 CAD 凸包；质量、惯量、关节、站立
+keyframe 和策略接口保持一致。本地 MuJoCo 3.9 静态检查中，站立时
+四脚凸包最低点变化约 0.06～0.27 mm；512 个方向的支撑面抽样差异中，
+脚部最大约 1.92 mm，全部部件最大约 4.39 mm。这不是任意姿态的误差上界。
 原来的无自碰撞掩码仍然保证机器人各部件只和地面碰撞。
 高度样本在加载模型后写入 `MjModel.hfield_data`，再转成 MJX；
 域随机化回调把它替换为每个环境自己的样本。生成的 XML 单独打开时没有

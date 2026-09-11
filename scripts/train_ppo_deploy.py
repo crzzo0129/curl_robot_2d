@@ -76,7 +76,7 @@ from brax.training.acme import running_statistics
 import train_ppo_walk3d as w3
 from deploy_gait import init_hip_rom, sample_command, update_hip_rom
 from deploy_terrain import (
-    RoughTerrainConfig, inject_heightfield, reference_terrain_data,
+    RoughTerrainConfig, inject_heightfield, limit_collision_hulls, reference_terrain_data,
     surface_height, terrain_data, write_height_preview,
 )
 from train_ppo_walk3d import (
@@ -302,7 +302,9 @@ def enable_deploy_dr():
 def enable_deploy_terrain(max_height=None):
     """Run after enable_deploy_dr so terrain outputs cannot overwrite flat runs."""
     global TERRAIN, TERRAIN_CONFIG, SAVE, VID_DIR, CKPT_DIR, JSON_OUT
+    global NUM_ENVS, BATCH_SIZE
     TERRAIN = True
+    NUM_ENVS, BATCH_SIZE = 1024, 64
     if max_height is not None:
         TERRAIN_CONFIG = replace(TERRAIN_CONFIG, max_height_m=max_height)
     TERRAIN_CONFIG.validate()
@@ -348,15 +350,24 @@ class DeployEnv(PipelineEnv):
 
     def __init__(self, terrain=None):
         self._terrain = TERRAIN if terrain is None else terrain
-        if self._terrain:
+        if self._terrain or TERRAIN:
             TERRAIN_CONFIG.validate()
             base_path = Path(w3.patch_xml())
-            terrain_path = base_path.with_name(base_path.stem + "_terrain.xml")
-            terrain_path.write_text(inject_heightfield(
-                base_path.read_text(encoding="utf-8"), TERRAIN_CONFIG),
-                encoding="utf-8")
+            # The paired flat video uses the same approximate collision hulls.
+            xml = limit_collision_hulls(base_path.read_text(encoding="utf-8"),
+                                       TERRAIN_CONFIG.collision_hull_vertices)
+            if self._terrain:
+                xml = inject_heightfield(xml, TERRAIN_CONFIG)
+            suffix = "_terrain.xml" if self._terrain else "_terrain_flat.xml"
+            terrain_path = base_path.with_name(base_path.stem + suffix)
+            terrain_path.write_text(xml, encoding="utf-8")
             mj = mujoco.MjModel.from_xml_path(str(terrain_path))
-            mj.hfield_data[:] = reference_terrain_data(TERRAIN_CONFIG)
+            hull_max = max((int(mj.mesh_graph[a]) for a in mj.mesh_graphadr
+                            if a >= 0), default=0)
+            if hull_max > TERRAIN_CONFIG.collision_hull_vertices:
+                raise RuntimeError(f"collision hull limit not applied: {hull_max} vertices")
+            if self._terrain:
+                mj.hfield_data[:] = reference_terrain_data(TERRAIN_CONFIG)
             w3.validate_model_contract(mj)
         else:
             mj = w3.load_mj()
@@ -893,6 +904,9 @@ def main(resume_path=None):
               f"grid={TERRAIN_CONFIG.grid_size}x{TERRAIN_CONFIG.grid_size}")
         print("           contact/lift/base height relative to local ground; "
               "checkpoint videos: flat + fixed rough field")
+        self_pairs, ground_pairs = w3.candidate_pairs(env._mj)
+        print(f"           collision hull vertex limit={TERRAIN_CONFIG.collision_hull_vertices}; "
+              f"robot-robot pairs={self_pairs}, robot-ground pairs={ground_pairs}")
     print(f"  commands: forward/backward {STRAIGHT_CMD_PROB/2:.0%} each, "
           f"mixed {1-STRAIGHT_CMD_PROB-ZERO_CMD_PROB:.0%}, "
           f"stand {ZERO_CMD_PROB:.0%}; straight |vx| >= "
@@ -918,7 +932,8 @@ def main(resume_path=None):
               f"leg_mass={LEG_MASS_SCALE} inertia={INERTIA_SCALE} "
               f"torso_com=±{TORSO_COM_XY_M*1000:.0f}/"
               f"{TORSO_COM_Z_M*1000:.0f}mm")
-    print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, {NUM_EVALS} evals")
+    print(f"  {NUM_TIMESTEPS:,} steps over {NUM_ENVS} envs, {NUM_EVALS} evals; "
+          f"batch_size={BATCH_SIZE}, minibatches={NUM_MINIBATCHES}")
     print(f"  writing to {SAVE}, {CKPT_DIR}/, {VID_DIR}/")
     print("=" * 72, flush=True)
 
@@ -1064,6 +1079,18 @@ if __name__ == "__main__":
         if "terrain" in argv:
             enable_deploy_terrain(terrain_max_height)
             argv.remove("terrain")
+        for flag, setting in (("--num-envs", "NUM_ENVS"), ("--batch-size", "BATCH_SIZE")):
+            if flag in argv:
+                i = argv.index(flag)
+                if i + 1 >= len(argv):
+                    raise ValueError(f"{flag} requires a positive integer")
+                value = int(argv[i + 1])
+                if value <= 0:
+                    raise ValueError(f"{flag} requires a positive integer")
+                globals()[setting] = value
+                del argv[i:i + 2]
+        if BATCH_SIZE * NUM_MINIBATCHES % NUM_ENVS:
+            raise ValueError("batch_size * num_minibatches must be divisible by num_envs")
         cmd = argv[0] if argv else "train"
         if cmd == "probe":
             probe()

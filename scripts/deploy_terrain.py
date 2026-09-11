@@ -25,6 +25,7 @@ class RoughTerrainConfig:
     edge_margin_m: float = 0.50
     base_depth_m: float = 0.05
     seed: int = 731
+    collision_hull_vertices: int = 256  # bound CAD-vs-heightfield intermediates
 
     def validate(self):
         for name in ("half_size_m", "min_height_m", "max_height_m",
@@ -39,8 +40,29 @@ class RoughTerrainConfig:
             raise ValueError("terrain flat probability must be in [0, 1]")
         if self.grid_size < 3 or self.grid_size % 2 != 1:
             raise ValueError("terrain grid size must be odd and >= 3")
+        if (not isinstance(self.collision_hull_vertices, int)
+                or self.collision_hull_vertices < 4):
+            raise ValueError("terrain collision hull vertex limit must be an integer >= 4")
         if self.spawn_radius_m + self.transition_m >= self.half_size_m - self.edge_margin_m:
             raise ValueError("terrain spawn/transition region leaves no walking area")
+
+
+def limit_collision_hulls(xml, max_vertices):
+    """Approximate collision hulls while retaining CAD render meshes/inertias.
+
+    MJX tests CAD convex hulls against each local heightfield prism. Thousands
+    of hull vertices can produce enormous SAT intermediates under vmap, even
+    when robot self-collision is disabled. MuJoCo's hull graph (also consumed
+    by MJX) honors maxhullvert; render vertices are unaffected.
+    """
+    if not isinstance(max_vertices, int) or max_vertices < 4:
+        raise ValueError("collision hull vertex limit must be an integer >= 4")
+    root = ET.fromstring(xml)
+    for mesh in root.findall("./asset/mesh"):
+        existing = int(mesh.get("maxhullvert", "-1"))
+        mesh.set("maxhullvert", str(min(existing, max_vertices)
+                                   if existing >= 4 else max_vertices))
+    return ET.tostring(root, encoding="unicode")
 
 
 def inject_heightfield(xml, config):
