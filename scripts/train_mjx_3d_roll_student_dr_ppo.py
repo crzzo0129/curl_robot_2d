@@ -117,6 +117,12 @@ def parse_args(argv=None):
     parser.add_argument("--turn-command-max-rad-s", type=float, default=0.08)
     parser.add_argument("--turn-command-straight-fraction", type=float, default=0.40)
     parser.add_argument("--command-interval-s", type=float, default=10.0)
+    parser.add_argument("--rolling-snapshots", action=argparse.BooleanOptionalAction, default=None,
+                        help="start PPO and its evaluation from cached rolling states; default on for command-conditioned training")
+    parser.add_argument("--snapshot-pool-size", type=int, default=512)
+    parser.add_argument("--eval-snapshot-pool-size", type=int, default=256)
+    parser.add_argument("--snapshot-warmup-min-steps", type=int, default=100)
+    parser.add_argument("--snapshot-warmup-max-steps", type=int, default=300)
     add_stand_startup_arguments(parser)
     parser.add_argument("--dr-strength", type=float, default=0.25)
     parser.add_argument("--student-anchor-weight", type=float, default=0.02)
@@ -142,6 +148,8 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
+    if args.rolling_snapshots is None:
+        args.rolling_snapshots = args.command_conditioned
     if args.controller is None:
         args.controller = cem_controller_path_3d(args.geometry)
     values = PRESETS[args.preset].copy()
@@ -181,6 +189,15 @@ def parse_args(argv=None):
         parser.error("command minima must not exceed maxima")
     if not 0 <= args.turn_command_straight_fraction <= 1:
         parser.error("--turn-command-straight-fraction must be in [0,1]")
+    if args.rolling_snapshots:
+        if not args.command_conditioned or args.dr_strength != 0 or args.reset_pose != "compact":
+            parser.error("rolling snapshots require --command-conditioned, --dr-strength 0 and the compact CEM warmup pose")
+        if not (20 <= args.snapshot_warmup_min_steps <= args.snapshot_warmup_max_steps < args.episode_length):
+            parser.error("snapshot warmup must satisfy 20 <= min <= max < episode length")
+        if min(args.snapshot_pool_size, args.eval_snapshot_pool_size) < 4:
+            parser.error("snapshot pools require at least four candidates")
+        if args.command_interval_s < args.episode_length * 0.02:
+            parser.error("snapshot PPO currently requires a fixed command for the whole student episode")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         parser.error("--learning-rate must be finite and positive")
     if not math.isfinite(args.initial_policy_std) or args.initial_policy_std <= 0.001:
@@ -308,7 +325,7 @@ def main(argv=None):
         )
     critic_observation_size = ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D + (3 if args.command_conditioned else 0)
 
-    def make_env(seed, noise_scale):
+    def make_env(seed, noise_scale, snapshot_pool=None):
         base = make_brax_env_3d(task, reward_config=reward_config, cem_reference=reference, seed=seed)
         return make_rolling_student_dr_env_3d(
             base,
@@ -318,10 +335,28 @@ def main(argv=None):
             observation_noise_scale=noise_scale,
             minimum_success_turns=args.minimum_success_turns,
             command_conditioned=args.command_conditioned,
+            snapshot_pool=snapshot_pool,
         )
 
-    train_env = make_env(args.seed, args.observation_noise_scale)
-    eval_env = make_env(args.seed + 10_000, args.observation_noise_scale)
+    train_pool = eval_pool = None
+    snapshot_summary = None
+    if args.rolling_snapshots:
+        from curl_robot_2d_mjx.rolling_student_snapshot_pool import build_cem_snapshot_pool
+        pool_devices = min(jax.local_device_count(), args.max_devices or jax.local_device_count())
+        if args.snapshot_pool_size % pool_devices or args.eval_snapshot_pool_size % pool_devices:
+            raise ValueError("snapshot candidate counts must be divisible by the selected device count")
+        teacher_task = replace(task, direct_effective_action=False, residual_pair_differential_scale=0.25)
+        teacher_env = make_brax_env_3d(teacher_task, reward_config=reward_config, cem_reference=reference, seed=args.seed)
+        observation_env = make_env(args.seed, 0.0)
+        pool_kwargs = dict(min_steps=args.snapshot_warmup_min_steps,
+                           max_steps=args.snapshot_warmup_max_steps, num_devices=pool_devices)
+        train_pool, train_pool_summary = build_cem_snapshot_pool(
+            teacher_env, observation_env, count=args.snapshot_pool_size, seed=args.seed + 30000, **pool_kwargs)
+        eval_pool, eval_pool_summary = build_cem_snapshot_pool(
+            teacher_env, observation_env, count=args.eval_snapshot_pool_size, seed=args.seed + 40000, **pool_kwargs)
+        snapshot_summary = {"training": train_pool_summary, "evaluation": eval_pool_summary}
+    train_env = make_env(args.seed, args.observation_noise_scale, train_pool)
+    eval_env = make_env(args.seed + 10_000, args.observation_noise_scale, eval_pool)
     if train_env.observation_size != {
         "state": ROLLING_DEPLOY_OBSERVATION_SIZE_3D,
         "privileged_state": critic_observation_size,
@@ -465,6 +500,7 @@ def main(argv=None):
         "critic_observation": "privileged_65d_plus_command" if args.command_conditioned else "privileged_65d",
         "critic_observation_size": critic_observation_size,
         "reward_config": asdict(reward_config),
+        "snapshot_pools": snapshot_summary,
         "policy_action_size": ROLLING_STUDENT_PPO_ACTION_SIZE_3D,
         "controller_action_size": 12,
         "student_anchor_weight": args.student_anchor_weight,
@@ -488,6 +524,8 @@ def main(argv=None):
         f"  actor=720D-real -> 8D-effective critic={critic_observation_size}D-privileged\n"
         f"  command_conditioned={args.command_conditioned} "
         f"vx={args.forward_command_min_m_s:g}..{args.forward_command_max_m_s:g}m/s\n"
+        f"  reset={'cached rolling snapshots' if args.rolling_snapshots else args.reset_pose} "
+        f"student_horizon={args.episode_length * task.control_timestep:.2f}s; warmup excluded\n"
         f"  DR strength={args.dr_strength:g} anchor={args.student_anchor_weight:g} "
         f"noise={args.observation_noise_scale:g}\n"
         f"  geometry={args.geometry} lateral_termination="

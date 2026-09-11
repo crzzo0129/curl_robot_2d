@@ -26,6 +26,7 @@ def make_rolling_student_dr_env_3d(
     observation_noise_scale: float,
     minimum_success_turns: float = 5.0,
     command_conditioned: bool = False,
+    snapshot_pool=None,
 ):
     """Wrap the direct rolling task with real observations and deploy effects."""
 
@@ -162,7 +163,25 @@ def make_rolling_student_dr_env_3d(
                 observation_key,
                 next_rng,
             ) = jax.random.split(rng, 6)
-            base_state = self.base_env.reset(base_key)
+            if snapshot_pool is None:
+                base_state = self.base_env.reset(base_key)
+                reset_history = initial_rolling_deploy_history_3d(jp)
+                previous_controller_action = jp.zeros((ROLLING_CONTROLLER_ACTION_SIZE_3D,))
+                reset_applied_action = jp.zeros((ROLLING_STUDENT_PPO_ACTION_SIZE_3D,))
+            else:
+                index = jax.random.randint(base_key, (), 0, snapshot_pool[1].shape[0])
+                base_state, reset_history, previous_controller_action = jax.tree_util.tree_map(
+                    lambda value: jp.take(value, index, axis=0), snapshot_pool
+                )
+                reset_applied_action = base_state.info["last_action"]
+                # Preserve physical time, phases, contacts and progress
+                # potentials. Only the student's episode timer starts anew.
+                base_state = base_state.replace(
+                    info={**base_state.info, "step_count": jp.zeros_like(base_state.info["step_count"])},
+                    reward=jp.zeros_like(base_state.reward),
+                    done=jp.zeros_like(base_state.done),
+                    metrics=jax.tree_util.tree_map(jp.zeros_like, base_state.metrics),
+                )
             motor_zero_bias = jax.random.uniform(
                 motor_key,
                 (ROLLING_CONTROLLER_ACTION_SIZE_3D,),
@@ -175,12 +194,9 @@ def make_rolling_student_dr_env_3d(
                 minval=-deploy_settings.encoder_fixed_bias_rad,
                 maxval=deploy_settings.encoder_fixed_bias_rad,
             )
-            previous_controller_action = jp.zeros(
-                (ROLLING_CONTROLLER_ACTION_SIZE_3D,)
-            )
             actor_history = self._actor_observation(
                 base_state,
-                initial_rolling_deploy_history_3d(jp),
+                reset_history,
                 previous_controller_action,
                 encoder_bias,
                 observation_key,
@@ -188,12 +204,9 @@ def make_rolling_student_dr_env_3d(
             info = {
                 **base_state.info,
                 "deploy_rng": next_rng,
-                "deploy_action_queue": jp.zeros(
-                    (3, ROLLING_STUDENT_PPO_ACTION_SIZE_3D)
-                ),
-                "deploy_applied_action": jp.zeros(
-                    (ROLLING_STUDENT_PPO_ACTION_SIZE_3D,)
-                ),
+                "deploy_action_queue": jp.broadcast_to(reset_applied_action, (3, ROLLING_STUDENT_PPO_ACTION_SIZE_3D)),
+                "deploy_applied_action": reset_applied_action,
+                "student_initial_roll_potential": base_state.info["previous_roll_potential"],
                 "deploy_latency_steps": jax.random.choice(
                     latency_key, 3, p=latency_probabilities
                 ),
@@ -274,7 +287,7 @@ def make_rolling_student_dr_env_3d(
                 (base_state.done > 0.0)
                 & (base_state.metrics["failed"] <= 0.0)
                 & (
-                    base_state.info["previous_roll_potential"]
+                    base_state.info["previous_roll_potential"] - state.info["student_initial_roll_potential"]
                     >= minimum_success_turns * (2.0 * jp.pi)
                 )
             )
@@ -282,7 +295,7 @@ def make_rolling_student_dr_env_3d(
                 (base_state.done > 0.0)
                 & (base_state.metrics["failed_non_lateral"] <= 0.0)
                 & (
-                    base_state.info["previous_roll_potential"]
+                    base_state.info["previous_roll_potential"] - state.info["student_initial_roll_potential"]
                     >= minimum_success_turns * (2.0 * jp.pi)
                 )
             )
