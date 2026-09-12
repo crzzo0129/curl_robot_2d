@@ -1,0 +1,31 @@
+{
+  "source_checkpoint": "C:\\Users\\12481\\Downloads\\000176168960.bin",
+  "source_sha256": "5d374aec89b3aab98f966c5c0e96d201a9ea1f11834d168ac011084c98c8306a",
+  "output_sha256": "e7ac1398e3278a29cadef0100713549b63891c4cf3cdda0ba5dc485fbba3ed65",
+  "normalization": "RTNeural native batchnorm, subtract before scaling",
+  "actor_dense_shapes": [
+    [
+      720,
+      512
+    ],
+    [
+      512,
+      256
+    ],
+    [
+      256,
+      128
+    ],
+    [
+      128,
+      24
+    ]
+  ],
+  "input_size": 720,
+  "output_size": 12,
+  "activation": "elu",
+  "numpy_parity_observations": 260,
+  "max_abs_action_error": 1.0125339031219482e-05,
+  "max_abs_target_error_rad": 4.410743713378906e-06,
+  "validation": "NumPy actor conversion parity; RTNeural JSON loader/batchnorm source inspected; no JAX tests, policy rollout, C++ runtime or hardware execution"
+}

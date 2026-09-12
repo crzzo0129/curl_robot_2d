@@ -37,7 +37,7 @@ ACTION_SCALES = np.tile([0., .8, 1.2], 4)
 ACTIVE = np.asarray(ROLLING_EFFECTIVE_ACTION_INDICES_3D)
 
 
-def make_command_schedule(settings, rng):
+def make_command_schedule(settings, rng, calibration=None):
     """Use the documented speed lookup and gain-scaled steering prior.
 
     Segment boundaries are observation-step indices, avoiding floating-point
@@ -64,11 +64,15 @@ def make_command_schedule(settings, rng):
                    (mid, -turn_hi), (hi, turn_lo), (lo, -turn_lo), (mid, 0.)]
         speeds, turns = np.array([pattern[i % len(pattern)] for i in range(count)]).T
     scales = forward_command_to_target_scale_3d(np, speeds)
-    steering = steering_prior_3d(
-        np, turns, settings["turn_k"], settings["turn_prior_clip"],
-        residual_gain=settings["turn_residual_gain"],
-        differential_scale=settings["turn_differential_scale"],
-    )[:, 0]
+    if calibration is None:
+        steering = steering_prior_3d(
+            np, turns, settings["turn_k"], settings["turn_prior_clip"],
+            residual_gain=settings["turn_residual_gain"],
+            differential_scale=settings["turn_differential_scale"],
+        )[:, 0]
+    else:
+        from curl_robot_2d_mjx.steering_calibration import calibrated_steering_amplitude
+        steering = calibrated_steering_amplitude(np, calibration, speeds, turns)
     return [dict(start_step=i * interval, speed_command=float(speeds[i]),
                  turn_command=float(turns[i]), target_scale=float(scales[i]),
                  steering_amplitude=float(steering[i])) for i in range(count)], interval

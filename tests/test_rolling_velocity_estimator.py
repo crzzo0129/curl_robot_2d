@@ -147,6 +147,38 @@ class DataAndRuntimeTest(unittest.TestCase):
 
 
 class CEMCollectionTest(unittest.TestCase):
+    def test_calibrated_collection_contract_and_physical_action_history(self):
+        from scripts import collect_calibrated_rolling_velocity_data as calibrated
+        from scripts.collect_rolling_velocity_data import ACTION_SCALES
+        args = calibrated.parse_args(["--out", "unused_calibrated.npz", "--duration", "3.1",
+            "--command-mode", "scripted", "--command-interval", ".5", "--observation-noise", "0"])
+        settings = {k: str(v.resolve()) if isinstance(v, Path) else v
+                    for k, v in vars(args).items() if k != "out"}
+        settings["control_hz"] = 50.
+        records, summary = calibrated.collect_episode((settings, 0))
+        compact = np.asarray(summary["compact_joint_position"])
+        np.testing.assert_allclose(compact + records["frames"][:, 24:36] * ACTION_SCALES,
+                                   records["motor_target"], atol=1e-7)
+        np.testing.assert_allclose(np.diff(records["time_s"]), .02, atol=1e-10)
+        self.assertEqual(records["command_segment"][25], 1)
+        self.assertTrue(np.all(np.diff(records["cem_phase"]) > 0))
+        # New table must actually reach the physical targets, without legacy gain.
+        self.assertGreater(records["steering_amplitude"][75], .045)
+        self.assertLess(records["steering_amplitude"][100], -.045)
+        self.assertFalse(summary["self_collision_enabled"])
+        self.assertLessEqual(np.max(np.abs(records["frames"][:, 24:36])), 1.000001)
+
+    def test_calibrated_collector_rejects_wrong_model_and_command_domain(self):
+        from scripts import collect_calibrated_rolling_velocity_data as calibrated
+        args = calibrated.parse_args(["--out", "unused_calibrated.npz"])
+        settings = {k: str(v.resolve()) if isinstance(v, Path) else v
+                    for k, v in vars(args).items() if k != "out"}
+        with self.assertRaisesRegex(ValueError, "does not match"):
+            calibrated.load_contract(dict(settings,
+                model="assets/rollingquad_description_2/mjcf/rollingquad_abd10.xml"))
+        with self.assertRaisesRegex(ValueError, "exceed"):
+            calibrated.load_contract(dict(settings, speed_range=[.4111, .9]))
+
     def test_schedule_uses_documented_lookup_and_steering_gains(self):
         from scripts import collect_rolling_velocity_data as collector
         args = collector.parse_args(["--out", "unused.npz", "--duration", "12",

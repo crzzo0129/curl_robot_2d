@@ -6,8 +6,9 @@ actor's final Gaussian location and scale parameters together; only the first
 half (the location) contributes to deterministic inference.  This exporter
 therefore keeps the location columns and appends a tanh activation.
 
-Observation normalization is folded into the first dense layer so the C++
-controller can feed raw observations directly to RTNeural.
+Observation normalization is folded into the first dense layer by default.
+The optional native batchnorm layer preserves subtract-before-scale arithmetic
+for near-constant observations, where folded float32 weights lose precision.
 """
 
 from __future__ import annotations
@@ -126,7 +127,10 @@ def convert(
     config: dict[str, Any],
     activation: str = "elu",
     observation_history: int | None = None,
+    normalization: str = "folded",
 ) -> dict[str, Any]:
+    if normalization not in ("folded", "batchnorm"):
+        raise ValueError("normalization must be folded or batchnorm")
     if activation not in SUPPORTED_ACTIVATIONS:
         raise ValueError(
             f"unsupported RTNeural activation {activation!r}; choose one of "
@@ -177,10 +181,11 @@ def convert(
     # Brax evaluates (obs - mean) / std before the actor.  Fold that affine
     # transform into layer 0:
     #   ((x - mean) / std) @ W + b == x @ (W / std) + b - mean @ (W / std)
-    first_kernel, first_bias, first_activation = converted[0]
-    first_kernel /= std[:, None]
-    first_bias -= mean @ first_kernel
-    converted[0] = (first_kernel, first_bias, first_activation)
+    if normalization == "folded":
+        first_kernel, first_bias, first_activation = converted[0]
+        first_kernel /= std[:, None]
+        first_bias -= mean @ first_kernel
+        converted[0] = (first_kernel, first_bias, first_activation)
 
     history_in_config = config.get("observation_history")
     if observation_history is None and history_in_config is not None:
@@ -200,6 +205,15 @@ def convert(
             )
 
     layers = []
+    if normalization == "batchnorm":
+        # RTNeural computes gamma * (x - mean) / sqrt(var + epsilon) + beta.
+        # Put 1/std in gamma and use unit variance to avoid squaring tiny std.
+        inverse_std = _array(np.reciprocal(std), "normalizer.inverse_std")
+        layers.append({
+            "type": "batchnorm", "shape": [1, int(input_size)], "epsilon": 0.0,
+            "weights": [inverse_std.tolist(), np.zeros_like(mean).tolist(),
+                        mean.tolist(), np.ones_like(std).tolist()],
+        })
     for kernel, bias, layer_activation in converted:
         layers.append(
             {
@@ -223,7 +237,7 @@ def convert(
 
 def _activation(name: str, value: np.ndarray) -> np.ndarray:
     if name == "elu":
-        return np.where(value > 0.0, value, np.expm1(value))
+        return np.maximum(value, 0.0) + np.expm1(np.minimum(value, 0.0))
     if name == "relu":
         return np.maximum(value, 0.0)
     if name == "sigmoid":
@@ -235,6 +249,12 @@ def _activation(name: str, value: np.ndarray) -> np.ndarray:
 
 def _run_layers(value: np.ndarray, layers: list[dict[str, Any]]) -> np.ndarray:
     for layer in layers:
+        if layer["type"] == "batchnorm":
+            gamma, beta, mean, variance = [np.asarray(w, dtype=np.float32)
+                                           for w in layer["weights"]]
+            multiplier = gamma / np.sqrt(variance + np.float32(layer["epsilon"]))
+            value = (value - mean) * multiplier + beta
+            continue
         kernel = np.asarray(layer["weights"][0], dtype=np.float32)
         bias = np.asarray(layer["weights"][1], dtype=np.float32)
         value = _activation(layer["activation"], value @ kernel + bias)
@@ -310,6 +330,8 @@ def main() -> None:
     parser.add_argument("--activation", default="elu", choices=sorted(SUPPORTED_ACTIVATIONS))
     parser.add_argument("--config", help="controller metadata JSON to merge")
     parser.add_argument("--obs-history", type=int, help="expected observation history")
+    parser.add_argument("--normalization", choices=("folded", "batchnorm"), default="folded",
+                        help="batchnorm avoids cancellation in near-constant observation channels")
     parser.add_argument("--self-test", action="store_true", help="run an in-memory conversion test")
     args = parser.parse_args()
 
@@ -328,6 +350,7 @@ def main() -> None:
         config,
         activation=args.activation,
         observation_history=args.obs_history,
+        normalization=args.normalization,
     )
     _write_json(args.output, document)
     print(

@@ -921,6 +921,7 @@ def do_export(ckpt=None, out=None):
         "--activation", ACTIVATION_NAME,
         "--config", cfg,
         "--obs-history", str(HISTORY),
+        "--normalization", "batchnorm",
     ], check=True)
 
 

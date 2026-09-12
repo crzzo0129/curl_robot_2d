@@ -1,5 +1,8 @@
 # CEM 回合内变速、转向与独立 estimator v2
 
+最新标定表采集与重训结果见 [rolling_velocity_estimator_calibrated_zh.md](rolling_velocity_estimator_calibrated_zh.md)。
+本页保留旧弱转向映射 v2 的历史结果和诊断。
+
 本版按用户要求，让 CEM 在同一条轨迹内改变速度和转向，然后训练独立状态估计器。
 不训练控制 policy。旧的固定振幅/差分 CEM v1 保留为对照；被拒绝的 neural policy
 数据仍为作废状态，不参与本次训练。

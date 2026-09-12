@@ -60,6 +60,8 @@
 [`docs/rolling_velocity_estimator_zh.md`](docs/rolling_velocity_estimator_zh.md)，
 包含数据采集、监督训练、留出评估和 NumPy 在线推理。回合内 CEM 变速/转向版本见
 [`docs/rolling_velocity_estimator_switching_zh.md`](docs/rolling_velocity_estimator_switching_zh.md)。
+基于二维转向标定表重训的 v3（50 Hz）及独立持续转向评估见
+[`docs/rolling_velocity_estimator_calibrated_zh.md`](docs/rolling_velocity_estimator_calibrated_zh.md)。
 此前使用未认可 policy 生成的模型和评估结果已作废。
 
 ```powershell

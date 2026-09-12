@@ -1,6 +1,8 @@
 # 独立滚动速度 estimator v1
 
-**最新工作：** 回合内变速、左右转向切换的采集、训练和评估见
+**最新工作：** 标定 CEM 上重训的 v3（50 Hz）见
+[rolling_velocity_estimator_calibrated_zh.md](rolling_velocity_estimator_calibrated_zh.md)。
+此前回合内变速、左右转向切换的 v2 采集、训练和评估见
 [rolling_velocity_estimator_switching_zh.md](rolling_velocity_estimator_switching_zh.md)。
 本页保留通用输入/标签定义和固定 CEM v1 对照结果。
 
