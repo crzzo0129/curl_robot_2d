@@ -6,6 +6,7 @@ from collections.abc import Mapping
 import math
 
 from curl_robot_2d_mjx.deployment_rolling_3d import (
+    ROLLING_CONTROLLER_ACTION_SIZE_3D,
     ROLLING_EFFECTIVE_ACTION_INDICES_3D,
 )
 
@@ -30,6 +31,36 @@ def _params_mapping(tree):
     if not isinstance(params, Mapping):
         raise ValueError("Flax 'params' must be a mapping")
     return params
+
+
+def controller_student_output_layer_name_3d(
+    student_params,
+    *,
+    hidden_layers=(512, 256, 128),
+):
+    """Find the 12-output head in distillation or exported-PPO Students."""
+
+    student = _params_mapping(student_params)
+    exported_head_name = f"hidden_{len(hidden_layers)}"
+    for name in ("location", exported_head_name):
+        if name not in student:
+            continue
+        layer = student[name]
+        if not isinstance(layer, Mapping):
+            continue
+        kernel = layer.get("kernel")
+        bias = layer.get("bias")
+        if (
+            getattr(kernel, "ndim", None) == 2
+            and kernel.shape[1] == ROLLING_CONTROLLER_ACTION_SIZE_3D
+            and getattr(bias, "shape", None)
+            == (ROLLING_CONTROLLER_ACTION_SIZE_3D,)
+        ):
+            return name
+    raise ValueError(
+        "Student must contain a 12-output 'location' layer or an exported "
+        f"PPO output layer named '{exported_head_name}'"
+    )
 
 
 def initialize_ppo_actor_from_student_3d(
@@ -63,12 +94,13 @@ def initialize_ppo_actor_from_student_3d(
             "bias": xp.asarray(source["bias"]),
         }
 
-    if "location" not in student:
-        raise ValueError("Student is missing its location output layer")
     head_name = f"hidden_{len(hidden_layers)}"
     if head_name not in ppo:
         raise ValueError(f"PPO actor is missing its output layer: {head_name}")
-    source_head = student["location"]
+    source_head_name = controller_student_output_layer_name_3d(
+        student_params, hidden_layers=hidden_layers
+    )
+    source_head = student[source_head_name]
     target_head = ppo[head_name]
     indices = xp.asarray(ROLLING_EFFECTIVE_ACTION_INDICES_3D)
     source_kernel = xp.take(source_head["kernel"], indices, axis=1)

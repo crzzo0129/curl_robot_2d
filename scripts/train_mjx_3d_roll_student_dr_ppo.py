@@ -29,6 +29,7 @@ from curl_robot_2d_mjx.randomization_3d import (
 from curl_robot_2d_mjx.rolling_student_dr_ppo_3d import (
     ROLLING_STUDENT_PPO_ACTION_SIZE_3D,
     ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D,
+    controller_student_output_layer_name_3d,
     expand_ppo_actor_to_controller_3d,
     initialize_ppo_actor_from_student_3d,
 )
@@ -377,6 +378,9 @@ def main(argv=None):
     frozen_std = jp.asarray(frozen_std_np)
 
     student_layers = student_params["params"]
+    student_head_name = controller_student_output_layer_name_3d(
+        student_params, hidden_layers=tuple(args.hidden_layers)
+    )
 
     @jax.jit
     def student_anchor_policy(observation):
@@ -384,7 +388,7 @@ def main(argv=None):
         for index in range(len(args.hidden_layers)):
             layer = student_layers[f"hidden_{index}"]
             value = jnn.elu(value @ layer["kernel"] + layer["bias"])
-        head = student_layers["location"]
+        head = student_layers[student_head_name]
         controller_action = jp.tanh(value @ head["kernel"] + head["bias"])
         return controller_action_to_effective_action_3d(
             jp, controller_action
@@ -510,9 +514,12 @@ def main(argv=None):
         original_init = networks.policy_network.init
 
         def initialize_policy(key):
+            initialized = original_init(key)
+            if args.restore_ppo is not None:
+                return initialized
             return initialize_ppo_actor_from_student_3d(
                 jp,
-                original_init(key),
+                initialized,
                 student_params,
                 hidden_layers=tuple(args.hidden_layers),
                 initial_std=args.initial_policy_std,

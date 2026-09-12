@@ -10,6 +10,7 @@ from curl_robot_2d_mjx.deployment_rolling_3d import (
     ROLLING_EFFECTIVE_ACTION_INDICES_3D,
 )
 from curl_robot_2d_mjx.rolling_student_dr_ppo_3d import (
+    controller_student_output_layer_name_3d,
     expand_ppo_actor_to_controller_3d,
     initialize_ppo_actor_from_student_3d,
     tanh_normal_scale_logit_3d,
@@ -91,6 +92,46 @@ class RollingStudentDRPPOContractTest(unittest.TestCase):
         np.testing.assert_array_equal(head["kernel"][:, 8:], 0.0)
         scale = np.logaddexp(0.0, head["bias"][8:]) + 0.001
         np.testing.assert_allclose(scale, 0.05, rtol=1e-6, atol=1e-6)
+
+    def test_exported_ppo_student_head_is_accepted(self):
+        expanded_student = {
+            "params": {
+                "hidden_0": self.student["params"]["hidden_0"],
+                "hidden_1": self.student["params"]["hidden_1"],
+                "hidden_2": self.student["params"]["location"],
+            }
+        }
+        self.assertEqual(
+            controller_student_output_layer_name_3d(
+                expanded_student, hidden_layers=(4, 3)
+            ),
+            "hidden_2",
+        )
+        initialized = initialize_ppo_actor_from_student_3d(
+            np,
+            self.ppo,
+            expanded_student,
+            hidden_layers=(4, 3),
+            initial_std=0.05,
+        )
+        expected = expanded_student["params"]["hidden_2"]
+        actual = initialized["params"]["hidden_2"]
+        np.testing.assert_array_equal(
+            actual["kernel"][:, :8],
+            expected["kernel"][:, list(ROLLING_EFFECTIVE_ACTION_INDICES_3D)],
+        )
+        np.testing.assert_array_equal(
+            actual["bias"][:8],
+            expected["bias"][list(ROLLING_EFFECTIVE_ACTION_INDICES_3D)],
+        )
+
+    def test_distillation_student_head_is_still_accepted(self):
+        self.assertEqual(
+            controller_student_output_layer_name_3d(
+                self.student, hidden_layers=(4, 3)
+            ),
+            "location",
+        )
 
     def test_export_expands_to_12_and_locks_abduction(self):
         initialized = initialize_ppo_actor_from_student_3d(
