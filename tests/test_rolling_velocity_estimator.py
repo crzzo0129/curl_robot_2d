@@ -99,10 +99,14 @@ class DataAndRuntimeTest(unittest.TestCase):
             np.savez(path, frames=frames, episode=episode, time_s=np.tile(np.arange(6) * .02, 5),
                      velocity_world=np.tile([1., 0, 0], (30, 1)),
                      body_y_world=np.tile([0., 1, 0], (30, 1)),
+                     command=np.tile([.45, 0., .08], (30, 1)),
                      metadata_json=np.array(json.dumps({"control_dt": .02})))
             data = prepare_dataset(path, config)
             self.assertEqual(len(data["x"]), 20)
             self.assertTrue(np.all(data["mask"]))
+            np.testing.assert_allclose(data["y"], np.tile([1., 0.], (20, 1)))
+            np.testing.assert_allclose(data["command"], np.tile([.45, 0., .08], (20, 1)))
+            self.assertEqual(data["x"].shape[1], 90)
             layers = [(rng.normal(size=(90, 8)).astype(np.float32), np.zeros(8, np.float32)),
                       (rng.normal(size=(8, 2)).astype(np.float32), np.zeros(2, np.float32))]
             model_path = Path(temp) / "estimator.npz"
@@ -143,6 +147,51 @@ class DataAndRuntimeTest(unittest.TestCase):
 
 
 class CEMCollectionTest(unittest.TestCase):
+    def test_schedule_uses_documented_lookup_and_steering_gains(self):
+        from scripts import collect_rolling_velocity_data as collector
+        args = collector.parse_args(["--out", "unused.npz", "--duration", "12",
+                                     "--command-mode", "scripted", "--speed-range", ".45", ".75"])
+        schedule, interval = collector.make_command_schedule(vars(args), np.random.default_rng(1))
+        self.assertEqual(interval, 78)
+        self.assertEqual([x["start_step"] for x in schedule], list(range(0, 624, 78)))
+        # Existing table: v_cmd=0.6 gives target scale about 0.52.
+        self.assertAlmostEqual(schedule[0]["target_scale"], .52, delta=.001)
+        self.assertEqual(schedule[1]["speed_command"], .45)
+        self.assertEqual(schedule[2]["speed_command"], .75)
+        self.assertAlmostEqual(schedule[3]["steering_amplitude"], .08 * 5 * .15 * .25)
+        self.assertAlmostEqual(schedule[4]["steering_amplitude"], -.08 * 5 * .15 * .25)
+
+    def test_random_schedule_is_reproducible_and_within_documented_range(self):
+        from scripts import collect_rolling_velocity_data as collector
+        args = collector.parse_args(["--out", "unused.npz", "--duration", "150",
+                                     "--command-mode", "random"])
+        a, _ = collector.make_command_schedule(vars(args), np.random.default_rng(11))
+        b, _ = collector.make_command_schedule(vars(args), np.random.default_rng(11))
+        self.assertEqual(a, b)
+        self.assertEqual({np.sign(s["turn_command"]) for s in a}, {-1., 0., 1.})
+        self.assertTrue(all(.45 <= s["speed_command"] <= .80 for s in a))
+        self.assertTrue(all(.36 <= s["target_scale"] <= 1. for s in a))
+
+    def test_command_switch_keeps_phase_and_history_continuous(self):
+        from scripts import collect_rolling_velocity_data as collector
+        args = collector.parse_args(["--out", "unused.npz", "--duration", "3.1",
+                                     "--command-mode", "scripted", "--command-interval", ".5",
+                                     "--dr-strength", "0", "--observation-noise", "0"])
+        settings = {k: v for k, v in vars(args).items() if k not in ("controller", "out", "model")}
+        settings.update(controllers=[str(args.controller[0])], model=str(args.model))
+        records, summary = collector.collect_episode((settings, 0))
+        np.testing.assert_allclose(records["frames"][:, 6:9], records["command"], atol=1e-7)
+        self.assertEqual(records["command_segment"][25], 0)
+        self.assertEqual(records["command_segment"][26], 1)
+        self.assertEqual(records["command_age_s"][26], 0.)
+        self.assertTrue(np.all(np.diff(records["cem_phase"]) > 0))
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "switches.npz"
+            np.savez(path, **records, metadata_json=np.array(json.dumps({"control_dt": 1 / 52})))
+            prepared = prepare_dataset(path, EstimatorConfig())
+            self.assertEqual(len(prepared["x"]), len(records["frames"]) - 19)
+            self.assertEqual(prepared["command_segment"][26 - 19], 1)
+
     def test_nominal_target_matches_existing_cem_replay(self):
         from scripts import collect_rolling_velocity_data as collector
         from scripts import evaluate_3d_symmetric_cem_reference as bridge

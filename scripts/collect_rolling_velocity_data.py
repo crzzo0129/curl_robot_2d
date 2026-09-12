@@ -331,7 +331,8 @@ def main(argv=None):
         for records, summary in results:
             episodes.append(records)
             summaries.append(summary)
-            print(f"episode {len(episodes)}/{args.episodes}: scale={summary['target_scale']:.3f}, "
+            print(f"episode {len(episodes)}/{args.episodes}: segments={len(summary['command_schedule'])}, "
+                  f"last_scale={summary['target_scale']:.3f}, "
                   f"mean_v={summary['speed_statistics']['time_mean_m_s']:.3f} m/s, "
                   f"rolls={summary['rolling_turns']:.2f}, wall={summary['wall_seconds']:.2f}s", flush=True)
     finally:

@@ -58,7 +58,8 @@
 
 独立滚动线速度 / 轨迹转向速度估计（不接入 policy）：见
 [`docs/rolling_velocity_estimator_zh.md`](docs/rolling_velocity_estimator_zh.md)，
-包含数据采集、监督训练、留出评估和 NumPy 在线推理。当前使用 CEM 生成轨迹，
+包含数据采集、监督训练、留出评估和 NumPy 在线推理。回合内 CEM 变速/转向版本见
+[`docs/rolling_velocity_estimator_switching_zh.md`](docs/rolling_velocity_estimator_switching_zh.md)。
 此前使用未认可 policy 生成的模型和评估结果已作废。
 
 ```powershell

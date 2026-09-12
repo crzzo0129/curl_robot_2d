@@ -114,6 +114,9 @@ def prepare_dataset(path: Path, config: EstimatorConfig):
     with np.load(path, allow_pickle=False) as archive:
         required = ("frames", "velocity_world", "body_y_world", "episode", "time_s")
         arrays = {key: archive[key] for key in required}
+        diagnostic_names = ("command", "command_age_s", "command_segment",
+                            "speed_command_delta", "turn_command_delta")
+        diagnostics = {key: archive[key] for key in diagnostic_names if key in archive}
         metadata = json.loads(str(archive["metadata_json"]))
     n = len(arrays["frames"])
     shapes = {"frames": (n, 36), "velocity_world": (n, 3),
@@ -121,6 +124,10 @@ def prepare_dataset(path: Path, config: EstimatorConfig):
     for key, shape in shapes.items():
         if arrays[key].shape != shape or not np.all(np.isfinite(arrays[key])):
             raise ValueError(f"invalid dataset array: {key}, expected {shape}")
+    for key, values in diagnostics.items():
+        shape = (n, 3) if key == "command" else (n,)
+        if values.shape != shape or not np.all(np.isfinite(values)):
+            raise ValueError(f"invalid diagnostic array: {key}")
     if not np.isclose(metadata["control_dt"], config.control_dt, rtol=1e-5):
         raise ValueError("dataset and estimator control_dt disagree")
     if not np.all(arrays["episode"] == arrays["episode"].astype(np.int64)):
@@ -146,9 +153,12 @@ def prepare_dataset(path: Path, config: EstimatorConfig):
                 source_rows.append(row)
     if not features:
         raise ValueError("no complete observation windows in dataset")
-    return dict(x=np.asarray(features), y=np.asarray(targets), mask=np.asarray(masks),
-                episode=np.asarray(episode_ids), source_row=np.asarray(source_rows),
-                metadata=metadata)
+    output = dict(x=np.asarray(features), y=np.asarray(targets), mask=np.asarray(masks),
+                  episode=np.asarray(episode_ids), source_row=np.asarray(source_rows),
+                  metadata=metadata)
+    # Diagnostics are never concatenated into estimator inputs or targets.
+    output.update({key: value[source_rows] for key, value in diagnostics.items()})
+    return output
 
 
 def split_episodes(episode_ids, seed=0):

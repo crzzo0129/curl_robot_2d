@@ -1,5 +1,9 @@
 # 独立滚动速度 estimator v1
 
+**最新工作：** 回合内变速、左右转向切换的采集、训练和评估见
+[rolling_velocity_estimator_switching_zh.md](rolling_velocity_estimator_switching_zh.md)。
+本页保留通用输入/标签定义和固定 CEM v1 对照结果。
+
 **当前来源：CEM 滚动控制器。** 用户已明确拒绝此前使用的 neural rolling policy。
 此前 `velocity_estimator_v1` / `velocity_estimator_v1_smoke` 数据、模型和误差结果作废；
 新数据使用独立目录 `results/velocity_estimator_cem_v1`。

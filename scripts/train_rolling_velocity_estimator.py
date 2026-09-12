@@ -32,6 +32,20 @@ def evaluate(model, data, rows, constant):
               "low_forward_speed": np.abs(target[:, 0]) <= .08,
               "left_turn": mask[:, 1] & (target[:, 1] > .1),
               "right_turn": mask[:, 1] & (target[:, 1] < -.1)}
+    if all(key in data for key in ("command", "command_age_s", "command_segment",
+                                   "speed_command_delta", "turn_command_delta")):
+        changed = data["command_segment"][rows] > 0
+        transition = changed & (data["command_age_s"][rows] < .5)
+        speed_delta = data["speed_command_delta"][rows]
+        turn = data["command"][rows, 2]
+        previous_turn = turn - data["turn_command_delta"][rows]
+        groups.update(command_transition_0p5s=transition,
+                      after_command_transition=changed & ~transition,
+                      speed_increase_transition=transition & (speed_delta > 1e-6),
+                      speed_decrease_transition=transition & (speed_delta < -1e-6),
+                      turn_reversal_transition=transition & (turn * previous_turn < 0),
+                      commanded_straight=np.abs(turn) < 1e-6,
+                      commanded_left=turn > 0, commanded_right=turn < 0)
     return {
         "estimator": regression_metrics(predicted, target, mask),
         "training_mean_baseline": regression_metrics(np.broadcast_to(constant, target.shape), target, mask),
@@ -170,7 +184,8 @@ def main(argv=None):
             np.savez_compressed(args.out / "test_predictions.npz", prediction=predicted,
                                 target=data["y"][rows], mask=data["mask"][rows],
                                 episode=data["episode"][rows], source_row=data["source_row"][rows],
-                                output_names=np.asarray(OUTPUT_NAMES))
+                                output_names=np.asarray(OUTPUT_NAMES),
+                                **{k: data[k][rows] for k in ("command", "command_age_s", "command_segment") if k in data})
     target_coverage = {name: {"valid_samples": int(data["mask"][:, i].sum()),
                               "quantiles": np.quantile(data["y"][:, i][data["mask"][:, i]],
                                                        [0, .05, .5, .95, 1]).tolist()}

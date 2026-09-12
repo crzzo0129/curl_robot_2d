@@ -356,6 +356,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--out", type=Path, default=None)
     parser.add_argument(
+        "--motion-series-out", type=Path, default=None,
+        help="Save sampled root position, world velocity and body-y axis as NPZ.",
+    )
+    parser.add_argument(
         "--joint-plot",
         type=Path,
         default=None,
@@ -600,6 +604,7 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     control_dt = control_repeat * float(model.opt.timestep)
     steps = max(1, round(args.duration / control_dt))
     records = []
+    motion_states = []
     joint_times = []
     actual_joint_angles = []
     commanded_joint_angles = []
@@ -803,6 +808,13 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
             )
         )
         joint_times.append(float(data.time))
+        if getattr(args, "motion_series_out", None) is not None:
+            # Free-joint qpos/qvel refer to the same integrated time. xmat may
+            # still describe the preceding physics step, so rotate from qpos.
+            root_rotation = np.empty(9, dtype=np.float64)
+            mujoco.mju_quat2Mat(root_rotation, data.qpos[3:7])
+            motion_states.append(np.r_[data.qpos[:3], data.qvel[:3],
+                                       root_rotation.reshape(3, 3)[:, 1]])
         if potential_self_contacts:
             potential_self_contact_fractions.append(
                 float(np.mean(potential_self_contacts))
@@ -817,6 +829,14 @@ def run_smoke(args: argparse.Namespace) -> dict[str, object]:
     if len(values) == 0:
         raise RuntimeError("simulation produced no records")
     joint_times_array = np.asarray(joint_times, dtype=np.float64)
+    if getattr(args, "motion_series_out", None) is not None:
+        args.motion_series_out.parent.mkdir(parents=True, exist_ok=True)
+        motion = np.asarray(motion_states, dtype=np.float64)
+        np.savez_compressed(
+            args.motion_series_out, time_s=joint_times_array,
+            position_world=motion[:, :3], velocity_world=motion[:, 3:6],
+            body_y_world=motion[:, 6:9],
+        )
     actual_joint_angles_array = np.asarray(actual_joint_angles, dtype=np.float64)
     commanded_joint_angles_array = np.asarray(
         commanded_joint_angles, dtype=np.float64
