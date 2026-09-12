@@ -162,6 +162,9 @@ def parse_args(argv=None):
     parser.add_argument("--snapshot-segment-steps", type=int, default=100)
     parser.add_argument("--snapshot-pool-refresh-steps", type=int, default=100,
                         help="refresh DAgger per-environment reset snapshots every N updates; reuse between refreshes")
+    parser.add_argument("--dagger-snapshot-sampling", choices=("uniform", "low_speed_focus"),
+                        default="uniform", help="DAgger only: low_speed_focus samples speed bins "
+                        "60/20/20 and restarts the episode timeout at student takeover; eval stays uniform")
     parser.add_argument("--num-devices", type=int, default=1,
                         help="local JAX devices for synchronous data parallelism; --envs is the GLOBAL batch")
     parser.add_argument(
@@ -397,6 +400,9 @@ def parse_args(argv=None):
             parser.error("random snapshot training currently requires commands fixed for the full episode")
         if args.deploy_dr or args.terrain_enabled or args.reset_pose != "compact":
             parser.error("random CEM snapshots currently require nominal flat compact-reset training")
+    if args.dagger_snapshot_sampling != "uniform":
+        if not args.random_cem_snapshots or args.forward_command_min_m_s >= args.forward_command_max_m_s:
+            parser.error("focused DAgger sampling requires random CEM snapshots and a nonzero speed range")
     if args.restore_student is not None and not args.restore_student.is_file():
         parser.error(
             f"student checkpoint does not exist: {args.restore_student}"
@@ -1276,6 +1282,38 @@ def main(argv=None):
         make_episode_randomization(args.envs)
     )
 
+    dagger_sampling_history = []
+
+    @execution.batch_jit
+    def gather_dagger_snapshots(pool, indices):
+        return jax.tree_util.tree_map(lambda value: value[indices], pool)
+
+    def reset_dagger_rollout(key):
+        pool = reset_rollout(key, args.envs)
+        if args.dagger_snapshot_sampling == "uniform":
+            return pool
+        from curl_robot_2d_mjx.distillation_curriculum import low_speed_snapshot_indices
+        # Only command vectors cross to the host. Gather the entire paired
+        # state/history/action tree on device using the same indices.
+        indices, sampling = low_speed_snapshot_indices(
+            jax.device_get(pool[0].info["forward_velocity_command"]),
+            jax.device_get(pool[0].info["yaw_rate_command"]),
+            speed_min=args.forward_command_min_m_s,
+            speed_max=args.forward_command_max_m_s,
+            straight_fraction=args.turn_command_straight_fraction,
+            seed=np.asarray(jax.device_get(jax.random.fold_in(key, 9271)), dtype=np.uint32),
+        )
+        reset_state, reset_history, reset_previous = gather_dagger_snapshots(pool, jp.asarray(indices))
+        reset_state = reset_state.replace(info={
+            **reset_state.info,
+            "step_count": jp.zeros_like(reset_state.info["step_count"]),
+        })
+        dagger_sampling_history.append(sampling)
+        print(f"[DAgger sampling] low/medium/high=60/20/20; "
+              f"unique={sampling['unique_snapshots']}/{args.envs}; "
+              f"takeover horizon={args.episode_length * direct_task.control_timestep:.2f}s", flush=True)
+        return reset_state, reset_history, reset_previous
+
     from curl_robot_2d_mjx.distillation_execution import make_reset_finished_rollouts
     reset_finished_rollouts = make_reset_finished_rollouts()
 
@@ -1297,9 +1335,7 @@ def main(argv=None):
         dagger_optimizer_state = dagger_optimizer.init(student_params)
         dagger_train_step = make_train_step(dagger_optimizer)
         rng, dagger_reset_key, dagger_episode_key = jax.random.split(rng, 3)
-        dagger_reset_state, dagger_reset_history, dagger_reset_previous = reset_rollout(
-            dagger_reset_key, args.envs
-        )
+        dagger_reset_state, dagger_reset_history, dagger_reset_previous = reset_dagger_rollout(dagger_reset_key)
         dagger_state = attach_train_episode_randomization(
             dagger_reset_state, dagger_episode_key
         )
@@ -1449,7 +1485,7 @@ def main(argv=None):
             if (args.random_cem_snapshots and step > 0
                     and step % args.snapshot_pool_refresh_steps == 0):
                 rng, pool_key = jax.random.split(rng)
-                reset_pool = reset_rollout(pool_key, args.envs)
+                reset_pool = reset_dagger_rollout(pool_key)
             with timed_stage("DAgger first update / JIT") if step == 0 else nullcontext():
                 (student_params, dagger_optimizer_state, dagger_state,
                  dagger_history, dagger_previous_controller_action, rng,
@@ -2001,6 +2037,7 @@ def main(argv=None):
         },
         "loss_history": loss_history,
         "dagger_loss_history": dagger_loss_history,
+        "dagger_sampling_history": dagger_sampling_history,
         "closed_loop_evaluation": closed_loop_evaluation,
         "eval_reset_keys": np.asarray(jax.device_get(eval_reset_keys)).tolist(),
         "lateral_diagnostics": lateral_diagnostics,

@@ -96,3 +96,4 @@ mjx_runs/
 # Cloud transfer bundle for the calibrated high-speed CEM steering map.
 !results/cem_steering_calibration_v1.zip
 !results/rolling_distill_review_v1.zip
+!results/rolling_low_speed_recovery_v1.zip
