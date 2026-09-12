@@ -1,0 +1,27 @@
+{
+  "date": "2026-09-12",
+  "host": "pi@pupper.local",
+  "status": "runtime_installed_model_not_bound",
+  "workspace": "/home/pi/pupperv3-monorepo/ros2_ws",
+  "backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_command_backup_20260912_200201_745962",
+  "isolated_build_workspace": "/home/pi/rolling_command_build_20260912",
+  "robot_review_directory": "/home/pi/rolling_command_review_20260912",
+  "installed_version": "gamepad-continuous-roll-v4-ps5-8bitdo",
+  "checks": {
+    "gamepad_unit_tests": "8 passed on robot",
+    "history_conversion_cpp_checks": "passed on robot",
+    "isolated_colcon_build": "passed",
+    "installed_colcon_build": "passed",
+    "installed_source_mismatches": [],
+    "installed_neutral_command": [0.6, 0.0, 0.0],
+    "installed_controller_library_exists": true,
+    "local_training_simulation_or_tests_run": false
+  },
+  "rolling_model_path": "",
+  "ppo_candidate_step": 81920,
+  "ppo_weights_available": false,
+  "ppo_native_inference_validated": false,
+  "physical_handoff_validated": false,
+  "controllers_launched": false,
+  "motors_enabled": false
+}

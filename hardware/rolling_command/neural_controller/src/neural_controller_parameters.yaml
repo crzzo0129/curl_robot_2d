@@ -1,0 +1,341 @@
+neural_controller:
+  rolling_model_path:
+    {
+      type: string,
+      default_value: "",
+      description: "Optional command-conditioned rolling PPO; Circle requests live takeover. Empty preserves the startup/stop workflow.",
+    }
+  rolling_handoff_max_target_delta_rad:
+    {
+      type: double,
+      default_value: 0.12,
+      description: "Reject takeover until all new targets differ from last sent targets by at most this amount; no automatic abduction ramp.",
+    }
+  controller_backend:
+    {
+      type: string,
+      default_value: "rtneural",
+      description: "Controller backend: rtneural or cem_phase_locked",
+    }
+
+  repeat_action:
+    {
+      type: int,
+      default_value: 10,
+      description: "Number of times to repeat the same action before querying the policy again",
+    }
+
+  model_path:
+    {
+      type: string,
+      default_value: "",
+      description: "Path to RTNeural model weights or a phase-locked CEM reference JSON",
+    }
+
+  roll_to_stand_model_path:
+    {
+      type: string,
+      default_value: "",
+      description: "Optional learned hot-switch RTNeural policy; arm with ~/request_roll_to_stand (rtneural backend only)",
+    }
+
+  neural_stop_pitch_deg:
+    {
+      type: double,
+      default_value: 90.0,
+      description: "Hot-switch pitch center in degrees: atan2(R20, R22), nose-up positive",
+    }
+
+  neural_stop_pitch_tolerance_deg:
+    {
+      type: double,
+      default_value: 5.0,
+      description: "Hot-switch pitch window half width in degrees",
+    }
+
+  cem_startup_ramp_duration:
+    {
+      type: double,
+      default_value: 0.25,
+      description: "Smooth-step duration from compact to the full CEM reference action",
+    }
+
+  cem_gyro_y_sign:
+    {
+      type: double,
+      default_value: 1.0,
+      description: "Sign mapping from body-frame rotation about the y axis (fused IMU quaternion delta) to rolling phase",
+    }
+
+  cem_max_timestep:
+    {
+      type: double,
+      default_value: 0.02,
+      description: "Maximum controller period integrated by the CEM oscillator after a scheduling delay",
+    }
+
+  cem_torso_length_m:
+    {
+      type: double,
+      default_value: 0.1504,
+      description: "Hip-to-hip torso length used by the CEM foot-clearance projection",
+    }
+
+  cem_upper_link_length_m:
+    {
+      type: double,
+      default_value: 0.0844547808,
+      description: "Upper-leg length used by the CEM foot-clearance projection",
+    }
+
+  cem_lower_link_length_m:
+    {
+      type: double,
+      default_value: 0.0880136895,
+      description: "Lower-leg length used by the CEM foot-clearance projection",
+    }
+
+  cem_foot_diameter_m:
+    {
+      type: double,
+      default_value: 0.039,
+      description: "Foot diameter used by the CEM foot-clearance projection",
+    }
+
+  cem_planar_joint_lower_limits:
+    {
+      type: double_array,
+      default_value: [-1.12, -0.61, -1.12, -0.61],
+      description: "Front hip/knee and rear hip/knee limits used inside the CEM reference projection",
+    }
+
+  cem_planar_joint_upper_limits:
+    {
+      type: double_array,
+      default_value: [2.41, 2.69, 2.41, 2.69],
+      description: "Front hip/knee and rear hip/knee limits used inside the CEM reference projection",
+    }
+
+  use_imu:
+    {
+      type: bool,
+      default_value: true,
+      description: "Whether to use the IMU sensor",
+    }
+
+  imu_sensor_name:
+    {
+      type: string,
+      default_value: "imu_sensor",
+      description: "Name of the IMU sensor",
+    }
+
+  joint_names:
+    {
+      type: string_array,
+      default_value: [],
+      description: "Names of the joints to control, in the order expected by the policy observation/action spaces",
+    }
+
+  startup_joint_pos:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Optional initialization/standby target in policy joint order. Empty uses default_joint_pos; does not alter the policy observation/action center.",
+    }
+
+  default_joint_pos:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Default joint positions. Added to policy output to get command. Subtracted from read motor angles to get observation, e.g. commanded_motor_angles = scaled_action + default_joint_pos",
+    }
+
+  kps:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Position gains for the joints",
+    }
+
+  kds:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Velocity gains for the joints",
+    }
+
+  gain_multiplier:
+    {
+      type: double,
+      default_value: 1.0,
+      description: "Multiplier for the position control gains",
+    }
+
+  init_kps:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Position gains for the joints during initialization (return to default position)",
+    }
+
+  init_kds:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Velocity gains for the joints during initialization (return to default position)",
+    }
+
+  init_duration:
+    {
+      type: double,
+      default_value: 2.0,
+      description: "Time to return to the default position on startup",
+    }
+
+  fade_in_duration:
+    {
+      type: double,
+      default_value: 2.0,
+      description: "Time to gradually fade in policy actions; set to 0 to apply the first policy action at full scale",
+    }
+
+  require_policy_enable:
+    {
+      type: bool,
+      default_value: false,
+      description: "Hold the default pose after initialization until an Empty message is received on ~/enable_policy",
+    }
+
+  accept_external_commands:
+    {
+      type: bool,
+      default_value: true,
+      description: "Accept /cmd_vel and /cmd_pose updates; disable for policies trained with fixed zero commands",
+    }
+
+  action_scales:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Scaling factor for the actions",
+    }
+
+  action_types:
+    {
+      type: string_array,
+      default_value: [],
+      description: "Type of action for each joint: position or velocity",
+    }
+
+  joint_lower_limits:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Lower limits for the joint positions",
+    }
+
+  joint_upper_limits:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Upper limits for the joint positions",
+    }
+
+  observation_history:
+    {
+      type: int,
+      default_value: 1,
+      description: "Number of previous observations to include in the observation space",
+    }
+
+  observation_limit:
+    {
+      type: double,
+      default_value: 100.0,
+      description: "Maximum observation value before scaling",
+    }
+
+  max_body_angle:
+    {
+      type: double,
+      default_value: 0.52,
+      description: "Maximum body angle (rad) allowed before the controller is reset",
+    }
+
+  enable_body_angle_estop:
+    {
+      type: bool,
+      default_value: true,
+      description: "Enable projected-gravity body-angle emergency stop; rolling policies must disable it",
+    }
+
+  estop_kd:
+    {
+      type: double,
+      default_value: 0.1,
+      description: "Velocity gain for the joints during emergency stop",
+    }
+
+  roll_to_stand_enabled:
+    {
+      type: bool,
+      default_value: false,
+      description: "After CEM rolling, trigger a pitch-based unfold to a standing pose",
+    }
+
+  roll_to_stand_trigger_pitch_deg:
+    {
+      type: double,
+      default_value: 90.0,
+      description: "Pitch (nose-up positive, 0 = upright) at which unfolding begins",
+    }
+
+  roll_to_stand_lead_deg:
+    {
+      type: double,
+      default_value: 15.0,
+      description: "Angular lead window (deg) before the trigger pitch",
+    }
+
+  roll_to_stand_pitch_rate_sign:
+    {
+      type: double,
+      default_value: -1.0,
+      description: "Sign mapping body-frame IMU angular_velocity.y to pitch rate",
+    }
+
+  roll_to_stand_min_pitch_rate:
+    {
+      type: double,
+      default_value: 0.5,
+      description: "Minimum |pitch rate| (rad/s) required to arm the trigger",
+    }
+
+  roll_to_stand_min_roll_duration:
+    {
+      type: double,
+      default_value: 2.0,
+      description: "Minimum rolling time (s) before the trigger may fire",
+    }
+
+  roll_to_stand_min_roll_turns:
+    {
+      type: double,
+      default_value: 1.0,
+      description: "Minimum accumulated turns before the trigger may fire",
+    }
+
+  roll_to_stand_deploy_duration:
+    {
+      type: double,
+      default_value: 0.15,
+      description: "Unfolding interpolation duration (s)",
+    }
+
+  roll_to_stand_stand_joint_pos:
+    {
+      type: double_array,
+      default_value: [],
+      description: "Stand pose target, 12 joints in policy order FL/FR/RL/RR x (abduction,hip,knee)",
+    }
