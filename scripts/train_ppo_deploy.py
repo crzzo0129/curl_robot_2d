@@ -38,6 +38,9 @@ Subcommands
     --fb-symmetry-weight FLOAT   actor front/back consistency (default 0.01; 0 disables)
     --action-rate-weight FLOAT   adjacent action change penalty (default 0.10)
     --collision-model cad|foot-spheres   full CAD or four native foot spheres (default cad)
+    --lr-symmetry-weight FLOAT   left/right actor consistency (default 0)
+    --trot-phase-weight FLOAT    measured straight-line trot phase reward (default 0)
+    --cycle-balance-weight FLOAT left/right cycle statistics penalty (default 0)
     <none>   train
 """
 import os
@@ -79,7 +82,8 @@ from brax.training.acme import running_statistics
 import train_ppo_walk3d as w3
 from deploy_collision import audit_foot_sphere_model, foot_sphere_only_xml
 from deploy_gait import init_hip_rom, sample_command, update_hip_rom
-from deploy_symmetry import audit_front_back_mapping, with_front_back_symmetry
+from deploy_symmetry import audit_front_back_mapping, audit_left_right_mapping, with_front_back_symmetry
+from deploy_cycle_gait import METRICS as CYCLE_METRICS, init_cycle_gait, update_cycle_gait
 from deploy_terrain import (
     RoughTerrainConfig, inject_heightfield, limit_collision_hulls, reference_terrain_data,
     surface_height, terrain_data, write_height_preview,
@@ -163,6 +167,9 @@ POSE_MAX_JOINT_PENALTY = 0.50  # bound extreme errors before exponentiation
 
 # Actor loss regularization, not a reward term. Applies to straight commands.
 FB_SYMMETRY_W = 0.01
+LR_SYMMETRY_W = 0.0       # opt in with CLI / the symmetry sweep
+TROT_PHASE_W = 0.0        # recommended first comparison: 0.05
+CYCLE_BALANCE_W = 0.0     # recommended first comparison: 0.02
 
 # Straight-line trot symmetry.  The gate below disables these terms for
 # lateral motion and turning so they do not remove steering authority.
@@ -484,6 +491,10 @@ class DeployEnv(PipelineEnv):
         vel = offset.vmap().do(ps.xd.take(self._shank_body - 1)).vel
         return pos, vel
 
+    def _foot_body_x(self, ps, foot_pos):
+        forward = math.rotate(jp.array([1.0, 0.0, 0.0]), ps.x.rot[0])
+        return jp.sum((foot_pos - ps.x.pos[0]) * forward, axis=-1)
+
     def _frame(self, ps, info):
         """One 36-value observation, in the controller's own order."""
         inv_rot = math.quat_inv(ps.x.rot[0])
@@ -562,6 +573,10 @@ class DeployEnv(PipelineEnv):
         }
         info.update(init_hip_rom(
             ps.q[self._joint_qpos].reshape((4, 3))[:, 1], info["command"]))
+        if TROT_PHASE_W > 0 or CYCLE_BALANCE_W > 0:
+            info.update(init_cycle_gait(
+                jp, ps.q[self._joint_qpos].reshape((4, 3))[:, 1],
+                self._foot_body_x(ps, ps.site_xpos[self._foot_site]), info["command"]))
         info["hist"] = self._push(hist, self._frame(ps, info))
         metrics = {k: jp.zeros(()) for k in
                    ("track_lin", "track_ang", "air", "slip", "scuff",
@@ -574,6 +589,7 @@ class DeployEnv(PipelineEnv):
                     "terrain_rough", "terrain_boundary",
                     "hip_fl", "hip_fr", "hip_rl", "hip_rr",
                     "vx", "vy", "wz", "height", "cmd_vx", "cmd_wz")}
+        metrics.update({key: jp.zeros(()) for key in CYCLE_METRICS})
         return State(ps, self._noise(info["hist"], k_obs), jp.zeros(()),
                      jp.zeros(()), metrics, info)
 
@@ -688,6 +704,12 @@ class DeployEnv(PipelineEnv):
             min_clearance=HIP_ROM_MIN_CLEARANCE)
         p_pose = pose_deviation_penalty(
             ps.q[self._joint_qpos] - DEFAULT_POSE, moving)
+        cycle_metrics = {key: jp.zeros(()) for key in CYCLE_METRICS}
+        if TROT_PHASE_W > 0 or CYCLE_BALANCE_W > 0:
+            foot_x = self._foot_body_x(ps, foot_pos)
+            cycle_state, cycle_metrics = update_cycle_gait(
+                jp, info, hip, foot_x, cmd, contact_filt, foot_clearance, lin_b[0], self.dt,
+                phase_weight=TROT_PHASE_W, balance_weight=CYCLE_BALANCE_W)
 
         bad = jp.isnan(ps.q).any() | jp.isnan(ps.qd).any()
         terrain_boundary = (jp.any(jp.abs(ps.q[:2]) > (
@@ -697,6 +719,7 @@ class DeployEnv(PipelineEnv):
                 | bad | terrain_boundary).astype(jp.float32)
 
         reward = (ALIVE_W + r_lin + r_ang + r_air + r_lift
+                  + cycle_metrics["trot_phase_reward"] - cycle_metrics["cycle_balance_penalty"]
                   - p_orient - p_linz - p_angxy - p_height
                   - p_torque - p_jvel - p_rate
                   - p_slip - p_scuff - p_clearance
@@ -714,6 +737,10 @@ class DeployEnv(PipelineEnv):
         reset_hip = (done > 0.0) | jp.any(info["command"] != cmd)
         info.update({k: jp.where(reset_hip, hip_reset[k], v)
                      for k, v in hip_state.items()})
+        if TROT_PHASE_W > 0 or CYCLE_BALANCE_W > 0:
+            cycle_reset = init_cycle_gait(jp, hip, foot_x, info["command"])
+            info.update({key: jp.where(reset_hip, cycle_reset[key], value)
+                         for key, value in cycle_state.items()})
         info["rng"] = rng
         info["last_act"] = action
         info["action_queue"] = action_queue
@@ -725,6 +752,7 @@ class DeployEnv(PipelineEnv):
 
         metrics = dict(state.metrics)
         metrics.update(hip_metrics)
+        metrics.update(cycle_metrics)
         metrics.update({
             "track_lin": r_lin, "track_ang": r_ang, "air": r_air,
             "slip": p_slip, "scuff": p_scuff,
@@ -969,7 +997,7 @@ def probe():
 # ================================================================ train
 def main(resume_path=None, fresh=False):
     restore_from = resolve_training_resume(resume_path, fresh)
-    ppo_train = with_front_back_symmetry(ppo.train, FB_SYMMETRY_W)
+    ppo_train = with_front_back_symmetry(ppo.train, FB_SYMMETRY_W, LR_SYMMETRY_W)
     os.makedirs(VID_DIR, exist_ok=True)
     os.makedirs(CKPT_DIR, exist_ok=True)
     env, eval_env = DeployEnv(), DeployEnv()
@@ -978,7 +1006,19 @@ def main(resume_path=None, fresh=False):
     if FB_SYMMETRY_W > 0:
         symmetry_audit = audit_front_back_mapping(
             env._mj, DEFAULT_POSE, ACTION_SCALE, CTRL_LO, CTRL_HI)
+    lr_audit = (audit_left_right_mapping(env._mj, DEFAULT_POSE, ACTION_SCALE, CTRL_LO, CTRL_HI)
+                if LR_SYMMETRY_W > 0 else None)
     import json
+    (Path(CKPT_DIR) / "gait_symmetry_config.json").write_text(json.dumps({
+        "left_right_weight": LR_SYMMETRY_W, "left_right_mapping_audit": lr_audit,
+        "left_right_gate": "norm(command)>0.05, including turning",
+        "trot_phase_weight": TROT_PHASE_W, "cycle_balance_weight": CYCLE_BALANCE_W,
+        "cycle_gate": "straight; four valid supported cycles; correct-direction actual vx > 0.05",
+        "cycle_seconds": [0.2, 1.2], "warmup_seconds": 0.5,
+        "minimum_swing_seconds": 0.06, "minimum_clearance_m": 0.008,
+        "phase_tolerance_cycles": 0.15,
+        "balance_scales": {"hip_mean_rad": 0.20, "hip_rom_rad": 0.20, "foot_span_m": 0.03},
+    }, indent=2), encoding="utf-8")
     (Path(CKPT_DIR) / "collision_model_config.json").write_text(json.dumps({
         "mode": COLLISION_MODEL,
         "audit": env._collision_audit,
@@ -1006,6 +1046,11 @@ def main(resume_path=None, fresh=False):
         print(f"    four native spheres, radius={FOOT_R*1000:g} mm; "
               "4 ground pairs, 0 robot pairs; CAD is visual only")
     print(f"  front/back actor symmetry weight={FB_SYMMETRY_W} (straight commands)")
+    print(f"  left/right actor symmetry weight={LR_SYMMETRY_W} (all moving commands); "
+          f"trot_phase={TROT_PHASE_W}, cycle_balance={CYCLE_BALANCE_W} (straight only)")
+    if lr_audit is not None:
+        print(f"    left/right mapping sampled foot discrepancy "
+              f"{lr_audit['sampled_foot_error_m']*1000:.3f} mm")
     if symmetry_audit is not None:
         print(f"    mapping check: sampled foot discrepancy "
               f"{symmetry_audit['sampled_foot_error_m']*1000:.3f} mm; "
@@ -1098,6 +1143,18 @@ def main(resume_path=None, fresh=False):
             print(f"    fb_symmetry_loss {metrics['training/fb_symmetry_loss']:.6f}  "
                   f"action_rmse {metrics['training/fb_symmetry_action_rmse']:.4f}  "
                   f"sample_fraction {metrics['training/fb_symmetry_fraction']:.3f}", flush=True)
+        if "training/lr_symmetry_loss" in metrics:
+            print(f"    lr_symmetry_loss {metrics['training/lr_symmetry_loss']:.6f}  "
+                  f"action_rmse {metrics['training/lr_symmetry_action_rmse']:.4f}  "
+                  f"sample_fraction {metrics['training/lr_symmetry_fraction']:.3f}", flush=True)
+        if TROT_PHASE_W > 0 or CYCLE_BALANCE_W > 0:
+            print(f"    trot_phase_quality {avg('trot_phase_quality'):.3f}  "
+                  f"phase_reward {avg('trot_phase_reward'):.4f}  "
+                  f"cycle_balance_penalty {avg('cycle_balance_penalty'):.4f}  "
+                  f"valid_fraction {avg('cycle_valid_fraction'):.3f}", flush=True)
+            print(f"    cycle hip_mean_error {avg('cycle_hip_mean_error'):.4f} rad  "
+                  f"hip_rom_error {avg('cycle_hip_rom_error'):.4f} rad  "
+                  f"foot_span_error {avg('cycle_foot_span_error'):.4f} m", flush=True)
         print(f"    hip_rom_penalty {g('hip_rom_penalty')}  "
               f"hip_rom_front_mean_rad {avg('hip_rom_front')}  "
               f"hip_rom_rear_mean_rad {avg('hip_rom_rear')}  "
@@ -1230,6 +1287,9 @@ if __name__ == "__main__":
             set_run_name(argv[i + 1])
             del argv[i:i + 2]
         for flag, setting in (("--fb-symmetry-weight", "FB_SYMMETRY_W"),
+                              ("--lr-symmetry-weight", "LR_SYMMETRY_W"),
+                              ("--trot-phase-weight", "TROT_PHASE_W"),
+                              ("--cycle-balance-weight", "CYCLE_BALANCE_W"),
                               ("--action-rate-weight", "RATE_W")):
             if flag in argv:
                 i = argv.index(flag)

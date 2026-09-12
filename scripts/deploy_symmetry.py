@@ -1,8 +1,9 @@
-"""Front/back policy consistency for the 720-observation deploy actor.
+"""Front/back and left/right consistency for the 720-observation deploy actor.
 
 Geometry and array helpers require no JAX. The training-loss factory imports
 JAX only when enabled by the trainer. Reflection is x -> -x in the torso frame,
-not a 180-degree yaw rotation: FL <-> RL and FR <-> RR.
+not a 180-degree yaw rotation: FL <-> RL and FR <-> RR. Left/right reflects
+y -> -y: FL <-> FR and RL <-> RR, including mirrored turn commands.
 """
 
 import functools
@@ -18,17 +19,27 @@ JOINT_PERM = (6, 7, 8, 9, 10, 11, 0, 1, 2, 3, 4, 5)
 POLAR_SIGN = (-1, 1, 1)
 AXIAL_SIGN = (1, -1, -1)
 COMMAND_SIGN = (-1, 1, -1)  # vx, vy, wz
+LR_JOINT_PERM = (3, 4, 5, 0, 1, 2, 9, 10, 11, 6, 7, 8)
 FRAME_SIZE = 36
 HISTORY = 20
 
 
-def mirror_action(xp, action):
+def reflection_mapping(reflection):
+    if reflection == "front_back":
+        return JOINT_PERM, POLAR_SIGN, AXIAL_SIGN, COMMAND_SIGN
+    if reflection == "left_right":
+        return LR_JOINT_PERM, (1, -1, 1), (-1, 1, -1), (1, -1, -1)
+    raise ValueError(f"unknown reflection: {reflection}")
+
+
+def mirror_action(xp, action, reflection="front_back"):
     if action.shape[-1] != 12:
         raise ValueError("front/back symmetry expects 12 canonical joint actions")
-    return xp.take(action, xp.asarray(JOINT_PERM), axis=-1)
+    permutation, _, _, _ = reflection_mapping(reflection)
+    return xp.take(action, xp.asarray(permutation), axis=-1)
 
 
-def mirror_observation(xp, observation):
+def mirror_observation(xp, observation, reflection="front_back"):
     """Mirror physical observations BEFORE the actor's usual normalization.
 
     Angular velocity is an axial vector; gravity and desired vertical are
@@ -39,34 +50,40 @@ def mirror_observation(xp, observation):
     if observation.shape[-1] != FRAME_SIZE * HISTORY:
         raise ValueError("front/back symmetry expects the 36 x 20 deploy layout")
     frames = observation.reshape(observation.shape[:-1] + (HISTORY, FRAME_SIZE))
+    _, polar_sign, axial_sign, command_sign = reflection_mapping(reflection)
     reflected = xp.concatenate([
-        frames[..., :3] * xp.asarray(AXIAL_SIGN, dtype=frames.dtype),
-        frames[..., 3:6] * xp.asarray(POLAR_SIGN, dtype=frames.dtype),
-        frames[..., 6:9] * xp.asarray(COMMAND_SIGN, dtype=frames.dtype),
-        frames[..., 9:12] * xp.asarray(POLAR_SIGN, dtype=frames.dtype),
-        mirror_action(xp, frames[..., 12:24]),
-        mirror_action(xp, frames[..., 24:36]),
+        frames[..., :3] * xp.asarray(axial_sign, dtype=frames.dtype),
+        frames[..., 3:6] * xp.asarray(polar_sign, dtype=frames.dtype),
+        frames[..., 6:9] * xp.asarray(command_sign, dtype=frames.dtype),
+        frames[..., 9:12] * xp.asarray(polar_sign, dtype=frames.dtype),
+        mirror_action(xp, frames[..., 12:24], reflection),
+        mirror_action(xp, frames[..., 24:36], reflection),
     ], axis=-1)
     return reflected.reshape(observation.shape)
 
 
-def consistency_statistics(xp, observation, action, mirrored_observation_action):
+def consistency_statistics(xp, observation, action, mirrored_observation_action,
+                           reflection="front_back"):
     """Compare policies on straight-command samples; no invented PPO returns."""
     cmd = observation[..., 6:9]  # newest frame, physical command units
     mask = ((xp.abs(cmd[..., 0]) > 0.05)
             & (xp.abs(cmd[..., 1]) < 0.05)
             & (xp.abs(cmd[..., 2]) < 0.15))
+    if reflection == "left_right":
+        mask = xp.linalg.norm(cmd, axis=-1) > 0.05  # includes turns and lateral motion
     error = xp.mean(xp.square(
-        mirrored_observation_action - mirror_action(xp, action)), axis=-1)
+        mirrored_observation_action - mirror_action(xp, action, reflection)), axis=-1)
     mse = xp.sum(xp.where(mask, error, 0.0)) / xp.maximum(xp.sum(mask), 1)
     fraction = xp.mean(mask.astype(observation.dtype))
     return mse, fraction
 
 
-def make_symmetry_loss(base_loss, weight, *, array_module=None):
+def make_symmetry_loss(base_loss, weight, *, left_right_weight=0.0, array_module=None):
     """Add a differentiable actor-only regularizer to the installed PPO loss."""
     if not math.isfinite(weight) or weight < 0:
         raise ValueError("front/back symmetry weight must be finite and nonnegative")
+    if not math.isfinite(left_right_weight) or left_right_weight < 0:
+        raise ValueError("left/right symmetry weight must be finite and nonnegative")
     if array_module is None:
         import jax.numpy as jp
     else:
@@ -80,20 +97,22 @@ def make_symmetry_loss(base_loss, weight, *, array_module=None):
         apply = ppo_network.policy_network.apply
         distribution = ppo_network.parametric_action_distribution
         action = distribution.mode(apply(normalizer_params, params.policy, obs))
-        reflected_action = distribution.mode(apply(
-            normalizer_params, params.policy, mirror_observation(jp, obs)))
         # Both predictions receive gradients; task PPO remains the anchor.
         # Neither critic targets nor behaviour log-probabilities are mirrored.
-        mse, fraction = consistency_statistics(jp, obs, action, reflected_action)
-        regularizer = weight * mse
-        total = total + regularizer
-        return total, {
-            **metrics,
-            "total_loss": total,
-            "fb_symmetry_loss": regularizer,
-            "fb_symmetry_action_rmse": jp.sqrt(mse),
-            "fb_symmetry_fraction": fraction,
-        }
+        metrics = dict(metrics)
+        for prefix, reflection, strength in (("fb", "front_back", weight),
+                                              ("lr", "left_right", left_right_weight)):
+            mse, fraction = jp.zeros(()), jp.zeros(())
+            if strength > 0:
+                reflected_action = distribution.mode(apply(
+                    normalizer_params, params.policy, mirror_observation(jp, obs, reflection)))
+                mse, fraction = consistency_statistics(jp, obs, action, reflected_action, reflection)
+            regularizer = strength * mse
+            total = total + regularizer
+            metrics.update({prefix + "_symmetry_loss": regularizer,
+                            prefix + "_symmetry_action_rmse": jp.sqrt(mse),
+                            prefix + "_symmetry_fraction": fraction})
+        return total, {**metrics, "total_loss": total}
 
     return loss
 
@@ -121,31 +140,45 @@ def bind_ppo_loss(train_fn, loss_fn):
     return functools.update_wrapper(bound, train_fn)
 
 
-def with_front_back_symmetry(train_fn, weight):
+def with_front_back_symmetry(train_fn, weight, left_right_weight=0.0):
     if not math.isfinite(weight) or weight < 0:
         raise ValueError("front/back symmetry weight must be finite and nonnegative")
-    if weight == 0:
+    if not math.isfinite(left_right_weight) or left_right_weight < 0:
+        raise ValueError("left/right symmetry weight must be finite and nonnegative")
+    if weight == 0 and left_right_weight == 0:
         return train_fn
     losses = getattr(train_fn, "__globals__", {}).get("ppo_losses")
     if losses is None or not callable(getattr(losses, "compute_ppo_loss", None)):
         raise RuntimeError("Cannot locate the installed Brax PPO loss for symmetry")
-    return bind_ppo_loss(train_fn, make_symmetry_loss(losses.compute_ppo_loss, weight))
+    return bind_ppo_loss(train_fn, make_symmetry_loss(
+        losses.compute_ppo_loss, weight, left_right_weight=left_right_weight))
 
 
 def audit_front_back_mapping(model, default_pose, action_scale, ctrl_lo, ctrl_hi):
+    return audit_reflection_mapping(model, default_pose, action_scale, ctrl_lo, ctrl_hi,
+                                    "front_back")
+
+
+def audit_left_right_mapping(model, default_pose, action_scale, ctrl_lo, ctrl_hi):
+    return audit_reflection_mapping(model, default_pose, action_scale, ctrl_lo, ctrl_hi,
+                                    "left_right")
+
+
+def audit_reflection_mapping(model, default_pose, action_scale, ctrl_lo, ctrl_hi, reflection):
     """Check the model/actor mapping with native kinematics, not simulation.
 
     This verifies the coordinate convention, not exact dynamic symmetry of
     CAD inertias, contacts or a particular DR realization. The loss is soft.
     """
     import mujoco
+    permutation, polar_sign, axial_sign, _ = reflection_mapping(reflection)
 
     for label, values in (("default pose", default_pose), ("action scale", action_scale),
                           ("lower limits", ctrl_lo), ("upper limits", ctrl_hi)):
         values = np.asarray(values)
         if values.shape != (12,) or not np.allclose(
-                values, mirror_action(np, values), atol=1e-6, rtol=0):
-            raise ValueError(f"front/back {label} does not match the symmetry mapping")
+                values, mirror_action(np, values, reflection), atol=1e-6, rtol=0):
+            raise ValueError(f"{reflection} {label} does not match the symmetry mapping")
     joint_ids = np.array([model.joint(f"{leg}_{kind}").id
                           for leg in LEG_ORDER for kind in JOINT_KINDS])
     addresses = model.jnt_qposadr[joint_ids]
@@ -157,21 +190,22 @@ def audit_front_back_mapping(model, default_pose, action_scale, ctrl_lo, ctrl_hi
     data.qpos[addresses] = np.asarray(default_pose)
     mujoco.mj_kinematics(model, data)
     axes = data.xaxis[joint_ids] @ data.xmat[torso_id].reshape(3, 3)
-    alignment = np.sum(axes[np.asarray(JOINT_PERM)] * axes * AXIAL_SIGN, axis=-1)
+    alignment = np.sum(axes[np.asarray(permutation)] * axes * axial_sign, axis=-1)
     if np.min(alignment) < 0.999:
-        raise ValueError("front/back joint-axis signs no longer match the actor mapping")
+        raise ValueError(f"{reflection} joint-axis signs no longer match the actor mapping")
     rng = np.random.default_rng(7)
     max_foot_error = 0.0
     for action in np.vstack([np.zeros((1, 12)), rng.uniform(-0.8, 0.8, (8, 12))]):
         feet = []
-        for candidate in (action, mirror_action(np, action)):
+        for candidate in (action, mirror_action(np, action, reflection)):
             data.qpos[addresses] = np.asarray(default_pose) + candidate * np.asarray(action_scale)
             mujoco.mj_kinematics(model, data)
             feet.append((data.site_xpos[site_ids] - data.xpos[torso_id])
                         @ data.xmat[torso_id].reshape(3, 3))
-        error = feet[1] - feet[0][[2, 3, 0, 1]] * POLAR_SIGN
+        leg_permutation = np.asarray(permutation)[::3] // 3
+        error = feet[1] - feet[0][leg_permutation] * polar_sign
         max_foot_error = max(max_foot_error, float(np.max(np.linalg.norm(error, axis=-1))))
     if max_foot_error > 0.003:
-        raise ValueError(f"front/back foot mapping discrepancy {max_foot_error*1000:.2f} mm exceeds 3 mm")
+        raise ValueError(f"{reflection} foot mapping discrepancy {max_foot_error*1000:.2f} mm exceeds 3 mm")
     return {"axis_alignment_min": float(np.min(alignment)),
             "sampled_foot_error_m": max_foot_error}

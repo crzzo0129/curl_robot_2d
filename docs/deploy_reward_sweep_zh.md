@@ -1,5 +1,9 @@
 # 四卡独立奖励对比
 
+新增 `--sweep symmetry` 可运行“基线 / 左右镜像 / 周期步态 / 两者都有”的
+四组对照，详见 [对称步态实验](deploy_trot_symmetry_zh.md)。本页原有组合仍是
+默认 `--sweep reward`，旧实验续训保持原设置。
+
 四张 GPU 分别训练四个独立策略；同一初始 checkpoint、默认随机种子、
 DR 配置、采样分布和训练步数，仅改变下表两项。镜像项是 actor loss，
 action rate 项是环境奖励中的相邻 action 差值平方和惩罚。
@@ -49,10 +53,22 @@ tail -f results/reward_ab_v1/sym001_rate010.log
 ```
 
 需要停止某一组时，用 manifest 或对应 .pid 文件中的 PID 执行
-`kill -INT PID`，让训练程序处理停止。恢复中断实验请直接调用
-scripts.train_ppo_deploy，使用该组最新 checkpoint、同一 --run-name，
-以及该组的 --fb-symmetry-weight 和 --action-rate-weight。
-不应再次用启动器从共同的旧 checkpoint 覆盖整组实验。
+`kill -INT PID`，让训练程序处理停止。四组停止后可整组续训：
+
+```bash
+python -m scripts.launch_deploy_reward_sweep \
+  --continue-from results/reward_spheres_v1 \
+  --prefix reward_spheres_v2 --launch
+```
+
+启动器读取旧 manifest，为四组分别选择各自目录中步数最大的数字命名
+checkpoint，继承各组奖励、GPU、碰撞模式、环境数和 batch size。
+在新目录保存结果，保留旧 checkpoint 和视频；四组来源文件会逐一打印并
+记录到新 manifest。缺少任一组 checkpoint 会在启动前报错，不会退回
+共同的初始策略。如果旧 manifest 记录的进程仍在运行，也会拒绝重复启动。
+去掉 --launch 可预览命令。再次续训 v2 应指向 results/reward_spheres_v2，
+同时选择新的 --prefix。恢复的是模型参数，优化器和训练计数会重新开始，
+默认再训练 300M 步，eval 从 1/30 重新显示。
 
 比较时按相同采样步数检查前后速度追踪、是否持续迈步、动作震荡、
 打滑/擦地和失败情况。不同 action rate 权重会改变总 reward，不能仅靠

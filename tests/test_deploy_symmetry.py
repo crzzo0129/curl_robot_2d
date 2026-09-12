@@ -74,6 +74,26 @@ class FrontBackReflectionTest(unittest.TestCase):
 
 
 class LossAdapterTest(unittest.TestCase):
+    def test_left_right_loss_covers_turning_without_front_back_term(self):
+        obs = np.zeros((2, 720), dtype=np.float32)
+        obs[:, 6:9] = [[0, 0, 1], [0, 0, -1]]
+        captured = []
+        def apply(norm, params, value):
+            captured.append(value.copy())
+            return np.broadcast_to(np.arange(12) / 10, (2, 12))
+        network = SimpleNamespace(policy_network=SimpleNamespace(apply=apply),
+                                  parametric_action_distribution=SimpleNamespace(mode=np.tanh))
+        base = lambda *args, **kwargs: (2., {"v_loss": 1.})
+        loss = make_symmetry_loss(base, 0., left_right_weight=.01, array_module=np)
+        total, metrics = loss(SimpleNamespace(policy=None), None,
+                              SimpleNamespace(observation=obs), None, network)
+        self.assertGreater(total, 2.)
+        self.assertEqual(metrics['fb_symmetry_loss'], 0)
+        self.assertEqual(metrics['lr_symmetry_fraction'], 1)
+        self.assertEqual(len(captured), 2)
+        np.testing.assert_array_equal(captured[1][:, 8], -obs[:, 8])
+        np.testing.assert_array_equal(captured[0], obs)
+
     def test_preserve_base_ppo_inputs_and_normalize_after_mirroring(self):
         obs = np.zeros((2, 3, 720)); obs[..., 6:9] = [.4, 0, 0]
         obs[..., 12:24] = np.arange(12) / 20
@@ -128,6 +148,34 @@ class LossAdapterTest(unittest.TestCase):
         for weight in [-1., float('nan'), float('inf')]:
             with self.assertRaises(ValueError):
                 with_front_back_symmetry(lambda: None, weight)
+            with self.assertRaises(ValueError):
+                with_front_back_symmetry(lambda: None, 0., weight)
+
+
+class LeftRightReflectionTest(unittest.TestCase):
+    def test_known_reflection_and_time_order(self):
+        obs = np.tile(np.arange(1, 37, dtype=np.float32), 20)
+        out = mirror_observation(np, obs, 'left_right').reshape(20, 36)
+        expected = [-1, 2, -3, 4, -5, 6, 7, -8, -9, 10, -11, 12,
+                    16, 17, 18, 13, 14, 15, 22, 23, 24, 19, 20, 21,
+                    28, 29, 30, 25, 26, 27, 34, 35, 36, 31, 32, 33]
+        np.testing.assert_array_equal(out, np.tile(expected, (20, 1)))
+        varying = np.random.default_rng(1).normal(size=(2, 3, 720)).astype(np.float32)
+        reflected = mirror_observation(np, varying, 'left_right')
+        np.testing.assert_array_equal(mirror_observation(np, reflected, 'left_right'), varying)
+        # Orthogonal spatial reflections commute, without changing history order.
+        np.testing.assert_array_equal(mirror_observation(np, reflected),
+                                      mirror_observation(np, mirror_observation(np, varying), 'left_right'))
+
+    def test_turn_gate_and_equivariant_actor(self):
+        obs = np.zeros((3, 720)); obs[:, 6:9] = [[0, 0, 1], [0, 0, -1], [0, 0, 0]]
+        obs[:, 12:24] = np.arange(12) / 10
+        action = np.tanh(obs[:, 12:24])
+        mirrored = np.tanh(mirror_observation(np, obs, 'left_right')[:, 12:24])
+        mirrored[2] = 100  # standing sample is excluded
+        mse, fraction = consistency_statistics(np, obs, action, mirrored, 'left_right')
+        self.assertEqual(mse, 0.)
+        self.assertAlmostEqual(fraction, 2 / 3)
 
 
 if __name__ == '__main__':
