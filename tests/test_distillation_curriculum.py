@@ -1,6 +1,7 @@
 """Lightweight cloud checks; no JAX, MuJoCo, training, or simulation."""
 import copy
 import unittest
+import tempfile
 import numpy as np
 
 from curl_robot_2d_mjx.distillation_curriculum import (
@@ -8,6 +9,9 @@ from curl_robot_2d_mjx.distillation_curriculum import (
 )
 from scripts.run_rolling_low_speed_recovery import distill_command, ppo_command
 from pathlib import Path
+from curl_robot_2d_mjx.distillation_eval_snapshots import (
+    evaluation_environment_seed, save_snapshot_arrays, load_snapshot_arrays,
+)
 
 
 class CurriculumTest(unittest.TestCase):
@@ -60,6 +64,39 @@ class CurriculumTest(unittest.TestCase):
         candidate['per_episode'][0]['yaw_command_rad_s'] = .05
         self.assertFalse(continuation_decision(baseline, baseline, candidate)['safe'])
 
+    def test_same_commands_with_different_physics_are_rejected(self):
+        baseline = self.report()
+        baseline['initial_state_sha256'] = 'original-state'
+        candidate = copy.deepcopy(baseline)
+        candidate['initial_state_sha256'] = 'different-state'
+        self.assertFalse(continuation_decision(baseline, baseline, candidate)['safe'])
+
+    def test_eval_seed_does_not_depend_on_training_seed(self):
+        self.assertEqual(evaluation_environment_seed(1, 123), evaluation_environment_seed(99, 123))
+        self.assertEqual(evaluation_environment_seed(99, 123, 7), 7)
+        self.assertEqual(evaluation_environment_seed(99, None), 99)
+
+    def test_snapshot_roundtrip_and_contract_rejection(self):
+        # A loader must replace template values, preserve exact dtypes/history,
+        # and reject a changed simulation contract instead of mixing state pools.
+        arrays = [np.array([[1., 2.], [3., 4.]], dtype=np.float32),
+                  np.array([111, 299], dtype=np.int32)]
+        paths = ['state.qpos', 'state.step_count']
+        contract = {'seed': 123, 'envs': 2}
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'states.npz'
+            manifest = save_snapshot_arrays(path, arrays, paths, contract)
+            loaded, metadata = load_snapshot_arrays(path, [np.zeros_like(a) for a in arrays], paths, contract)
+            self.assertEqual(manifest, metadata)
+            for a, b in zip(arrays, loaded):
+                np.testing.assert_array_equal(a, b)
+            with self.assertRaisesRegex(ValueError, 'contract/schema'):
+                load_snapshot_arrays(path, arrays, paths, {'seed': 456, 'envs': 2})
+            with self.assertRaisesRegex(ValueError, 'shape/dtype'):
+                load_snapshot_arrays(path, [arrays[0].astype(np.float64), arrays[1]], paths, contract)
+            with self.assertRaises(FileExistsError):
+                save_snapshot_arrays(path, arrays, paths, contract)
+
     def test_profile_keeps_calibration_and_eval_uniform(self):
         saved = {'hidden_layers': [512, 256, 128], 'steering_calibration': 'calibration.json',
                  'num_devices': 4, 'minimum_closed_loop_turns': 5, 'eval_envs': 256,
@@ -69,6 +106,11 @@ class CurriculumTest(unittest.TestCase):
         self.assertIn('low_speed_focus', train)
         self.assertNotIn('--dagger-snapshot-sampling', evaluate)
         self.assertIn('calibration.json', evaluate)
+        another_seed = distill_command(saved, 'student', Path('other'), seed=999,
+                evaluation=False, chunk_steps=500, snapshot_cache=Path('shared.npz'))
+        self.assertEqual(train[train.index('--eval-environment-seed') + 1],
+                         another_seed[another_seed.index('--eval-environment-seed') + 1])
+        self.assertIn('shared.npz', another_seed)
         actor = ppo_command(saved, 'student', Path('run'), 'actor')
         self.assertIn('calibration.json', actor)
         self.assertEqual(actor[actor.index('--restore-ppo') + 1], str(Path('run/critic/params_final')))

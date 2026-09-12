@@ -2,13 +2,15 @@
 
 **第一步：云端低速补训**
 
-在云端 `curl_robot_2d` 项目根目录，先通过 Git 同步本次修改。如只同步了 `results/rolling_low_speed_recovery_v1.zip`，在项目根目录解压：
+在云端 `curl_robot_2d` 项目根目录，先通过 Git 同步本次修改。如只同步了 `results/rolling_low_speed_recovery_v2.zip`，在项目根目录解压：
 
 ```bash
-python -m zipfile -e results/rolling_low_speed_recovery_v1.zip .
+python -m zipfile -e results/rolling_low_speed_recovery_v2.zip .
 ```
 
-该增量包依赖云端现有的校准蒸馏/PPO实现；它包含更新后的蒸馏入口、采样/筛选模块、恢复入口、轻量检查和说明，不包含训练权重。原 CEM controller、标定表与模型文件仍使用原运行记录中的路径。
+2026-09-12 更新：v1 在各段改变训练 seed 时也改变了评价环境 reset 的 seed salt，导致命令面板不一致。已有权重无需重训，先按文末的 v2 复评命令修复比较。
+
+该增量包依赖云端现有的校准蒸馏/PPO实现；它包含更新后的蒸馏入口、环境 reset 的可选 seed 参数、采样/筛选模块、恢复入口、轻量检查和说明，不包含训练权重。原 CEM controller、标定表与模型文件仍使用原运行记录中的路径。
 
 云端先运行轻量检查（只需 NumPy，无仿真），再启动训练：
 
@@ -49,7 +51,7 @@ python -u -m scripts.run_rolling_low_speed_recovery distill \
 
 出现以上退化、空分组、非有限指标或命令/评价口径变化时，停止后续 DAgger 段。所有已经完成的候选都保留，不覆盖原权重。未退化但尚未改善的候选可以继续下一段；最终所选仍是此前最佳。没有新候选通过时，`selected_student` 保留原 DAgger 策略。
 
-这些阈值是本轮保守筛选规则，不是统计显著性证明。不同进程仍各自生成评价快照，复用命令和 seed 不等于物理初态严格一致；在独立面板验证前，不把小幅提升当作已确定收益。当前成功判据仍不等于速度跟踪合格率。
+这些阈值是本轮保守筛选规则，不是统计显著性证明。v2 将评估环境 seed 与训练 seed 隔离，并复用首次生成的 `evaluation_snapshots.npz`，其中保存完整状态、观察历史和上一动作。各候选的 `command_evaluation.json` 必须具有相同 `initial_state_sha256`，否则拒绝筛选。缓存兼容性检查包括命令/物理配置、环境代码、模型 XML、controller、标定表和状态结构；缓存不含可执行的 pickle 对象。后续候选只做初始模板 reset，不重复 CEM 预热。在独立面板验证前，不把小幅提升当作已确定收益。当前成功判据仍不等于速度跟踪合格率。
 
 训练结束查看：
 
@@ -86,3 +88,21 @@ python -u -m scripts.run_rolling_low_speed_recovery actor --out "$RUN"
 恢复本轮 critic 的 `params_final`，运行 819200 环境步，每批更新 1 次；actor 初始学习率及上限均 `3e-6`，KL 自适应、目标 KL=0.01，下限 `1e-7`。继续 DR=0；固定成功率相对该阶段起点下降超过 5 个百分点时，训练器保存现场并停止。这个 PPO 止损针对总体成功率，不能替代分组跟踪审查。
 
 各 PPO 阶段会额外生成 `$RUN/critic_diagnostics.zip`、`$RUN/actor_diagnostics.zip`，同时更新外层诊断包。最终候选按 `best_fixed_checkpoint.json` 查看，不能默认最后一步最好。确定低速、直行漂移与转向均改善后，再制定逐步开启 DR 的下一阶段；当前入口不自动扩大 DR。
+
+**已有第一段结果：只复评，不重训**
+
+这条命令针对 `rolling_low_speed_20260912_065438`，读取旧 `recovery.json` 中的原策略和已完成候选路径。先同步 v2 源码；若只传 ZIP：
+
+```bash
+python -m zipfile -e results/rolling_low_speed_recovery_v2.zip .
+python -m unittest discover -s tests -p test_distillation_curriculum.py
+export CUDA_VISIBLE_DEVICES=0,1,2,3
+python -u -m scripts.run_rolling_low_speed_recovery recheck \
+  --out results/rolling_low_speed_20260912_065438
+```
+
+原策略与 `dagger_01/student_params` 使用同一实际状态池，原训练 seed 作为显式评价环境 salt，以保留旧基线命令面板。只运行评价，不修改任何网络权重。新结果放在运行目录的 `recheck_<时间>/`，筛选结论在其中的 `comparison.json`。尚未启动 critic/actor 时，按相同筛选规则更新 `recovery.json` 中的 `selected_student`；若 PPO 已经启动，记录建议但不更改对应学生。
+
+复评结束更新外层 `results/rolling_low_speed_20260912_065438_diagnostics.zip`，发回这个 ZIP 即可。状态缓存留在云端，不放入诊断包；包内报告保留实际初态校验值。后续 PPO 先等这次可比评价的结果，不要直接把 79.7% 视为已确认提升。
+
+直接使用蒸馏入口时，`--eval-seed` 现在同时决定默认的评价环境 salt；复现旧评价面板可显式指定 `--eval-environment-seed 原训练seed`。固定 seed 仍可能有 GPU 数值差异，严格配对还需让两个命令共享 `--eval-snapshot-cache 同一路径.npz`。不要删除正在用于候选比较的缓存。

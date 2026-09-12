@@ -64,13 +64,14 @@ def bundle_reports(out):
                                    or path.name.endswith('_diagnostics.zip'))
                     and not any(p in ('ppo_checkpoint', 'checkpoints', 'ppo_checkpoints')
                                 for p in path.relative_to(out).parts)
-                    and path.name not in ('student_rtneural.json', 'controller_config.json')):
+                    and path.name not in ('student_rtneural.json', 'controller_config.json',
+                                          'evaluation_snapshots.npz')):
                 archive.write(path, path.relative_to(out.parent))
     temporary.replace(target)
     print(f'[diagnostics] {target}', flush=True)
 
 
-def distill_command(saved, checkpoint, out, *, seed, evaluation, chunk_steps):
+def distill_command(saved, checkpoint, out, *, seed, evaluation, chunk_steps, snapshot_cache=None):
     command = [sys.executable, '-u', '-m', 'scripts.train_mjx_3d_roll_distillation',
                '--teacher-source', 'cem', '--command-conditioned', '--random-cem-snapshots',
                '--restore-student', str(checkpoint), '--out', str(out), '--record-diagnostics']
@@ -80,6 +81,14 @@ def distill_command(saved, checkpoint, out, *, seed, evaluation, chunk_steps):
     ))
     command += ['--hidden-layers', *map(str, saved['hidden_layers']),
                 '--seed', str(seed), '--log-every', '100']
+    # Older baseline panels salted reset keys with the original training seed.
+    # Preserve that panel while allowing every continuation seed to differ.
+    environment_seed = saved.get('eval_environment_seed')
+    if environment_seed is None:
+        environment_seed = saved['seed']
+    command += ['--eval-environment-seed', str(environment_seed)]
+    if snapshot_cache is not None:
+        command += ['--eval-snapshot-cache', str(snapshot_cache)]
     if not saved.get('teacher_explicit_phase_observation', True):
         command.append('--no-teacher-explicit-phase-observation')
     if evaluation:
@@ -125,7 +134,7 @@ def ppo_command(saved, selected, out, stage):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('stage', choices=('distill', 'critic', 'actor'))
+    parser.add_argument('stage', choices=('distill', 'recheck', 'critic', 'actor'))
     parser.add_argument('--source', type=Path,
                         default=Path('results/rolling_distill_calibrated_20260912_034719'))
     parser.add_argument('--out', type=Path, help='reuse this directory for later critic/actor stages')
@@ -136,8 +145,70 @@ def main():
     if args.chunks < 1 or args.chunk_steps < 500:
         parser.error('chunks must be positive; chunk-steps must be >= 500 for a full student rollout')
     if args.stage != 'distill' and args.out is None:
-        parser.error('critic/actor require --out pointing to the completed continuation directory')
+        parser.error('recheck/critic/actor require --out pointing to the completed continuation directory')
     out = (args.out or Path(f'results/rolling_low_speed_{datetime.now():%Y%m%d_%H%M%S}')).resolve()
+    snapshot_cache = out / 'evaluation_snapshots.npz'
+    if args.stage == 'recheck':
+        manifest = json.loads((out / 'recovery.json').read_text(encoding='utf-8'))
+        saved = manifest['settings']
+        source = Path(manifest['source']) / 'student_params'
+        # Evaluate existing weights only; do not replay any failed training stage.
+        checkpoints = [('baseline', source)] + [
+            (f'candidate_{i:02d}', Path(c['directory']) / 'student_params')
+            for i, c in enumerate(manifest['chunks'], 1)]
+        if len(checkpoints) < 2:
+            parser.error('No completed DAgger candidate to recheck')
+        review = out / f'recheck_{datetime.now():%Y%m%d_%H%M%S}'
+        cache = review / 'evaluation_snapshots.npz'
+        commands = [distill_command(saved, checkpoint, review / name,
+                    seed=saved['seed'], evaluation=True, chunk_steps=args.chunk_steps,
+                    snapshot_cache=cache) for name, checkpoint in checkpoints]
+        if args.dry_run:
+            print(json.dumps(commands, indent=2))
+            return
+        for _, checkpoint in checkpoints:
+            if not checkpoint.is_file():
+                parser.error(f'Missing existing checkpoint: {checkpoint}')
+        review.mkdir()
+        (review / 'source').mkdir()
+        for filename in ('scripts/run_rolling_low_speed_recovery.py',
+                         'scripts/train_mjx_3d_roll_distillation.py',
+                         'curl_robot_2d_mjx/distillation_curriculum.py',
+                         'curl_robot_2d_mjx/distillation_eval_snapshots.py',
+                         'curl_robot_2d_mjx/environment_3d.py'):
+            shutil.copy2(filename, review / 'source' / Path(filename).name)
+        comparison = {'commands': commands, 'candidates': [],
+                      'selected_student': str(source), 'exact_snapshot_cache': str(cache)}
+        try:
+            from curl_robot_2d_mjx.distillation_curriculum import continuation_decision
+            for index, ((name, checkpoint), command) in enumerate(zip(checkpoints, commands)):
+                write_json(review / 'comparison.json', comparison)
+                run(command, review / f'{name}.log')
+                metrics = json.loads((review / name / 'command_evaluation.json').read_text())
+                if index == 0:
+                    baseline = best = metrics
+                else:
+                    decision = continuation_decision(baseline, best, metrics)
+                    comparison['candidates'].append({'student': str(checkpoint), 'decision': decision,
+                        'initial_state_sha256': metrics.get('initial_state_sha256'),
+                        'overall': metrics['overall'], 'by_speed': metrics['by_speed']})
+                    if decision['select']:
+                        best = metrics
+                        comparison['selected_student'] = str(checkpoint)
+                    print('[recheck candidate] ' + json.dumps(decision), flush=True)
+            # Never change the student associated with an already-started PPO run.
+            if not any((out / stage).exists() for stage in ('critic', 'actor')):
+                manifest['selected_student'] = comparison['selected_student']
+                comparison['selection_applied'] = True
+            else:
+                comparison['selection_applied'] = False
+            manifest.setdefault('rechecks', []).append(str(review))
+            write_json(out / 'recovery.json', manifest)
+            write_json(review / 'comparison.json', comparison)
+            print(f"[recheck selected] {comparison['selected_student']}", flush=True)
+        finally:
+            bundle_reports(out)
+        return
     if args.stage == 'distill':
         source = args.source.resolve()
         saved = json.loads((source / 'distillation.json').read_text(encoding='utf-8'))['args']
@@ -152,11 +223,11 @@ def main():
         selected = source / 'student_params'
         if args.dry_run:
             commands = [distill_command(saved, selected, out / 'baseline', seed=saved['seed'],
-                                       evaluation=True, chunk_steps=args.chunk_steps)]
+                                       evaluation=True, chunk_steps=args.chunk_steps, snapshot_cache=snapshot_cache)]
             for index in range(1, args.chunks + 1):
                 chunk = out / f'dagger_{index:02d}'
                 commands.append(distill_command(saved, selected, chunk, seed=saved['seed'] + index,
-                                                evaluation=False, chunk_steps=args.chunk_steps))
+                                                evaluation=False, chunk_steps=args.chunk_steps, snapshot_cache=snapshot_cache))
                 selected = chunk / 'student_params'
             print(json.dumps({'commands': commands, 'note': 'Later chunks run only while guardrails pass.'}, indent=2))
             return
@@ -172,15 +243,17 @@ def main():
         code_dir.mkdir()
         for filename in ('scripts/run_rolling_low_speed_recovery.py',
                          'scripts/train_mjx_3d_roll_distillation.py',
-                         'curl_robot_2d_mjx/distillation_curriculum.py'):
+                         'curl_robot_2d_mjx/distillation_curriculum.py',
+                         'curl_robot_2d_mjx/distillation_eval_snapshots.py',
+                         'curl_robot_2d_mjx/environment_3d.py'):
             shutil.copy2(filename, code_dir / Path(filename).name)
         manifest = {'source': str(source), 'settings': saved, 'chunks': [], 'completed_stages': [],
                     'selected_student': str(selected), 'commands': [],
-                    'comparison_note': 'Same eval commands/seed, independently regenerated physical snapshots; '
-                                       'not exact state pairing. Selection thresholds are operational guardrails.'}
+                    'comparison_note': 'One persisted physical evaluation state/history pool reused for all candidates; '
+                                       'matching checksums required. Selection thresholds are operational guardrails.'}
         try:
             command = distill_command(saved, selected, out / 'baseline', seed=saved['seed'],
-                                      evaluation=True, chunk_steps=args.chunk_steps)
+                                      evaluation=True, chunk_steps=args.chunk_steps, snapshot_cache=snapshot_cache)
             manifest['commands'].append(command)
             write_json(out / 'recovery.json', manifest)
             run(command, out / 'baseline.log')
@@ -191,7 +264,7 @@ def main():
             for index in range(1, args.chunks + 1):
                 chunk = out / f'dagger_{index:02d}'
                 command = distill_command(saved, current, chunk, seed=saved['seed'] + index,
-                                          evaluation=False, chunk_steps=args.chunk_steps)
+                                          evaluation=False, chunk_steps=args.chunk_steps, snapshot_cache=snapshot_cache)
                 manifest['commands'].append(command)
                 write_json(out / 'recovery.json', manifest)
                 run(command, out / f'dagger_{index:02d}.log')

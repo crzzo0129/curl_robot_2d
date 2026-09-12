@@ -42,6 +42,13 @@ def main():
     if not saved.get('teacher_explicit_phase_observation', True):
         common.append('--no-teacher-explicit-phase-observation')
     common += ['--hidden-layers', *(str(v) for v in saved['hidden_layers'])]
+    # Reproduce the historical reset salt and share real states between policies.
+    environment_seed = saved.get('eval_environment_seed')
+    if environment_seed is None:
+        environment_seed = saved['seed']
+    common += ['--eval-environment-seed', str(environment_seed)]
+    if saved.get('random_cem_snapshots'):
+        common += ['--eval-snapshot-cache', str(out/'evaluation_snapshots.npz')]
     commands = [common + ['--restore-student', str(path), '--out', str(out/name)]
                 for name, path in checkpoints]
     if args.dry_run:
@@ -58,7 +65,7 @@ def main():
     if calibration:
         shutil.copy2(calibration, out/'steering_calibration.json')
     manifest = {'commands': commands,
-        'note': 'Evaluation only; teacher queried at student states, not independently rolled out. Both runs use saved seed/settings. Initial states are regenerated separately, so GPU numerical variation may prevent exact state pairing.'}
+        'note': 'Evaluation only; teacher queried at student states, not independently rolled out. Random-snapshot comparisons reuse one persisted physical state/history pool; verify initial_state_sha256 in both command reports.'}
     (out/'manifest.json').write_text(json.dumps(manifest, indent=2), encoding='utf-8')
     status = 0
     for (name, _), command in zip(checkpoints, commands):
@@ -74,7 +81,7 @@ def main():
             break
     with zipfile.ZipFile(bundle, 'x', zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(out.rglob('*')):
-            if path.is_file():
+            if path.is_file() and path.name != 'evaluation_snapshots.npz':
                 archive.write(path, path.relative_to(out.parent))
     print(f'Diagnostics: {bundle}', flush=True)
     raise SystemExit(status)

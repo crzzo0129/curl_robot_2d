@@ -1453,8 +1453,10 @@ def make_brax_env_3d(
                 "failure_forbidden_contact": zero,
             }
 
-        def reset(self, rng):
-            rng = jax.random.fold_in(rng, self.seed)
+        def reset(self, rng, *, seed=None):
+            # Evaluation may isolate this salt from the training environment's
+            # seed while using exactly the same model and reset implementation.
+            rng = jax.random.fold_in(rng, self.seed if seed is None else seed)
             if task.lateral_command_fixed is not None:
                 lateral_velocity_command = jp.asarray(
                     task.lateral_command_fixed, dtype=jp.float32

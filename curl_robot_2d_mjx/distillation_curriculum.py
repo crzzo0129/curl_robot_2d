@@ -58,6 +58,10 @@ def continuation_decision(baseline, best, candidate):
                     return {'safe': False, 'select': False,
                             'reasons': ['Empty/nonfinite evaluation group'], 'low_speed_improved': False}
     for reference in (baseline, best):
+        if (candidate.get('initial_state_sha256') or reference.get('initial_state_sha256')):
+            if candidate.get('initial_state_sha256') != reference.get('initial_state_sha256'):
+                return {'safe': False, 'select': False,
+                        'reasons': ['Evaluation physical snapshot checksum changed'], 'low_speed_improved': False}
         if (candidate['speed_bin_edges_m_s'] != reference['speed_bin_edges_m_s']
                 or candidate['criteria'] != reference['criteria']
                 or candidate['overall']['episodes'] != reference['overall']['episodes']):

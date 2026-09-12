@@ -185,6 +185,10 @@ def parse_args(argv=None):
         "--eval-seed", type=int,
         help="independent evaluation reset seed; defaults to seed+100000 in eval-only mode",
     )
+    parser.add_argument("--eval-environment-seed", type=int,
+                        help="evaluation reset salt; defaults to eval-seed, or seed when eval-seed is absent")
+    parser.add_argument("--eval-snapshot-cache", type=Path,
+                        help="save/reuse an exact nominal CEM evaluation state/history pool (NPZ); training never uses it")
     parser.add_argument(
         "--restore-student",
         type=Path,
@@ -403,6 +407,8 @@ def parse_args(argv=None):
     if args.dagger_snapshot_sampling != "uniform":
         if not args.random_cem_snapshots or args.forward_command_min_m_s >= args.forward_command_max_m_s:
             parser.error("focused DAgger sampling requires random CEM snapshots and a nonzero speed range")
+    if args.eval_snapshot_cache is not None and not args.random_cem_snapshots:
+        parser.error("--eval-snapshot-cache requires --random-cem-snapshots")
     if args.restore_student is not None and not args.restore_student.is_file():
         parser.error(
             f"student checkpoint does not exist: {args.restore_student}"
@@ -638,6 +644,11 @@ def main(argv=None):
         teacher_description = "cem_reference_only"
     reset_batch = execution.batch_jit(jax.vmap(teacher_env.reset))
     step_batch = execution.batch_jit(jax.vmap(teacher_env.step))
+    from curl_robot_2d_mjx.distillation_eval_snapshots import evaluation_environment_seed
+    eval_environment_seed = evaluation_environment_seed(
+        args.seed, args.eval_seed, args.eval_environment_seed)
+    eval_teacher_reset_batch = execution.batch_jit(jax.vmap(
+        lambda key: teacher_env.reset(key, seed=eval_environment_seed)))
 
     controller_qpos_indices = []
     import mujoco
@@ -750,9 +761,9 @@ def main(argv=None):
 
     snapshot_reset_cache = {}
 
-    def plain_reset_rollout(rng_key, batch_size):
+    def plain_reset_rollout(rng_key, batch_size, *, evaluation=False):
         reset_keys = jax.random.split(rng_key, batch_size)
-        state = reset_batch(reset_keys)
+        state = (eval_teacher_reset_batch if evaluation else reset_batch)(reset_keys)
         history = jp.broadcast_to(
             initial_history, (batch_size, ROLLING_DEPLOY_OBSERVATION_SIZE_3D)
         )
@@ -761,11 +772,11 @@ def main(argv=None):
         )
         return state, history, previous_controller_action
 
-    def make_snapshot_reset(batch_size):
+    def make_snapshot_reset(batch_size, *, evaluation=False):
         @execution.batch_jit
         def snapshot_reset(rng_key):
             rng_key, reset_key, warmup_key = jax.random.split(rng_key, 3)
-            state, history, previous_action = plain_reset_rollout(reset_key, batch_size)
+            state, history, previous_action = plain_reset_rollout(reset_key, batch_size, evaluation=evaluation)
             warmup_steps = jax.random.randint(
                 warmup_key, (batch_size,), args.snapshot_warmup_min_steps,
                 args.snapshot_warmup_max_steps + 1,
@@ -808,13 +819,14 @@ def main(argv=None):
 
         return snapshot_reset
 
-    def reset_rollout(rng_key, batch_size):
+    def reset_rollout(rng_key, batch_size, *, evaluation=False):
         if not args.random_cem_snapshots:
-            return plain_reset_rollout(rng_key, batch_size)
-        if batch_size not in snapshot_reset_cache:
-            snapshot_reset_cache[batch_size] = make_snapshot_reset(batch_size)
+            return plain_reset_rollout(rng_key, batch_size, evaluation=evaluation)
+        cache_key = (batch_size, evaluation)
+        if cache_key not in snapshot_reset_cache:
+            snapshot_reset_cache[cache_key] = make_snapshot_reset(batch_size, evaluation=evaluation)
         with timed_stage(f"CEM snapshots batch={batch_size}"):
-            result = snapshot_reset_cache[batch_size](rng_key)
+            result = snapshot_reset_cache[cache_key](rng_key)
             jax.block_until_ready(result)
         return result
 
@@ -1541,7 +1553,7 @@ def main(argv=None):
     direct_eval_env = make_brax_env_3d(
         direct_task,
         cem_reference=reference,
-        seed=args.seed + 70_000,
+        seed=eval_environment_seed + 70_000,
     )
     (
         direct_eval_wrapper,
@@ -1563,10 +1575,50 @@ def main(argv=None):
         eval_reset_key = jax.random.PRNGKey(args.eval_seed)
     eval_reset_key, eval_episode_key = jax.random.split(eval_reset_key)
     eval_reset_keys = jax.random.split(eval_reset_key, args.eval_envs)
+    eval_snapshot_manifest = None
     if args.random_cem_snapshots:
-        eval_base_state, eval_history, eval_previous_controller_action = reset_rollout(
-            eval_reset_key, args.eval_envs
-        )
+        cache = args.eval_snapshot_cache
+        if cache is not None:
+            import hashlib
+            from curl_robot_2d_mjx.distillation_eval_snapshots import load_snapshot_arrays, save_snapshot_arrays
+            cache_contract = {
+                "teacher_task": asdict(teacher_task), "envs": args.eval_envs,
+                "environment_seed": eval_environment_seed,
+                "reset_key": np.asarray(jax.device_get(eval_reset_key)).tolist(),
+                "warmup_min": args.snapshot_warmup_min_steps,
+                "warmup_max": args.snapshot_warmup_max_steps,
+                "controller_sha256": hashlib.sha256(args.controller.read_bytes()).hexdigest(),
+                "calibration_sha256": (hashlib.sha256(args.steering_calibration.read_bytes()).hexdigest()
+                                       if args.steering_calibration else None),
+                "model_xml_sha256": hashlib.sha256(teacher_env.model_path.read_bytes()).hexdigest(),
+                "environment_code_sha256": hashlib.sha256(
+                    (Path(__file__).resolve().parents[1] / "curl_robot_2d_mjx/environment_3d.py").read_bytes()).hexdigest(),
+            }
+            # Normalize dataclass tuples and paths to their JSON representation.
+            cache_contract = json.loads(json.dumps(cache_contract))
+        if cache is not None and cache.is_file():
+            # The reset template supplies only pytree structure, shapes and dtypes;
+            # all numerical leaves are replaced by the saved mature rolling pool.
+            template = plain_reset_rollout(eval_reset_key, args.eval_envs, evaluation=True)
+            pairs, definition = jax.tree_util.tree_flatten_with_path(template)
+            paths = [jax.tree_util.keystr(path) for path, _ in pairs]
+            arrays, eval_snapshot_manifest = load_snapshot_arrays(
+                cache, [value for _, value in pairs], paths, cache_contract)
+            pool = jax.tree_util.tree_unflatten(definition, [jp.asarray(a) for a in arrays])
+            pool = jax.tree_util.tree_map(lambda a: jax.device_put(a, execution.batch), pool)
+            print(f"[evaluation snapshots] loaded {cache}; teacher warmup reused", flush=True)
+        else:
+            pool = reset_rollout(eval_reset_key, args.eval_envs, evaluation=True)
+            if cache is not None:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                pairs, _ = jax.tree_util.tree_flatten_with_path(pool)
+                paths = [jax.tree_util.keystr(path) for path, _ in pairs]
+                eval_snapshot_manifest = save_snapshot_arrays(
+                    cache, jax.device_get([value for _, value in pairs]), paths, cache_contract)
+                print(f"[evaluation snapshots] saved {cache}", flush=True)
+        eval_base_state, eval_history, eval_previous_controller_action = pool
+        if eval_snapshot_manifest is not None:
+            print(f"[evaluation snapshots] sha256={eval_snapshot_manifest['initial_state_sha256']}", flush=True)
     else:
         eval_base_state = direct_eval_reset_batch(eval_reset_keys)
         eval_history = jp.broadcast_to(
@@ -1621,7 +1673,10 @@ def main(argv=None):
     eval_yaw_error_per_episode = jp.zeros((args.eval_envs,))
     eval_command_changed = jp.zeros((args.eval_envs,), dtype=jp.bool_)
     diagnostic_frames = []
-    diagnostic_rng = jax.random.PRNGKey(args.seed + 200_000)
+    # Training length and training seed must not select evaluation noise or labels.
+    if args.eval_seed is not None:
+        rng = jax.random.fold_in(jax.random.PRNGKey(args.eval_seed), 81001)
+    diagnostic_rng = jax.random.PRNGKey(eval_environment_seed + 200_000)
 
     @jax.jit
     def diagnostic_frame(before, after, active, student_action, teacher_action, label_valid, turns):
@@ -1928,6 +1983,11 @@ def main(argv=None):
         rolling_radius=float(direct_eval_env.rolling_radius),
     )
     closed_loop_evaluation["command_evaluation"] = command_evaluation
+    command_evaluation["evaluation_environment_seed"] = eval_environment_seed
+    if eval_snapshot_manifest is not None:
+        command_evaluation["initial_state_sha256"] = eval_snapshot_manifest["initial_state_sha256"]
+    with (args.out / "command_evaluation.json").open("w", encoding="utf-8") as handle:
+        json.dump(command_evaluation, handle, indent=2, allow_nan=False)
 
     lateral_diagnostics = None
     if args.record_diagnostics:
@@ -1952,6 +2012,8 @@ def main(argv=None):
             "student": str(args.restore_student.resolve()),
             "controller": str(args.controller.resolve()),
             "eval_seed": args.eval_seed,
+            "eval_environment_seed": eval_environment_seed,
+            "evaluation_snapshot_manifest": eval_snapshot_manifest,
             "eval_reset_keys": np.asarray(jax.device_get(eval_reset_keys)).tolist(),
             "closed_loop_task": asdict(direct_task),
             "teacher_task": asdict(teacher_task),
@@ -2038,6 +2100,7 @@ def main(argv=None):
         "loss_history": loss_history,
         "dagger_loss_history": dagger_loss_history,
         "dagger_sampling_history": dagger_sampling_history,
+        "evaluation_snapshot_manifest": eval_snapshot_manifest,
         "closed_loop_evaluation": closed_loop_evaluation,
         "eval_reset_keys": np.asarray(jax.device_get(eval_reset_keys)).tolist(),
         "lateral_diagnostics": lateral_diagnostics,
