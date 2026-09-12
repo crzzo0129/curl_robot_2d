@@ -189,6 +189,8 @@ def parse_args(argv=None):
                         help="evaluation reset salt; defaults to eval-seed, or seed when eval-seed is absent")
     parser.add_argument("--eval-snapshot-cache", type=Path,
                         help="save/reuse an exact nominal CEM evaluation state/history pool (NPZ); training never uses it")
+    parser.add_argument("--record-rollout-episodes", type=int, nargs="+",
+                        help="with eval-only, save qpos/qvel trajectories for these zero-based episode indices")
     parser.add_argument(
         "--restore-student",
         type=Path,
@@ -409,6 +411,11 @@ def parse_args(argv=None):
             parser.error("focused DAgger sampling requires random CEM snapshots and a nonzero speed range")
     if args.eval_snapshot_cache is not None and not args.random_cem_snapshots:
         parser.error("--eval-snapshot-cache requires --random-cem-snapshots")
+    if args.record_rollout_episodes is not None:
+        if not args.eval_only:
+            parser.error("--record-rollout-episodes requires --eval-only")
+        if any(i < 0 or i >= args.eval_envs for i in args.record_rollout_episodes):
+            parser.error("recorded episode indices must be within eval-envs")
     if args.restore_student is not None and not args.restore_student.is_file():
         parser.error(
             f"student checkpoint does not exist: {args.restore_student}"
@@ -1673,6 +1680,21 @@ def main(argv=None):
     eval_yaw_error_per_episode = jp.zeros((args.eval_envs,))
     eval_command_changed = jp.zeros((args.eval_envs,), dtype=jp.bool_)
     diagnostic_frames = []
+    rollout_indices = jp.asarray(args.record_rollout_episodes or [], dtype=jp.int32)
+    render_frames = []
+
+    def capture_render_frame(state):
+        metrics = ("forward_velocity_m_s", "rolling_axis_heading_rate_rad_s", "axis_tilt_rad",
+                   "lateral_drift_m", *EVALUATION_FAILURE_METRICS)
+        return jax.device_get({
+            "qpos": state.pipeline_state.qpos[rollout_indices],
+            "qvel": state.pipeline_state.qvel[rollout_indices],
+            "reward": state.reward[rollout_indices],
+            **{name: state.metrics[name][rollout_indices] for name in metrics},
+        })
+
+    if args.record_rollout_episodes:
+        render_frames.append(capture_render_frame(eval_state))
     # Training length and training seed must not select evaluation noise or labels.
     if args.eval_seed is not None:
         rng = jax.random.fold_in(jax.random.PRNGKey(args.eval_seed), 81001)
@@ -1779,6 +1801,8 @@ def main(argv=None):
         next_eval_state = direct_eval_step_batch(
             eval_state, applied_effective_action, was_active
         )
+        if args.record_rollout_episodes:
+            render_frames.append(capture_render_frame(next_eval_state))
         eval_roll_progress += jp.where(
             was_active,
             next_eval_state.metrics["roll_progress_rad"],
@@ -1988,6 +2012,23 @@ def main(argv=None):
         command_evaluation["initial_state_sha256"] = eval_snapshot_manifest["initial_state_sha256"]
     with (args.out / "command_evaluation.json").open("w", encoding="utf-8") as handle:
         json.dump(command_evaluation, handle, indent=2, allow_nan=False)
+    if render_frames:
+        rollout_dir = args.out / "rollouts"
+        rollout_dir.mkdir(exist_ok=True)
+        stacked = {name: np.stack([frame[name] for frame in render_frames]) for name in render_frames[0]}
+        for column, episode in enumerate(args.record_rollout_episodes):
+            summary = command_evaluation["per_episode"][episode]
+            count = int(summary["student_steps"]) + 1
+            values = {name: value[:count, column] for name, value in stacked.items()}
+            values["reward"][0] = 0  # Initial snapshot reward belongs to teacher warmup.
+            np.savez_compressed(rollout_dir / f"episode_{episode:03d}.npz", **values,
+                control_dt=direct_task.control_timestep, seed_index=episode,
+                mode=f"STUDENT vx={summary['forward_command_m_s']:.3f} yaw={summary['yaw_command_rad_s']:+.3f}",
+                forward_command_m_s=summary["forward_command_m_s"],
+                yaw_command_rad_s=summary["yaw_command_rad_s"],
+                geometry=args.geometry, student=str(args.restore_student.resolve()),
+                initial_state_sha256=command_evaluation.get("initial_state_sha256", ""))
+        print(f"[saved visualization trajectories] {rollout_dir}", flush=True)
 
     lateral_diagnostics = None
     if args.record_diagnostics:

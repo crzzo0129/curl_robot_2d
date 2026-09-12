@@ -176,6 +176,11 @@ def render_rollout(
     pitch, axis_tilt = _rollout_orientation_diagnostics(
         model, data, torso_body, qpos
     )
+    recorded_tilt = _optional_series(rollout, "axis_tilt_rad", qpos.shape[0])
+    if recorded_tilt is not None:
+        axis_tilt = recorded_tilt
+    forward_speed = _optional_series(rollout, "forward_velocity_m_s", qpos.shape[0])
+    heading_rate = _optional_series(rollout, "rolling_axis_heading_rate_rad_s", qpos.shape[0])
     indices = _frame_indices(qpos.shape[0], control_dt=control_dt, fps=fps)
     initial_x = float(qpos[0, 0])
     initial_y = float(qpos[0, 1])
@@ -223,7 +228,16 @@ def render_rollout(
         scene_option.flags[mujoco.mjtVisFlag.mjVIS_CONTACTFORCE] = True
 
     frames: list[Image.Image] = []
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    video_writer = None
+    frame_count = 0
     try:
+        if output_path.suffix.lower() == ".mp4":
+            import imageio.v2 as imageio
+            video_writer = imageio.get_writer(str(output_path), fps=fps, codec="libx264",
+                                             pixelformat="yuv420p", quality=8,
+                                             macro_block_size=2,
+                                             ffmpeg_params=["-movflags", "+faststart"])
         for index in indices:
             data.qpos[:] = qpos[index]
             data.qvel[:] = 0.0
@@ -251,7 +265,7 @@ def render_rollout(
             pitch_turns = float((pitch[index] - pitch[0]) / (2.0 * math.pi))
             failure = _failure_at(rollout, index)
             extra_rows = int(residual_rms is not None) + int(gate_error is not None)
-            panel_bottom = 126 + 22 * extra_rows
+            panel_bottom = 126 + 22 * (extra_rows + int(forward_speed is not None))
             draw.rectangle((12, 10, 470, panel_bottom), fill=(18, 22, 30))
             if title:
                 draw.text((22, 16), title, fill=(244, 247, 251))
@@ -303,31 +317,33 @@ def render_rollout(
                     f"FAIL {failure}",
                     fill=(255, 116, 104),
                 )
-            frames.append(
-                frame.quantize(
-                    colors=128, method=Image.Quantize.FASTOCTREE
-                )
-            )
+            if forward_speed is not None:
+                yaw_text = f"  yaw {heading_rate[index]:+.3f} rad/s" if heading_rate is not None else ""
+                draw.text((22, first_row + 88 + 22 * extra_rows),
+                          f"actual vx {forward_speed[index]:+.3f} m/s{yaw_text}", fill=(120, 220, 190))
+            if video_writer is not None:
+                video_writer.append_data(np.asarray(frame))
+            else:
+                frames.append(frame.quantize(colors=128, method=Image.Quantize.FASTOCTREE))
+            frame_count += 1
     finally:
         renderer.close()
+        if video_writer is not None:
+            video_writer.close()
 
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    frames[0].save(
-        output_path,
-        save_all=True,
-        append_images=frames[1:],
-        duration=max(1, round(1000.0 / fps)),
-        loop=0,
-        optimize=False,
-        disposal=2,
-    )
+    if video_writer is None:
+        frames[0].save(
+            output_path, save_all=True, append_images=frames[1:],
+            duration=max(1, round(1000.0 / fps)), loop=0, optimize=False, disposal=2,
+        )
 
     final_translation_turns = float((qpos[-1, 0] - initial_x) / turn_radius)
     final_pitch_turns = float((pitch[-1] - pitch[0]) / (2.0 * math.pi))
     return {
         "output": str(output_path),
         "samples": int(qpos.shape[0]),
-        "frames": len(frames),
+        "frames": frame_count,
         "duration_s": float((qpos.shape[0] - 1) * control_dt),
         "physics_profile": task.physics_profile,
         "root_x_displacement_m": float(qpos[-1, 0] - initial_x),
