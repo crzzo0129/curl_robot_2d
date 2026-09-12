@@ -36,6 +36,8 @@ Subcommands
     terrain  (composable) 40% flat / 60% mild 2-D rough terrain
              --terrain-max-height METERS sets the next terrain difficulty
     --fb-symmetry-weight FLOAT   actor front/back consistency (default 0.01; 0 disables)
+    --action-rate-weight FLOAT   adjacent action change penalty (default 0.10)
+    --collision-model cad|foot-spheres   full CAD or four native foot spheres (default cad)
     <none>   train
 """
 import os
@@ -75,6 +77,7 @@ from brax.training.acme import running_statistics
 # imported: importing it sets w3.SHELL_CONTACT = True as a side effect, and
 # a walking policy must not be trained against colliding shells.
 import train_ppo_walk3d as w3
+from deploy_collision import audit_foot_sphere_model, foot_sphere_only_xml
 from deploy_gait import init_hip_rom, sample_command, update_hip_rom
 from deploy_symmetry import audit_front_back_mapping, with_front_back_symmetry
 from deploy_terrain import (
@@ -100,6 +103,7 @@ CKPT_DIR = "rollingquad_2_deploy_fine_lift_checkpoints"
 JSON_OUT = "rollingquad_2_deploy_fine_lift_policy.json"
 
 TERRAIN = False
+COLLISION_MODEL = "cad"
 TERRAIN_CONFIG = RoughTerrainConfig()
 
 # ==================================================== controller contract
@@ -411,27 +415,34 @@ class DeployEnv(PipelineEnv):
 
     def __init__(self, terrain=None):
         self._terrain = TERRAIN if terrain is None else terrain
-        if self._terrain or TERRAIN:
+        if self._terrain or TERRAIN or COLLISION_MODEL == "foot-spheres":
             TERRAIN_CONFIG.validate()
             base_path = Path(w3.patch_xml())
-            # The paired flat video uses the same approximate collision hulls.
-            xml = limit_collision_hulls(base_path.read_text(encoding="utf-8"),
-                                       TERRAIN_CONFIG.collision_hull_vertices)
+            xml = base_path.read_text(encoding="utf-8")
+            if COLLISION_MODEL == "foot-spheres":
+                xml = foot_sphere_only_xml(xml, LEGS, FOOT_R)
+            else:
+                # Paired flat videos use the same approximate CAD hulls.
+                xml = limit_collision_hulls(xml, TERRAIN_CONFIG.collision_hull_vertices)
             if self._terrain:
                 xml = inject_heightfield(xml, TERRAIN_CONFIG)
-            suffix = "_terrain.xml" if self._terrain else "_terrain_flat.xml"
+            suffix = "_foot_spheres" if COLLISION_MODEL == "foot-spheres" else ""
+            suffix += "_terrain" if self._terrain else ("_terrain_flat" if TERRAIN else "")
+            suffix += ".xml"
             terrain_path = base_path.with_name(base_path.stem + suffix)
             terrain_path.write_text(xml, encoding="utf-8")
             mj = mujoco.MjModel.from_xml_path(str(terrain_path))
             hull_max = max((int(mj.mesh_graph[a]) for a in mj.mesh_graphadr
                             if a >= 0), default=0)
-            if hull_max > TERRAIN_CONFIG.collision_hull_vertices:
+            if COLLISION_MODEL == "cad" and hull_max > TERRAIN_CONFIG.collision_hull_vertices:
                 raise RuntimeError(f"collision hull limit not applied: {hull_max} vertices")
             if self._terrain:
                 mj.hfield_data[:] = reference_terrain_data(TERRAIN_CONFIG)
             w3.validate_model_contract(mj)
         else:
             mj = w3.load_mj()
+        self._collision_audit = (audit_foot_sphere_model(mj, LEGS, FOOT_R)
+                                 if COLLISION_MODEL == "foot-spheres" else None)
         self._mj = mj
         self._nom_h = w3.NOMINAL_H
         self._init_z = w3.NOMINAL_H + 0.0005
@@ -967,6 +978,11 @@ def main(resume_path=None, fresh=False):
         symmetry_audit = audit_front_back_mapping(
             env._mj, DEFAULT_POSE, ACTION_SCALE, CTRL_LO, CTRL_HI)
     import json
+    (Path(CKPT_DIR) / "collision_model_config.json").write_text(json.dumps({
+        "mode": COLLISION_MODEL,
+        "audit": env._collision_audit,
+        "resume_from": str(restore_from) if restore_from is not None else None,
+    }, indent=2), encoding="utf-8")
     (Path(CKPT_DIR) / "front_back_symmetry_config.json").write_text(json.dumps({
         "weight": FB_SYMMETRY_W,
         "reflection": "torso x -> -x; FL <-> RL, FR <-> RR; joint signs +1",
@@ -984,6 +1000,10 @@ def main(resume_path=None, fresh=False):
           f"self-collision {'ON' if w3.SELF_COLLISION else 'off'}, "
           f"walking proxies {'ON' if w3.WALK_COLLISION_PROXIES else 'off'}")
     print(f"  hidden {POLICY_HIDDEN}")
+    print(f"  collision model={COLLISION_MODEL}")
+    if env._collision_audit is not None:
+        print(f"    four native spheres, radius={FOOT_R*1000:g} mm; "
+              "4 ground pairs, 0 robot pairs; CAD is visual only")
     print(f"  front/back actor symmetry weight={FB_SYMMETRY_W} (straight commands)")
     if symmetry_audit is not None:
         print(f"    mapping check: sampled foot discrepancy "
@@ -1002,7 +1022,7 @@ def main(resume_path=None, fresh=False):
         print("           contact/lift/base height relative to local ground; "
               "checkpoint videos: flat + fixed rough field")
         self_pairs, ground_pairs = w3.candidate_pairs(env._mj)
-        print(f"           collision hull vertex limit={TERRAIN_CONFIG.collision_hull_vertices}; "
+        print(f"           collision model={COLLISION_MODEL}; "
               f"robot-robot pairs={self_pairs}, robot-ground pairs={ground_pairs}")
     print(f"  commands: forward/backward {STRAIGHT_CMD_PROB/2:.0%} each, "
           f"mixed {1-STRAIGHT_CMD_PROB-ZERO_CMD_PROB:.0%}, "
@@ -1192,20 +1212,33 @@ if __name__ == "__main__":
         if "terrain" in argv:
             enable_deploy_terrain(terrain_max_height)
             argv.remove("terrain")
+        if "--collision-model" in argv:
+            i = argv.index("--collision-model")
+            if i + 1 >= len(argv) or argv[i + 1] not in ("cad", "foot-spheres"):
+                raise ValueError("--collision-model requires cad or foot-spheres")
+            COLLISION_MODEL = argv[i + 1]
+            del argv[i:i + 2]
+            if COLLISION_MODEL == "foot-spheres":
+                # Isolate default sphere outputs; explicit --run-name below wins.
+                set_run_name(("terrain_" if TERRAIN else "")
+                             + ("dr_" if DEPLOY_DR else "") + "foot_spheres")
         if "--run-name" in argv:
             i = argv.index("--run-name")
             if i + 1 >= len(argv):
                 raise ValueError("--run-name requires an experiment name")
             set_run_name(argv[i + 1])
             del argv[i:i + 2]
-        if "--fb-symmetry-weight" in argv:
-            i = argv.index("--fb-symmetry-weight")
-            if i + 1 >= len(argv):
-                raise ValueError("--fb-symmetry-weight requires a nonnegative number")
-            FB_SYMMETRY_W = float(argv[i + 1])
-            if not np.isfinite(FB_SYMMETRY_W) or FB_SYMMETRY_W < 0:
-                raise ValueError("--fb-symmetry-weight must be finite and nonnegative")
-            del argv[i:i + 2]
+        for flag, setting in (("--fb-symmetry-weight", "FB_SYMMETRY_W"),
+                              ("--action-rate-weight", "RATE_W")):
+            if flag in argv:
+                i = argv.index(flag)
+                if i + 1 >= len(argv):
+                    raise ValueError(f"{flag} requires a nonnegative number")
+                value = float(argv[i + 1])
+                if not np.isfinite(value) or value < 0:
+                    raise ValueError(f"{flag} must be finite and nonnegative")
+                globals()[setting] = value
+                del argv[i:i + 2]
         for flag, setting in (("--num-envs", "NUM_ENVS"), ("--batch-size", "BATCH_SIZE")):
             if flag in argv:
                 i = argv.index(flag)
