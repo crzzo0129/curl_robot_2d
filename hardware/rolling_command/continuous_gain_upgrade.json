@@ -1,0 +1,18 @@
+{
+  "version": "rolling-kp-p55-v1",
+  "date": "2026-09-13",
+  "host": "pi@pupper.local",
+  "model": "/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/models/rolling_command_ppo_000000081920.json",
+  "backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_gain_p55_backup_20260913_043829/rolling_command_ppo_000000081920.json",
+  "old_sha256": "902d8c08f530cfe752e394332e45d5ccbe7e641fba7f5bcf316b4c4938f74e97",
+  "new_sha256": "b495d98d67d98494909038a16d4e50bcdee224bcbffdf694c672aa59137a1f2d",
+  "old_kp": 5.0,
+  "new_kp": 5.5,
+  "kd": 0.1,
+  "only_json_kp_changed": true,
+  "activation": "next controller launch; the process running during installation retained its already-loaded kp=5.0",
+  "controller_running_during_installation": true,
+  "bag_recording_running_during_installation": true,
+  "motors_restarted": false,
+  "verification": "backup hash, installed hash, JSON parse and changed-key equality check passed on robot"
+}

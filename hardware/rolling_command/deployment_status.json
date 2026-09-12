@@ -6,7 +6,7 @@
   "backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_command_backup_20260912_200201_745962",
   "isolated_build_workspace": "/home/pi/rolling_command_build_20260912",
   "robot_review_directory": "/home/pi/rolling_command_review_20260912",
-  "installed_version": "gamepad-continuous-roll-v5-smooth-handoff",
+  "installed_version": "gamepad-continuous-roll-v5.1-relaxed-start",
   "checks": {
     "gamepad_unit_tests": "8 passed on robot",
     "history_conversion_cpp_checks": "passed on robot",
@@ -29,7 +29,7 @@
   "physical_handoff_validated": false,
   "controllers_launched": false,
   "motors_enabled": false,
-  "model_sha256": "902d8c08f530cfe752e394332e45d5ccbe7e641fba7f5bcf316b4c4938f74e97",
+  "model_sha256": "b495d98d67d98494909038a16d4e50bcdee224bcbfffdf694c672aa59137a1f2d",
   "model_binding_backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_actor_binding_backup_20260912_202425",
   "native_verification": {
     "backend": "RTNeural Eigen float32 on robot",
@@ -202,5 +202,32 @@
     "policy_replay_max_abs_error": 4.917383193969727e-07,
     "steering_tracking": "insufficient in the pre-collision left-command interval",
     "collision_confirmed_by_user": true
+  },
+  "relaxed_start_upgrade": {
+    "version": "gamepad-continuous-roll-v5.1-relaxed-start",
+    "backup": "/home/pi/pupperv3-monorepo/ros2_ws/relaxed_start_backup_20260913_030952",
+    "sha256": "b3e64972c43076c11da1bf1c3d54c60bef8b430bc51fde06f71e308a236850b5",
+    "startup_hold_seconds": 0.2,
+    "startup_joint_tolerance_rad": 0.25,
+    "startup_velocity_tolerance_rad_s": 1.0,
+    "startup_gyro_tolerance_rad_s": 0.6,
+    "restart_required": true,
+    "motors_started": false,
+    "checks": "8 existing gamepad tests locally; syntax and startup/return hold checks on robot passed"
+  },
+  "continuous_gain_upgrade": {
+    "version": "rolling-kp-p55-v1",
+    "model": "/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/models/rolling_command_ppo_000000081920.json",
+    "backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_gain_p55_backup_20260913_043829/rolling_command_ppo_000000081920.json",
+    "old_sha256": "902d8c08f530cfe752e394332e45d5ccbe7e641fba7f5bcf316b4c4938f74e97",
+    "new_sha256": "b495d98d67d98494909038a16d4e50bcdee224bcbffdf694c672aa59137a1f2d",
+    "old_kp": 5.0,
+    "new_kp": 5.5,
+    "kd": 0.1,
+    "only_json_kp_changed": true,
+    "activation": "next controller launch; current running process retained loaded kp=5.0",
+    "controller_running_during_installation": true,
+    "motors_restarted": false,
+    "verification": "passed on robot"
   }
 }

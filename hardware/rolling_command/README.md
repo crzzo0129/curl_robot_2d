@@ -4,6 +4,8 @@
 
 当前已安装 v5 平滑接管逻辑并绑定第 81,920 步 PPO 模型，机器人原生 RTNeural 校验通过。64 组输入的最大动作误差为 5.4389e-7，网络推理中位耗时 0.1495 ms。该检查使用合成观察向量，不是实际滚动接管测试；没有启动控制器或使能电机。模型校验记录见 `model_binding_report.json`；本次更新的仿真、构建和备份记录见 `smooth_handoff_validation.json`。
 
+2026-09-13 已把持续滚动模型的 `kp` 从 5.0 小幅提高到 5.5，`kd` 保持 0.1；只修改模型 JSON 的 `kp` 字段，完整旧模型已备份。安装时控制器和录包仍在运行，因此当前进程继续使用已载入的 P=5；退出并重新启动原 launch 后才使用 P=5.5。路径、哈希和逐字段核验见 `continuous_gain_upgrade.json`。
+
 模型路径：`/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/models/rolling_command_ppo_000000081920.json`。
 已绑定的配置：`/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/launch/config_rollingquad_gamepad.yaml`，安装目录的配置是指向它的符号链接。
 绑定前配置备份：`/home/pi/pupperv3-monorepo/ros2_ws/rolling_actor_binding_backup_20260912_202425/`。

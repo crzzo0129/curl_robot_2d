@@ -94,9 +94,15 @@ def parse_args(argv=None):
         "--lateral-drift-diagnostic-only",
         action="store_true",
         help=(
-            "measure the 0.20 m lateral envelope without terminating or "
+            "measure the configured lateral envelope without terminating or "
             "counting it as a physical failure"
         ),
+    )
+    parser.add_argument(
+        "--terminate-lateral-drift-m",
+        type=float,
+        default=0.50,
+        help="lateral displacement counted as failure; default 0.50 m for rolling DR continuation",
     )
     parser.add_argument("--out", type=Path, required=True)
     parser.add_argument("--allow-existing-output", action="store_true")
@@ -244,8 +250,8 @@ def parse_args(argv=None):
     if not 0 <= args.turn_command_straight_fraction <= 1:
         parser.error("--turn-command-straight-fraction must be in [0,1]")
     if args.rolling_snapshots:
-        if not args.command_conditioned or args.dr_strength != 0 or args.reset_pose != "compact":
-            parser.error("rolling snapshots require --command-conditioned, --dr-strength 0 and the compact CEM warmup pose")
+        if not args.command_conditioned or args.reset_pose != "compact":
+            parser.error("rolling snapshots require --command-conditioned and the compact CEM warmup pose")
         if not (20 <= args.snapshot_warmup_min_steps <= args.snapshot_warmup_max_steps < args.episode_length):
             parser.error("snapshot warmup must satisfy 20 <= min <= max < episode length")
         if min(args.snapshot_pool_size, args.eval_snapshot_pool_size) < 4:
@@ -254,6 +260,11 @@ def parse_args(argv=None):
             parser.error("snapshot PPO currently requires a fixed command for the whole student episode")
     if not math.isfinite(args.learning_rate) or args.learning_rate <= 0.0:
         parser.error("--learning-rate must be finite and positive")
+    if (
+        not math.isfinite(args.terminate_lateral_drift_m)
+        or args.terminate_lateral_drift_m <= 0.0
+    ):
+        parser.error("--terminate-lateral-drift-m must be finite and positive")
     if args.max_learning_rate is None:
         args.max_learning_rate = args.learning_rate
     for name in ("desired_kl", "min_learning_rate", "max_learning_rate"):
@@ -397,6 +408,10 @@ def main(argv=None):
         ),
         args,
     )
+    task = replace(
+        task,
+        terminate_lateral_drift_m=args.terminate_lateral_drift_m,
+    )
     deploy_settings = RollingStudentDeployDomainRandomization().scaled(
         args.dr_strength
     )
@@ -454,6 +469,11 @@ def main(argv=None):
         eval_pool, eval_pool_summary = build_cem_snapshot_pool(
             teacher_env, observation_env, count=args.eval_snapshot_pool_size, seed=args.seed + 40000, **pool_kwargs)
         snapshot_summary = {"training": train_pool_summary, "evaluation": eval_pool_summary}
+        snapshot_summary["deploy_dr_reset_contract"] = (
+            "Each nominal CEM snapshot keeps qpos/qvel/ctrl/time, phase, command and "
+            "actor history; contacts and other derived MJX state are recomputed with "
+            "the lane-specific randomized model at reset."
+        )
     train_sampling_cdf = None
     sampling_summary = {"mode": "uniform"}
     if train_pool is not None and args.snapshot_sampling == "tracking_focus":
@@ -788,7 +808,8 @@ def main(argv=None):
         f"desired_kl={args.desired_kl:g} adaptive_lr_bounds="
         f"{args.min_learning_rate:g}..{args.max_learning_rate:g}\n"
         f"  geometry={args.geometry} lateral_termination="
-        f"{task.lateral_drift_termination}\n"
+        f"{task.lateral_drift_termination} "
+        f"lateral_limit={task.terminate_lateral_drift_m:g}m\n"
         f"  steps={args.steps:,} envs={args.envs} eval_envs={args.eval_envs}",
         flush=True,
     )

@@ -1,7 +1,8 @@
 {
-  "status": "model_bound_not_physically_tested",
+  "status": "model_bound_gain_p55_pending_restart_and_test",
   "model_path": "/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/models/rolling_command_ppo_000000081920.json",
-  "model_sha256": "902d8c08f530cfe752e394332e45d5ccbe7e641fba7f5bcf316b4c4938f74e97",
+  "model_sha256": "b495d98d67d98494909038a16d4e50bcdee224bcbfffdf694c672aa59137a1f2d",
+  "pre_gain_model_sha256": "902d8c08f530cfe752e394332e45d5ccbe7e641fba7f5bcf316b4c4938f74e97",
   "checkpoint_step": 81920,
   "config": "/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/launch/config_rollingquad_gamepad.yaml",
   "backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_actor_binding_backup_20260912_202425",
@@ -20,5 +21,12 @@
     "tolerance": 2e-05
   },
   "motors_enabled": false,
-  "controllers_launched": false
+  "controllers_launched": false,
+  "gain_upgrade": {
+    "kp": 5.5,
+    "kd": 0.1,
+    "activation": "next controller launch",
+    "physical_tested": false,
+    "record": "continuous_gain_upgrade.json"
+  }
 }

@@ -170,6 +170,7 @@ class RollingStudentDRPPOContractTest(unittest.TestCase):
         self.assertEqual(args.dr_strength, 0.25)
         self.assertEqual(args.student_anchor_weight, 0.02)
         self.assertEqual(args.minimum_success_turns, 5.0)
+        self.assertEqual(args.terminate_lateral_drift_m, 0.50)
         self.assertEqual(args.envs, 64)
         self.assertEqual(args.eval_envs, 8)
         self.assertEqual(args.max_devices, 4)
@@ -193,6 +194,35 @@ class RollingStudentDRPPOContractTest(unittest.TestCase):
         self.assertEqual(args.geometry, "rollingquad_2_primitive")
         self.assertIn("rollingquad_primitive_stiff_cem", str(args.controller))
         self.assertTrue(args.lateral_drift_diagnostic_only)
+
+    def test_command_snapshots_accept_dr_and_custom_lateral_limit(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            student = root / "student_params"
+            controller = root / "controller.json"
+            student.write_bytes(b"placeholder")
+            controller.write_text("{}", encoding="utf-8")
+            args = train_mjx_3d_roll_student_dr_ppo.parse_args(
+                [
+                    str(student),
+                    "--controller",
+                    str(controller),
+                    "--command-conditioned",
+                    "--rolling-snapshots",
+                    "--dr-strength",
+                    "0.25",
+                    "--terminate-lateral-drift-m",
+                    "0.50",
+                    "--command-interval-s",
+                    "10",
+                    "--out",
+                    str(root / "output"),
+                ]
+            )
+
+        self.assertTrue(args.rolling_snapshots)
+        self.assertEqual(args.dr_strength, 0.25)
+        self.assertEqual(args.terminate_lateral_drift_m, 0.50)
 
     def test_cli_rejects_missing_restore_checkpoint(self):
         with tempfile.TemporaryDirectory() as temporary:

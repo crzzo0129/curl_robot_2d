@@ -175,6 +175,12 @@ Student 模仿教师。新入口将现有 Student 权重直接复制为 PPO Acto
 
 建议按 25% → 50% → 100% 三档推进，并逐档减小原 Student 的行为约束：
 
+当前真机第 81,920 步 PPO 的 25% DR 续训使用
+[`scripts/run_rolling_dr025_continuation.sh`](../scripts/run_rolling_dr025_continuation.sh)。
+该入口允许滚动快照与 DR 同时使用，并在每次 reset 后用 lane 对应的随机模型重算
+快照接触和派生状态；本级 lateral failure 阈值为 0.50 m。具体设置见
+[`rolling_dr_continuation_20260913.md`](rolling_dr_continuation_20260913.md)。
+
 ```bash
 # 第一级：现有 Student 初始化 Actor，25% DR
 python -m scripts.train_mjx_3d_roll_student_dr_ppo \

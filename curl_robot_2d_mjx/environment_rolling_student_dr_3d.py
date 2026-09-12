@@ -35,6 +35,7 @@ def make_rolling_student_dr_env_3d(
     import jax.numpy as jp
     import mujoco
     from brax.envs.base import Env
+    from mujoco import mjx
 
     if student_anchor_weight < 0.0:
         raise ValueError("student_anchor_weight must be nonnegative")
@@ -192,6 +193,18 @@ def make_rolling_student_dr_env_3d(
                     reward=jp.zeros_like(base_state.reward),
                     done=jp.zeros_like(base_state.done),
                     metrics=jax.tree_util.tree_map(jp.zeros_like, base_state.metrics),
+                )
+                # Snapshot pipeline states were generated once with the
+                # nominal CEM model.  DomainRandomizationVmapWrapper installs
+                # a lane-specific randomized ``sys`` before calling reset;
+                # refresh contacts, kinematics and accelerations against that
+                # model while preserving qpos/qvel/ctrl/time from the rolling
+                # snapshot.  Reusing nominal derived state here would make a
+                # clean nominal reset inconsistent under deploy DR.
+                base_state = base_state.replace(
+                    pipeline_state=mjx.forward(
+                        self.sys, base_state.pipeline_state
+                    )
                 )
             motor_zero_bias = jax.random.uniform(
                 motor_key,

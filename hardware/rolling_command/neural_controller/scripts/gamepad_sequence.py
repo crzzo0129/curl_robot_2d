@@ -4,12 +4,12 @@ import math
 import time
 from rolling_gamepad_mapping import rolling_command
 
-VERSION = 'gamepad-continuous-roll-v5-smooth-handoff'
+VERSION = 'gamepad-continuous-roll-v5.1-relaxed-start'
 
 class Sequence:
     """ROS-independent button and settling state machine."""
     def __init__(self, indices, init_duration, hold=0.5, timeout=10.0,
-                 expected_button_count=None, circle_index=1):
+                 expected_button_count=None, circle_index=1, startup_hold=None):
         if len(indices) != 5 or len(set(indices)) != len(indices) or min(indices) < 0:
             raise ValueError('Expected five distinct, non-negative gamepad indices')
         if expected_button_count is not None and expected_button_count <= max(indices):
@@ -24,6 +24,7 @@ class Sequence:
         self.previous = None
         self.state = 'idle'
         self.init_duration, self.hold, self.timeout = init_duration, hold, timeout
+        self.startup_hold = hold if startup_hold is None else startup_hold
         self.started = 0.0
         self.stable_since = None
 
@@ -91,7 +92,7 @@ class Sequence:
             self.stable_since = None
         elif self.stable_since is None:
             self.stable_since = now
-        elif now-self.stable_since >= self.hold:
+        elif now-self.stable_since >= self.startup_hold:
             return 'enable'
         return None
 
@@ -119,6 +120,8 @@ def main():
                             init_duration=1.0, stand_hold_seconds=0.5,
                             stand_timeout_seconds=10.0, joint_tolerance=0.10,
                             velocity_tolerance=0.25, gyro_tolerance=0.3, stand_tilt_tolerance=0.35,
+                            startup_hold_seconds=0.20, startup_joint_tolerance=0.25,
+                            startup_velocity_tolerance=1.0, startup_gyro_tolerance=0.6,
                             joy_timeout_seconds=1.0)
             for key, value in defaults.items():
                 self.declare_parameter(key, value)
@@ -128,7 +131,8 @@ def main():
                                 self.p['init_duration'], self.p['stand_hold_seconds'],
                                 self.p['stand_timeout_seconds'],
                                 expected_button_count=self.p['expected_button_count'],
-                                circle_index=self.p['circle_index'])
+                                circle_index=self.p['circle_index'],
+                                startup_hold=self.p['startup_hold_seconds'])
             self.rolling_axes = None
             self.rolling_stage = 'unavailable'
             self.rolling_stage_time = -math.inf
@@ -275,13 +279,17 @@ def main():
                 return blocked(f'stale sensors: joint_age={now-self.joint_time:.2f}s imu_age={now-self.imu_time:.2f}s (limit 0.25s)')
             positions = dict(zip(self.joints.name,self.joints.position))
             velocities = dict(zip(self.joints.name,self.joints.velocity))
+            # Startup allows standing servo jitter; return-to-walk keeps its original limits.
+            joint_limit = self.p['startup_joint_tolerance']
+            velocity_limit = self.p['startup_velocity_tolerance' if check_startup_pose else 'velocity_tolerance']
+            gyro_limit = self.p['startup_gyro_tolerance' if check_startup_pose else 'gyro_tolerance']
             for name, target in zip(self.p['joint_names'],self.p['startup_joint_pos']):
                 q, v = positions.get(name,math.nan), velocities.get(name,math.nan)
                 if not math.isfinite(q) or not math.isfinite(v): return blocked(f'missing/non-finite joint state: {name}')
-                if check_startup_pose and abs(q-target)>self.p['joint_tolerance']:
-                    return blocked(f'{name} position error={abs(q-target):.3f}rad exceeds {self.p["joint_tolerance"]}')
-                if abs(v)>self.p['velocity_tolerance']:
-                    return blocked(f'{name} speed={abs(v):.3f}rad/s exceeds {self.p["velocity_tolerance"]}')
+                if check_startup_pose and abs(q-target)>joint_limit:
+                    return blocked(f'{name} position error={abs(q-target):.3f}rad exceeds {joint_limit}')
+                if abs(v)>velocity_limit:
+                    return blocked(f'{name} speed={abs(v):.3f}rad/s exceeds {velocity_limit}')
             rates = self.imu.angular_velocity
             q = self.imu.orientation
             values = (q.x,q.y,q.z,q.w)
@@ -291,8 +299,8 @@ def main():
             if upright<math.cos(self.p['stand_tilt_tolerance']):
                 return blocked(f'body tilt={math.degrees(math.acos(max(-1.,min(1.,upright)))):.1f}deg exceeds {math.degrees(self.p["stand_tilt_tolerance"]):.1f}deg')
             for axis,v in zip('xyz',(rates.x,rates.y,rates.z)):
-                if not math.isfinite(v) or abs(v)>self.p['gyro_tolerance']:
-                    return blocked(f'gyro {axis}={v:.3f}rad/s exceeds {self.p["gyro_tolerance"]}')
+                if not math.isfinite(v) or abs(v)>gyro_limit:
+                    return blocked(f'gyro {axis}={v:.3f}rad/s exceeds {gyro_limit}')
             self.blocked_reason = 'sensors stable; waiting for continuous hold interval'
             return True
 
