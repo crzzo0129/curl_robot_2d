@@ -44,7 +44,9 @@ def main():
                  "curl_robot_2d_mjx/rolling_student_snapshot_pool.py",
                  "curl_robot_2d_mjx/rolling_student_dr_ppo_3d.py",
                  "curl_robot_2d_mjx/rolling_ppo_diagnostics.py",
-                 "curl_robot_2d_mjx/reward_3d.py", "requirements-mjx.txt"):
+                 "curl_robot_2d_mjx/reward_3d.py",
+                 "curl_robot_2d_mjx/config_3d.py",
+                 "curl_robot_2d_mjx/steering_calibration.py", "requirements-mjx.txt"):
         path = project / name
         if path.is_file():
             files.append((path, f"source/{name}"))
@@ -65,6 +67,16 @@ def main():
         pass
     if args.log:
         files.append((args.log, "run/training.log"))
+    config_path = args.run / "training_config.json"
+    if config_path.is_file():
+        saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+        calibration = saved_config.get("task", {}).get("steering_calibration_path")
+        if calibration:
+            calibration_path = Path(calibration)
+            if not calibration_path.is_absolute():
+                calibration_path = project / calibration_path
+            if calibration_path.is_file():
+                files.append((calibration_path, "run/steering_calibration.json"))
     checkpoint_files = []
     for name in ("params_final", "student_params"):
         path = args.run / name

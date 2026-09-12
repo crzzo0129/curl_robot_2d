@@ -92,3 +92,6 @@ ppo_models/
 ppo_models_cloud/
 mjx_runs/
 *.tfevents.*
+
+# Cloud transfer bundle for the calibrated high-speed CEM steering map.
+!results/cem_steering_calibration_v1.zip

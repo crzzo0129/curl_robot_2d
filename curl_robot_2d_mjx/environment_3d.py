@@ -787,6 +787,15 @@ def rolling_axis_heading_3d(xp, body_y_axis):
     return xp.arctan2(-body_y_axis[..., 0], body_y_axis[..., 1])
 
 
+def rolling_axis_stability_tilt_3d(xp, body_y_axis, yaw_command, *, calibrated=False):
+    """Calibrated turns may rotate horizontally without being treated as falls."""
+    legacy = xp.arccos(xp.clip(xp.abs(body_y_axis[..., 1]), 0., 1.))
+    if not calibrated:
+        return legacy
+    elevation = xp.arcsin(xp.clip(xp.abs(body_y_axis[..., 2]), 0., 1.))
+    return xp.where(xp.abs(yaw_command) > 1e-3, elevation, legacy)
+
+
 def pair_coupled_residual_action_3d(
     xp,
     raw_action,
@@ -1060,6 +1069,15 @@ def make_brax_env_3d(
     reference_settings = cem_reference or load_cem_reference(
         cem_controller_path_3d(task.geometry)
     )
+    steering_table = None
+    if task.steering_calibration_path:
+        from curl_robot_2d_mjx.steering_calibration import (
+            load_steering_calibration, calibrated_steering_prior,
+        )
+        steering_table = load_steering_calibration(
+            task.steering_calibration_path, task=task,
+            reference=reference_settings, model_path=model_path_3d(task.geometry),
+        )
 
     class CurlRobot3DMJXEnv(Env):
         def __init__(self):
@@ -1548,6 +1566,12 @@ def make_brax_env_3d(
                     else task.residual_pair_differential_scale
                 ),
             )
+            if steering_table is not None:
+                # Table values are already effective normalized offsets. Do
+                # not multiply by residual_gain or differential_scale again.
+                prior_sequence = calibrated_steering_prior(
+                    jp, steering_table, v_cmd_sequence, yaw_cmd_sequence,
+                )
             forward_velocity_command = v_cmd_sequence[0]
             forward_command_scale = scale_sequence[0]
             yaw_rate_command = yaw_cmd_sequence[0]
@@ -1697,7 +1721,7 @@ def make_brax_env_3d(
             )
             data = mjx.forward(self.mjx_model, data)
             contacts = self._contact_metrics(data)
-            axis_tilt = self._rolling_axis_tilt(data)
+            axis_tilt = self._rolling_axis_tilt(data, yaw_rate_command)
             body_y_axis, _ = self._body_axes(data)
             initial_stability_cost = stability_error_cost_3d(
                 jp,
@@ -2034,7 +2058,7 @@ def make_brax_env_3d(
                 jp, rolling_phase, oscillator_phase
             )
             contacts = self._contact_metrics(data)
-            axis_tilt = self._rolling_axis_tilt(data)
+            axis_tilt = self._rolling_axis_tilt(data, yaw_rate_command)
 
             root_x = data.qpos[0]
             root_y = data.qpos[1]
@@ -2639,10 +2663,11 @@ def make_brax_env_3d(
                 return jp.zeros_like(root_x)
             return terrain_surface_z_xp(jp, root_x, self.terrain_config)
 
-        def _rolling_axis_tilt(self, data):
+        def _rolling_axis_tilt(self, data, yaw_command=0.):
             body_y_axis, _ = self._body_axes(data)
-            alignment = jp.clip(jp.abs(body_y_axis[1]), 0.0, 1.0)
-            return jp.arccos(alignment)
+            return rolling_axis_stability_tilt_3d(
+                jp, body_y_axis, yaw_command, calibrated=steering_table is not None,
+            )
 
         def _observation(
             self,

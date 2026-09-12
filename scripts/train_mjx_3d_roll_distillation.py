@@ -151,6 +151,8 @@ def parse_args(argv=None):
     parser.add_argument("--turn-command-min-rad-s", type=float, default=0.02)
     parser.add_argument("--turn-command-max-rad-s", type=float, default=0.08)
     parser.add_argument("--turn-command-straight-fraction", type=float, default=0.40)
+    parser.add_argument("--steering-calibration", type=Path, default=None,
+                        help="Validated speed/yaw steering table; enables elevation-only tilt for commanded turns")
     parser.add_argument("--command-interval-s", type=float, default=10.0,
                         help="command hold duration; keep >= episode duration for fixed-command teacher trajectories")
     parser.add_argument("--random-cem-snapshots", action="store_true",
@@ -289,6 +291,8 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
+    if args.steering_calibration is not None and not args.command_conditioned:
+        parser.error("--steering-calibration requires --command-conditioned")
     if args.teacher_source is None:
         args.teacher_source = "privileged" if args.teacher is not None else "cem"
     if args.controller is None:
@@ -503,6 +507,8 @@ def _task(
             turn_command_left_fraction=(1.0 - args.turn_command_straight_fraction) / 2.0,
             turn_command_right_fraction=(1.0 - args.turn_command_straight_fraction) / 2.0,
             turn_command_interval_s=args.command_interval_s,
+            steering_calibration_path=(str(args.steering_calibration)
+                if getattr(args, "steering_calibration", None) else None),
         )
     return task
 

@@ -111,6 +111,8 @@ class Rolling3DConfig:
     turn_command_k_turn: float = 5.0
     turn_command_prior_clip: float = 0.5
     turn_command_fixed_rad_s: float | None = None
+    # Opt-in measured effective-action lookup. Legacy recipes remain unchanged.
+    steering_calibration_path: str | None = None
     explicit_phase_observation: bool = False
     direct_effective_action: bool = False
     disable_root_damping: bool = True

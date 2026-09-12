@@ -116,6 +116,8 @@ def parse_args(argv=None):
     parser.add_argument("--turn-command-min-rad-s", type=float, default=0.02)
     parser.add_argument("--turn-command-max-rad-s", type=float, default=0.08)
     parser.add_argument("--turn-command-straight-fraction", type=float, default=0.40)
+    parser.add_argument("--steering-calibration", type=Path, default=None,
+                        help="Validated speed/yaw steering table; enables elevation-only tilt for commanded turns")
     parser.add_argument("--command-interval-s", type=float, default=10.0)
     parser.add_argument("--rolling-snapshots", action=argparse.BooleanOptionalAction, default=None,
                         help="start PPO and its evaluation from cached rolling states; default on for command-conditioned training")
@@ -180,6 +182,8 @@ def parse_args(argv=None):
         default="disable",
     )
     args = parser.parse_args(argv)
+    if args.steering_calibration is not None and not args.command_conditioned:
+        parser.error("--steering-calibration requires --command-conditioned")
     if args.fixed_eval_envs is None:
         args.fixed_eval_envs = 64 if args.dr_strength == 0 else 0
     if args.rolling_snapshots is None:
