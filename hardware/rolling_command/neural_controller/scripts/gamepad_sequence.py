@@ -4,7 +4,7 @@ import math
 import time
 from rolling_gamepad_mapping import rolling_command
 
-VERSION = 'gamepad-continuous-roll-v4-ps5-8bitdo'
+VERSION = 'gamepad-continuous-roll-v5-smooth-handoff'
 
 class Sequence:
     """ROS-independent button and settling state machine."""
@@ -228,14 +228,20 @@ def main():
                     self.continuous.publish(Empty())
                     self.seq.state = 'roll_requested'
                     self.rolling_pending_seen = False
-                    self.get_logger().info('Circle: waiting for mature rolling and a continuous target handoff')
+                    self.get_logger().info('Circle: waiting for a rolling phase window, then blend, settle straight and ramp steering')
                 else:
                     self.get_logger().warn('Circle ignored: continuous policy/command/status is not ready')
 
         def policy_state(self, msg):
+            previous_stage = self.rolling_stage
             self.rolling_stage, self.rolling_stage_time = msg.data, time.monotonic()
+            if msg.data == 'stop' and self.seq.state in ('rolling', 'roll_requested', 'continuous_rolling'):
+                self.seq.state = 'stand_requested'
+                self.get_logger().warn('Controller requested roll-to-stand; wait for standing before returning to Walking')
+            if msg.data != previous_stage and msg.data in ('blending', 'settling', 'command_ramp'):
+                self.get_logger().info('Rolling handoff stage: ' + msg.data)
             if self.seq.state == 'roll_requested':
-                if msg.data == 'pending':
+                if msg.data in ('pending', 'blending', 'settling', 'command_ramp'):
                     self.rolling_pending_seen = True
                 if msg.data == 'continuous':
                     self.seq.state = 'continuous_rolling'

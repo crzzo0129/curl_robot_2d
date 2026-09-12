@@ -1,27 +1,206 @@
 {
   "date": "2026-09-12",
   "host": "pi@pupper.local",
-  "status": "runtime_installed_model_not_bound",
+  "status": "smooth_handoff_installed_hardware_handoff_observed_steering_under_review",
   "workspace": "/home/pi/pupperv3-monorepo/ros2_ws",
   "backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_command_backup_20260912_200201_745962",
   "isolated_build_workspace": "/home/pi/rolling_command_build_20260912",
   "robot_review_directory": "/home/pi/rolling_command_review_20260912",
-  "installed_version": "gamepad-continuous-roll-v4-ps5-8bitdo",
+  "installed_version": "gamepad-continuous-roll-v5-smooth-handoff",
   "checks": {
     "gamepad_unit_tests": "8 passed on robot",
     "history_conversion_cpp_checks": "passed on robot",
     "isolated_colcon_build": "passed",
     "installed_colcon_build": "passed",
     "installed_source_mismatches": [],
-    "installed_neutral_command": [0.6, 0.0, 0.0],
+    "installed_neutral_command": [
+      0.6,
+      0.0,
+      0.0
+    ],
     "installed_controller_library_exists": true,
-    "local_training_simulation_or_tests_run": false
+    "local_training_simulation_or_tests_run": true,
+    "local_check_scope": "CPU MuJoCo sequence simulations and small regression tests explicitly authorized; no training."
   },
-  "rolling_model_path": "",
+  "rolling_model_path": "/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/models/rolling_command_ppo_000000081920.json",
   "ppo_candidate_step": 81920,
-  "ppo_weights_available": false,
-  "ppo_native_inference_validated": false,
+  "ppo_weights_available": true,
+  "ppo_native_inference_validated": true,
   "physical_handoff_validated": false,
   "controllers_launched": false,
-  "motors_enabled": false
+  "motors_enabled": false,
+  "model_sha256": "902d8c08f530cfe752e394332e45d5ccbe7e641fba7f5bcf316b4c4938f74e97",
+  "model_binding_backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_actor_binding_backup_20260912_202425",
+  "native_verification": {
+    "backend": "RTNeural Eigen float32 on robot",
+    "inference_latency_max_ms": 0.389276,
+    "inference_latency_median_ms": 0.149499,
+    "max_action_error": 5.438923835754395e-07,
+    "passed": true,
+    "physical_handoff_validated": false,
+    "probe_kind": "synthetic_normalizer_neighborhood",
+    "rmse": 1.3062147653619162e-07,
+    "samples": 64,
+    "tolerance": 2e-05
+  },
+  "smooth_handoff_update": {
+    "version": "gamepad-continuous-roll-v5-smooth-handoff",
+    "status": "installed_and_built_no_motor_test",
+    "backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_smooth_handoff_backup_20260912_220748",
+    "isolated_workspace": "/home/pi/rolling_handoff_build_20260912_v1",
+    "robot_review_directory": "/home/pi/rolling_handoff_review_20260912_v1",
+    "installed_source_mismatches": [],
+    "installed_controller_running_at_verification": false,
+    "motor_enable_performed": false,
+    "checks": {
+      "cpp_handoff": "passed",
+      "cpp_history": "passed",
+      "python_gamepad_tests": 8,
+      "python_gyro_schedule_native_parity_tests": 3,
+      "native_python_parity_ticks": 200,
+      "isolated_ros_build": "passed, ~83s",
+      "installed_ros_build": "passed, ~76s"
+    },
+    "simulations": {
+      "left": {
+        "stand_success": true,
+        "tracking": {
+          "duration_s": 6.980000000000517,
+          "mean_world_vx_m_s": 0.7843297711296568,
+          "mean_yaw_rad_s": 0.062108202860339225,
+          "heading_change_deg": 24.83859452133954,
+          "world_y_change_m": 1.1090055406521697
+        },
+        "max_applied_target_delta_rad": 0.1200000000000001,
+        "limiter_ticks": 3
+      },
+      "straight": {
+        "stand_success": true,
+        "tracking": {
+          "duration_s": 6.980000000000517,
+          "mean_world_vx_m_s": 0.8085776046115192,
+          "mean_yaw_rad_s": 0.016664758692874475,
+          "heading_change_deg": 6.664645971145987,
+          "world_y_change_m": 0.4402970260545946
+        },
+        "max_applied_target_delta_rad": 0.1200000000000001,
+        "limiter_ticks": 3
+      },
+      "right": {
+        "stand_success": true,
+        "tracking": {
+          "duration_s": 6.980000000000517,
+          "mean_world_vx_m_s": 0.7814675312116461,
+          "mean_yaw_rad_s": -0.04781645324336066,
+          "heading_change_deg": -19.12297311566325,
+          "world_y_change_m": -0.5407843585576547
+        },
+        "max_applied_target_delta_rad": 0.1200000000000001,
+        "limiter_ticks": 3
+      },
+      "slow_left": {
+        "stand_success": true,
+        "tracking": {
+          "duration_s": 6.980000000000517,
+          "mean_world_vx_m_s": 0.6623225116982485,
+          "mean_yaw_rad_s": 0.07100501205823366,
+          "heading_change_deg": 28.39664685618401,
+          "world_y_change_m": 0.9406463821746528
+        },
+        "max_applied_target_delta_rad": 0.1200000000000001,
+        "limiter_ticks": 3
+      },
+      "fast_right": {
+        "stand_success": true,
+        "tracking": {
+          "duration_s": 6.980000000000517,
+          "mean_world_vx_m_s": 0.858091877086636,
+          "mean_yaw_rad_s": -0.04422995980576664,
+          "heading_change_deg": -17.68864637382913,
+          "world_y_change_m": -0.5716897648331944
+        },
+        "max_applied_target_delta_rad": 0.1200000000000001,
+        "limiter_ticks": 152
+      }
+    },
+    "limitations": [
+      "Five nominal command cases share one initial stand pose; not a random success-rate evaluation.",
+      "Velocity tracking still biased high.",
+      "Hardware SPI/NaN issue not repaired.",
+      "No hardware motion validation."
+    ],
+    "model_sha256": {
+      "startup": "4f16bf9607b2a40ff40ae3b52bc26eab57091c538213596cf0c459920c0b6c7b",
+      "rolling": "902d8c08f530cfe752e394332e45d5ccbe7e641fba7f5bcf316b4c4938f74e97",
+      "stop": "98cae471b8659c1d967ee4aac5b763e21282c4f40fcf58016007e3af4f72d7d5"
+    },
+    "source_manifest": {
+      "include/neural_controller/neural_controller.hpp": {
+        "previous_sha256": "b6b9222ed9a69f9898a2c6c695358a3d17a9c77730ba002b55d587268dbad051",
+        "new_sha256": "95b3db5958952b59e4eb7e7fc3c882ac055565802c88c7bdeb5d1537ee647a5d"
+      },
+      "include/neural_controller/rolling_command_runtime.inc": {
+        "previous_sha256": "5c37b0212c7b12908650d4c450b0e7324cae791637a8380c83fe0b077d843af0",
+        "new_sha256": "0e71371e3432648ed7153af41ed402aef061b7a7c4f6f215c30fa35bdf881697"
+      },
+      "include/neural_controller/rolling_handoff.hpp": {
+        "previous_sha256": null,
+        "new_sha256": "0c65bd3f0f1f44e1661d0f2d613fbac5654fb7db108c9877ebd35a8aad531aa2"
+      },
+      "src/neural_controller.cpp": {
+        "previous_sha256": "df835846040a8a1b43f56a6a0456be45142ab63d83021531c1ff3a5b21d443fb",
+        "new_sha256": "1637e2ff7a592ec4e7747a2b0964921f7ce776d729bed895a4ea1e766c56ba4e"
+      },
+      "src/neural_controller_parameters.yaml": {
+        "previous_sha256": "26eb19389df6a523d11e1f5978998a63b17b8e16b037396ccfb34978c8c78f62",
+        "new_sha256": "f800b721845bf8b40bdac25509d82d7c51b620c31981674ce133c46750232a7f"
+      },
+      "scripts/gamepad_sequence.py": {
+        "previous_sha256": "54248a4c67b1981869af529d750cdcd0d1e7b88ab28d8a38afc17e452e8f9bf5",
+        "new_sha256": "8bcd6121a25e755e03382f6f8e2625ffd0a4b2a1d4f476651f4b5a7866698753"
+      }
+    }
+  },
+  "steering_recording_update": {
+    "date": "2026-09-12",
+    "host": "pi@pupper.local",
+    "config": "/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/launch/config_rollingquad_gamepad.yaml",
+    "backup": "/home/pi/pupperv3-monorepo/ros2_ws/steering_recording_backup_20260912_235227",
+    "old_sha256": "1ee899dc07e967bb76465b4942ed2bb8c01c0700976f68c3d72d406efb51cab3",
+    "new_sha256": "1fc15d056a21e1a36211b086a83b4f429afc805f48b246ea679da2ff3a222248",
+    "old_topic_count": 7,
+    "new_topic_count": 17,
+    "required_topics": [
+      "/joy",
+      "/emergency_stop",
+      "/joint_states",
+      "/imu_sensor_broadcaster/imu",
+      "/neural_controller_roll/rolling_cmd_vel",
+      "/neural_controller_roll/rolling_policy_state",
+      "/neural_controller_roll/request_rolling_policy",
+      "/neural_controller_roll/enable_policy",
+      "/neural_controller_roll/request_roll_to_stand",
+      "/neural_controller_roll/observation",
+      "/neural_controller_roll/policy_output",
+      "/neural_controller_roll/position_command",
+      "/neural_controller_roll/imu_latency_seconds",
+      "/neural_controller_roll/policy_inference_latency_seconds",
+      "/joy_util_node/sequence_state",
+      "/joy_util_node/sequence_detail",
+      "/rosout"
+    ],
+    "only_record_topics_changed": true,
+    "installed_symlink_verified": true,
+    "takes_effect_on_next_launch": true,
+    "controller_process_running_at_update": false,
+    "recording_helper": "/home/pi/record_steering_check.py",
+    "helper_dry_run": "passed on robot; no recording or actuation started"
+  },
+  "hardware_trial": {
+    "recording": "recording_2026-09-12_23-21-19.tar.gz",
+    "handoff_observed": true,
+    "policy_replay_max_abs_error": 4.917383193969727e-07,
+    "steering_tracking": "insufficient in the pre-collision left-command interval",
+    "collision_confirmed_by_user": true
+  }
 }

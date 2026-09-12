@@ -1,0 +1,26 @@
+{
+  "include/neural_controller/neural_controller.hpp": {
+    "previous_sha256": "b6b9222ed9a69f9898a2c6c695358a3d17a9c77730ba002b55d587268dbad051",
+    "new_sha256": "95b3db5958952b59e4eb7e7fc3c882ac055565802c88c7bdeb5d1537ee647a5d"
+  },
+  "include/neural_controller/rolling_command_runtime.inc": {
+    "previous_sha256": "5c37b0212c7b12908650d4c450b0e7324cae791637a8380c83fe0b077d843af0",
+    "new_sha256": "0e71371e3432648ed7153af41ed402aef061b7a7c4f6f215c30fa35bdf881697"
+  },
+  "include/neural_controller/rolling_handoff.hpp": {
+    "previous_sha256": null,
+    "new_sha256": "0c65bd3f0f1f44e1661d0f2d613fbac5654fb7db108c9877ebd35a8aad531aa2"
+  },
+  "src/neural_controller.cpp": {
+    "previous_sha256": "df835846040a8a1b43f56a6a0456be45142ab63d83021531c1ff3a5b21d443fb",
+    "new_sha256": "1637e2ff7a592ec4e7747a2b0964921f7ce776d729bed895a4ea1e766c56ba4e"
+  },
+  "src/neural_controller_parameters.yaml": {
+    "previous_sha256": "26eb19389df6a523d11e1f5978998a63b17b8e16b037396ccfb34978c8c78f62",
+    "new_sha256": "f800b721845bf8b40bdac25509d82d7c51b620c31981674ce133c46750232a7f"
+  },
+  "scripts/gamepad_sequence.py": {
+    "previous_sha256": "54248a4c67b1981869af529d750cdcd0d1e7b88ab28d8a38afc17e452e8f9bf5",
+    "new_sha256": "8bcd6121a25e755e03382f6f8e2625ffd0a4b2a1d4f476651f4b5a7866698753"
+  }
+}

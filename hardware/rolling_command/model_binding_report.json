@@ -1,0 +1,24 @@
+{
+  "status": "model_bound_not_physically_tested",
+  "model_path": "/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/models/rolling_command_ppo_000000081920.json",
+  "model_sha256": "902d8c08f530cfe752e394332e45d5ccbe7e641fba7f5bcf316b4c4938f74e97",
+  "checkpoint_step": 81920,
+  "config": "/home/pi/pupperv3-monorepo/ros2_ws/src/neural_controller/launch/config_rollingquad_gamepad.yaml",
+  "backup": "/home/pi/pupperv3-monorepo/ros2_ws/rolling_actor_binding_backup_20260912_202425",
+  "startup_model": "/home/pi/pupperv3-monorepo/ros2_ws/stand_to_roll_ws/src/neural_controller/models/stand_to_roll_student_clipped_bc_norm_v1.json",
+  "stop_model": "/home/pi/roll_to_stand_policy_rtneural.json",
+  "native_verification": {
+    "backend": "RTNeural Eigen float32 on robot",
+    "inference_latency_max_ms": 0.389276,
+    "inference_latency_median_ms": 0.149499,
+    "max_action_error": 5.438923835754395e-07,
+    "passed": true,
+    "physical_handoff_validated": false,
+    "probe_kind": "synthetic_normalizer_neighborhood",
+    "rmse": 1.3062147653619162e-07,
+    "samples": 64,
+    "tolerance": 2e-05
+  },
+  "motors_enabled": false,
+  "controllers_launched": false
+}

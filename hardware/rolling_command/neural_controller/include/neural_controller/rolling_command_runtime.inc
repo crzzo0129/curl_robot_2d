@@ -77,6 +77,9 @@ void NeuralController::configure_continuous_rolling_io() {
   continuous_requested_ = false;
   continuous_stage_ = 0;
   continuous_history_ticks_ = 0;
+  continuous_window_ticks_ = 0;
+  continuous_handoff_ = RollingHandoff{};
+  continuous_startup_history_.assign(720, 0.0F);
   continuous_last_tick_ = continuous_turn_ = continuous_request_started_ = 0.0;
   rolling_command_buffer_.writeFromNonRT(RollingCommand{});
   if (!continuous_model_) return;
@@ -102,7 +105,8 @@ void NeuralController::configure_continuous_rolling_io() {
   rolling_state_publisher_ = get_node()->create_publisher<std_msgs::msg::String>(
       "~/rolling_policy_state", rclcpp::QoS(1).reliable().durability_volatile());
   rolling_state_timer_ = get_node()->create_wall_timer(std::chrono::milliseconds(100), [this]() {
-    static const char *names[] = {"inactive", "startup", "pending", "continuous", "stop", "rejected"};
+    static const char *names[] = {"inactive", "startup", "pending", "continuous", "stop", "rejected",
+                                  "blending", "settling", "command_ramp"};
     std_msgs::msg::String msg;
     msg.data = names[estop_active_.load() ? 0 : continuous_stage_.load()];
     rolling_state_publisher_->publish(msg);
@@ -110,21 +114,39 @@ void NeuralController::configure_continuous_rolling_io() {
 }
 
 void NeuralController::try_continuous_rolling() {
-  if (!continuous_model_ || continuous_active_ || transition_active_) return;
+  if (!continuous_model_ || transition_active_) return;
   const double now = rolling_clock();
   const auto &imu = state_interfaces_map_.at(params_.imu_sensor_name);
   tf2::Quaternion q(imu.at("orientation.x").get().get_value(),
                     imu.at("orientation.y").get().get_value(),
                     imu.at("orientation.z").get().get_value(),
                     imu.at("orientation.w").get().get_value());
-  if (!std::isfinite(q.length2()) || q.length2() < 1e-8) return;
+  if (!std::isfinite(q.length2()) || q.length2() < 1e-8) {
+    if (continuous_active_) estop_active_ = true;
+    return;
+  }
   q.normalize();
   const auto row = tf2::Matrix3x3(q).getRow(2);
   const double pitch = std::atan2(row.x(), row.z());
   const double dt = now - continuous_last_tick_;
+  if (continuous_active_) {
+    continuous_last_tick_ = now;
+    if (!std::isfinite(dt) || dt <= 0.0 || dt > 0.04) {
+      estop_active_ = true;
+      RCLCPP_ERROR(get_node()->get_logger(), "Rolling policy timing invalid during handoff/tracking");
+      return;
+    }
+    continuous_handoff_.tick(RollingHandoff::healthy(row.y(),
+        imu.at("angular_velocity.y").get().get_value()),
+        continuous_tick_command_.vx, transition_requested_.load() ? 0.0 : continuous_tick_command_.yaw);
+    if (continuous_handoff_.stop_required) transition_requested_ = true;
+    continuous_stage_ = transition_requested_.load() ? 4 : continuous_handoff_.stage;
+    return;
+  }
   if (dt < 0.015 || dt > 0.025) {
     continuous_history_ticks_ = 0;
     continuous_turn_ = 0.0;
+    continuous_window_ticks_ = 0;
   } else {
     const double delta = pitch - continuous_pitch_;
     continuous_turn_ += std::atan2(std::sin(delta), std::cos(delta));
@@ -146,16 +168,23 @@ void NeuralController::try_continuous_rolling() {
     continuous_requested_ = false;
     continuous_request_started_ = 0.0;
     continuous_stage_ = 5;
-    RCLCPP_WARN(get_node()->get_logger(), "Rolling handoff rejected after 10s: timing/turn/command/target gate not met");
+    continuous_window_ticks_ = 0;
+    RCLCPP_WARN(get_node()->get_logger(), "Rolling handoff rejected after 10s: no valid phase/axis/rate/target window");
     return;
   }
   const auto cmd = continuous_tick_command_;
   if (!cmd.valid || now - cmd.received > 0.25 || continuous_history_ticks_ < 50 ||
       std::abs(continuous_turn_) < 2.0 * 3.14159265358979323846 ||
-      std::abs(imu.at("angular_velocity.y").get().get_value()) < 0.5) return;
+      !RollingHandoff::healthy(row.y(), imu.at("angular_velocity.y").get().get_value())) {
+    continuous_window_ticks_ = 0;
+    return;
+  }
   // Convert every retained frame; never cold-reset a mature rolling actor.
   if (!convert_rolling_history(continuous_candidate_, observation_, action_,
-                               params_, continuous_params_, cmd.vx, cmd.yaw)) return;
+                               params_, continuous_params_, 0.60, 0.0)) {
+    continuous_window_ticks_ = 0;
+    return;
+  }
   // Frame zero is the current measurement; remaining frames are actual history.
   const auto gravity = tf2::Matrix3x3(q).inverse() * tf2::Vector3(0, 0, -1);
   for (int i = 0; i < 3; ++i) {
@@ -166,23 +195,39 @@ void NeuralController::try_continuous_rolling() {
   for (int i = 0; i < 12; ++i)
     continuous_candidate_[12+i] = state_interfaces_map_.at(params_.joint_names[i])
         .at("position").get().get_value() - continuous_params_.default_joint_pos[i];
-  if (contains_non_finite(continuous_candidate_) || contains_non_finite(action_)) return;
+  if (contains_non_finite(continuous_candidate_) || contains_non_finite(action_)) {
+    continuous_window_ticks_ = 0;
+    return;
+  }
   for (auto &v : continuous_candidate_) v = std::clamp(v, -100.0F, 100.0F);
   continuous_model_->forward(continuous_candidate_.data());
   const auto *output = continuous_model_->getOutputs();
+  double max_delta = 0.0;
   for (int i = 0; i < 12; ++i) {
     if (!std::isfinite(output[i]) || std::abs(output[i]) > 1.0001 ||
-        (i % 3 == 0 && output[i] != 0.0F)) return;
+        (i % 3 == 0 && output[i] != 0.0F)) {
+      continuous_window_ticks_ = 0;
+      return;
+    }
     const double target = std::clamp(continuous_params_.default_joint_pos[i] +
         continuous_params_.action_scales[i] * output[i],
         continuous_params_.joint_lower_limits[i], continuous_params_.joint_upper_limits[i]);
-    if (std::abs(target - action_[i]) > params_.rolling_handoff_max_target_delta_rad) return;
+    max_delta = std::max(max_delta, std::abs(target - action_[i]));
   }
+  if (!RollingHandoff::window(pitch, row.y(), imu.at("angular_velocity.y").get().get_value(), max_delta)) {
+    continuous_window_ticks_ = 0;
+    return;
+  }
+  if (++continuous_window_ticks_ < 2) return;
   if (estop_active_.load() || transition_requested_.load() || !continuous_requested_.load()) return;
+  std::copy(observation_.begin(), observation_.end(), continuous_startup_history_.begin());
   std::copy(continuous_candidate_.begin(), continuous_candidate_.end(), observation_.begin());
+  continuous_handoff_ = RollingHandoff{};
+  continuous_handoff_.tick(true, cmd.vx, cmd.yaw);
   continuous_active_ = true;
   continuous_requested_ = false;
   continuous_request_started_ = 0.0;
-  continuous_stage_ = 3;
-  RCLCPP_INFO(get_node()->get_logger(), "Continuous PPO rolling HOT SWITCH; live history converted, no fade");
+  continuous_stage_ = 6;
+  RCLCPP_INFO(get_node()->get_logger(), "PPO handoff blend started: pitch=%.1f deg, candidate delta=%.3f rad; 0.30s live-policy blend, then straight settling",
+              pitch * 180.0 / RollingHandoff::pi, max_delta);
 }

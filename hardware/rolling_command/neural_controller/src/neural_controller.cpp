@@ -1090,7 +1090,9 @@ controller_interface::return_type NeuralController::update(const rclcpp::Time &t
     continuous_request_started_ = 0.0;
     continuous_stage_ = 5;
     RCLCPP_ERROR(get_node()->get_logger(), "Rolling takeover rejected: %s", e.what());
+    if (continuous_active_) estop_active_ = true;
   }
+  if (estop_active_.load()) return controller_interface::return_type::OK;
   const auto &policy_params = transition_active_ ? transition_params_ :
       (continuous_active_ ? continuous_params_ : params_);
   const auto &policy_model = transition_active_ ? transition_model_ :
@@ -1117,9 +1119,9 @@ controller_interface::return_type NeuralController::update(const rclcpp::Time &t
     cmd_x_vel_ = cmd_y_vel_ = cmd_yaw_vel_ = 0.0F;
     desired_world_z_in_body_frame_ = tf2::Vector3(0, 0, 1);
   } else if (continuous_active_) {
-    cmd_x_vel_ = continuous_tick_command_.vx;
+    cmd_x_vel_ = continuous_handoff_.vx;
     cmd_y_vel_ = 0.0F;
-    cmd_yaw_vel_ = continuous_tick_command_.yaw;
+    cmd_yaw_vel_ = continuous_handoff_.yaw;
     desired_world_z_in_body_frame_ = tf2::Vector3(0, 0, 1);
   }
 
@@ -1315,6 +1317,38 @@ controller_interface::return_type NeuralController::update(const rclcpp::Time &t
   // Perform policy inference
   policy_model->forward(observation_.data());
 
+  // The startup actor remains live during the blend. Keep its own full history:
+  // locked PPO abduction actions cannot reconstruct startup action history.
+  const bool blending = continuous_active_ && continuous_handoff_.stage == 6;
+  if (blending) {
+    std::copy_n(observation_.begin(), 24, continuous_startup_history_.begin());
+    continuous_startup_history_[6] = continuous_startup_history_[7] =
+        continuous_startup_history_[8] = 0.0F;
+    for (int i = 0; i < 12; ++i) {
+      continuous_startup_history_[12+i] += continuous_params_.default_joint_pos[i] -
+          params_.default_joint_pos[i];
+      continuous_startup_history_[24+i] = RollingHandoff::effective_action(
+          action_[i], params_.default_joint_pos[i], params_.action_scales[i]);
+    }
+    for (auto &v : continuous_startup_history_)
+      v = std::clamp(v, static_cast<float>(-params_.observation_limit),
+                     static_cast<float>(params_.observation_limit));
+    model_->forward(continuous_startup_history_.data());
+    for (int i = 0; i < 12; ++i) {
+      const float raw = model_->getOutputs()[i];
+      if (!std::isfinite(raw)) {
+        estop_active_ = true;
+        return controller_interface::return_type::OK;
+      }
+      continuous_startup_target_[i] = std::clamp(
+          params_.default_joint_pos[i] + params_.action_scales[i] * raw,
+          params_.joint_lower_limits[i], params_.joint_upper_limits[i]);
+    }
+    std::rotate(continuous_startup_history_.rbegin(),
+                continuous_startup_history_.rbegin() + kSingleObservationSize,
+                continuous_startup_history_.rend());
+  }
+
   // Measure the time after policy inference
   auto end_time = std::chrono::high_resolution_clock::now();
   auto inference_duration_us =
@@ -1365,6 +1399,19 @@ controller_interface::return_type NeuralController::update(const rclcpp::Time &t
       if (transition_active_) {
         const float max_delta = static_cast<float>(transition_rate_limits_[i] * transition_timestep_s_);
         target = std::clamp(target, action_[i] - max_delta, action_[i] + max_delta);
+      } else if (continuous_active_) {
+        if (blending) target = static_cast<float>(
+            (1.0 - continuous_handoff_.alpha) * continuous_startup_target_[i] +
+            continuous_handoff_.alpha * target);
+        const float cap = static_cast<float>(params_.rolling_handoff_max_target_delta_rad);
+        target = std::clamp(target, action_[i] - cap, action_[i] + cap);
+        // Both actors observe the command actually sent, including the blend
+        // and rate limiter. PPO locked-axis previous actions remain zero.
+        observation_.at(kLastActionIdx + i) = RollingHandoff::effective_action(
+            target, default_joint_pos, action_scale);
+        if (blending) continuous_startup_history_[kLastActionIdx+i] =
+            RollingHandoff::effective_action(target, params_.default_joint_pos[i],
+                                             params_.action_scales[i]);
       }
       action_.at(i) = target;
     } else {
@@ -1386,11 +1433,13 @@ controller_interface::return_type NeuralController::update(const rclcpp::Time &t
     command_interfaces_map_.at(params_.joint_names.at(i))
         .at("kp")
         .get()
-        .set_value(policy_params.kps.at(i) * params_.gain_multiplier);
+        .set_value((blending ? (1.0 - continuous_handoff_.alpha) * params_.kps.at(i) +
+                    continuous_handoff_.alpha * policy_params.kps.at(i) : policy_params.kps.at(i)) * params_.gain_multiplier);
     command_interfaces_map_.at(params_.joint_names.at(i))
         .at("kd")
         .get()
-        .set_value(policy_params.kds.at(i) * params_.gain_multiplier);
+        .set_value((blending ? (1.0 - continuous_handoff_.alpha) * params_.kds.at(i) +
+                    continuous_handoff_.alpha * policy_params.kds.at(i) : policy_params.kds.at(i)) * params_.gain_multiplier);
   }
 
   if (!transition_active_ && fade_in_multiplier >= 1.0F) rolling_policy_ready_ = true;

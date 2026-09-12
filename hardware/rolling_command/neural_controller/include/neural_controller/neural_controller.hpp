@@ -18,6 +18,7 @@
 #include "neural_controller/cem_phase_controller.hpp"
 #include "neural_controller/command_encoding.hpp"
 #include "neural_controller/rolling_history.hpp"
+#include "neural_controller/rolling_handoff.hpp"
 #include "rclcpp/subscription.hpp"
 #include "rclcpp_lifecycle/node_interfaces/lifecycle_node_interface.hpp"
 #include "rclcpp_lifecycle/state.hpp"
@@ -136,13 +137,18 @@ class NeuralController : public controller_interface::ControllerInterface {
   rclcpp::Publisher<std_msgs::msg::String>::SharedPtr rolling_state_publisher_;
   rclcpp::TimerBase::SharedPtr rolling_state_timer_;
   std::atomic_bool continuous_requested_{false};
-  // 0 unavailable/inactive, 1 startup, 2 pending, 3 continuous, 4 stop, 5 rejected.
+  // 0 inactive, 1 startup, 2 pending, 3 continuous, 4 stop, 5 rejected,
+  // 6 blending, 7 straight settling, 8 command ramp.
   std::atomic_int continuous_stage_{0};
   bool continuous_active_ = false;
   int continuous_history_ticks_ = 0;
   double continuous_last_tick_ = 0.0, continuous_pitch_ = 0.0;
   double continuous_turn_ = 0.0, continuous_request_started_ = 0.0;
   std::array<float, 720> continuous_candidate_{};
+  std::vector<float> continuous_startup_history_;
+  std::array<float, 12> continuous_startup_target_{};
+  RollingHandoff continuous_handoff_;
+  int continuous_window_ticks_ = 0;
   Params transition_params_;
   std::shared_ptr<RTNeural::Model<float>> transition_model_;
   std::array<double, kActionSize> transition_rate_limits_{};

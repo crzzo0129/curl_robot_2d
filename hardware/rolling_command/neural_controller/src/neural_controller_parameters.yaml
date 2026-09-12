@@ -9,7 +9,7 @@ neural_controller:
     {
       type: double,
       default_value: 0.12,
-      description: "Reject takeover until all new targets differ from last sent targets by at most this amount; no automatic abduction ramp.",
+      description: "Maximum applied target change per 20ms rolling tick, including blending and subsequent PPO control. Candidate selection also requires <=0.12rad plus phase/axis/rate gates.",
     }
   controller_backend:
     {
