@@ -127,6 +127,10 @@ def parse_args(argv=None):
                         help="Validated speed/yaw steering table; enables elevation-only tilt for commanded turns")
     parser.add_argument("--command-interval-s", type=float, default=10.0)
     parser.add_argument("--forward-velocity-frame", choices=("world", "heading"), default="world")
+    parser.add_argument('--gradient-diagnostics', action='store_true')
+    parser.add_argument('--checkpoint-selection', choices=('success','handoff_speed'), default='success')
+    parser.add_argument('--tracking-success-drop', type=float, default=.03,
+                        help='allowed absolute success/full-horizon drop from step=0 for speed selection and stopping')
     parser.add_argument("--handoff-bank", type=Path, help="NPZ from collect_rolling_handoff_bank")
     parser.add_argument("--handoff-fraction", type=float, default=0.5)
     parser.add_argument("--handoff-speed-slew-m-s2", type=float, default=0.15)
@@ -316,6 +320,10 @@ def parse_args(argv=None):
         parser.error("fixed-eval-envs must be nonnegative and training-metrics-steps positive")
     if args.eval_only and args.fixed_eval_envs < 1:
         parser.error("--eval-only requires --fixed-eval-envs > 0")
+    if not math.isfinite(args.tracking_success_drop) or not 0 <= args.tracking_success_drop <= .1:
+        parser.error('--tracking-success-drop must be finite and in [0,0.1]')
+    if args.checkpoint_selection == 'handoff_speed' and (args.handoff_bank is None or args.fixed_eval_envs < 1):
+        parser.error('handoff speed selection requires handoff bank and fixed evaluation')
     if not math.isfinite(args.clipping_epsilon) or not 0 < args.clipping_epsilon < 1:
         parser.error("--clipping-epsilon must be in (0,1)")
     if not math.isfinite(args.reward_scaling) or args.reward_scaling <= 0:
@@ -653,7 +661,7 @@ def main(argv=None):
             handle.write("\n")
         if "eval/episode_movement_success" not in clean:
             selected = {name: value for name, value in clean.items()
-                        if any(word in name for word in ("loss", "kl", "entropy", "policy_dist", "learning_rate"))}
+                        if any(word in name for word in ("loss", "kl", "entropy", "policy_dist", "learning_rate", "grad"))}
             print(f"[PPO training] step={int(step):,} {selected}", flush=True)
             return
         turns = clean.get("eval/episode_roll_progress_rad", 0.0) / (
@@ -685,7 +693,7 @@ def main(argv=None):
         reasons = {name.removeprefix("eval/episode_"): value for name, value in clean.items()
                    if name.startswith("eval/episode_failure_") and not name.endswith("_std")}
         learning = {name: value for name, value in clean.items()
-                    if name.startswith("training/") and any(word in name for word in ("loss", "kl", "entropy", "policy_dist"))}
+                    if name.startswith("training/") and any(word in name for word in ("loss", "kl", "entropy", "policy_dist", "learning_rate", "grad"))}
         print(f"  failures={reasons}\n  PPO={learning}", flush=True)
         with (args.out / "metrics_history.json").open("w", encoding="utf-8") as handle:
             json.dump(history, handle, indent=2)
@@ -818,12 +826,20 @@ def main(argv=None):
                 item["success_rate"], -(item.get("steady_forward_mae_m_s")
                     if item.get("steady_forward_mae_m_s") is not None else item["forward_mae_m_s"]),
                 -item["yaw_mae_rad_s"]))
+            selection = 'Highest fixed-panel success, then lowest steady vx MAE, then yaw MAE; requires independent validation.'
+            if args.checkpoint_selection == 'handoff_speed':
+                from curl_robot_2d_mjx.rolling_speed_tracking import select_speed_checkpoint
+                best = select_speed_checkpoint(fixed_history, args.tracking_success_drop)
+                selection = ('Lowest handoff 1s-window vx MAE among checkpoints retaining baseline success '
+                             'and each reset source full-horizon rate within '+str(args.tracking_success_drop)+
+                             '; then handoff instantaneous steady vx MAE and yaw MAE. Independent validation required.')
             write_json(args.out / "best_fixed_checkpoint.json", {
                 "step": best["step"], "checkpoint": best["checkpoint"],
                 "success_rate": best["success_rate"], "forward_mae_m_s": best["forward_mae_m_s"],
                 "steady_forward_mae_m_s": best.get("steady_forward_mae_m_s"),
+                "handoff_tracking": best['tracking_by_reset_source'].get('handoff'),
                 "yaw_mae_rad_s": best["yaw_mae_rad_s"],
-                "selection": "Highest fixed-panel success, then lowest steady vx MAE (total MAE if no steady samples), then lowest yaw MAE; requires independent validation.",
+                "selection": selection,
             })
             print(
                 f"[fixed PPO eval] step={step:,} success={record['success_rate']:.1%} "
@@ -838,6 +854,13 @@ def main(argv=None):
                       f"steady_vx_mae={record['steady_forward_mae_m_s']} "
                       f"steady_reached={record['steady_phase_reached_episodes']}/{args.fixed_eval_envs}\n"
                       f"  reset_sources={record['tracking_by_reset_source']}", flush=True)
+            if (not args.eval_only and args.checkpoint_selection == 'handoff_speed' and step > 0):
+                from curl_robot_2d_mjx.rolling_speed_tracking import speed_checkpoint_eligible
+                if not speed_checkpoint_eligible(record, fixed_history[0], args.tracking_success_drop):
+                    write_json(args.out/'stopped.json', {'reason':'speed run exceeded baseline survival tolerance',
+                        'checkpoint':str(checkpoint_dir),'best_checkpoint':best['checkpoint'],
+                        'tolerance':args.tracking_success_drop})
+                    raise SystemExit(f'Stopped after saving {checkpoint_dir}: survival regression during speed training')
             if (not args.eval_only and args.stop_success_drop is not None and step > 0
                     and record["success_rate"] < fixed_history[0]["success_rate"] - args.stop_success_drop):
                 write_json(args.out / "stopped.json", {
@@ -899,7 +922,9 @@ def main(argv=None):
         flush=True,
     )
     started = time.perf_counter()
-    _, final_params, final_metrics = ppo.train(
+    from curl_robot_2d_mjx.rolling_ppo_gradient_diagnostics import train_with_gradient_diagnostics
+    _, final_params, final_metrics = train_with_gradient_diagnostics(
+        ppo, enabled=args.gradient_diagnostics,
         environment=train_env,
         eval_env=eval_env,
         wrap_env_fn=wrap_rolling_student_dr_3d,

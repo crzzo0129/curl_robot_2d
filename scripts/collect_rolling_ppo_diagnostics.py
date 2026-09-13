@@ -43,6 +43,8 @@ def main():
                  "curl_robot_2d_mjx/wrappers_rolling_student_dr_3d.py",
                  "curl_robot_2d_mjx/rolling_student_snapshot_pool.py",
                  "curl_robot_2d_mjx/rolling_speed_tracking.py",
+                 "curl_robot_2d_mjx/rolling_ppo_gradient_diagnostics.py",
+                 "scripts/run_rolling_speed_fast.py",
                  "scripts/collect_rolling_handoff_bank.py",
                  "scripts/run_rolling_handoff_tracking.py",
                  "scripts/rolling_handoff.py",

@@ -73,6 +73,12 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
     import jax
     import jax.numpy as jp
     from curl_robot_2d_mjx.distillation_execution import timed_stage
+    from curl_robot_2d_mjx.rolling_speed_tracking import update_speed_window, update_speed_settling
+
+    dt = float(env.config.control_timestep)
+    window_steps = max(1, round(1.0 / dt))
+    # Consecutive samples must span two seconds, including both endpoints.
+    hold_steps = max(1, round(2.0 / dt)) + 1
 
     # This uses the unwrapped env: a finished episode is frozen, never reset.
     reset_keys = jax.random.split(jax.random.PRNGKey(seed), count)
@@ -98,6 +104,11 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
         "handoff_snapshot": np.asarray(jax.device_get(initial.info.get("handoff_snapshot", jp.zeros(count)))).tolist(),
         "observation_noise_scale": observation_noise_scale,
         "description": "Identical initial state, history, commands and RNG for every policy; failed episodes freeze.",
+        "speed_settling_definition": {"averaging_window_s":window_steps*dt,
+            "tolerance_m_s":.05, "required_hold_s":(hold_steps-1)*dt,
+            "clock":"seconds after snapshot reset; first_time is start of a subsequently confirmed interval",
+            "valid_window":"full window after command ramp; speed averaged along horizontal heading",
+            "unreached_value":-1},
     }
 
     @jax.jit
@@ -109,6 +120,8 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             "final_target_vx_abs": z,
             "transition_steps": z, "transition_vx_abs": z, "transition_yaw_abs": z,
             "steady_steps": z, "steady_vx_abs": z, "steady_yaw_abs": z,
+            "window_steps": z, "window_vx_abs": z, "window_in_band_steps": z,
+            "in_band_streak": z, "speed_settling_time_s": jp.full((count,), -1.),
             "action_error_sq": z, "std_sum": z, "saturation": z,
             **{name: z for name in failures},
             **{name: z for name in rewards},
@@ -116,13 +129,20 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
         }
 
         def advance(carry, _):
-            state, active, totals = carry
+            state, active, totals, speed_buffer = carry
             logits = networks.policy_network.apply(params[0], params[1], state.obs)
             dist = networks.parametric_action_distribution
             action = dist.mode(logits)
             reference = jax.vmap(anchor_policy)(state.obs["state"])
             candidate = step_batch(state, action)
             transition = candidate.metrics.get("handoff_transition_active", jp.zeros_like(z))
+            updated_buffer, window_error, window_valid = update_speed_window(
+                jp, speed_buffer, candidate.metrics['forward_velocity_m_s'],
+                candidate.metrics['forward_velocity_command'], transition, totals['steps']+1)
+            streak, settling_time, inside = update_speed_settling(
+                jp, totals['in_band_streak'], totals['speed_settling_time_s'],
+                window_error, window_valid, candidate.metrics['failed']<.5,
+                (totals['steps']+1)*dt, dt=dt, hold_steps=hold_steps)
             increment = {
                 "steps": jp.ones_like(z), "return": candidate.reward,
                 "turns": candidate.metrics["roll_progress_rad"] / (2 * jp.pi),
@@ -137,6 +157,9 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
                 "steady_steps": 1-transition,
                 "steady_vx_abs": (1-transition) * candidate.metrics["forward_velocity_error_abs_m_s"],
                 "steady_yaw_abs": (1-transition) * candidate.metrics["yaw_rate_error_abs_rad_s"],
+                "window_steps": window_valid.astype(jp.float32),
+                "window_vx_abs": jp.where(window_valid, jp.abs(window_error), 0.),
+                "window_in_band_steps": inside.astype(jp.float32),
                 "yaw_signed": (candidate.metrics["rolling_axis_heading_rate_rad_s"]
                                - candidate.metrics["yaw_rate_command_rad_s"]),
                 "action_error_sq": jp.mean(jp.square(action - reference), axis=-1),
@@ -145,6 +168,8 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
                 **{name: candidate.metrics[name] for name in rewards},
             }
             next_totals = dict(totals)
+            next_totals['in_band_streak'] = jp.where(active, streak, totals['in_band_streak'])
+            next_totals['speed_settling_time_s'] = jp.where(active, settling_time, totals['speed_settling_time_s'])
             for name, value in increment.items():
                 next_totals[name] = totals[name] + jp.where(active, value, 0.0)
             for name in (*failures, "failed"):
@@ -163,10 +188,12 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
                 return jp.where(mask, new, old)
 
             next_state = jax.tree_util.tree_map(keep, candidate, state)
-            return (next_state, active & (candidate.done < 0.5), next_totals), None
+            return (next_state, active & (candidate.done < 0.5), next_totals,
+                    keep(updated_buffer, speed_buffer)), None
 
-        (_, _, totals), _ = jax.lax.scan(
-            advance, (initial, jp.ones((count,), dtype=jp.bool_), totals),
+        (_, _, totals, _), _ = jax.lax.scan(
+            advance, (initial, jp.ones((count,), dtype=jp.bool_), totals,
+                      jp.zeros((count, window_steps, 3))),
             xs=None, length=episode_length,
         )
         return totals
@@ -179,6 +206,16 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             totals = jax.device_get(rollout(params))
         samples = max(float(np.sum(totals["steps"])), 1.0)
         success = (totals["failed"] < 0.5) & (totals["turns"] >= minimum_turns)
+        def window_summary(mask):
+            windows = float(np.sum(totals['window_steps'][mask]))
+            times = totals['speed_settling_time_s'][mask]
+            reached = times >= 0
+            return {'windowed_forward_mae_m_s':float(np.sum(totals['window_vx_abs'][mask])/windows) if windows else None,
+                'windowed_in_band_fraction':float(np.sum(totals['window_in_band_steps'][mask])/windows) if windows else None,
+                'windowed_samples':int(windows),
+                'ever_sustained_tracking_rate':float(np.mean(reached)) if len(times) else None,
+                'speed_settling_time_mean_s':float(np.mean(times[reached])) if np.any(reached) else None,
+                'speed_settling_time_median_s':float(np.median(times[reached])) if np.any(reached) else None}
         return {
             "episodes": count,
             "diagnostics_finite": bool(all(np.all(np.isfinite(value)) for value in totals.values())),
@@ -192,6 +229,7 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             "mean_return": float(np.mean(totals["return"])),
             "forward_mae_m_s": float(np.sum(totals["vx_abs"]) / samples),
             "forward_bias_m_s": float(np.sum(totals["vx_signed"]) / samples),
+            **window_summary(np.ones(count,dtype=bool)),
             "final_target_forward_mae_m_s": float(np.sum(totals["final_target_vx_abs"]) / samples),
             "transition_steps": int(np.sum(totals["transition_steps"])),
             "steady_steps": int(np.sum(totals["steady_steps"])),
@@ -206,6 +244,7 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             "steady_yaw_mae_rad_s": (float(np.sum(totals["steady_yaw_abs"])/np.sum(totals["steady_steps"]))
                                     if np.sum(totals["steady_steps"]) else None),
             "tracking_by_reset_source": {label: {
+                **window_summary(mask),
                 "episodes": int(np.sum(mask)),
                 "success_rate": float(np.mean(success[mask])) if np.any(mask) else None,
                 "failure_rate": float(np.mean(totals['failed'][mask]>.5)) if np.any(mask) else None,
