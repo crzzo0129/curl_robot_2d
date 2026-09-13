@@ -32,7 +32,7 @@ def main():
     files = []
     for name in ("training_config.json", "metrics_history.json", "summary.json",
                  "fixed_eval_manifest.json", "fixed_eval_history.json", "stopped.json",
-                 "best_fixed_checkpoint.json"):
+                 "best_fixed_checkpoint.json", "speed_run.json", "speed_result.json"):
         path = args.run / name
         if path.is_file():
             files.append((path, f"run/{name}"))

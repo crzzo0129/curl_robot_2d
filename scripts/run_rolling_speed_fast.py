@@ -60,7 +60,7 @@ def main():
     parser.add_argument('--out',type=Path)
     parser.add_argument('--steps',type=int,default=491520)
     parser.add_argument('--learning-rate',type=float,default=1e-5)
-    parser.add_argument('--max-learning-rate',type=float,default=3e-5)
+    parser.add_argument('--max-learning-rate',type=float,default=1e-5)
     parser.add_argument('--dry-run',action='store_true')
     args = parser.parse_args()
     if args.step < 0 or args.steps < 163840 or args.steps % 40960:

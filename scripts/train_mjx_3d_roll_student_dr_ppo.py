@@ -651,6 +651,7 @@ def main(argv=None):
               f"{task.forward_command_min_m_s}..{task.forward_command_max_m_s} "
               f"slew={task.handoff_speed_slew_m_s2}m/s^2; fixed final commands, 10s recipe", flush=True)
     history = []
+    pending_survival_stop = None
 
     def progress(step, metrics):
         clean = {name: _float(value) for name, value in metrics.items()}
@@ -663,6 +664,8 @@ def main(argv=None):
             selected = {name: value for name, value in clean.items()
                         if any(word in name for word in ("loss", "kl", "entropy", "policy_dist", "learning_rate", "grad"))}
             print(f"[PPO training] step={int(step):,} {selected}", flush=True)
+            if pending_survival_stop is not None:
+                raise SystemExit(pending_survival_stop)
             return
         turns = clean.get("eval/episode_roll_progress_rad", 0.0) / (
             2.0 * math.pi
@@ -698,6 +701,11 @@ def main(argv=None):
         with (args.out / "metrics_history.json").open("w", encoding="utf-8") as handle:
             json.dump(history, handle, indent=2)
             handle.write("\n")
+
+        # Brax calls policy_params_fn before writing this epoch's training
+        # metrics. Delay survival stops until here, without another PPO update.
+        if pending_survival_stop is not None:
+            raise SystemExit(pending_survival_stop)
 
     optional_train_kwargs = dict(adaptive_kwargs)
     for name, value in (("clipping_epsilon", args.clipping_epsilon),
@@ -784,7 +792,7 @@ def main(argv=None):
 
     def capture_policy(step, make_policy, params):
         del make_policy
-        nonlocal initial_actor
+        nonlocal initial_actor, pending_survival_stop
         step = int(step)
         host_params = jax.tree_util.tree_map(np.asarray, params)
         checkpoint_dir = args.out / "checkpoints" / f"{step:012d}"
@@ -860,8 +868,8 @@ def main(argv=None):
                     write_json(args.out/'stopped.json', {'reason':'speed run exceeded baseline survival tolerance',
                         'checkpoint':str(checkpoint_dir),'best_checkpoint':best['checkpoint'],
                         'tolerance':args.tracking_success_drop})
-                    raise SystemExit(f'Stopped after saving {checkpoint_dir}: survival regression during speed training')
-            if (not args.eval_only and args.stop_success_drop is not None and step > 0
+                    pending_survival_stop = f'Stopped after saving {checkpoint_dir} and training metrics: survival regression during speed training'
+            if (pending_survival_stop is None and not args.eval_only and args.stop_success_drop is not None and step > 0
                     and record["success_rate"] < fixed_history[0]["success_rate"] - args.stop_success_drop):
                 write_json(args.out / "stopped.json", {
                     "reason": "fixed evaluation success dropped below baseline tolerance",
