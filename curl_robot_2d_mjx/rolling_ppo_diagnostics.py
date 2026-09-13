@@ -40,6 +40,11 @@ def summarize_command_groups(totals, forward_commands, yaw_commands, *,
             "insufficient_turns_without_failure": int(np.sum(mask & ~failed & ~success)),
             "forward_mae_m_s": float(np.sum(totals["vx_abs"][mask]) / samples),
             "forward_bias_m_s": float(np.sum(totals["vx_signed"][mask]) / samples),
+            "transition_steps": int(np.sum(totals["transition_steps"][mask])) if "transition_steps" in totals else 0,
+            "steady_steps": int(np.sum(totals["steady_steps"][mask])) if "steady_steps" in totals else 0,
+            "steady_forward_mae_m_s": (
+                float(np.sum(totals["steady_vx_abs"][mask]) / np.sum(totals["steady_steps"][mask]))
+                if "steady_steps" in totals and np.sum(totals["steady_steps"][mask]) else None),
             "yaw_mae_rad_s": float(np.sum(totals["yaw_abs"][mask]) / samples),
             "yaw_bias_rad_s": float(np.sum(totals["yaw_signed"][mask]) / samples),
             "full_horizon_failure_free_episodes": int(np.sum(survivors)),
@@ -88,6 +93,9 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
         "reset_keys": np.asarray(jax.device_get(reset_keys)).tolist(),
         "forward_commands_m_s": np.asarray(jax.device_get(initial.info["forward_velocity_command"])).tolist(),
         "yaw_commands_rad_s": np.asarray(jax.device_get(initial.info["yaw_rate_command"])).tolist(),
+        "target_forward_commands_m_s": np.asarray(jax.device_get(initial.info["v_cmd_sequence"][:,0])).tolist(),
+        "target_yaw_commands_rad_s": np.asarray(jax.device_get(initial.info["yaw_cmd_sequence"][:,0])).tolist(),
+        "handoff_snapshot": np.asarray(jax.device_get(initial.info.get("handoff_snapshot", jp.zeros(count)))).tolist(),
         "observation_noise_scale": observation_noise_scale,
         "description": "Identical initial state, history, commands and RNG for every policy; failed episodes freeze.",
     }
@@ -98,6 +106,9 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
         totals = {
             "steps": z, "return": z, "turns": z,
             "vx_abs": z, "vx_signed": z, "yaw_abs": z, "yaw_signed": z,
+            "final_target_vx_abs": z,
+            "transition_steps": z, "transition_vx_abs": z, "transition_yaw_abs": z,
+            "steady_steps": z, "steady_vx_abs": z, "steady_yaw_abs": z,
             "action_error_sq": z, "std_sum": z, "saturation": z,
             **{name: z for name in failures},
             **{name: z for name in rewards},
@@ -111,12 +122,21 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             action = dist.mode(logits)
             reference = jax.vmap(anchor_policy)(state.obs["state"])
             candidate = step_batch(state, action)
+            transition = candidate.metrics.get("handoff_transition_active", jp.zeros_like(z))
             increment = {
                 "steps": jp.ones_like(z), "return": candidate.reward,
                 "turns": candidate.metrics["roll_progress_rad"] / (2 * jp.pi),
                 "vx_abs": candidate.metrics["forward_velocity_error_abs_m_s"],
                 "vx_signed": candidate.metrics["forward_velocity_error_m_s"],
+                "final_target_vx_abs": jp.abs(candidate.metrics["forward_velocity_m_s"]
+                    - candidate.metrics.get("target_forward_velocity_command", candidate.info["forward_velocity_command"])),
                 "yaw_abs": candidate.metrics["yaw_rate_error_abs_rad_s"],
+                "transition_steps": transition,
+                "transition_vx_abs": transition * candidate.metrics["forward_velocity_error_abs_m_s"],
+                "transition_yaw_abs": transition * candidate.metrics["yaw_rate_error_abs_rad_s"],
+                "steady_steps": 1-transition,
+                "steady_vx_abs": (1-transition) * candidate.metrics["forward_velocity_error_abs_m_s"],
+                "steady_yaw_abs": (1-transition) * candidate.metrics["yaw_rate_error_abs_rad_s"],
                 "yaw_signed": (candidate.metrics["rolling_axis_heading_rate_rad_s"]
                                - candidate.metrics["yaw_rate_command_rad_s"]),
                 "action_error_sq": jp.mean(jp.square(action - reference), axis=-1),
@@ -131,8 +151,10 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
                 next_totals[name] = jp.maximum(totals[name], jp.where(active, candidate.metrics[name], 0.0))
             next_totals["non_lateral_failed"] = jp.maximum(
                 totals["non_lateral_failed"], jp.where(active, candidate.metrics["failed_non_lateral"], 0.0))
-            changed = ((jp.abs(candidate.info["forward_velocity_command"] - initial.info["forward_velocity_command"]) > 1e-6)
-                       | (jp.abs(candidate.info["yaw_rate_command"] - initial.info["yaw_rate_command"]) > 1e-6))
+            changed = ((jp.abs(candidate.metrics.get("target_forward_velocity_command", candidate.info["forward_velocity_command"])
+                              - initial.info["v_cmd_sequence"][:,0]) > 1e-6)
+                       | (jp.abs(candidate.metrics.get("target_yaw_rate_command", candidate.info["yaw_rate_command"])
+                                 - initial.info["yaw_cmd_sequence"][:,0]) > 1e-6))
             next_totals["command_changed"] = jp.maximum(
                 totals["command_changed"], (active & changed).astype(jp.float32))
 
@@ -170,6 +192,32 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             "mean_return": float(np.mean(totals["return"])),
             "forward_mae_m_s": float(np.sum(totals["vx_abs"]) / samples),
             "forward_bias_m_s": float(np.sum(totals["vx_signed"]) / samples),
+            "final_target_forward_mae_m_s": float(np.sum(totals["final_target_vx_abs"]) / samples),
+            "transition_steps": int(np.sum(totals["transition_steps"])),
+            "steady_steps": int(np.sum(totals["steady_steps"])),
+            "steady_phase_reached_episodes": int(np.sum(totals["steady_steps"] > 0)),
+            "tracking_definition": "Transition/steady split follows commanded ramp completion, not actual convergence. Errors use active transitions, including failure; final_target MAE includes the initial speed gap.",
+            "transition_forward_mae_m_s": (float(np.sum(totals["transition_vx_abs"])/np.sum(totals["transition_steps"]))
+                                           if np.sum(totals["transition_steps"]) else None),
+            "steady_forward_mae_m_s": (float(np.sum(totals["steady_vx_abs"])/np.sum(totals["steady_steps"]))
+                                       if np.sum(totals["steady_steps"]) else None),
+            "transition_yaw_mae_rad_s": (float(np.sum(totals["transition_yaw_abs"])/np.sum(totals["transition_steps"]))
+                                        if np.sum(totals["transition_steps"]) else None),
+            "steady_yaw_mae_rad_s": (float(np.sum(totals["steady_yaw_abs"])/np.sum(totals["steady_steps"]))
+                                    if np.sum(totals["steady_steps"]) else None),
+            "tracking_by_reset_source": {label: {
+                "episodes": int(np.sum(mask)),
+                "success_rate": float(np.mean(success[mask])) if np.any(mask) else None,
+                "failure_rate": float(np.mean(totals['failed'][mask]>.5)) if np.any(mask) else None,
+                "full_horizon_rate": float(np.mean(totals['steps'][mask]==episode_length)) if np.any(mask) else None,
+                "steady_phase_reached_episodes": int(np.sum(totals['steady_steps'][mask]>0)),
+                "steady_steps": int(np.sum(totals['steady_steps'][mask])),
+                "transition_forward_mae_m_s": (float(np.sum(totals['transition_vx_abs'][mask])/np.sum(totals['transition_steps'][mask]))
+                    if np.sum(totals['transition_steps'][mask]) else None),
+                "steady_forward_mae_m_s": (float(np.sum(totals["steady_vx_abs"][mask]) / np.sum(totals["steady_steps"][mask]))
+                                           if np.sum(totals["steady_steps"][mask]) else None)}
+                for label,mask in (("handoff", np.asarray(manifest["handoff_snapshot"])>.5),
+                                   ("mature", np.asarray(manifest["handoff_snapshot"])<=.5))},
             "yaw_mae_rad_s": float(np.sum(totals["yaw_abs"]) / samples),
             "yaw_bias_rad_s": float(np.sum(totals["yaw_signed"]) / samples),
             "same_state_student_action_rmse": float(np.sqrt(np.sum(totals["action_error_sq"]) / samples)),
@@ -178,8 +226,8 @@ def make_fixed_evaluator(env, networks, anchor_policy, *, count, seed,
             "failure_counts": {name: int(np.sum(totals[name] > 0.5)) for name in failures},
             "reward_mean_per_active_step": {name: float(np.sum(totals[name]) / samples) for name in rewards},
             "command_evaluation": (summarize_command_groups(
-                totals, np.asarray(manifest["forward_commands_m_s"]),
-                np.asarray(manifest["yaw_commands_rad_s"]), speed_min=speed_bounds[0],
+                totals, np.asarray(manifest["target_forward_commands_m_s"]),
+                np.asarray(manifest["target_yaw_commands_rad_s"]), speed_min=speed_bounds[0],
                 speed_max=speed_bounds[1], episode_length=episode_length,
                 minimum_turns=minimum_turns) if speed_bounds is not None else None),
             "per_episode": {name: np.asarray(value).tolist() for name, value in totals.items()},

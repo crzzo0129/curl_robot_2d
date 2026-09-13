@@ -75,6 +75,11 @@ def validate_contract(config, training, dense):
     for key in ("kp", "kd"):
         if not math.isfinite(float(config[key])) or float(config[key]) <= 0:
             raise ValueError(f"Invalid {key}")
+    for key, maximum in (("kps", 10.0), ("kds", 1.0)):
+        if key in config:
+            gains = _array(config[key], key)
+            if gains.shape != (12,) or not np.all(np.isfinite(gains) & (gains > 0) & (gains <= maximum)):
+                raise ValueError(f"Invalid per-joint {key}")
 
 
 def verify_export(checkpoint, document):
@@ -150,9 +155,17 @@ def main():
         "requires_live_history_and_action_coordinate_handoff": True,
         "note": "Metadata only; the existing ROS controller does not enforce these requirements.",
     }
+    per_joint_gains = any(key in config and not np.allclose(config[key], config[key][0])
+                          for key in ("kps", "kds"))
     document.update(joint_names=list(HARDWARE_CONTROLLER_JOINT_NAMES_3D),
-                    export_contract="rolling_command_ppo_36x20_batchnorm_v1",
+                    export_contract=("rolling_command_ppo_36x20_batchnorm_v2_joint_gains" if per_joint_gains
+                                     else "rolling_command_ppo_36x20_batchnorm_v1"),
                     student_sha256=sha256(student), controller_requirements=requirements)
+    if config.get('handoff_command_transition'):
+        # Existing on-robot loaders intentionally reject this until their
+        # command transition matches the newly trained controller contract.
+        document['export_contract'] = 'rolling_command_ppo_36x20_heading_handoff_v3'
+        requirements['handoff_command_transition'] = config['handoff_command_transition']
     model_name = f"rolling_command_ppo_{step:012d}.json"
     out.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="rolling_export_", dir=out.parent) as temporary:

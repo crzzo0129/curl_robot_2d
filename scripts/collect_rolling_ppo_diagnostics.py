@@ -42,6 +42,11 @@ def main():
                  "curl_robot_2d_mjx/environment_rolling_student_dr_3d.py",
                  "curl_robot_2d_mjx/wrappers_rolling_student_dr_3d.py",
                  "curl_robot_2d_mjx/rolling_student_snapshot_pool.py",
+                 "curl_robot_2d_mjx/rolling_speed_tracking.py",
+                 "scripts/collect_rolling_handoff_bank.py",
+                 "scripts/run_rolling_handoff_tracking.py",
+                 "scripts/rolling_handoff.py",
+                 "scripts/simulate_rolling_policy_sequence.py",
                  "curl_robot_2d_mjx/rolling_student_dr_ppo_3d.py",
                  "curl_robot_2d_mjx/rolling_ppo_diagnostics.py",
                  "curl_robot_2d_mjx/reward_3d.py",
@@ -70,6 +75,13 @@ def main():
     config_path = args.run / "training_config.json"
     if config_path.is_file():
         saved_config = json.loads(config_path.read_text(encoding="utf-8"))
+        bank = saved_config.get('args',{}).get('handoff_bank')
+        if bank:
+            bank_path = Path(bank)
+            for suffix in ('.json','.log'):
+                sidecar = bank_path.with_suffix(suffix)
+                if sidecar.is_file():
+                    files.append((sidecar,'run/handoff_bank'+suffix))
         calibration = saved_config.get("task", {}).get("steering_calibration_path")
         if calibration:
             calibration_path = Path(calibration)

@@ -126,6 +126,11 @@ def parse_args(argv=None):
     parser.add_argument("--steering-calibration", type=Path, default=None,
                         help="Validated speed/yaw steering table; enables elevation-only tilt for commanded turns")
     parser.add_argument("--command-interval-s", type=float, default=10.0)
+    parser.add_argument("--forward-velocity-frame", choices=("world", "heading"), default="world")
+    parser.add_argument("--handoff-bank", type=Path, help="NPZ from collect_rolling_handoff_bank")
+    parser.add_argument("--handoff-fraction", type=float, default=0.5)
+    parser.add_argument("--handoff-speed-slew-m-s2", type=float, default=0.15)
+    parser.add_argument("--handoff-initial-speed-max-m-s", type=float, default=1.05)
     parser.add_argument("--rolling-snapshots", action=argparse.BooleanOptionalAction, default=None,
                         help="start PPO and its evaluation from cached rolling states; default on for command-conditioned training")
     parser.add_argument("--snapshot-pool-size", type=int, default=512)
@@ -136,6 +141,8 @@ def parse_args(argv=None):
     parser.add_argument("--snapshot-warmup-max-steps", type=int, default=300)
     add_stand_startup_arguments(parser)
     parser.add_argument("--dr-strength", type=float, default=0.25)
+    parser.add_argument("--rolling-hip-knee-kp-scale", type=float, default=1.0,
+                        help="scale nominal hip/knee P only; 1.1 gives P=5.5, abduction P=5 and all D=0.1")
     parser.add_argument("--student-anchor-weight", type=float, default=0.02)
     parser.add_argument("--forward-tracking-weight", type=float,
                         help="override command-conditioned forward tracking reward weight")
@@ -195,6 +202,18 @@ def parse_args(argv=None):
         args.fixed_eval_envs = 64 if args.dr_strength == 0 else 0
     if args.rolling_snapshots is None:
         args.rolling_snapshots = args.command_conditioned
+    if args.handoff_bank is not None:
+        if not args.handoff_bank.is_file() or not args.command_conditioned or not args.rolling_snapshots:
+            parser.error("--handoff-bank requires an existing bank, commands and rolling snapshots")
+        if args.forward_velocity_frame != "heading" or args.snapshot_sampling != "uniform":
+            parser.error("handoff training requires heading-frame speed and uniform mixed-pool sampling")
+        if args.rolling_hip_knee_kp_scale != 1.0:
+            parser.error("handoff bank was collected at P=5; use --rolling-hip-knee-kp-scale 1")
+    if not math.isfinite(args.handoff_fraction) or not 0 < args.handoff_fraction < 1:
+        parser.error("--handoff-fraction must be in (0,1)")
+    for name in ("handoff_speed_slew_m_s2", "handoff_initial_speed_max_m_s"):
+        if not math.isfinite(getattr(args,name)) or getattr(args,name) <= 0:
+            parser.error(name + " must be finite and positive")
     if args.controller is None:
         args.controller = cem_controller_path_3d(args.geometry)
     values = PRESETS[args.preset].copy()
@@ -236,6 +255,8 @@ def parse_args(argv=None):
             parser.error(f"{name} must be finite and nonnegative")
     if args.dr_strength > 1.0:
         parser.error("--dr-strength must not exceed one")
+    if not math.isfinite(args.rolling_hip_knee_kp_scale) or not 0 < args.rolling_hip_knee_kp_scale <= 2:
+        parser.error("--rolling-hip-knee-kp-scale must be finite and in (0,2]")
     if args.snapshot_sampling != "uniform" and not (args.command_conditioned and args.rolling_snapshots):
         parser.error("tracking-focused sampling requires command-conditioned rolling snapshots")
     for name in ("forward_tracking_weight", "yaw_tracking_weight"):
@@ -282,12 +303,19 @@ def parse_args(argv=None):
         parser.error("--discounting must be in (0, 1]")
     if args.episode_length < 1 or args.unroll_length < 1 or args.updates_per_batch < 1:
         parser.error("episode and rollout lengths must be positive")
+    if args.handoff_bank is not None:
+        if args.handoff_initial_speed_max_m_s < args.forward_command_max_m_s:
+            parser.error('handoff initial speed cap must cover the final command range')
+        if args.command_interval_s < args.episode_length * .02:
+            parser.error('handoff recipe requires a fixed final command throughout each episode')
+        transition_limit = max((args.handoff_initial_speed_max_m_s - args.forward_command_min_m_s)
+                               / args.handoff_speed_slew_m_s2, args.turn_command_max_rad_s / .07)
+        if transition_limit + 2. > args.episode_length * .02:
+            parser.error('handoff evaluation must leave at least 2 seconds after the longest command ramp')
     if args.fixed_eval_envs < 0 or args.training_metrics_steps < 1:
         parser.error("fixed-eval-envs must be nonnegative and training-metrics-steps positive")
     if args.eval_only and args.fixed_eval_envs < 1:
         parser.error("--eval-only requires --fixed-eval-envs > 0")
-    if args.fixed_eval_envs and args.dr_strength != 0:
-        parser.error("fixed evaluation currently requires --dr-strength 0; use --fixed-eval-envs 0 for deploy-DR runs")
     if not math.isfinite(args.clipping_epsilon) or not 0 < args.clipping_epsilon < 1:
         parser.error("--clipping-epsilon must be in (0,1)")
     if not math.isfinite(args.reward_scaling) or args.reward_scaling <= 0:
@@ -415,6 +443,10 @@ def main(argv=None):
     task = replace(
         task,
         terminate_lateral_drift_m=args.terminate_lateral_drift_m,
+        rolling_hip_knee_kp_scale=args.rolling_hip_knee_kp_scale,
+        forward_velocity_frame=args.forward_velocity_frame,
+        handoff_speed_slew_m_s2=args.handoff_speed_slew_m_s2 if args.handoff_bank else 0.0,
+        handoff_initial_speed_max_m_s=args.handoff_initial_speed_max_m_s,
     )
     deploy_settings = RollingStudentDeployDomainRandomization().scaled(
         args.dr_strength
@@ -440,11 +472,11 @@ def main(argv=None):
         reward_config = replace(reward_config, **overrides)
     critic_observation_size = ROLLING_STUDENT_PPO_CRITIC_OBSERVATION_SIZE_3D + (3 if args.command_conditioned else 0)
 
-    def make_env(seed, noise_scale, snapshot_pool=None, snapshot_sampling_cdf=None):
+    def make_env(seed, noise_scale, snapshot_pool=None, snapshot_sampling_cdf=None, *, nominal=False):
         base = make_brax_env_3d(task, reward_config=reward_config, cem_reference=reference, seed=seed)
         return make_rolling_student_dr_env_3d(
             base,
-            deploy_settings,
+            RollingStudentDeployDomainRandomization().scaled(0.0) if nominal else deploy_settings,
             student_anchor_policy=student_anchor_policy,
             student_anchor_weight=args.student_anchor_weight,
             observation_noise_scale=noise_scale,
@@ -473,8 +505,22 @@ def main(argv=None):
         eval_pool, eval_pool_summary = build_cem_snapshot_pool(
             teacher_env, observation_env, count=args.eval_snapshot_pool_size, seed=args.seed + 40000, **pool_kwargs)
         snapshot_summary = {"training": train_pool_summary, "evaluation": eval_pool_summary}
+        if args.handoff_bank is not None:
+            from curl_robot_2d_mjx.rolling_student_snapshot_pool import (
+                build_handoff_snapshot_pool, append_handoff_pool)
+            def add_handoff(mature, seed, evaluation):
+                n = max(1, round(mature[1].shape[0] * args.handoff_fraction / (1-args.handoff_fraction)))
+                n = ((n + pool_devices - 1) // pool_devices) * pool_devices
+                handoff_pool, details = build_handoff_snapshot_pool(
+                    observation_env.base_env, args.handoff_bank, count=n, seed=seed,
+                    evaluation=evaluation, num_devices=pool_devices)
+                details['actual_handoff_fraction'] = n / (n + mature[1].shape[0])
+                return append_handoff_pool(mature, handoff_pool), details
+            if train_pool is not None:
+                train_pool, snapshot_summary['handoff_training'] = add_handoff(train_pool,args.seed+50000,False)
+            eval_pool, snapshot_summary['handoff_evaluation'] = add_handoff(eval_pool,args.seed+60000,True)
         snapshot_summary["deploy_dr_reset_contract"] = (
-            "Each nominal CEM snapshot keeps qpos/qvel/ctrl/time, phase, command and "
+            "Each nominal rolling snapshot keeps qpos/qvel/ctrl/time, phase, command and "
             "actor history; contacts and other derived MJX state are recomputed with "
             "the lane-specific randomized model at reset."
         )
@@ -577,6 +623,25 @@ def main(argv=None):
     )
     args.out.mkdir(parents=True, exist_ok=True)
     controller_config = student_controller_config(train_env.mj_model)
+    controller_config['forward_velocity_frame'] = task.forward_velocity_frame
+    if args.handoff_bank is not None:
+        from curl_robot_2d_mjx.rolling_student_snapshot_pool import read_handoff_bank, handoff_split_indices
+        handoff_bank, _ = read_handoff_bank(args.handoff_bank)
+        training_rows, _ = handoff_split_indices(handoff_bank['trajectory_id'])
+        controller_config['export_contract'] = 'rolling_command_ppo_36x20_heading_handoff_v3'
+        controller_config['handoff_command_transition'] = {
+            'initial_speed_source':'per_snapshot_measured_1s_heading_speed_in_training',
+            'runtime_initial_speed_estimate_m_s':float(np.clip(np.median(handoff_bank['speed'][training_rows]),
+                task.forward_command_min_m_s,task.handoff_initial_speed_max_m_s)),
+            'runtime_estimate_note':'Training-split median is an approximate deployment fallback, not a live velocity measurement.',
+            'speed_slew_m_s2':task.handoff_speed_slew_m_s2,
+            'yaw_slew_rad_s2':task.handoff_yaw_slew_rad_s2,
+            'initial_speed_max_m_s':task.handoff_initial_speed_max_m_s,
+            'final_speed_range_m_s':[task.forward_command_min_m_s,task.forward_command_max_m_s],
+            'requires_matching_runtime_upgrade':True}
+        print(f"[handoff tracking] frame={task.forward_velocity_frame} final_vx="
+              f"{task.forward_command_min_m_s}..{task.forward_command_max_m_s} "
+              f"slew={task.handoff_speed_slew_m_s2}m/s^2; fixed final commands, 10s recipe", flush=True)
     history = []
 
     def progress(step, metrics):
@@ -692,7 +757,8 @@ def main(argv=None):
     fixed_evaluate = None
     fixed_history = []
     if args.fixed_eval_envs:
-        fixed_env = make_env(args.seed + 10000, args.fixed_eval_observation_noise_scale, eval_pool)
+        fixed_env = make_env(args.seed + 10000, args.fixed_eval_observation_noise_scale, eval_pool,
+                             nominal=True)
         fixed_evaluate, fixed_manifest = make_fixed_evaluator(
             fixed_env, initialized_networks, student_anchor_policy,
             count=args.fixed_eval_envs, seed=args.fixed_eval_seed,
@@ -701,6 +767,10 @@ def main(argv=None):
             if args.command_conditioned else None,
             observation_noise_scale=args.fixed_eval_observation_noise_scale,
         )
+        fixed_manifest["physics_mode"] = "nominal_physics_and_no_deploy_DR; regular PPO evaluation reports DR performance"
+        fixed_manifest["terminate_lateral_drift_m"] = task.terminate_lateral_drift_m
+        fixed_manifest["rolling_hip_knee_kp_scale"] = task.rolling_hip_knee_kp_scale
+        fixed_manifest["forward_velocity_frame"] = task.forward_velocity_frame
         write_json(args.out / "fixed_eval_manifest.json", fixed_manifest)
     initial_actor = None
 
@@ -745,12 +815,15 @@ def main(argv=None):
                 })
                 raise SystemExit(f"Stopped after saving {checkpoint_dir}: nonfinite fixed evaluation")
             best = max(fixed_history, key=lambda item: (
-                item["success_rate"], -item["forward_mae_m_s"], -item["yaw_mae_rad_s"]))
+                item["success_rate"], -(item.get("steady_forward_mae_m_s")
+                    if item.get("steady_forward_mae_m_s") is not None else item["forward_mae_m_s"]),
+                -item["yaw_mae_rad_s"]))
             write_json(args.out / "best_fixed_checkpoint.json", {
                 "step": best["step"], "checkpoint": best["checkpoint"],
                 "success_rate": best["success_rate"], "forward_mae_m_s": best["forward_mae_m_s"],
+                "steady_forward_mae_m_s": best.get("steady_forward_mae_m_s"),
                 "yaw_mae_rad_s": best["yaw_mae_rad_s"],
-                "selection": "Highest fixed-panel success, then lowest vx MAE, then lowest yaw MAE; requires independent validation.",
+                "selection": "Highest fixed-panel success, then lowest steady vx MAE (total MAE if no steady samples), then lowest yaw MAE; requires independent validation.",
             })
             print(
                 f"[fixed PPO eval] step={step:,} success={record['success_rate']:.1%} "
@@ -760,6 +833,11 @@ def main(argv=None):
                 f"std={record['mean_pre_tanh_policy_std']:.5f} "
                 f"actor_param_delta={parameter_delta:.6g}\n  failures={record['failure_counts']}", flush=True,
             )
+            if args.handoff_bank is not None:
+                print(f"  transition_vx_mae={record['transition_forward_mae_m_s']} "
+                      f"steady_vx_mae={record['steady_forward_mae_m_s']} "
+                      f"steady_reached={record['steady_phase_reached_episodes']}/{args.fixed_eval_envs}\n"
+                      f"  reset_sources={record['tracking_by_reset_source']}", flush=True)
             if (not args.eval_only and args.stop_success_drop is not None and step > 0
                     and record["success_rate"] < fixed_history[0]["success_rate"] - args.stop_success_drop):
                 write_json(args.out / "stopped.json", {

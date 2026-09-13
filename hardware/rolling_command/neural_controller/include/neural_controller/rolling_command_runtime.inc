@@ -18,7 +18,9 @@ void NeuralController::load_continuous_rolling() {
   nlohmann::json j;
   stream >> j;
   const auto &r = j.at("controller_requirements");
-  if (j.at("export_contract") != "rolling_command_ppo_36x20_batchnorm_v1" ||
+  const bool per_joint_contract = j.at("export_contract") == "rolling_command_ppo_36x20_batchnorm_v2_joint_gains";
+  if ((!per_joint_contract && j.at("export_contract") != "rolling_command_ppo_36x20_batchnorm_v1") ||
+      (per_joint_contract && (!j.contains("kps") || !j.contains("kds"))) ||
       j.at("in_shape") != nlohmann::json::array({1, 720}) ||
       j.at("out_shape") != nlohmann::json::array({1, 12}) ||
       j.at("observation_history") != 20 || !j.at("use_imu").get<bool>() ||
@@ -51,6 +53,14 @@ void NeuralController::load_continuous_rolling() {
     throw std::runtime_error("Invalid rolling gains");
   continuous_params_.kps.assign(12, kp);
   continuous_params_.kds.assign(12, kd);
+  // New exports retain per-joint gains; scalar-only deployed models remain valid.
+  if (j.contains("kps")) read("kps", continuous_params_.kps);
+  if (j.contains("kds")) read("kds", continuous_params_.kds);
+  for (int i = 0; i < 12; ++i) {
+    if (continuous_params_.kps[i] <= 0 || continuous_params_.kps[i] > 10.0 ||
+        continuous_params_.kds[i] <= 0 || continuous_params_.kds[i] > 1.0)
+      throw std::runtime_error("Rolling per-joint gains exceed hardware limits");
+  }
   for (int i = 0; i < 12; ++i) {
     const double scale = i % 3 == 0 ? 0.0 : (i % 3 == 1 ? 0.8 : 1.2);
     const double center = continuous_params_.default_joint_pos[i];

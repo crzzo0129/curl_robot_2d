@@ -1023,6 +1023,10 @@ def apply_physics_options_3d(model, task: Rolling3DConfig) -> None:
         model.body_mass[body_id] *= scale
         model.body_inertia[body_id] *= scale
     model.actuator_gainprm[:, 0] *= task.actuator_gain_scale
+    for actuator_id in range(model.nu):
+        name = mujoco.mj_id2name(model, mujoco.mjtObj.mjOBJ_ACTUATOR, actuator_id) or ""
+        if name.endswith(("_hip_servo", "_knee_servo")):
+            model.actuator_gainprm[actuator_id, 0] *= task.rolling_hip_knee_kp_scale
     model.actuator_biasprm[:, 1] = -model.actuator_gainprm[:, 0]
     if task.disable_root_damping:
         root_id = mujoco.mj_name2id(
@@ -1391,6 +1395,11 @@ def make_brax_env_3d(
                 "lateral_drift_abs_m": zero,
                 "lateral_velocity_m_s": zero,
                 "forward_velocity_command": zero,
+                "world_forward_velocity_m_s": zero,
+                "heading_forward_velocity_m_s": zero,
+                "handoff_transition_active": zero,
+                "target_forward_velocity_command": zero,
+                "target_yaw_rate_command": zero,
                 "forward_velocity_m_s": zero,
                 "forward_velocity_error_m_s": zero,
                 "forward_velocity_error_abs_m_s": zero,
@@ -1751,6 +1760,10 @@ def make_brax_env_3d(
                 ),
                 "rolling_axis_heading_rate": jp.zeros((), dtype=jp.float32),
                 "previous_root_x": data.qpos[0],
+                "previous_root_y": data.qpos[1],
+                "cumulative_forward_distance_m": jp.zeros((), dtype=jp.float32),
+                "handoff_snapshot": jp.zeros((), dtype=jp.float32),
+                "handoff_start_speed": forward_velocity_command,
                 "cumulative_rotation": jp.zeros((), dtype=jp.float32),
                 "previous_roll_potential": jp.zeros(
                     (), dtype=jp.float32
@@ -1895,6 +1908,32 @@ def make_brax_env_3d(
             ]
             yaw_rate_command = state.info["yaw_cmd_sequence"][command_index]
             steering_prior = state.info["prior_sequence"][command_index]
+            target_forward_command, target_yaw_command = forward_velocity_command, yaw_rate_command
+            applied_index = jp.minimum(state.info["step_count"] // self.command_interval_steps,
+                                       self.num_command_segments - 1)
+            applied_target_forward = state.info["v_cmd_sequence"][applied_index]
+            applied_target_yaw = state.info["yaw_cmd_sequence"][applied_index]
+            handoff_transition_active = jp.asarray(False)
+            if task.handoff_speed_slew_m_s2 > 0:
+                from curl_robot_2d_mjx.rolling_speed_tracking import takeover_commands
+                ramp_speed, ramp_yaw, _ = takeover_commands(
+                    jp, state.info["handoff_start_speed"], target_forward_command,
+                    target_yaw_command, step_count * control_dt,
+                    task.handoff_speed_slew_m_s2, task.handoff_yaw_slew_rad_s2)
+                handoff = state.info["handoff_snapshot"] > 0.5
+                forward_velocity_command = jp.where(handoff, ramp_speed, target_forward_command)
+                yaw_rate_command = jp.where(handoff, ramp_yaw, target_yaw_command)
+                _, _, active_now = takeover_commands(
+                    jp, state.info["handoff_start_speed"], applied_target_forward,
+                    applied_target_yaw, state.info["step_count"] * control_dt,
+                    task.handoff_speed_slew_m_s2, task.handoff_yaw_slew_rad_s2)
+                handoff_transition_active = handoff & active_now
+            # The actor selected this action using the command in its input.
+            # The newly computed command belongs to the next observation.
+            applied_forward_command = (state.info["forward_velocity_command"]
+                if task.forward_velocity_frame == "heading" else forward_velocity_command)
+            applied_yaw_command = (state.info["yaw_rate_command"]
+                if task.forward_velocity_frame == "heading" else yaw_rate_command)
 
             def reference_physics_step(carry, _):
                 current_data, current_phase, current_rolling_phase = carry
@@ -2060,27 +2099,31 @@ def make_brax_env_3d(
                 jp, rolling_phase, oscillator_phase
             )
             contacts = self._contact_metrics(data)
-            axis_tilt = self._rolling_axis_tilt(data, yaw_rate_command)
+            axis_tilt = self._rolling_axis_tilt(data, applied_yaw_command)
 
             root_x = data.qpos[0]
             root_y = data.qpos[1]
             root_z = data.qpos[2]
             terrain_z = self._terrain_surface_z(root_x)
             root_z_relative = root_z - terrain_z
-            translation_progress = (
-                root_x - state.info["previous_root_x"]
-            ) / self.rolling_radius
-            forward_velocity_m_s = (
-                translation_progress * self.rolling_radius / control_dt
-            )
+            body_y_axis, _ = self._body_axes(data)
+            lateral_yaw = rolling_axis_heading_3d(jp, body_y_axis)
+            from curl_robot_2d_mjx.rolling_speed_tracking import heading_displacement
+            dx = root_x - state.info["previous_root_x"]
+            dy = root_y - state.info["previous_root_y"]
+            along_heading = heading_displacement(
+                jp, dx, dy, state.info["previous_rolling_axis_heading"], lateral_yaw)
+            distance_step = along_heading if task.forward_velocity_frame == "heading" else dx
+            cumulative_forward_distance = state.info["cumulative_forward_distance_m"] + distance_step
+            translation_progress = distance_step / self.rolling_radius
+            forward_velocity_m_s = distance_step / control_dt
             angular_velocity_y = jp.abs(data.qvel[4])
             rotation_progress = angular_velocity_y * control_dt
             cumulative_rotation = (
                 state.info["cumulative_rotation"] + rotation_progress
             )
-            cumulative_translation = (
-                root_x - state.info["initial_root_x"]
-            ) / self.rolling_radius
+            cumulative_translation = (cumulative_forward_distance if task.forward_velocity_frame == "heading"
+                                      else root_x - state.info["initial_root_x"]) / self.rolling_radius
             roll_potential = conservative_rolling_potential(
                 jp, cumulative_rotation, cumulative_translation
             )
@@ -2099,8 +2142,6 @@ def make_brax_env_3d(
             lateral_drift = root_y - state.info["initial_root_y"]
             lateral_drift_abs = jp.abs(lateral_drift)
             lateral_velocity = data.qvel[1]
-            body_y_axis, _ = self._body_axes(data)
-            lateral_yaw = rolling_axis_heading_3d(jp, body_y_axis)
             yaw_rate = data.qvel[5]
             rolling_axis_heading_rate = (
                 wrapped_phase_error(
@@ -2111,7 +2152,7 @@ def make_brax_env_3d(
                 / control_dt
             )
             turning = (
-                jp.abs(yaw_rate_command) > 1e-3
+                jp.abs(applied_yaw_command) > 1e-3
             ).astype(jp.float32)
             stability_cost = stability_error_cost_3d(
                 jp,
@@ -2243,12 +2284,12 @@ def make_brax_env_3d(
                     "mismatch_progress": mismatch_progress,
                     "backward_progress": backward_progress,
                     "forward_velocity": forward_velocity_m_s,
-                    "forward_velocity_command": forward_velocity_command,
+                    "forward_velocity_command": applied_forward_command,
                     "lateral_velocity": lateral_velocity,
                     "lateral_drift": lateral_drift,
                     "yaw_rate": yaw_rate,
                     "yaw": lateral_yaw,
-                    "yaw_rate_command": yaw_rate_command,
+                    "yaw_rate_command": applied_yaw_command,
                     "rolling_axis_heading_rate": rolling_axis_heading_rate,
                     "previous_stability_cost": state.info["previous_stability_cost"],
                     "axis_tilt_squared": jp.square(axis_tilt),
@@ -2315,6 +2356,8 @@ def make_brax_env_3d(
                 "forward_command_scale": forward_command_scale,
                 "yaw_rate_command": yaw_rate_command,
                 "previous_root_x": root_x,
+                "previous_root_y": root_y,
+                "cumulative_forward_distance_m": cumulative_forward_distance,
                 "cumulative_rotation": cumulative_rotation,
                 "previous_roll_potential": roll_potential,
                 "previous_mismatch_potential": mismatch_potential,
@@ -2354,21 +2397,26 @@ def make_brax_env_3d(
                 "lateral_drift_m": lateral_drift,
                 "lateral_drift_abs_m": lateral_drift_abs,
                 "lateral_velocity_m_s": lateral_velocity,
-                "forward_velocity_command": forward_velocity_command,
+                "forward_velocity_command": applied_forward_command,
                 "forward_velocity_m_s": forward_velocity_m_s,
+                "world_forward_velocity_m_s": dx / control_dt,
+                "heading_forward_velocity_m_s": along_heading / control_dt,
+                "handoff_transition_active": handoff_transition_active.astype(jp.float32),
+                "target_forward_velocity_command": applied_target_forward,
+                "target_yaw_rate_command": applied_target_yaw,
                 "forward_velocity_error_m_s": (
                     forward_velocity_m_s
-                    - forward_velocity_command
+                    - applied_forward_command
                 ),
                 "forward_velocity_error_abs_m_s": jp.abs(
                     forward_velocity_m_s
-                    - forward_velocity_command
+                    - applied_forward_command
                 ),
-                "yaw_rate_command_rad_s": yaw_rate_command,
+                "yaw_rate_command_rad_s": applied_yaw_command,
                 "rolling_axis_heading_rate_rad_s": rolling_axis_heading_rate,
                 "yaw_rate_error_abs_rad_s": jp.abs(
                     rolling_axis_heading_rate
-                    - yaw_rate_command
+                    - applied_yaw_command
                 ),
                 "stability_error_cost": stability_cost,
                 "axis_tilt_rad": axis_tilt,

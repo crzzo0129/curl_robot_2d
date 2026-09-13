@@ -462,6 +462,8 @@ def student_controller_config(model, *, action_scales=CONTROLLER_ACTION_SCALES):
         "observation_history": ROLLING_DEPLOY_OBSERVATION_HISTORY_3D,
         "kp": float(np.median(kp)),
         "kd": float(np.median(kd)),
+        "kps": [float(value) for value in kp],
+        "kds": [float(value) for value in kd],
         "action_scale": [float(value) for value in action_scales],
         "default_joint_pos": [float(value) for value in compact],
         "joint_lower_limits": [float(value) for value in limits[:, 0]],

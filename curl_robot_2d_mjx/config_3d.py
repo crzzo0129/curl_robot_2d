@@ -54,6 +54,7 @@ class Rolling3DConfig:
     body_mass_left_scale: float = 1.0
     body_mass_right_scale: float = 1.0
     actuator_gain_scale: float = 1.0
+    rolling_hip_knee_kp_scale: float = 1.0
     action_repeat: int = 20
     episode_length: int = 500
     action_scales: tuple[float, ...] = (
@@ -98,6 +99,11 @@ class Rolling3DConfig:
     forward_command_min_m_s: float = 0.40
     forward_command_max_m_s: float = 0.90
     forward_command_fixed_m_s: float | None = None
+    forward_velocity_frame: str = "world"
+    # Only measured handoff snapshots use this initial command transition.
+    handoff_speed_slew_m_s2: float = 0.0
+    handoff_yaw_slew_rad_s2: float = 0.07
+    handoff_initial_speed_max_m_s: float = 1.05
     # Turning angular-velocity command (yaw_rate_cmd). Turning is learned via
     # the 8-D differential residual; a small steering prior from the validated
     # constant differential pattern [a, a, a, -a] helps PPO find the direction.
@@ -158,6 +164,13 @@ class Rolling3DConfig:
 
 
 def validate_3d_config(config: Rolling3DConfig) -> None:
+    if config.forward_velocity_frame not in ("world", "heading"):
+        raise ValueError("forward_velocity_frame must be world or heading")
+    if not math.isfinite(config.handoff_speed_slew_m_s2) or config.handoff_speed_slew_m_s2 < 0:
+        raise ValueError("handoff_speed_slew_m_s2 must be finite and nonnegative")
+    for name in ("handoff_yaw_slew_rad_s2", "handoff_initial_speed_max_m_s"):
+        if not math.isfinite(getattr(config, name)) or getattr(config, name) <= 0:
+            raise ValueError(name + " must be finite and positive")
     if config.reset_pose not in ("compact", "stand"):
         raise ValueError("reset_pose must be compact or stand")
     if not math.isfinite(config.stand_hold_s) or config.stand_hold_s < 0.0:
@@ -187,6 +200,7 @@ def validate_3d_config(config: Rolling3DConfig) -> None:
         (config.body_mass_left_scale, "body_mass_left_scale"),
         (config.body_mass_right_scale, "body_mass_right_scale"),
         (config.actuator_gain_scale, "actuator_gain_scale"),
+        (config.rolling_hip_knee_kp_scale, "rolling_hip_knee_kp_scale"),
     ):
         if not math.isfinite(value) or value <= 0.0:
             raise ValueError(f"{name} must be finite and positive")

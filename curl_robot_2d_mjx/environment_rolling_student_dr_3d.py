@@ -186,6 +186,8 @@ def make_rolling_student_dr_env_3d(
                     lambda value: jp.take(value, index, axis=0), snapshot_pool
                 )
                 reset_applied_action = base_state.info["last_action"]
+                reset_action_ramp = jp.where(base_state.info["handoff_snapshot"] > .5,
+                                            1., base_state.metrics["startup_action_ramp"])
                 # Preserve physical time, phases, contacts and progress
                 # potentials. Only the student's episode timer starts anew.
                 base_state = base_state.replace(
@@ -203,9 +205,36 @@ def make_rolling_student_dr_env_3d(
                 # clean nominal reset inconsistent under deploy DR.
                 base_state = base_state.replace(
                     pipeline_state=mjx.forward(
-                        self.sys, base_state.pipeline_state
+                        self.sys, base_state.pipeline_state.replace(
+                            qacc_warmstart=jp.zeros_like(base_state.pipeline_state.qacc_warmstart)
+                        )
                     )
                 )
+            if self.config.handoff_speed_slew_m_s2 > 0:
+                handoff = base_state.info["handoff_snapshot"] > 0.5
+                speed = jp.where(handoff, base_state.info["handoff_start_speed"],
+                                 base_state.info["forward_velocity_command"])
+                yaw = jp.where(handoff, 0., base_state.info["yaw_rate_command"])
+                base_state = base_state.replace(info={**base_state.info,
+                    "forward_velocity_command":speed, "yaw_rate_command":yaw})
+            if snapshot_pool is not None:
+                # Rebuild privileged features too: imported nominal contacts
+                # and command slots are stale after DR and the handoff ramp.
+                data, info = base_state.pipeline_state, base_state.info
+                contacts = self.base_env._contact_metrics(data)
+                observation = self.base_env._observation(
+                    data, info["last_action"], contacts,
+                    axis_tilt=self.base_env._rolling_axis_tilt(data, info["yaw_rate_command"]),
+                    reference_action_value=info["last_reference_action"],
+                    oscillator_phase=info["oscillator_phase"], rolling_phase=info["rolling_phase"],
+                    action_ramp=reset_action_ramp,
+                    lateral_drift=data.qpos[1] - info["initial_root_y"],
+                    lateral_velocity_command=info["lateral_velocity_command"],
+                    forward_velocity_command=info["forward_velocity_command"],
+                    yaw_rate_command=info["yaw_rate_command"],
+                    rolling_axis_heading_rate=info["rolling_axis_heading_rate"])
+                base_state = base_state.replace(obs=jp.nan_to_num(observation), info={**info,
+                    "previous_same_side_foot_contact": contacts["same_side_foot_count"] > 0})
             motor_zero_bias = jax.random.uniform(
                 motor_key,
                 (ROLLING_CONTROLLER_ACTION_SIZE_3D,),
@@ -218,6 +247,10 @@ def make_rolling_student_dr_env_3d(
                 minval=-deploy_settings.encoder_fixed_bias_rad,
                 maxval=deploy_settings.encoder_fixed_bias_rad,
             )
+            if snapshot_pool is not None:
+                # A fixed encoder offset applies to every pre-takeover frame too.
+                history_frames = reset_history.reshape((-1, 36))
+                reset_history = history_frames.at[:, 12:24].add(encoder_bias).reshape((-1,))
             actor_history = self._actor_observation(
                 base_state,
                 reset_history,

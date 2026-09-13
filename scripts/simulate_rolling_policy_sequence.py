@@ -37,6 +37,8 @@ class Policy:
                        for l in self.doc['layers']]
         self.center, self.scale, self.low, self.high = [np.asarray(self.doc[k]) for k in
             ('default_joint_pos', 'action_scale', 'joint_lower_limits', 'joint_upper_limits')]
+        self.kps = np.asarray(self.doc.get('kps', [self.doc['kp']] * 12))
+        self.kds = np.asarray(self.doc.get('kds', [self.doc['kd']] * 12))
 
     def __call__(self, obs):
         x = np.clip(obs, -100., 100.).astype(np.float32)
@@ -78,7 +80,7 @@ def remap(history, old, new, last_target, command):
     return result
 
 
-def run(args):
+def run(args, snapshot_callback=None):
     policies = {k: Policy(getattr(args, k)) for k in ('startup', 'rolling', 'stop')}
     model = mujoco.MjModel.from_xml_path(str(args.xml.resolve()))
     model.opt.solver = mujoco.mjtSolver.mjSOL_CG
@@ -96,6 +98,9 @@ def run(args):
     standing = np.asarray([0., .9, 1.15] * 4)
     data.qpos[qi] = standing
     data.qvel[:] = 0
+    rng = np.random.default_rng(getattr(args, 'seed', 0))
+    data.qpos[qi] += rng.normal(0., getattr(args, 'initial_joint_noise_rad', 0.), len(qi))
+    data.qvel[vi] = rng.normal(0., getattr(args, 'initial_velocity_noise', 0.), len(vi))
     data.ctrl[ai] = standing
     mujoco.mj_forward(model, data)
     clearance = make_floor_clearance(model, model.geom('floor').id, np)
@@ -108,6 +113,7 @@ def run(args):
     request_time = takeover = stop_request = stop_time = None
     previous_pitch = math.atan2(data.xmat[torso].reshape(3, 3)[2, 0], data.xmat[torso].reshape(3, 3)[2, 2])
     rolled = 0.
+    integrated_roll_phase = 0.
     events, frames, rows = [], [], []
     next_policy_tick = 500
     policy_ticks = 0
@@ -122,7 +128,8 @@ def run(args):
     limiter_ticks = 0
     applied_command = np.zeros(3)
     continuous_phases = ('blending', 'settling', 'command_ramp', 'rolling')
-    max_seconds = 30.
+    # Leave time for startup, the requested rolling interval and stand-up.
+    max_seconds = max(30., 15. + args.turn_seconds + args.stop_seconds)
 
     def event(name, **extra):
         row = dict(event=name, time_s=round(float(data.time), 6), **extra)
@@ -201,6 +208,12 @@ def run(args):
                 applied_command = np.array([handoff.vx, 0., handoff.yaw])
             else:
                 applied_command = command.copy() if continuous else np.zeros(3)
+            if snapshot_callback is not None and smooth:
+                snapshot = snapshot_callback(data=data, phase=phase, history=history,
+                    previous_target=last_target, policy=policies['rolling'], rows=rows,
+                    rolling_phase=integrated_roll_phase, healthy=RollingHandoff.healthy(R[2, 1], gyro[1]))
+                if snapshot is not None:
+                    return snapshot
             policy = policies['rolling' if continuous else phase]
             fill(history[0], policy, applied_command, R, gyro)
             raw = policy(history.reshape(-1))
@@ -225,12 +238,13 @@ def run(args):
             last_target = target
             data.ctrl[ai] = target
             alpha = handoff.alpha if smooth and phase == 'blending' else 1.
-            kp = alpha*policy.doc['kp'] + (1-alpha)*policies['startup'].doc['kp']
-            kd = alpha*policy.doc['kd'] + (1-alpha)*policies['startup'].doc['kd']
+            kp = alpha*policy.kps + (1-alpha)*policies['startup'].kps
+            kd = alpha*policy.kds + (1-alpha)*policies['startup'].kds
             model.actuator_gainprm[ai, 0] = kp
             model.actuator_biasprm[ai, 1] = -kp
             model.actuator_biasprm[ai, 2] = -kd
         mujoco.mj_step(model, data)
+        integrated_roll_phase += dt * float(data.qvel[4])
         if not np.isfinite(data.qpos).all() or not np.isfinite(data.qvel).all():
             event('nonfinite_physics')
             break
