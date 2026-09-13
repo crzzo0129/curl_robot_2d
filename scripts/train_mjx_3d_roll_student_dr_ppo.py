@@ -130,7 +130,12 @@ def parse_args(argv=None):
     parser.add_argument('--gradient-diagnostics', action='store_true')
     parser.add_argument('--checkpoint-selection', choices=('success','handoff_speed'), default='success')
     parser.add_argument('--tracking-success-drop', type=float, default=.03,
-                        help='allowed absolute success/full-horizon drop from step=0 for speed selection and stopping')
+                        help='allowed absolute success/full-horizon drop for best speed checkpoint selection only')
+    parser.add_argument('--exploration-stop-drop', type=float, default=.15)
+    parser.add_argument('--exploration-stop-patience', type=int, default=3)
+    parser.add_argument('--exploration-warmup-steps', type=int, default=245760)
+    parser.add_argument('--no-performance-stop', action='store_true',
+                        help='disable success/survival-based early stops; finite-value checks remain enabled')
     parser.add_argument("--handoff-bank", type=Path, help="NPZ from collect_rolling_handoff_bank")
     parser.add_argument("--handoff-fraction", type=float, default=0.5)
     parser.add_argument("--handoff-speed-slew-m-s2", type=float, default=0.15)
@@ -322,6 +327,10 @@ def parse_args(argv=None):
         parser.error("--eval-only requires --fixed-eval-envs > 0")
     if not math.isfinite(args.tracking_success_drop) or not 0 <= args.tracking_success_drop <= .1:
         parser.error('--tracking-success-drop must be finite and in [0,0.1]')
+    if not math.isfinite(args.exploration_stop_drop) or not 0 < args.exploration_stop_drop <= 1:
+        parser.error('--exploration-stop-drop must be in (0,1]')
+    if args.exploration_stop_patience < 1 or args.exploration_warmup_steps < 0:
+        parser.error('exploration patience must be positive and warmup steps nonnegative')
     if args.checkpoint_selection == 'handoff_speed' and (args.handoff_bank is None or args.fixed_eval_envs < 1):
         parser.error('handoff speed selection requires handoff bank and fixed evaluation')
     if not math.isfinite(args.clipping_epsilon) or not 0 < args.clipping_epsilon < 1:
@@ -862,14 +871,19 @@ def main(argv=None):
                       f"steady_vx_mae={record['steady_forward_mae_m_s']} "
                       f"steady_reached={record['steady_phase_reached_episodes']}/{args.fixed_eval_envs}\n"
                       f"  reset_sources={record['tracking_by_reset_source']}", flush=True)
-            if (not args.eval_only and args.checkpoint_selection == 'handoff_speed' and step > 0):
-                from curl_robot_2d_mjx.rolling_speed_tracking import speed_checkpoint_eligible
-                if not speed_checkpoint_eligible(record, fixed_history[0], args.tracking_success_drop):
-                    write_json(args.out/'stopped.json', {'reason':'speed run exceeded baseline survival tolerance',
+            if (not args.eval_only and not args.no_performance_stop
+                    and args.checkpoint_selection == 'handoff_speed' and step > 0):
+                from curl_robot_2d_mjx.rolling_speed_tracking import exploration_should_stop
+                if exploration_should_stop(fixed_history, drop=args.exploration_stop_drop,
+                        patience=args.exploration_stop_patience, warmup_steps=args.exploration_warmup_steps):
+                    write_json(args.out/'stopped.json', {'reason':'persistent survival regression after exploration warmup',
                         'checkpoint':str(checkpoint_dir),'best_checkpoint':best['checkpoint'],
-                        'tolerance':args.tracking_success_drop})
+                        'tolerance':args.exploration_stop_drop, 'patience':args.exploration_stop_patience,
+                        'warmup_steps':args.exploration_warmup_steps})
                     pending_survival_stop = f'Stopped after saving {checkpoint_dir} and training metrics: survival regression during speed training'
-            if (pending_survival_stop is None and not args.eval_only and args.stop_success_drop is not None and step > 0
+            # The legacy single-evaluation guard must not bypass exploration.
+            if (pending_survival_stop is None and not args.eval_only and not args.no_performance_stop
+                    and args.checkpoint_selection != 'handoff_speed' and args.stop_success_drop is not None and step > 0
                     and record["success_rate"] < fixed_history[0]["success_rate"] - args.stop_success_drop):
                 write_json(args.out / "stopped.json", {
                     "reason": "fixed evaluation success dropped below baseline tolerance",

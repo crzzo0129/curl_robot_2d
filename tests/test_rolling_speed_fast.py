@@ -7,7 +7,8 @@ import unittest
 import numpy as np
 
 from curl_robot_2d_mjx.rolling_speed_tracking import (
-    update_speed_window, update_speed_settling, select_speed_checkpoint, speed_checkpoint_eligible)
+    update_speed_window, update_speed_settling, select_speed_checkpoint, speed_checkpoint_eligible,
+    exploration_should_stop)
 from scripts.run_rolling_speed_fast import build_command
 
 
@@ -41,6 +42,21 @@ class SpeedTrackingTest(unittest.TestCase):
         self.assertEqual(select_speed_checkpoint([baseline,good,unsafe])['step'],1)
         self.assertEqual(select_speed_checkpoint([baseline,row(3,.11)])['step'],0)
 
+    def test_exploration_allows_transient_regression_and_resets_after_recovery(self):
+        def row(step,full):
+            return dict(step=step,success_rate=full,tracking_by_reset_source={
+                'handoff':dict(episodes=100,full_horizon_rate=full),
+                'mature':dict(episodes=100,full_horizon_rate=1.)})
+        baseline=row(0,1.)
+        warmup_bad=row(122880,.50)
+        self.assertFalse(exploration_should_stop([baseline,warmup_bad]))
+        mild=[baseline,warmup_bad,row(245760,.94),row(368640,.94),row(491520,.94)]
+        self.assertFalse(exploration_should_stop(mild))
+        self.assertFalse(speed_checkpoint_eligible(mild[-1],baseline,.03))
+        bad=[baseline,warmup_bad,row(245760,.80),row(368640,.80),row(491520,.80)]
+        self.assertTrue(exploration_should_stop(bad))
+        self.assertFalse(exploration_should_stop(bad[:-1]+[row(491520,.99),row(614400,.80)]))
+
     def test_runner_command_is_accepted_and_restores_best_actor(self):
         from scripts.train_mjx_3d_roll_student_dr_ppo import parse_args
         with tempfile.TemporaryDirectory() as folder:
@@ -60,6 +76,11 @@ class SpeedTrackingTest(unittest.TestCase):
             self.assertEqual(args.max_learning_rate,3e-5)
             self.assertTrue(args.gradient_diagnostics)
             self.assertEqual(args.checkpoint_selection,'handoff_speed')
+            self.assertIsNone(args.stop_success_drop)
+            self.assertEqual(args.exploration_stop_drop,.15)
+            self.assertEqual(args.exploration_stop_patience,3)
+            self.assertEqual(args.exploration_warmup_steps,245760)
+            self.assertTrue(parse_args(cmd[4:]+['--no-performance-stop']).no_performance_stop)
 
     def test_gradient_diagnostics_preserve_gradients_and_restore_hook_on_failure(self):
         import jax.numpy as jp

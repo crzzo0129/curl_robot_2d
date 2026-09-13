@@ -56,3 +56,10 @@ def select_speed_checkpoint(records, tolerance=.03):
         return (float('inf') if error is None else error,
                 float('inf') if steady is None else steady, record['yaw_mae_rad_s'], -record['success_rate'])
     return min(eligible, key=score)
+
+
+def exploration_should_stop(records, *, drop=.15, patience=3, warmup_steps=245760):
+    """Allow transient regressions; only persistent post-warmup decline stops PPO."""
+    assessed = [r for r in records if r['step'] > 0 and r['step'] >= warmup_steps]
+    return len(assessed) >= patience and all(
+        not speed_checkpoint_eligible(r, records[0], drop) for r in assessed[-patience:])
